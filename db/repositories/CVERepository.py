@@ -19,12 +19,12 @@ from db.database import Database
 
 
 class CVERepository:
-    def __init__(self, db_adapter: Database):
-        self.db_adapter = db_adapter
+    def __init__(self, dbAdapter: Database):
+        self.dbAdapter = dbAdapter
 
-    def get_cves_by_host_ip(self, host_ip):
+    def getCVEsByHostIP(self, hostIP):
         query = ('SELECT cves.name, cves.severity, cves.product, cves.version, cves.url, cves.source, '
                  'cves.exploitId, cves.exploit, cves.exploitUrl FROM cve AS cves '
                  'INNER JOIN hostObj AS hosts ON hosts.id = cves.hostId '
                  'WHERE hosts.ip = ?')
-        return self.db_adapter.metadata.bind.execute(query, str(host_ip)).fetchall()
+        return self.dbAdapter.metadata.bind.execute(query, str(hostIP)).fetchall()
