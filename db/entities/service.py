@@ -18,7 +18,8 @@ Author(s): Dmitriy Dubson (d.dubson@gmail.com)
 from sqlalchemy import String, Column, Integer
 from sqlalchemy.orm import relationship
 
-from db.database import Base, appObj
+from db.database import Base
+from db.entities.app import appObj
 from db.entities.cve import cve
 from db.entities.port import portObj
 
