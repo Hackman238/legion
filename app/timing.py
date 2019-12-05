@@ -15,10 +15,16 @@ Copyright (c) 2018 GoVanguard
 
 Author(s): Dmitriy Dubson (d.dubson@gmail.com)
 """
+from datetime import datetime
 from functools import wraps
 from time import time
 
 from app.logging.legionLog import log
+
+timestampFormats = {
+    "HUMAN_FORMAT": "%d %b %Y %H:%M:%S.%f",
+    "STANDARD_TIMESTAMP": '%Y%m%d%H%M%S%f'
+}
 
 
 def timing(f):
@@ -32,3 +38,8 @@ def timing(f):
         return result
 
     return wrap
+
+
+def getTimestamp(human: bool = False) -> str:
+    timeFormat = timestampFormats["HUMAN_FORMAT"] if human else timestampFormats["STANDARD_TIMESTAMP"]
+    return datetime.fromtimestamp(time()).strftime(timeFormat)
