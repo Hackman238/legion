@@ -3,7 +3,7 @@ WORKDIR /
 ENV DISPLAY :0
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/Chicago
-RUN git clone https://github.com/GoVanguard/legion.git
+RUN git clone https://github.com/Hackman238/legion.git
 RUN cd legion && \
     chmod +x ./startLegion.sh && \
     chmod +x ./deps/* -R && \

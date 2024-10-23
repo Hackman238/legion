@@ -1,9 +1,9 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: legion
-Source: https://github.com/GoVanguard/Legion
+Source: https://github.com/Hackman238/Legion
 
 Files: *
-Copyright: 2018-2019 GoVanguard
+Copyright: 2024 Hackman238
 License: GPL-3+
 
 Files: scripts/rdp-sec-check.pl
@@ -65,7 +65,7 @@ License: BSD-3-clause
  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Files: debian/*
-Copyright: 2018-2019 GoVanguard
+Copyright: 2024 Hackman238
 License: GPL-3+
 
 License: GPL-3+
