@@ -1,6 +1,6 @@
 """
-LEGION (https://govanguard.io)
-Copyright (c) 2019 GoVanguard
+LEGION (https://shanewilliamscott.com)
+Copyright (c) 2024 Shane Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -13,7 +13,6 @@ Copyright (c) 2019 GoVanguard
     You should have received a copy of the GNU General Public License along with this program.
     If not, see <http://www.gnu.org/licenses/>.
 
-Author(s): Shane Scott (sscott@gotham-security.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
 from PyQt6.QtCore import QSemaphore

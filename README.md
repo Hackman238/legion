@@ -1,4 +1,10 @@
-![alt tag](https://github.com/GoVanguard/legion/blob/master/images/LegionBanner.png)
+## NOTICE
+
+This is the new home of "Legion". A major release will follow very soon!
+
+##
+
+![alt tag](https://github.com/Hackman238/legion/blob/master/images/LegionBanner.png)
 
 ## ✨ About
 
@@ -114,7 +120,7 @@ and granting Docker group SSH rights [here](#setup-docker-to-allow-non-root-user
 Within Terminal:
 
 ```shell
-git clone https://github.com/GoVanguard/legion.git
+git clone https://github.com/Hackman238/legion.git
 cd legion/docker
 chmod +x runIt.sh
 ./runIt.sh
@@ -129,7 +135,7 @@ Replace `X.X.X.X` with the IP address of the remote running X11.
 Within Terminal:
 
 ```shell
-git clone https://github.com/GoVanguard/legion.git
+git clone https://github.com/Hackman238/legion.git
 cd legion/docker
 chmod +x runIt.sh
 ./runIt.sh X.X.X.X
@@ -152,7 +158,7 @@ log and see IP next to "XdmcpRegisterConnection: newAddress"
 Within Terminal:
 
 ```shell
-git clone https://github.com/GoVanguard/legion.git
+git clone https://github.com/Hackman238/legion.git
 cd legion/docker
 sudo chmod +x runIt.sh
 sudo ./runIt.sh X.X.X.X
@@ -251,7 +257,7 @@ Assumes Ubuntu, Kali or Parrot Linux is being used with **Python 3.6** installed
 Within Terminal:
 
 ```shell
-git clone https://github.com/GoVanguard/legion.git
+git clone https://github.com/Hackman238/legion.git
 cd legion
 sudo chmod +x startLegion.sh
 sudo ./startLegion.sh
@@ -281,16 +287,16 @@ sudoedit /root/.local/share/legion/legion.conf
 ## ⚖️ License
 
 Legion is licensed under the GNU General Public License v3.0. Take a look at the
-[LICENSE](https://github.com/GoVanguard/legion/blob/master/LICENSE) for more information.
+[LICENSE](https://github.com/Hackman238/legion/blob/master/LICENSE) for more information.
 
 ## ⭐️ Attribution
 
 * Refactored Python 3.6+ codebase, added feature set and ongoing development of Legion is credited
-  to [GoVanguard](https://govanguard.com)
+  to [Hackman238] & [sscottgvit] (Shane Scott)
 * The initial Sparta Python 2.7 codebase and application design is credited SECFORCE.
 * Several additional PortActions, PortTerminalActions and SchedulerSettings are credited to batmancrew.
 * The nmap XML output parsing engine was largely based on code by yunshu, modified by ketchup and modified SECFORCE.
 * ms08-067_check script used by `smbenum.sh` is credited to Bernardo Damele A.G.
 * Legion relies heavily on nmap, hydra, python, PyQt, SQLAlchemy and many other tools and technologies, so we would like
   to thank all of the people involved in the creation of those.
-* Special thanks to Dmitriy Dubson for his continued contributions to the project!
+* Special thanks to Dmitriy Dubson [ddubson] for his continued contributions to the project!

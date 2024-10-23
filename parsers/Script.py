@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 from db.entities.cve import cve
 
 __author__ =  'ketchup'

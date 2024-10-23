@@ -1,11 +1,11 @@
 Source: legion
 Section: misc
 Priority: optional
-Maintainer: GoVanguard <hello@gotham-security.com>
-Uploaders: Shane Scott <sscott@gotham-security.com>
+Maintainer: Hackman238 <sscott@shanewilliamscott.com>
+Uploaders: Shane Scott <sscott@shanewilliamscott.com>
 Build-Depends: debhelper, python3, python3-requests
 Standards-Version: 0.4.3
-Homepage: https://github.com/GoVanguard/Legion
+Homepage: https://github.com/Hackman238/Legion
 
 Package: legion
 Architecture: all
