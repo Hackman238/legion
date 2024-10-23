@@ -9,7 +9,7 @@ for script in "${scripts[@]}"; do
   if [ -a "scripts/$script" ]; then
     echo "$script is already installed"
   else
-    wget -v -P scripts/ "https://raw.githubusercontent.com/GoVanguard/sparta-scripts/master/$script"
+    wget -v -P scripts/ "https://raw.githubusercontent.com/Hackman238/sparta-scripts/master/$script"
   fi
 done
 

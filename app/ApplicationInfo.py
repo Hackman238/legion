@@ -1,6 +1,6 @@
 """
-LEGION (https://gotham-security.com)
-Copyright (c) 2023 Gotham Security
+LEGION (https://shanewilliamscott.com)
+Copyright (c) 2024 Shane Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -13,18 +13,18 @@ Copyright (c) 2023 Gotham Security
     You should have received a copy of the GNU General Public License along with this program.
     If not, see <http://www.gnu.org/licenses/>.
 
-Author(s): Shane Scott (sscott@gotham-security.com), Dmitriy Dubson (d.dubson@gmail.com)
+Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
 applicationInfo = {
     "name": "LEGION",
     "version": "0.4.3",
-    "build": '1700529501',
-    "author": "Gotham Security",
-    "copyright": "2023",
-    "links": ["http://github.com/GoVanguard/legion/issues", "https://gotham-security.com/legion"],
+    "build": '1729699482',
+    "author": "Shane Scott",
+    "copyright": "2024",
+    "links": ["http://github.com/Hackman238/legion/issues"],
     "emails": [],
-    "update": '11/20/2023',
+    "update": '10/23/2024',
     "license": "GPL v3",
     "desc": "Legion is a fork of SECFORCE's Sparta, Legion is an open source, easy-to-use, \n" +
             "super-extensible and semi-automated network penetration testing tool that aids in " +

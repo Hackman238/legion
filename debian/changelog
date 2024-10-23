@@ -10,14 +10,14 @@ legion (0.4.0-0) UNRELEASED; urgency=medium
   * Eliminate support for distributions other than Kali 2022 and later or Ubuntu 20.04 or later
   * Improved WSL support (handling of path conversions for calling the Windows NMAP installation from the program)
 
- -- Shane Scott <sscot@gotham-security.com>  Thur, 09 Nov 2023 19:04:55 -0600
+ -- Shane Scott <sscot@shanewilliamscott.com>  Thur, 09 Nov 2023 19:04:55 -0600
 
 legion (0.4.1-0) UNRELEASED; urgency=medium
 
   * Add checkXserver.sh to help users troubleshoot connections to X
   * Fix a few missing dependencies
 
- -- Shane Scott <sscot@gotham-security.com>  Thur, 13 Nov 2023 10:54:55 -0600
+ -- Shane Scott <sscot@shanewilliamscott.com>  Thur, 13 Nov 2023 10:54:55 -0600
 
 legion (0.4.2-0) UNRELEASED; urgency=medium
 
@@ -31,7 +31,7 @@ legion (0.4.2-0) UNRELEASED; urgency=medium
   * Revise screenshooter to use schema://ip:port when url is a single node
   * Fix typo in startLegion.sh
 
- -- Shane Scott <sscot@gotham-security.com>  Mon, 20 Nov 2023 12:50:55 -0600
+ -- Shane Scott <sscot@shanewilliamscott.com>  Mon, 20 Nov 2023 12:50:55 -0600
 
 legion (0.4.3-0) UNRELEASED; urgency=medium
 
@@ -40,4 +40,4 @@ legion (0.4.3-0) UNRELEASED; urgency=medium
   * Doubleckick to copy hostname (Linux only)
   * Script to generate huge bogus NMAP XML imports for testing.
 
- -- Shane Scott <sscott@gotham-security.com> Mon, 20 Nov 2023 19:17:00 -0600
+ -- Shane Scott <sscott@shanewilliamscott.com> Mon, 20 Nov 2023 19:17:00 -0600

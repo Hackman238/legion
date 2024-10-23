@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-LEGION (https://gotham-security.com)
-Copyright (c) 2023 Gotham Security
+LEGION (https://shanewilliamscott.com)
+Copyright (c) 2024 Shane Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -13,7 +13,10 @@ Copyright (c) 2023 Gotham Security
 
     You should have received a copy of the GNU General Public License along with this program.
     If not, see <http://www.gnu.org/licenses/>.
+
+Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
+
 import shutil
 
 from app.ApplicationInfo import getConsoleLogo
@@ -118,10 +121,10 @@ if __name__ == "__main__":
 
     if '7.92' in checkNmapVersion.decode():
         startupLog.error("Cannot continue. NMAP version is 7.92, which has problems segfaulting under zsh.")
-        startupLog.error("Please follow the instructions at https://github.com/GoVanguard/legion/ to resolve.")
+        startupLog.error("Please follow the instructions at https://github.com/Hackman238/legion/ to resolve.")
         notice=QMessageBox()
         notice.setIcon(QMessageBox.Icon.Critical)
-        notice.setText("Cannot continue. The installed NMAP version is 7.92, which has segfaults under zsh.\nPlease follow the instructions at https://github.com/GoVanguard/legion/ to resolve.")
+        notice.setText("Cannot continue. The installed NMAP version is 7.92, which has segfaults under zsh.\nPlease follow the instructions at https://github.com/Hackman238/legion/ to resolve.")
         notice.exec_()
         exit(1)
 
