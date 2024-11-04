@@ -3,6 +3,8 @@
 This is the new home of "Legion". A major release will follow very soon!
 
 ##
+[![Known Vulnerabilities](https://snyk.io/test/github/Hackman238/legion/badge.svg?targetFile=requirements.txt)](https://snyk.io/test/github/Hackman238/legion?targetFile=requirements.txt)
+[![Maintainability](https://api.codeclimate.com/v1/badges/c2055fddab6b95642b6e/maintainability)](https://codeclimate.com/github/Hackman238/legion/maintainability)
 
 ![alt tag](https://github.com/Hackman238/legion/blob/master/images/LegionBanner.png)
 
@@ -291,6 +293,7 @@ Legion is licensed under the GNU General Public License v3.0. Take a look at the
 
 ## ⭐️ Attribution
 
+* Fork based from http://guthub.com/GoVanguard/legion by Shane Scott.
 * Refactored Python 3.6+ codebase, added feature set and ongoing development of Legion is credited
   to [Hackman238] & [sscottgvit] (Shane Scott)
 * The initial Sparta Python 2.7 codebase and application design is credited SECFORCE.
