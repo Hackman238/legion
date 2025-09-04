@@ -1,6 +1,6 @@
 ## NOTICE
 
-This is the new home of "Legion". A major release will follow very soon!
+This is the new home of "Legion". A major release is out!
 
 ##
 [![Known Vulnerabilities](https://snyk.io/test/github/Hackman238/legion/badge.svg?targetFile=requirements.txt)](https://snyk.io/test/github/Hackman238/legion?targetFile=requirements.txt)

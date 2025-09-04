@@ -1,3 +1,9 @@
+LEGION 0.4.6
+
+* Dockerfiles updated
+* Dependancies for Eyewitness (mainly geckodriver and xvfb) will be checked and installed
+* Minor fixes related to data structures
+
 LEGION 0.4.5
 
 * Added CLI (headless) mode: Run Legion without a GUI for automation and scripting. Supports input/output files, discovery scans, staged scans, and automated actions.
