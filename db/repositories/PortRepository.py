@@ -59,9 +59,12 @@ class PortRepository:
                  "LEFT OUTER JOIN serviceObj AS services ON services.id = ports.serviceId WHERE hosts.ip = :host_ip")
         query += applyPortFilters(filters)
         query = text(query)
-        result = session.execute(query, {'host_ip': str(host_ip)}).fetchall()
+        result = session.execute(query, {'host_ip': str(host_ip)})
+        rows = result.fetchall()
+        keys = result.keys()
+        services = [dict(zip(keys, row)) for row in rows]
         session.close()
-        return result
+        return services
 
     # used to delete all port/script data related to a host - to overwrite portscan info with the latest scan
     def deleteAllPortsAndScriptsByHostId(self, hostID, protocol):
