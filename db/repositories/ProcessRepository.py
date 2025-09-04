@@ -44,19 +44,22 @@ class ProcessRepository:
             query = text('SELECT "0", "0", "0", process.name, "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0" '
                          'FROM process AS process WHERE process.closed = "False" AND process.name != "nmap" '
                          'GROUP BY process.name')
-            result = session.execute(query).fetchall()
+            result = session.execute(query)
         elif not showProcesses:
             query = text('SELECT process.id, process.hostIp, process.tabTitle, process.outputfile, output.output '
                          'FROM process AS process INNER JOIN process_output AS output ON process.id = output.processId '
                          'WHERE process.display = :display AND process.closed = "False" order by process.id desc')
-            result = session.execute(query, {'display': str(showProcesses)}).fetchall()
+            result = session.execute(query, {'display': str(showProcesses)})
         else:
             query = text(
                 'SELECT * FROM process AS process WHERE process.display=:display order by {0} {1}'.format(ncol, sort)
             )
-            result = session.execute(query, {'display': str(showProcesses)}).fetchall()
+            result = session.execute(query, {'display': str(showProcesses)})
+        rows = result.fetchall()
+        keys = result.keys()
+        processes = [dict(zip(keys, row)) for row in rows]
         session.close()
-        return result
+        return processes
 
     def storeProcess(self, proc):
         session = self.dbAdapter.session()

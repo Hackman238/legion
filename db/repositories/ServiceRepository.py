@@ -35,9 +35,12 @@ class ServiceRepository:
         query += applyFilters(filters)
         query += ' ORDER BY service.name ASC'
         query = text(query)
-        result = session.execute(query).fetchall()
+        result = session.execute(query)
+        rows = result.fetchall()
+        keys = result.keys()
+        services = [dict(zip(keys, row)) for row in rows]
         session.close()
-        return result
+        return services
 
     def getServiceNamesByHostIPAndPort(self, host_ip, port):
         session = self.dbAdapter.session()

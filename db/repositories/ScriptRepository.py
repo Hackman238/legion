@@ -37,13 +37,19 @@ class ScriptRepository:
         query = text("SELECT host.id, host.scriptId, port.portId, port.protocol FROM l1ScriptObj AS host "
                      "INNER JOIN hostObj AS hosts ON hosts.id = host.hostId "
                      "LEFT OUTER JOIN portObj AS port ON port.id = host.portId WHERE hosts.ip=:hostIP")
-        result = session.execute(query, {'hostIP': str(hostIP)}).fetchall()
+        result = session.execute(query, {'hostIP': str(hostIP)})
+        rows = result.fetchall()
+        keys = result.keys()
+        scripts = [dict(zip(keys, row)) for row in rows]
         session.close()
-        return result
+        return scripts
 
     def getScriptOutputById(self, scriptDBId):
         session = self.dbAdapter.session()
         query = text("SELECT script.output FROM l1ScriptObj as script WHERE script.id = :scriptDBId")
-        result = session.execute(query, {'scriptDBId': str(scriptDBId)}).fetchall()
+        result = session.execute(query, {'scriptDBId': str(scriptDBId)})
+        rows = result.fetchall()
+        keys = result.keys()
+        outputs = [dict(zip(keys, row)) for row in rows]
         session.close()
-        return result
+        return outputs

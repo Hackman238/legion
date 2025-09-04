@@ -1425,7 +1425,7 @@ class View(QtCore.QObject):
         self.ui.ScriptsOutputTextEdit.clear()
         lines = self.controller.getScriptOutputFromDB(scriptId)
         for line in lines:
-            self.ui.ScriptsOutputTextEdit.insertPlainText(line.output.rstrip())
+            self.ui.ScriptsOutputTextEdit.insertPlainText(line['output'].rstrip())
 
     # TODO: check if this hack can be improved because we are calling setDirty more than we need
     def updateNotesView(self, hostid):
@@ -1584,7 +1584,7 @@ class View(QtCore.QObject):
     def updateProcessesIcon(self):
         if self.ProcessesTableModel:
             for row in range(len(self.ProcessesTableModel.getProcesses())):
-                status = self.ProcessesTableModel.getProcesses()[row].status
+                status = self.ProcessesTableModel.getProcesses()[row]['status']
                 
                 directStatus = {'Waiting':'waiting', 'Running':'running', 'Finished':'finished', 'Crashed':'killed'}
                 defaultStatus = 'killed'

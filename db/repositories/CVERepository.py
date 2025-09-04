@@ -30,6 +30,9 @@ class CVERepository:
                      'cves.exploitId, cves.exploit, cves.exploitUrl FROM cve AS cves '
                      'INNER JOIN hostObj AS hosts ON hosts.id = cves.hostId '
                      'WHERE hosts.ip = :hostIP')
-        result = session.execute(query, {'hostIP': str(hostIP)}).fetchall()
+        result = session.execute(query, {'hostIP': str(hostIP)})
+        rows = result.fetchall()
+        keys = result.keys()
+        cves = [dict(zip(keys, row)) for row in rows]
         session.close()
-        return result
+        return cves
