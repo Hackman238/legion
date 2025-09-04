@@ -58,9 +58,12 @@ class HostRepository:
                  "WHERE services.name=:service_name")
         query += applyFilters(filters)
         query = text(query)
-        result = session.execute(query, {'service_name': str(service_name)}).fetchall()
+        result = session.execute(query, {'service_name': str(service_name)})
+        rows = result.fetchall()
+        keys = result.keys()
+        services = [dict(zip(keys, row)) for row in rows]
         session.close()
-        return result
+        return services
 
     def getHostInformation(self, host_ip_address: str):
         session = self.dbAdapter.session()
