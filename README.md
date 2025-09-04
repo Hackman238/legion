@@ -25,14 +25,14 @@ penetration testing framework that aids in discovery, reconnaissance, and exploi
 * Automatic detection of CPEs (Common Platform Enumeration) and CVEs (Common Vulnerabilities and Exposures), now with enhanced mapping to ExploitDB including direct links to exploits.
 * Integrated screenshotting: Take, view, and manage screenshots of web services directly from the UI, with support for EyeWitness and advanced screenshot management.
 * Realtime auto-saving of project results and tasks.
-* Numerous quality of life improvements: UI enhancements, improved error handling, more robust project export, and expanded configurability.
+* Numerous quality of life improvements: UI enhancements, improved error handling, more robust project export (sqlite abd json), and expanded configurability.
 
 ### Notable changes from Sparta
 
 * Major overhaul of screenshotting subsystem: asynchronous operation, EyeWitness integration, deterministic filenames, and UI improvements for screenshot management.
 * Enhanced CVE mapping: CVEs now include ExploitDB IDs and direct links, with improved association to services and hosts.
 * Many quality of life improvements: better context menus, tab management, error handling, and expanded test coverage.
-* Refactored from Python 2.7 to Python 3.8+ and the elimination of deprecated and unmaintained libraries.
+* Refactored from Python 2.7 to Python 3.10+ and the elimination of deprecated and unmaintained libraries.
 * Upgraded to PyQT6, increased responsiveness, less buggy, more intuitive GUI that includes features like:
     * Task completion estimates
     * 1-Click scan lists of ips, hostnames and CIDR subnets
@@ -78,6 +78,8 @@ requirements and the complications that occur in environments which differ from 
 > NOTE: Docker versions of Legion are *unlikely* to work when run as root or under a root X!
 
 ### Docker method
+
+**Note:** As of September 2025, the Docker images have been updated to use the official `python:3.10` base image with all required system dependencies (Qt6, git, etc.) installed via `apt-get`. If you previously relied on a custom or private base image, you no longer need access to it. See `docker/Dockerfile` for details.
 
 Docker method includes support for various environments, choose the one that works for you.
 

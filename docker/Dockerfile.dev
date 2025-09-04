@@ -1,8 +1,20 @@
-FROM gvit/python-secbase:latest
+FROM python:3.10
+
 WORKDIR /
-ENV DISPLAY :0
+ENV DISPLAY=:0
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/Chicago
+
+# Install system dependencies for PyQt6 and Legion
+RUN apt-get update && apt-get install -y \
+    git \
+    bash \
+    qt6-base-dev \
+    libgl1 \
+    x11-apps \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN git clone https://github.com/Hackman238/legion.git -b development
 RUN cd legion && \
     chmod +x ./startLegion.sh && \

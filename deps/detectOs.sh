@@ -17,7 +17,7 @@ echo "Detected ${releaseName} ${releaseVersion} ${wslEnv}"
 # Figure Linux Version
 if [[ ${releaseName} == *"Ubuntu"* ]]
 then
-    if [[ ${releaseVersion} != *"20.04"* ]] && [[ ${releaseVersion} != *"20.10"* ]] && [[ ${releaseVersion} != *"21."* ]] && [[ ${releaseVersion} != *"22."* ]] && [[ ${releaseVersion} != *"23."* ]]
+    if [[ ${releaseVersion} != *"20.04"* ]] && [[ ${releaseVersion} != *"20.10"* ]] && [[ ${releaseVersion} != *"21."* ]] && [[ ${releaseVersion} != *"22."* ]] && [[ ${releaseVersion} != *"23."* ]] && [[ ${releaseVersion} != *"24."* ]]
     then
         echo "Unsupported Ubuntu version. Please use Ubuntu 20.04 or later."
         exit 1
