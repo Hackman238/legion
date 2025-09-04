@@ -106,7 +106,7 @@ class Screenshooter(QtCore.QThread):
                 raise FileNotFoundError("EyeWitness not found at /usr/bin/eyewitness. Please install it.")
 
             command = (
-                '{eyewitness} --single {url} --no-prompt --web --delay 5 -d {outputfolder}'
+                'xvfb-run -a {eyewitness} --single {url} --no-prompt --web --delay 5 -d {outputfolder}'
             ).format(
                 eyewitness=eyewitness_path,
                 url=url,
