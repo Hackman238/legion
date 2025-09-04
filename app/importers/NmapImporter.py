@@ -472,6 +472,43 @@ class NmapImporter(QtCore.QThread):
                     )
                     self.tsLog("Include your nmap file, sanitized if needed.")
 
+                # Check if any vulners script is present for this host or its ports
+                has_vulners = False
+                for scr in h.getHostScripts():
+                    if 'vulners' in str(scr.scriptId).lower():
+                        has_vulners = True
+                        break
+                if not has_vulners:
+                    for p in h.all_ports():
+                        for scr in p.getScripts():
+                            if 'vulners' in str(scr.scriptId).lower():
+                                has_vulners = True
+                                break
+                        if has_vulners:
+                            break
+
+                # Only update/replace CVEs if vulners data is present
+                if has_vulners:
+                    # Remove existing CVEs for this host
+                    session.execute(
+                        "DELETE FROM cve WHERE hostId = :hostId",
+                        {'hostId': db_host.id}
+                    )
+                    session.commit()
+                    # Add new CVEs from vulners scripts
+                    for scr in h.getHostScripts():
+                        for cve_obj in scr.scriptSelector(db_host):
+                            session.add(cve_obj)
+                            session.commit()
+                    for p in h.all_ports():
+                        db_port = session.query(portObj).filter_by(hostId=db_host.id).filter_by(portId=p.portId) \
+                            .filter_by(protocol=p.protocol).first()
+                        for scr in p.getScripts():
+                            for cve_obj in scr.scriptSelector(db_host):
+                                session.add(cve_obj)
+                                session.commit()
+                # If no vulners data, do not touch existing CVEs
+
                 if db_host.ipv4 == '' and not h.ipv4 == '':
                     db_host.ipv4 = h.ipv4
                 if db_host.ipv6 == '' and not h.ipv6 == '':

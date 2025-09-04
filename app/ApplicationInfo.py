@@ -19,7 +19,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 applicationInfo = {
     "name": "LEGION",
     "version": "0.4.6",
-    "build": '1756999432',
+    "build": '1757007470',
     "author": "Shane Scott",
     "copyright": "2025",
     "links": ["http://github.com/Hackman238/legion/issues"],

@@ -30,6 +30,7 @@ from app.importers.PythonImporter import PythonImporter
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
 from app.auxiliary import unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
+import os
 
 try:
     import queue
@@ -41,6 +42,10 @@ from app.settings import *
 from db.entities.port import portObj
 
 log = getAppLogger()
+
+def normalize_path(path):
+    """Normalize a path to use forward slashes, regardless of input."""
+    return os.path.normpath(path).replace("\\", "/")
 
 class Controller:
 
@@ -55,8 +60,6 @@ class Controller:
 
         self.loadSettings()  # creation of context menu actions from settings file and set up of various settings
         updateProgressObservable = UpdateProgressObservable()
-        # updateProgressObserver = QtUpdateProgressObserver(self.view.importProgressWidget)
-        # updateProgressObservable.attach(updateProgressObserver)
 
         self.initNmapImporter(updateProgressObservable)
         self.initPythonImporter()
@@ -117,18 +120,12 @@ class Controller:
     def initTimers(self):
         self.updateUITimer = QTimer()
         self.updateUITimer.setSingleShot(True)
-        # Moving to deprecate all these general interface update timers
-        #self.updateUITimer.timeout.connect(self.view.updateProcessesTableView)
-        #self.updateUITimer.timeout.connect(self.view.updateToolsTableView)
 
         self.updateUI2Timer = QTimer()
         self.updateUI2Timer.setSingleShot(True)
-        # Moving to deprecate all these general interface update timers
-        #self.updateUI2Timer.timeout.connect(self.view.updateInterface)
 
         self.processTableUiUpdateTimer = QTimer()
         self.processTableUiUpdateTimer.timeout.connect(self.view.updateProcessesTableView)
-        # Update only when queue > 0
         self.processTableUiUpdateTimer.start(500) # Faster than this doesn't make anything smoother
 
     # this function fetches all the settings from the conf file. Among other things it populates the actions lists
@@ -216,14 +213,11 @@ class Controller:
 
     def openExistingProject(self, filename, projectType='legion'):
         self.view.closeProject()
-        # self.view.importProgressWidget.reset('Opening project..')
-        # self.view.importProgressWidget.show()                           # show the progress widget
         self.logic.openExistingProject(filename, projectType)
         # initialisations (globals, signals, etc)
-        self.start(ntpath.basename(self.logic.activeProject.properties.projectName))
-        self.view.restoreToolTabs()                                     # restores the tool tabs for each host
-        self.view.hostTableClick()                                 # click on first host to restore his host tool tabs
-        # self.view.importProgressWidget.hide()                           # hide the progress widget
+        self.start(os.path.basename(self.logic.activeProject.properties.projectName))
+        self.view.restoreToolTabs() # restores the tool tabs for each host
+        self.view.hostTableClick() # click on first host to restore his host tool tabs
 
     def saveProject(self, lastHostIdClicked, notes):
         if not lastHostIdClicked == '':
@@ -232,20 +226,20 @@ class Controller:
     def saveProjectAs(self, filename, replace=0):
         success = self.logic.saveProjectAs(filename, replace)
         if success:
-            self.nmapImporter.setDB(self.logic.activeProject.database)   # tell nmap importer which db to use
+            self.nmapImporter.setDB(self.logic.activeProject.database) # tell nmap importer which db to use
         return success
 
     def closeProject(self):
-        self.saveSettings()                                             # backup and save config file, if necessary
+        self.saveSettings() # backup and save config file, if necessary
         self.screenshooter.terminate()
         self.initScreenshooter()
         self.logic.activeProject.repositoryContainer.processRepository.toggleProcessDisplayStatus(True)
-        self.view.updateProcessesTableView()                            # clear process table
+        self.view.updateProcessesTableView() # clear process table
         self.logic.projectManager.closeProject(self.logic.activeProject)
 
     def copyToClipboard(self, data):
         clipboard = QtWidgets.QApplication.clipboard()
-        clipboard.setText(data)  # Assuming item.text() contains the IP or hostname
+        clipboard.setText(data) # Assuming item.text() contains the IP or hostname
 
     @timing
     def addHosts(self, targetHosts, runHostDiscovery, runStagedNmap, nmapSpeed, scanMode, nmapOptions = []):
@@ -254,11 +248,11 @@ class Controller:
             return
 
         import os
-        runningFolder = self.logic.activeProject.properties.runningFolder
+        runningFolder = normalize_path(self.logic.activeProject.properties.runningFolder)
         # Use the session directory for temp files
         session_path = getattr(self.logic.activeProject, "sessionFile", None)
         if session_path:
-            session_dir = os.path.dirname(session_path)
+            session_dir = normalize_path(os.path.dirname(session_path))
         else:
             session_dir = runningFolder
         # Use the tool output directory directly, not a subdirectory
@@ -267,7 +261,7 @@ class Controller:
             if runStagedNmap:
                 self.runStagedNmap(targetHosts, runHostDiscovery)
             elif runHostDiscovery:
-                outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-host-discover")
+                outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-host-discover"))
                 nmapOptionsString = ' '.join(nmapOptions)
                 command = (
                     f"nmap {nmapOptionsString} -sV -O --version-light -T{str(nmapSpeed)} "
@@ -276,7 +270,7 @@ class Controller:
                 self.runCommand('nmap', 'nmap (discovery)', targetHosts, '', '', command, getTimestamp(True),
                                 outputfile, self.view.createNewTabForHost(str(targetHosts), 'nmap (discovery)', True))
             else:
-                outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-list")
+                outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-list"))
                 nmapOptionsString = ' '.join(nmapOptions)
                 command = (
                     "nmap " + nmapOptionsString + " -sL -T" + str(nmapSpeed) + " " + targetHosts +
@@ -286,7 +280,7 @@ class Controller:
                                 outputfile,
                                 self.view.createNewTabForHost(str(targetHosts), 'nmap (list)', True))
         elif scanMode == 'Hard':
-            outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-custom")
+            outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-custom"))
             nmapOptionsString = ' '.join(nmapOptions)
             if 'randomize' not in nmapOptionsString:
                 nmapOptionsString = nmapOptionsString + " -T" + str(nmapSpeed)
@@ -294,8 +288,7 @@ class Controller:
             self.runCommand('nmap', 'nmap (custom ' + nmapOptionsString + ')', targetHosts, '', '', command,
                             getTimestamp(True), outputfile,
                             self.view.createNewTabForHost(
-                                str(targetHosts), 'nmap (custom ' + nmapOptionsString + ')',
-                                                          True))
+                                str(targetHosts), 'nmap (custom ' + nmapOptionsString + ')', True))
 
     #################### CONTEXT MENUS ####################
 
@@ -387,30 +380,14 @@ class Controller:
                     invisibleTab = True
                 elif 'python-script' in name:
                     invisibleTab = True
-                # remove all chars that are not alphanumeric from tool name (used in the outputfile's name)
-                #outputfile = self.logic.activeProject.properties.runningFolder + "/" + \
-                #             re.sub("[^0-9a-zA-Z]", "", str(name)) + "/" + getTimestamp() + "-" + \
-                #             re.sub("[^0-9a-zA-Z]", "", str(self.settings.hostActions[i][1])) + "-" + ip
-                # remove all chars that are not alphanumeric from tool name (used in the outputfile's name)
                 
-                outputfile = os.path.join(
+                outputfile = normalize_path(os.path.join(
                     tool_output_dir,
                     f"{getTimestamp()}-{re.sub('[^0-9a-zA-Z]', '', str(self.settings.hostActions[i][1]))}-{ip}"
-                )
-                outputfile = os.path.normpath(outputfile).replace("\\", "/")
+                ))
                 command = str(self.settings.hostActions[i][2])
                 command = command.replace('[IP]', ip).replace('[OUTPUT]', outputfile)
-                #if 'nmap' in command:
-                #    if isWsl():
-                #        command = f"{command} -oA {unixPath2Win(outputfile)}"
-                #    else:
                 command = f"{command} -oA {outputfile}"
-
-                # check if same type of nmap scan has already been made; do not purge previous portscan results.
-                if 'nmap' in command:
-                    if '-sU' in command:
-                        pass  # Preserve previously discovered ports/services; do not delete before scan.
-                    # Preserve previously discovered ports/services; do not delete before scan.
 
                 tabTitle = self.settings.hostActions[i][1]
                 self.runCommand(name, tabTitle, ip, '', '', command, getTimestamp(True), outputfile,
@@ -466,19 +443,23 @@ class Controller:
                     tool = self.settings.portActions[srvc_num][1]
                     tabTitle = self.settings.portActions[srvc_num][1]+" ("+ip[1]+"/"+ip[2]+")"
                     import os
-                    outputfile = os.path.join(
-                        self.logic.activeProject.properties.runningFolder,
+                    # Use the same tool_output_dir logic as runStagedNmap for manual tool runs
+                    runningFolder = normalize_path(self.logic.activeProject.properties.runningFolder)
+                    session_path = getattr(self.logic.activeProject, "sessionFile", None)
+                    if session_path:
+                        tool_output_dir = normalize_path(os.path.dirname(session_path))
+                    else:
+                        tool_output_dir = runningFolder
+                    outputfile = normalize_path(os.path.join(
+                        tool_output_dir,
                         f"{getTimestamp()}-{tool}-{ip[0]}-{ip[1]}"
-                    )
-                    outputfile = os.path.normpath(outputfile).replace("\\", "/")
+                    ))
 
                     command = str(self.settings.portActions[srvc_num][2])
+                    # Insert normalized outputfile into command
                     command = command.replace('[IP]', ip[0]).replace('[PORT]', ip[1]).replace('[OUTPUT]', outputfile)
                     if 'nmap' in command:
-                        if isWsl():
-                            command = f"{command} -oA {unixPath2Win(outputfile)}"
-                        else:
-                            command = f"{command} -oA {outputfile}"
+                        command = f"{command} -oA {outputfile}"
 
                     if 'nmap' in command and ip[2] == 'udp':
                         command = command.replace("-sV", "-sVU")
@@ -992,8 +973,6 @@ class Controller:
         protocol = 'tcp'
         command = 'python3 --version'
         startTime = getTimestamp(True)
-        outputfile = tempfile.NamedTemporaryFile(delete=False).name
-        qProcess = MyQProcess(name, tabTitle, hostIp, port, protocol, command, startTime, outputfile, textbox)
         outputfile = tempfile.NamedTemporaryFile(delete=False).name
         qProcess = MyQProcess(name, tabTitle, hostIp, port, protocol, command, startTime, outputfile, textbox)
 

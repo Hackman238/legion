@@ -14,5 +14,5 @@ pandas
 flake8
 rich
 urllib3>=1.26.18,<2.0
-selenium
+selenium==4.9.1
 webdriver-manager

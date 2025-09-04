@@ -38,12 +38,12 @@ class ProcessRepository:
     # we are using the same model to display process information everywhere)
 
     def getProcesses(self, filters, showProcesses: Union[str, bool] = 'noNmap', sort: str = 'desc', ncol: str = 'id'):
-        # we do not fetch nmap processes because these are not displayed in the host tool tabs / tools
+        # Modified: include nmap processes in the tools table
         session = self.dbAdapter.session()
         if showProcesses == 'noNmap':
             query = text('SELECT "0", "0", "0", process.name, "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0" '
-                         'FROM process AS process WHERE process.closed = "False" AND process.name != "nmap" '
-                         'GROUP BY process.name')
+                         'FROM process AS process WHERE process.closed = "False" '
+                         'ORDER BY process.id DESC')
             result = session.execute(query)
         elif not showProcesses:
             query = text('SELECT process.id, process.hostIp, process.tabTitle, process.outputfile, output.output '
