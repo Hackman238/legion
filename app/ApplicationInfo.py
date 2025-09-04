@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -18,13 +18,13 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 
 applicationInfo = {
     "name": "LEGION",
-    "version": "0.4.3",
-    "build": '1729699482',
+    "version": "0.4.5",
+    "build": '1756989867',
     "author": "Shane Scott",
-    "copyright": "2024",
+    "copyright": "2025",
     "links": ["http://github.com/Hackman238/legion/issues"],
     "emails": [],
-    "update": '10/23/2024',
+    "update": '09/04/2025',
     "license": "GPL v3",
     "desc": "Legion is a fork of SECFORCE's Sparta, Legion is an open source, easy-to-use, \n" +
             "super-extensible and semi-automated network penetration testing tool that aids in " +

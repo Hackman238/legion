@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -18,10 +18,19 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 
 from sqlalchemy import text
 from db.SqliteDbAdapter import Database
+from db.entities.l1script import l1ScriptObj
+
 
 class ScriptRepository:
     def __init__(self, dbAdapter: Database):
         self.dbAdapter = dbAdapter
+
+    def getScriptsByPortId(self, port_id):
+        session = self.dbAdapter.session()
+        scripts = session.query(l1ScriptObj).filter_by(portId=port_id).all()
+        session.close()
+        return scripts
+
 
     def getScriptsByHostIP(self, hostIP):
         session = self.dbAdapter.session()

@@ -26,7 +26,7 @@ then
     fi
 elif [[ ${releaseName} == *"Kali"* ]]
 then
-    if [[ ${releaseVersion} != *"2022"* ]] && [[ ${releaseVersion} != *"2023"* ]]
+    if [[ ${releaseVersion} != *"2024"* ]] && [[ ${releaseVersion} != *"2025"* ]]
     then
         echo "Unsupported Kali version. Please use Kali 2022 or later."
         exit 1

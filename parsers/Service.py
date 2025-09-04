@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
 __author__ = 'yunshu(wustyunshu@hotmail.com)'
 __version__ = '0.2'

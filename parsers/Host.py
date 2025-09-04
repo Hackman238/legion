@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
 __author__ =  'yunshu(wustyunshu@hotmail.com)'
 __version__=  '0.2'
@@ -33,7 +33,7 @@ class Host:
             elif e.getAttribute('addrtype') == 'mac':
                 self.macaddr = e.getAttribute('addr')
                 self.vendor = e.getAttribute('vendor')
-        self.ip = HostNode.getElementsByTagName('address')[0].getAttribute('addr');
+        self.ip = HostNode.getElementsByTagName('address')[0].getAttribute('addr')
         #self.ip = self.ipv4 # for compatibility with the original library
         if len(HostNode.getElementsByTagName('hostname')) > 0:
             self.hostname = HostNode.getElementsByTagName('hostname')[0].getAttribute('name')

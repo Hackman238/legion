@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -26,6 +26,15 @@ from db.filters import applyPortFilters
 class PortRepository:
     def __init__(self, dbAdapter: Database):
         self.dbAdapter = dbAdapter
+
+    def getPortsByHostId(self, host_id):
+        """
+        Return all portObj ORM objects for a given host ID.
+        """
+        session = self.dbAdapter.session()
+        ports = session.query(portObj).filter_by(hostId=host_id).all()
+        session.close()
+        return ports
 
     def getPortsByIPAndProtocol(self, host_ip, protocol):
         session = self.dbAdapter.session()
@@ -69,3 +78,28 @@ class PortRepository:
             session.delete(p)
         session.commit()
         session.close()
+
+    # delete a single port (and its scripts) by hostId, port, and protocol
+    def deletePortByHostIdAndPort(self, hostID, port, protocol):
+        session = self.dbAdapter.session()
+        port_entry = session.query(portObj)\
+            .filter(portObj.hostId == hostID)\
+            .filter(portObj.portId == str(port))\
+            .filter(portObj.protocol == str(protocol)).first()
+        if port_entry:
+            scripts_for_port = session.query(l1ScriptObj).filter(l1ScriptObj.portId == port_entry.id).all()
+            for s in scripts_for_port:
+                session.delete(s)
+            session.delete(port_entry)
+            session.commit()
+        session.close()
+
+    # fetch a single port by hostId, port, and protocol
+    def getPortByHostIdAndPort(self, hostID, port, protocol):
+        session = self.dbAdapter.session()
+        port_entry = session.query(portObj)\
+            .filter(portObj.hostId == hostID)\
+            .filter(portObj.portId == str(port))\
+            .filter(portObj.protocol == str(protocol)).first()
+        session.close()
+        return port_entry

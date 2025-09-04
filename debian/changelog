@@ -33,6 +33,21 @@ legion (0.4.2-0) UNRELEASED; urgency=medium
 
  -- Shane Scott <sscot@shanewilliamscott.com>  Mon, 20 Nov 2023 12:50:55 -0600
 
+legion (0.4.5-0) UNRELEASED; urgency=medium
+
+  * Added CLI (headless) mode: Run Legion without a GUI for automation and scripting. Supports input/output files, discovery scans, staged scans, and automated actions.
+  * Introduced MCP (Model Context Protocol) server: Enables programmatic and AI integration with Legion via JSON-RPC. The MCP server exposes tools such as project listing and automated discovery scans, returning structured results for external consumption. See README for detailed usage and examples.
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Tue, 03 Sep 2025 20:40:39 -0500
+
+legion (0.4.4-0) UNRELEASED; urgency=medium
+
+  * Major overhaul of screenshotting subsystem: asynchronous operation, EyeWitness integration, deterministic filenames, and UI improvements for screenshot management.
+  * Enhanced CVE mapping: CVEs now include ExploitDB IDs and direct links, with improved association to services and hosts.
+  * Numerous quality of life improvements: better context menus, tab management, error handling, configurability, and expanded test coverage.
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Tue, 03 Sep 2025 13:33:00 -0500
+
 legion (0.4.3-0) UNRELEASED; urgency=medium
 
   * Revise NMAP import process

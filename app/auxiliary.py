@@ -2,7 +2,7 @@
 
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -14,15 +14,18 @@ Copyright (c) 2024 Shane Scott
 
     You should have received a copy of the GNU General Public License along with this program.
     If not, see <http://www.gnu.org/licenses/>.
+
+Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
 import os, sys, socket, locale, webbrowser, \
     re, platform  # for webrequests, screenshot timeouts, timestamps, browser stuff and regex
+import tempfile
 from PyQt6 import QtCore, QtWidgets
-from PyQt6.QtCore import *  # for QProcess
+from PyQt6.QtCore import QProcess, QObject, pyqtSignal, pyqtSlot, QThread, Qt
 from six import u as unicode
 
-from app.http.isHttps import isHttps
+from app.httputil.isHttps import isHttps
 from app.logging.legionLog import getAppLogger
 from app.timing import timing
 
@@ -58,7 +61,10 @@ def getAppdataTemp():
     try:
         username = os.environ["WSL_USER_NAME"]
     except KeyError:
-        raise Exception("WSL detected but environment variable 'WSL_USER_NAME' is unset. Please run 'export WSL_USER_NAME=' followed by your username as it appears in c:\\Users\\")
+        raise Exception(
+            "WSL detected but environment variable 'WSL_USER_NAME' is unset. "
+            "Please run 'export WSL_USER_NAME=' followed by your username as it appears in c:\\Users\\"
+        )
 
     appDataTemp = "C:\\Users\\{0}\\AppData\\Local\\Temp".format(username)
     appDataTempUnix = winPath2Unix(appDataTemp)
@@ -67,21 +73,17 @@ def getAppdataTemp():
         return appDataTemp
     else:
         raise Exception("The AppData Temp directory path {0} does not exist.".format(appDataTemp))
-    return path
 
 # Get the temp folder based on os. Create if missing from *nix
 def getTempFolder():
-    if isWsl():
-        tempPathWin = "{0}\\legion\\tmp".format(getAppdataTemp())
-        tempPath = winPath2Unix(tempPathWin)
-        if not os.path.isdir(os.path.expanduser(tempPath)):
-            os.makedirs(tempPath)
-        log.info("WSL is detected. The AppData Temp directory path is {0} ({1})".format(tempPath, tempPathWin))
-    else:
-        tempPath = os.path.expanduser("~/.local/share/legion/tmp")
-        if not os.path.isdir(tempPath):
-            os.makedirs(tempPath)
-        log.info("Non-WSL The AppData Temp directory path is {0}".format(tempPath))
+    # Prefer environment variable for configurability
+    tempPath = os.environ.get("LEGION_TMPDIR")
+    if tempPath is None:
+        # Use system temp dir + 'legion'
+        tempPath = os.path.join(tempfile.gettempdir(), "legion")
+    if not os.path.isdir(tempPath):
+        os.makedirs(tempPath, exist_ok=True)
+    log.info(f"Using temp directory: {tempPath}")
     return tempPath
 
 def getPid(qprocess):
@@ -99,15 +101,12 @@ def formatCommandQProcess(inputCommand):
 # used to sort objects by one of their attributes.
 @timing
 def sortArrayWithArray(array, arrayToSort):
-    for i in range(0, len(array) - 1):
-        swap_test = False
-        for j in range(0, len(array) - i - 1):
-            if array[j] > array[j + 1]:
-                array[j], array[j + 1] = array[j + 1], array[j]  # swap
-                arrayToSort[j], arrayToSort[j + 1] = arrayToSort[j + 1], arrayToSort[j]
-            swap_test = True
-        if swap_test == False:
-            break
+    # Sorts array and arrayToSort in place based on the values in array
+    combined = sorted(zip(array, arrayToSort), key=lambda x: x[0])
+    if combined:
+        array[:], arrayToSort[:] = zip(*combined)
+    else:
+        array[:], arrayToSort[:] = [], []
 
 
 # converts an IP address to an integer (for the sort function)
@@ -140,7 +139,8 @@ def clearLayout(layout):
 def setTableProperties(table, headersLen, hiddenColumnIndexes=[]):
     table.verticalHeader().setVisible(False)  # hide the row headers
     table.setShowGrid(False)  # hide the table grid
-    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)  # select entire row instead of single cell
+    # select entire row instead of single cell
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setSortingEnabled(True)  # enable column sorting
     table.horizontalHeader().setStretchLastSection(True)  # header behaviour
     table.horizontalHeader().setSortIndicatorShown(False)  # hide sort arrow from column header
@@ -190,7 +190,9 @@ class Wordlist():
 
     # adds a word to the wordlist (without duplicates)
     def add(self, word):
-        with open(self.filename, 'a') as f:
+        with open(self.filename, 'a+') as f:
+            f.seek(0)
+            self.wordlist = f.readlines()
             if not word + '\n' in self.wordlist:
                 log.info('Adding ' + word + ' to the wordlist..')
                 self.wordlist.append(word + '\n')
@@ -249,11 +251,12 @@ class BrowserOpener(QtCore.QThread):
         self.urls.append(url)
 
     def run(self):
-        while self.processing == True:
+        while self.processing:
             self.sleep(1)  # effectively a semaphore
 
         self.processing = True
-        for i in range(0, len(self.urls)):
+        first = True
+        while self.urls:
             try:
                 url = self.urls.pop(0)
                 self.tsLog('Opening url in browser: ' + url)
@@ -261,22 +264,17 @@ class BrowserOpener(QtCore.QThread):
                     webbrowser.open_new_tab('https://' + url)
                 else:
                     webbrowser.open_new_tab('http://' + url)
-                if i == 0:
-                    # fixes bug in Kali. have to sleep on first url so the next ones don't open a new browser
-                    # instead of adding a new tab
+                if first:
                     self.sleep(3)
+                    first = False
                 else:
-                    self.sleep(1)  # fixes bug when several calls to urllib occur too fast (interrupted system call)
-
-            except:
+                    self.sleep(1)
+            except Exception:
                 self.tsLog('Problem while opening url in browser. Moving on..')
                 continue
 
         self.processing = False
-        if not len(self.urls) == 0:  # if meanwhile urls were added to the queue, start over
-            self.run()
-        else:
-            self.done.emit()
+        self.done.emit()
 
 
 # This class handles what is to be shown in each panel
@@ -332,40 +330,12 @@ class Filters():
             log.info(w)
 
 
-### VALIDATION FUNCTIONS ###
-# TODO: should probably be moved to a new file called test_validation.py
-
-def validateNmapInput(text):  # validate nmap input entered in Add Hosts dialog
-    if re.search('[^a-zA-Z0-9\.\/\-\s]', text) != None:
-        return False
-    return True
-
-
-def validateCommandFormat(text):  # used by settings dialog to validate commands
-    if text != '' and text != ' ':
-        return True
-    return False
-
-
-def validateNumeric(text):  # only allows numbers
-    if text.isdigit():
-        return True
-    return False
-
-
-def validateString(text):  # only allows alphanumeric characters, '_' and '-'
-    if text != '' and re.search("[^A-Za-z0-9_-]+", text) == None:
-        return True
-    return False
-
-
-def validateStringWithSpace(text):  # only allows alphanumeric characters, '_', '-' and space
-    if text != '' and re.search("[^A-Za-z0-9_() -]+", text) == None:
-        return True
-    return False
-
-
-def validateNmapPorts(text):  # only allows alphanumeric characters and the following: ./-'"*,:[any kind of space]
-    if re.search('[^a-zA-Z0-9\.\/\-\'\"\*\,\:\s]', text) != None:
-        return False
-    return True
+# Validation functions moved to app/validation.py
+from app.validation import (
+    validateNmapInput,
+    validateCommandFormat,
+    validateNumeric,
+    validateString,
+    validateStringWithSpace,
+    validateNmapPorts,
+)

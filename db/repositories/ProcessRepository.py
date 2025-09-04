@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -51,7 +51,9 @@ class ProcessRepository:
                          'WHERE process.display = :display AND process.closed = "False" order by process.id desc')
             result = session.execute(query, {'display': str(showProcesses)}).fetchall()
         else:
-            query = text('SELECT * FROM process AS process WHERE process.display=:display order by {0} {1}'.format(ncol, sort))
+            query = text(
+                'SELECT * FROM process AS process WHERE process.display=:display order by {0} {1}'.format(ncol, sort)
+            )
             result = session.execute(query, {'display': str(showProcesses)}).fetchall()
         session.close()
         return result
@@ -181,6 +183,16 @@ class ProcessRepository:
             proc.elapsed = elapsed
             session.add(proc)
             session.commit()
+
+    def storeProcessPercent(self, processId: str, percent):
+        """Update the percent field for a process."""
+        session = self.dbAdapter.session()
+        proc = session.query(process).filter_by(id=processId).first()
+        if proc:
+            proc.percent = percent
+            session.add(proc)
+            session.commit()
+        session.close()
 
     def storeCloseStatus(self, processId):
         session = self.dbAdapter.session()

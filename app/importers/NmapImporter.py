@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -39,12 +39,43 @@ class NmapImporter(QtCore.QThread):
     done = QtCore.pyqtSignal(name="done")  # New style signal
     schedule = QtCore.pyqtSignal(object, bool, name="schedule")  # New style signal
     log = QtCore.pyqtSignal(str, name="log")
+    progressUpdated = QtCore.pyqtSignal(int, str)  # progress, title
 
     def __init__(self, updateProgressObservable: AbstractUpdateProgressObservable, hostRepository: HostRepository):
         QtCore.QThread.__init__(self, parent=None)
         self.output = ''
         self.updateProgressObservable = updateProgressObservable
         self.hostRepository = hostRepository
+        self._cancel_requested = False  # Cancellation flag
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    # Removed startProgressTimer and stopProgressTimer (QTimer usage) due to threading issues.
+
+    def updatePercentFromXml(self):
+        """Read the XML file and update percent in the process table."""
+        appLog.debug("updatePercentFromXml called")
+        self.tsLog("[DEBUG] updatePercentFromXml called")
+        try:
+            if hasattr(self, "filename") and hasattr(self, "processId") and self.processId:
+                appLog.debug(f"updatePercentFromXml: filename={self.filename}, processId={self.processId}")
+                self.tsLog(f"[DEBUG] updatePercentFromXml: filename={self.filename}, processId={self.processId}")
+                from parsers.Parser import parseNmapReport
+                nmapReport = parseNmapReport(self.filename)
+                highest_percent = nmapReport.get_highest_percent()
+                if highest_percent is not None:
+                    self.tsLog(f"[Periodic] Nmap scan percent complete: {highest_percent}%")
+                    appLog.debug(f"[Periodic] Nmap scan percent complete: {highest_percent}%")
+                    self.db.repositoryContainer.processRepository.storeProcessPercent(
+                        self.processId, str(highest_percent)
+                    )
+                else:
+                    self.tsLog("[Periodic] No percent found in XML.")
+                    appLog.debug("[Periodic] No percent found in XML.")
+        except Exception as e:
+            self.tsLog(f"Periodic percent update failed: {e}")
+            appLog.debug(f"Periodic percent update failed: {e}")
 
     def tsLog(self, msg):
         self.log.emit(str(msg))
@@ -64,28 +95,92 @@ class NmapImporter(QtCore.QThread):
     # it is necessary to get the qprocess because we need to send it back to the scheduler when we're done importing
     def run(self):
         try:
-            self.updateProgressObservable.start()
+            # Removed periodic progress updates (QTimer) due to threading issues.
+            if self.updateProgressObservable is not None:
+                self.updateProgressObservable.start()
             session = self.db.session()
             self.tsLog("Parsing nmap xml file: " + self.filename)
             startTime = time()
 
+            import os
+            nmap_xml_path = self.filename
             try:
-                nmapReport = parseNmapReport(self.filename)
-            except MalformedXmlDocumentException as e:
-                self.tsLog('Giving up on import due to previous errors.')
-                appLog.error(f"NMAP xml report is likely malformed: {e}")
-                self.updateProgressObservable.finished()
-                self.done.emit()
-                return
+                nmapReport = parseNmapReport(nmap_xml_path)
+            except (MalformedXmlDocumentException, FileNotFoundError) as e:
+                # If file not found, try searching in any subdirectory of the parent directory
+                if isinstance(e, FileNotFoundError):
+                    parent_dir = os.path.dirname(nmap_xml_path)
+                    base_name = os.path.basename(nmap_xml_path)
+                    found = False
+                    for sub in os.listdir(parent_dir):
+                        sub_path = os.path.join(parent_dir, sub, base_name)
+                        if os.path.isfile(sub_path):
+                            self.tsLog(f"Found nmap xml in subdirectory: {sub_path}")
+                            try:
+                                nmapReport = parseNmapReport(sub_path)
+                                found = True
+                                break
+                            except Exception as e2:
+                                self.tsLog(f"Failed to parse nmap xml in subdirectory: {e2}")
+                    if not found:
+                        self.tsLog('Giving up on import due to previous errors.')
+                        appLog.error(f"NMAP xml report is likely malformed or missing: {e}")
+                        appLog.error(f"Nmap XML import failed: {e}")
+                        self.updateProgressObservable.finished()
+                        self.done.emit()
+                        return
+                else:
+                    self.tsLog('Giving up on import due to previous errors.')
+                    appLog.error(f"NMAP xml report is likely malformed: {e}")
+                    appLog.error(f"Nmap XML import failed: {e}")
+                    if self.updateProgressObservable is not None:
+                        self.updateProgressObservable.finished()
+                    self.done.emit()
+                    return
 
             self.tsLog('nmap xml report read successfully!')
             self.db.dbsemaphore.acquire()  # ensure that while this thread is running, no one else can write to the DB
             s = nmapReport.getSession()  # nmap session info
             if s:
-                n = nmapSessionObj(self.filename, s.startTime, s.finish_time, s.nmapVersion, s.scanArgs, s.totalHosts,
-                                   s.upHosts, s.downHosts)
-                session.add(n)
-                session.commit()
+                # Log latest progress/ETA if available
+                latest_progress = s.get_latest_progress()
+                if latest_progress:
+                    percent = latest_progress.get("percent")
+                    remaining = latest_progress.get("remaining")
+                    if percent is not None:
+                        self.tsLog(f"Nmap scan percent complete: {percent}%")
+                    elif remaining is not None:
+                        self.tsLog(f"Nmap scan estimated time remaining: {remaining}")
+                    else:
+                        self.tsLog(f"Nmap scan progress: {latest_progress}")
+                # After parsing, set percent to highest percent found in XML
+                try:
+                    highest_percent = nmapReport.get_highest_percent()
+                    if hasattr(self, "processId") and self.processId and highest_percent is not None:
+                        self.db.repositoryContainer.processRepository.storeProcessPercent(
+                            self.processId, str(highest_percent)
+                        )
+                except Exception as e:
+                    self.tsLog(f"Failed to set highest percent: {e}")
+                n = nmapSessionObj(
+                    self.filename, s.startTime, s.finish_time, s.nmapVersion, s.scanArgs, s.totalHosts,
+                    s.upHosts, s.downHosts
+                )
+                try:
+                    session.add(n)
+                    session.commit()
+                except Exception as e:
+                    from sqlalchemy.exc import IntegrityError
+                    if isinstance(e, IntegrityError):
+                        msg = (
+                            f"Duplicate nmap session for filename '{self.filename}' detected. "
+                            "Skipping session insert."
+                        )
+                        self.tsLog(msg)
+                        appLog.warning(msg)
+                        session.rollback()
+                    else:
+                        raise
 
             allHosts = nmapReport.getAllHosts()
             hostCount = len(allHosts)
@@ -95,18 +190,31 @@ class NmapImporter(QtCore.QThread):
             createProgress = 0
             createOsNodesProgress = 0
             createPortsProgress = 0
-            createDbScriptsProgress = 0
-            updateObjectsRunScriptsProgress = 0
 
-            self.updateProgressObservable.updateProgress(int(createProgress), 'Adding hosts...')
+            if self.updateProgressObservable is not None:
+                self.updateProgressObservable.updateProgress(
+                    int(createProgress), 'Adding hosts...'
+                )
+            self.progressUpdated.emit(0, 'Adding hosts...')
 
+            last_update_time = time()
+            update_interval = 1.0
             for h in allHosts:  # create all the hosts that need to be created
+                if self._cancel_requested:
+                    self.tsLog("Import canceled by user.")
+                    if self.updateProgressObservable is not None:
+                        self.updateProgressObservable.finished()
+                    self.done.emit()
+                    return
+
                 db_host = self.hostRepository.getHostInformation(h.ip)
 
                 if not db_host:  # if host doesn't exist in DB, create it first
-                    hid = hostObj(osMatch='', osAccuracy='', ip=h.ip, ipv4=h.ipv4, ipv6=h.ipv6, macaddr=h.macaddr,
-                                  status=h.status, hostname=h.hostname, vendor=h.vendor, uptime=h.uptime,
-                                  lastboot=h.lastboot, distance=h.distance, state=h.state, count=h.count)
+                    hid = hostObj(
+                        osMatch='', osAccuracy='', ip=h.ip, ipv4=h.ipv4, ipv6=h.ipv6, macaddr=h.macaddr,
+                        status=h.status, hostname=h.hostname, vendor=h.vendor, uptime=h.uptime,
+                        lastboot=h.lastboot, distance=h.distance, state=h.state, count=h.count
+                    )
                     self.tsLog("Adding db_host")
                     session.add(hid)
                     session.commit()
@@ -117,9 +225,32 @@ class NmapImporter(QtCore.QThread):
                     self.tsLog("Found db_host already in db")
 
                 createProgress = createProgress + (100.0 / hostCount)
-                self.updateProgressObservable.updateProgress(int(createProgress), 'Adding hosts...')
+                now = time()
+                # Update progress at least every 1 second or on every host
+                if (
+                    self.updateProgressObservable is not None
+                    and (now - last_update_time > update_interval or createProgress >= 100)
+                ):
+                    self.updateProgressObservable.updateProgress(
+                        int(createProgress), 'Adding hosts...'
+                    )
+                    self.progressUpdated.emit(int(createProgress), 'Adding hosts...')
+                    last_update_time = now
 
-            self.updateProgressObservable.updateProgress(int(createOsNodesProgress), 'Creating Service, Port and OS children...')
+            if self.updateProgressObservable is not None:
+                self.updateProgressObservable.updateProgress(
+                    int(createOsNodesProgress), 'Creating Service, Port and OS children...'
+                )
+            self.progressUpdated.emit(0, 'Creating Service, Port and OS children...')
+
+            last_update_time_os = time()
+            update_interval_os = 1.0
+
+            # --- Begin global port progress calculation ---
+            # Calculate total number of ports across all hosts
+            total_ports = sum(len(h.all_ports()) for h in allHosts)
+            total_ports_processed = 0
+            # --- End global port progress calculation ---
 
             for h in allHosts:  # create all OS, service and port objects that need to be created
                 self.tsLog("Processing h {ip}".format(ip=h.ip))
@@ -129,7 +260,10 @@ class NmapImporter(QtCore.QThread):
                     self.tsLog("Found db_host during os/ports/service processing")
                 else:
                     self.tsLog("Did not find db_host during os/ports/service processing")
-                    self.tsLog("A host that should have been found was not. Something is wrong. Save your session and report a bug.")
+                    self.tsLog(
+                        "A host that should have been found was not. Something is wrong. "
+                        "Save your session and report a bug."
+                    )
                     self.tsLog("Include your nmap file, sanitized if needed.")
                     continue
 
@@ -142,34 +276,67 @@ class NmapImporter(QtCore.QThread):
                         vendor=os.vendor).first()
 
                     if not db_os:
-                        t_osObj = osObj(os.name, os.family, os.generation, os.osType, os.vendor, os.accuracy,
-                            db_host.id)
+                        t_osObj = osObj(
+                            os.name, os.family, os.generation, os.osType, os.vendor, os.accuracy, db_host.id
+                        )
                         session.add(t_osObj)
                         session.commit()
 
                 createOsNodesProgress = createOsNodesProgress + (100.0 / hostCount)
-                self.updateProgressObservable.updateProgress(int(createOsNodesProgress), 'Creating Service, Port and OS children...')
+                now_os = time()
+                if (
+                    self.updateProgressObservable is not None
+                    and (now_os - last_update_time_os > update_interval_os or createOsNodesProgress >= 100)
+                ):
+                    self.updateProgressObservable.updateProgress(
+                        int(createOsNodesProgress), 'Creating Service, Port and OS children...'
+                    )
+                    self.progressUpdated.emit(
+                        int(createOsNodesProgress), 'Creating Service, Port and OS children...'
+                    )
+                    last_update_time_os = now_os
 
-                self.updateProgressObservable.updateProgress(int(createPortsProgress), 'Processing ports...')
+                # Only set to 0% at the start of all port processing
+                if total_ports_processed == 0 and total_ports > 0:
+                    if self.updateProgressObservable is not None:
+                        self.updateProgressObservable.updateProgress(0, 'Processing ports...')
+                    self.progressUpdated.emit(0, 'Processing ports...')
+                last_update_time_ports = time()
+                update_interval_ports = 1.0
 
                 all_ports = h.all_ports()
-                portCount = len(all_ports)
                 self.tsLog("    'ports' to process: {all_ports}".format(all_ports=str(len(all_ports))))
                 for p in all_ports:  # parse the ports
+                    if self._cancel_requested:
+                        self.tsLog("Import canceled by user during port processing.")
+                        if self.updateProgressObservable is not None:
+                            self.updateProgressObservable.finished()
+                        self.done.emit()
+                        return
+
                     self.tsLog("        Processing port obj {port}".format(port=str(p.portId)))
                     s = p.getService()
 
                     if not (s is None):  # check if service already exists to avoid adding duplicates
-                        self.tsLog("            Processing service result *********** name={0} prod={1} ver={2} extra={3} fing={4}"
-                            .format(s.name, s.product, s.version, s.extrainfo, s.fingerprint))
+                        self.tsLog(
+                            "            Processing service result *********** "
+                            "name={0} prod={1} ver={2} extra={3} fing={4}".format(
+                                s.name, s.product, s.version, s.extrainfo, s.fingerprint
+                            )
+                        )
                         db_service = session.query(serviceObj).filter_by(hostId=db_host.id) \
                             .filter_by(name=s.name).filter_by(product=s.product).filter_by(version=s.version) \
                             .filter_by(extrainfo=s.extrainfo).filter_by(fingerprint=s.fingerprint).first()
                         if not db_service:
-                            self.tsLog("            Did not find service *********** name={0} prod={1} ver={2} extra={3} fing={4}"
-                                .format(s.name, s.product, s.version, s.extrainfo, s.fingerprint))
-                            db_service = serviceObj(s.name, db_host.id, s.product, s.version, s.extrainfo,
-                                s.fingerprint)
+                            self.tsLog(
+                                "            Did not find service *********** "
+                                "name={0} prod={1} ver={2} extra={3} fing={4}".format(
+                                    s.name, s.product, s.version, s.extrainfo, s.fingerprint
+                                )
+                            )
+                            db_service = serviceObj(
+                                s.name, db_host.id, s.product, s.version, s.extrainfo, s.fingerprint
+                            )
                             session.add(db_service)
                             session.commit()
                     else:  # else, there is no service info to parse
@@ -179,23 +346,66 @@ class NmapImporter(QtCore.QThread):
                         .filter_by(protocol=p.protocol).first()
 
                     if not db_port:
-                        self.tsLog("            Did not find port *********** portid={0} proto={1}".format(p.portId, p.protocol))
+                        self.tsLog(
+                            "            Did not find port *********** portid={0} proto={1}".format(
+                                p.portId, p.protocol
+                            )
+                        )
                         if db_service:
                             db_port = portObj(p.portId, p.protocol, p.state, db_host.id, db_service.id)
                         else:
                             db_port = portObj(p.portId, p.protocol, p.state, db_host.id, '')
                         session.add(db_port)
                         session.commit()
-                createPortsProgress = createPortsProgress + (100.0 / hostCount)
-                self.updateProgressObservable.updateProgress(createPortsProgress, 'Processing ports...')
 
-            self.updateProgressObservable.updateProgress(createDbScriptsProgress, 'Creating script objects...')
+                    # Update global progress for each port
+                    total_ports_processed += 1
+                    if total_ports > 0:
+                        port_progress = int((total_ports_processed / total_ports) * 100)
+                        if port_progress <= 100:
+                            if self.updateProgressObservable is not None:
+                                self.updateProgressObservable.updateProgress(
+                                    port_progress, 'Processing ports...'
+                                )
+                            self.progressUpdated.emit(port_progress, 'Processing ports...')
+
+                createPortsProgress = createPortsProgress + (100.0 / hostCount)
+                now_ports = time()
+                if (
+                    self.updateProgressObservable is not None
+                    and (now_ports - last_update_time_ports > update_interval_ports or createPortsProgress >= 100)
+                ):
+                    self.updateProgressObservable.updateProgress(
+                        int(createPortsProgress), 'Processing ports...'
+                    )
+                    self.progressUpdated.emit(int(createPortsProgress), 'Processing ports...')
+                    last_update_time_ports = now_ports
+
+            # --- Begin global script progress calculation ---
+            # Calculate total number of scripts (port scripts + host scripts) across all hosts
+            total_scripts = 0
+            for h in allHosts:
+                for p in h.all_ports():
+                    total_scripts += len(p.getScripts())
+                total_scripts += len(h.getHostScripts())
+            total_scripts_processed = 0
+            # --- End global script progress calculation ---
+
+            if self.updateProgressObservable is not None:
+                self.updateProgressObservable.updateProgress(0, 'Creating script objects...')
+            self.progressUpdated.emit(0, 'Creating script objects...')
 
             for h in allHosts:  # create all script objects that need to be created
                 db_host = self.hostRepository.getHostInformation(h.ip)
 
                 for p in h.all_ports():
                     for scr in p.getScripts():
+                        if self._cancel_requested:
+                            self.tsLog("Import canceled by user during script creation.")
+                            if self.updateProgressObservable is not None:
+                                self.updateProgressObservable.finished()
+                            self.done.emit()
+                            return
                         self.tsLog("        Processing script obj {scr}".format(scr=str(scr)))
                         db_port = session.query(portObj).filter_by(hostId=db_host.id) \
                             .filter_by(portId=p.portId).filter_by(protocol=p.protocol).first()
@@ -211,25 +421,56 @@ class NmapImporter(QtCore.QThread):
                             self.tsLog("        Adding l1ScriptObj obj {script}".format(script=scr.scriptId))
                             session.add(t_l1ScriptObj)
                             session.commit()
+                        # Update global script progress
+                        total_scripts_processed += 1
+                        if total_scripts > 0:
+                            script_progress = int((total_scripts_processed / total_scripts) * 100)
+                            if self.updateProgressObservable is not None:
+                                self.updateProgressObservable.updateProgress(
+                                    script_progress, 'Creating script objects...'
+                                )
+                            self.progressUpdated.emit(script_progress, 'Creating script objects...')
                 for hs in h.getHostScripts():
+                    if self._cancel_requested:
+                        self.tsLog("Import canceled by user during script creation.")
+                        if self.updateProgressObservable is not None:
+                            self.updateProgressObservable.finished()
+                        self.done.emit()
+                        return
                     db_script = session.query(l1ScriptObj).filter_by(scriptId=hs.scriptId) \
                         .filter_by(hostId=db_host.id).first()
                     if not db_script:
                         t_l1ScriptObj = l1ScriptObj(hs.scriptId, hs.output, None, db_host.id)
                         session.add(t_l1ScriptObj)
                         session.commit()
+                    # Update global script progress
+                    total_scripts_processed += 1
+                    if total_scripts > 0:
+                        script_progress = int((total_scripts_processed / total_scripts) * 100)
+                        if self.updateProgressObservable is not None:
+                            self.updateProgressObservable.updateProgress(
+                                script_progress, 'Creating script objects...'
+                            )
+                        self.progressUpdated.emit(script_progress, 'Creating script objects...')
 
-                createDbScriptsProgress = createDbScriptsProgress + (100.0 / hostCount)
-                self.updateProgressObservable.updateProgress(createDbScriptsProgress, 'Creating script objects...')
+            # --- Begin global update objects progress calculation ---
+            total_update_hosts = len(allHosts)
+            update_hosts_processed = 0
+            # --- End global update objects progress calculation ---
 
-            self.updateProgressObservable.updateProgress(updateObjectsRunScriptsProgress, 'Update objects and run scripts...')
+            if self.updateProgressObservable is not None:
+                self.updateProgressObservable.updateProgress(0, 'Update objects and run scripts...')
+            self.progressUpdated.emit(0, 'Update objects and run scripts...')
 
             for h in allHosts:  # update everything
 
                 db_host = self.hostRepository.getHostInformation(h.ip)
                 if not db_host:
-                    self.tsLog("            A host that should have been found was not. Something is wrong. Save your session and report a bug.")
-                    self.tsLog("            Include your nmap file, sanitized if needed.")
+                    self.tsLog(
+                        "A host that should have been found was not. Something is wrong. "
+                        "Save your session and report a bug."
+                    )
+                    self.tsLog("Include your nmap file, sanitized if needed.")
 
                 if db_host.ipv4 == '' and not h.ipv4 == '':
                     db_host.ipv4 = h.ipv4
@@ -326,22 +567,37 @@ class NmapImporter(QtCore.QThread):
                         db_script = session.query(l1ScriptObj).filter_by(scriptId=scr.scriptId) \
                             .filter_by(portId=db_port.id).first()
 
-                        if not scr.output == '' and scr.output != None:
-                            db_script.output = scr.output
+                        if db_script:
+                            if not scr.output == '' and scr.output != None:
+                                db_script.output = scr.output
 
-                        session.add(db_script)
+                            session.add(db_script)
                         session.commit()
 
-                updateObjectsRunScriptsProgress = updateObjectsRunScriptsProgress + (100.0 / hostCount)
-                self.updateProgressObservable.updateProgress(updateObjectsRunScriptsProgress, 'Update objects and run scripts...')
+                # Update global update objects progress
+                update_hosts_processed += 1
+                if total_update_hosts > 0:
+                    update_progress = int((update_hosts_processed / total_update_hosts) * 100)
+                    if update_progress <= 100:
+                        if self.updateProgressObservable is not None:
+                            self.updateProgressObservable.updateProgress(
+                                update_progress, 'Update objects and run scripts...'
+                            )
+                        self.progressUpdated.emit(update_progress, 'Update objects and run scripts...')
 
-            self.updateProgressObservable.updateProgress(100, 'Almost done...')
+            if self.updateProgressObservable is not None:
+                self.updateProgressObservable.updateProgress(100, 'Almost done...')
+                self.progressUpdated.emit(update_progress, 'Almost done...')
 
             session.commit()
             self.db.dbsemaphore.release()  # we are done with the DB
             self.tsLog(f"Finished in {str(time() - startTime)} seconds.")
-            self.updateProgressObservable.finished()
+            if self.updateProgressObservable is not None:
+                self.updateProgressObservable.finished()
+            appLog.debug("NmapImporter: emitting done signal")
             self.done.emit()
+
+            # Removed periodic progress updates (QTimer) due to threading issues.
 
             # call the scheduler (if there is no terminal output it means we imported nmap)
             self.schedule.emit(nmapReport, self.output == '')
@@ -350,6 +606,8 @@ class NmapImporter(QtCore.QThread):
             self.tsLog('Something went wrong when parsing the nmap file..')
             self.tsLog("Unexpected error: {0}".format(sys.exc_info()[0]))
             self.tsLog(e)
-            self.updateProgressObservable.finished()
+            if self.updateProgressObservable is not None:
+                self.updateProgressObservable.finished()
             self.done.emit()
+            self.stopProgressTimer()
             raise

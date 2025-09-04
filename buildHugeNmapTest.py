@@ -30,10 +30,16 @@ def generate_nmap_xml(num_hosts=1000, base_subnet="172.16"):
     })
 
     # Create scaninfo, verbose, and debugging elements
-    scaninfo = ET.SubElement(nmaprun, "scaninfo", {
+    # scaninfo = ET.SubElement(nmaprun, "scaninfo", {
+    #     "type": "syn",
+    #     "protocol": "tcp",
+    #     "numservices": "100",
+    #     "services": "1-65535"
+    # })
+    ET.SubElement(nmaprun, "scaninfo", {
         "type": "syn",
         "protocol": "tcp",
-        "numservices": "1000",
+        "numservices": "100",
         "services": "1-65535"
     })
     ET.SubElement(nmaprun, "verbose", {"level": "0"})
@@ -66,7 +72,10 @@ def generate_nmap_xml(num_hosts=1000, base_subnet="172.16"):
     colors = ["Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Cyan", "Magenta", "Lime", "Pink"]
     foods = ["Apple", "Burger", "Cake", "Dumpling", "Eclair", "Pizza", "Sushi", "Taco", "Waffle", "Bagel"]
     cities = ["Tokyo", "Paris", "London", "NewYork", "Sydney", "Berlin", "Rome", "Madrid", "Moscow", "Beijing"]
-    verbs = ["Jumping", "Running", "Flying", "Swimming", "Dancing", "Singing", "Playing", "Walking", "Reading", "Writing"]
+    verbs = [
+        "Jumping", "Running", "Flying", "Swimming", "Dancing",
+        "Singing", "Playing", "Walking", "Reading", "Writing"
+    ]
 
     # Unique hostname tracker
     generated_hostnames = set()
@@ -113,7 +122,13 @@ def generate_nmap_xml(num_hosts=1000, base_subnet="172.16"):
         for service, port in services:
             port_element = ET.SubElement(ports, "port", {"protocol": "tcp", "portid": str(port)})
             ET.SubElement(port_element, "state", {"state": "open", "reason": "syn-ack", "reason_ttl": "64"})
-            service_element = ET.SubElement(port_element, "service", {
+            # service_element = ET.SubElement(port_element, "service", {
+            #     "name": service,
+            #     "product": service_info[service]["product"],
+            #     "version": service_info[service]["version"],
+            #     "ostype": host_os
+            # })
+            ET.SubElement(port_element, "service", {
                 "name": service,
                 "product": service_info[service]["product"],
                 "version": service_info[service]["version"],
@@ -164,7 +179,7 @@ def generate_nmap_xml(num_hosts=1000, base_subnet="172.16"):
     xml_str = xml_header + '\n' + ET.tostring(nmaprun, encoding='unicode', method='xml')
     return xml_str
 
-def save_nmap_xml(filename, num_hosts=200, base_subnet="172.16"):
+def save_nmap_xml(filename, num_hosts=100, base_subnet="10"):
     # Generate the XML content
     xml_content = generate_nmap_xml(num_hosts, base_subnet)
 
@@ -173,5 +188,5 @@ def save_nmap_xml(filename, num_hosts=200, base_subnet="172.16"):
         file.write(xml_content)
 
 # Specify the filename and call the function to save the file
-filename = "huge_nmap.xml"
+filename = "big_nmap2.xml"
 save_nmap_xml(filename)

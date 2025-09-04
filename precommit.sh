@@ -26,5 +26,3 @@ rm -Rf ./scripts/CloudFail/
 
 # Removed backups
 rm -Rf ./backup/*.conf
-
-find . -type f -exec sed -i 's/Copyright (c) 2024 Shane Scott/Copyright (c) 2024 Shane Scott/' {} \;

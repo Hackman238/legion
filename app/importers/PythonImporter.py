@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -55,7 +55,7 @@ class PythonImporter(QtCore.QThread):
             session = self.db.session()
             startTime = time()
             self.db.dbsemaphore.acquire() # ensure that while this thread is running, no one else can write to the DB
-            #self.setPythonScript(self.pythonScript)
+            self.setPythonScript(self.pythonScript)
             db_host = session.query(hostObj).filter_by(ip = self.hostIp).first()
             self.pythonScriptObj.setDbHost(db_host)
             self.pythonScriptObj.setSession(session)

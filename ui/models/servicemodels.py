@@ -2,7 +2,7 @@
 
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -21,7 +21,7 @@ from PyQt6 import QtWidgets, QtGui, QtCore
 from PyQt6.QtCore import pyqtSignal, QObject
 
 from app.ModelHelpers import resolveHeaders, itemInteractive
-from app.auxiliary import *                                                 # for bubble sort
+from app.auxiliary import *
 
 class ServicesTableModel(QtCore.QAbstractTableModel):
 
@@ -46,7 +46,9 @@ class ServicesTableModel(QtCore.QAbstractTableModel):
 
     # this method takes care of how the information is displayed
     def data(self, index, role):
-        if role == QtCore.Qt.ItemDataRole.DecorationRole:                            # to show the open/closed/filtered icons
+        if (
+            role == QtCore.Qt.ItemDataRole.DecorationRole
+        ):  # to show the open/closed/filtered icons
             if index.column() == 0 or index.column() == 2:
                 tmp_state = self.__services[index.row()]['state']
 
@@ -198,7 +200,11 @@ class ServiceNamesTableModel(QtCore.QAbstractTableModel):
 
     # method that allows views to know how to treat each item, eg: if it should be enabled, editable, selectable etc
     def flags(self, index):
-        return QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEditable
+        return (
+            QtCore.Qt.ItemFlag.ItemIsEnabled
+            | QtCore.Qt.ItemFlag.ItemIsSelectable
+            | QtCore.Qt.ItemFlag.ItemIsEditable
+        )
 
     # sort function called when the user clicks on a header
     def sort(self, Ncol, order):

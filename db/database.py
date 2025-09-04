@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -17,3 +17,5 @@ Copyright (c) 2024 Shane Scott
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
+
+# (Entity class imports moved to db/SqliteDbAdapter.py to avoid circular import issues)

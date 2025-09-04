@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -40,6 +40,7 @@ class process(Base):
     output = relationship("process_output")
     status = Column(String)
     closed = Column(String)
+    percent = Column(String)  # New: percent complete for nmap scans
 
     def __init__(self, pid, *args):
         self.display = 'True'
@@ -58,3 +59,4 @@ class process(Base):
         self.closed = 'False'
         self.estimatedRemaining = args[11]
         self.elapsed = args[12]
+        self.percent = args[13] if len(args) > 13 else None

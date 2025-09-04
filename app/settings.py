@@ -2,7 +2,7 @@
 
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -35,7 +35,10 @@ class AppSettings():
                 os.makedirs(os.path.expanduser("~/.local/share/legion"))
             shutil.copy('./legion.conf', os.path.expanduser('~/.local/share/legion/legion.conf'))
         log.info('Loading settings file..')
-        self.actions = QtCore.QSettings(os.path.expanduser('~/.local/share/legion/legion.conf'), QtCore.QSettings.Format.NativeFormat)
+        self.actions = QtCore.QSettings(
+            os.path.expanduser('~/.local/share/legion/legion.conf'),
+            QtCore.QSettings.Format.NativeFormat
+        )
 
     def getGeneralSettings(self):
         return self.getSettingsByGroup("GeneralSettings")
@@ -114,11 +117,17 @@ class AppSettings():
         # Backup and save
         if saveBackup:
             log.info('Backing up old settings and saving new settings...')
-            os.rename(os.path.expanduser('~/.local/share/legion/legion.conf'), os.path.expanduser("~/.local/share/legion/backup/") + getTimestamp() + '-legion.conf')
+            os.rename(
+                os.path.expanduser('~/.local/share/legion/legion.conf'),
+                os.path.expanduser("~/.local/share/legion/backup/") + getTimestamp() + '-legion.conf'
+            )
         else:
             log.info('Saving config...')
 
-        self.actions = QtCore.QSettings(os.path.expanduser('~/.local/share/legion/legion.conf'), QtCore.QSettings.Format.NativeFormat)
+        self.actions = QtCore.QSettings(
+            os.path.expanduser('~/.local/share/legion/legion.conf'),
+            QtCore.QSettings.Format.NativeFormat
+        )
 
         self.actions.beginGroup('GeneralSettings')
         self.actions.setValue('default-terminal', newSettings.general_default_terminal)

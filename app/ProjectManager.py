@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -15,6 +15,7 @@ Copyright (c) 2024 Shane Scott
 
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
+
 import ntpath
 import os
 import sys
@@ -46,7 +47,11 @@ class ProjectManager:
                                                              directory=tempDirectory)
 
         # to store tool output of running processes
-        runningFolder = self.shell.create_temporary_directory(prefix="legion-", suffix="-running", directory=tempDirectory)
+        runningFolder = self.shell.create_temporary_directory(
+            prefix="legion-",
+            suffix="-running",
+            directory=tempDirectory
+        )
 
         self.shell.create_directory_recursively(f"{outputFolder}/screenshots")  # to store screenshots
         self.shell.create_directory_recursively(getNmapRunningFolder(runningFolder))  # to store nmap output
@@ -124,8 +129,12 @@ class ProjectManager:
         if projectName:
             return Database(projectName)
 
-        databaseFile = self.shell.create_named_temporary_file(suffix=".legion", prefix="legion-", directory=tempDirectory,
-                                                              delete_on_close=False)  # to store the db file
+        databaseFile = self.shell.create_named_temporary_file(
+            suffix=".legion",
+            prefix="legion-",
+            directory=tempDirectory,
+            delete_on_close=False
+        )  # to store the db file
         return Database(databaseFile.name)
 
     @staticmethod

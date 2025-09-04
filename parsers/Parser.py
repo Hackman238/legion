@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
 '''this module used to parse nmap xml report'''
 
@@ -30,6 +30,20 @@ class Parser:
             __host = Host.Host(hostNode)
             self.__hosts[__host.ip] = __host
 
+    def get_highest_percent(self):
+        '''Return the highest percent value from all <taskprogress> elements, or None if not found.'''
+        taskprogress_nodes = self.__dom.getElementsByTagName('taskprogress')
+        max_percent = None
+        for node in taskprogress_nodes:
+            if node.hasAttribute('percent'):
+                try:
+                    percent_val = float(node.getAttribute('percent'))
+                    if max_percent is None or percent_val > max_percent:
+                        max_percent = percent_val
+                except Exception:
+                    continue
+        return max_percent
+
     def getSession(self):
         '''get this scans information, return a Session object'''
         run_node = self.__dom.getElementsByTagName('nmaprun')[0]
@@ -54,6 +68,16 @@ class Parser:
                      'downHosts': downHosts}
 
         self.__session = Session.Session(MySession)
+
+        # Parse <taskprogress> elements for progress/ETA data (if present)
+        taskprogress_nodes = self.__dom.getElementsByTagName('taskprogress')
+        for node in taskprogress_nodes:
+            progress_dict = {}
+            # Extract common attributes if present
+            for attr in ['task', 'percent', 'remaining', 'elapsed', 'etc']:
+                if node.hasAttribute(attr):
+                    progress_dict[attr] = node.getAttribute(attr)
+            self.__session.add_progress(progress_dict)
 
         return self.__session
 

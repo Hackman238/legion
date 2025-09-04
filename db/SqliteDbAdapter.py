@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -25,6 +25,15 @@ from sqlalchemy.orm.scoping import scoped_session
 
 from app.logging.legionLog import getDbLogger
 
+# Import all entity classes to ensure their tables are registered with Base
+from db.entities.host import hostObj
+from db.entities.note import note
+from db.entities.os import osObj
+from db.entities.port import portObj
+from db.entities.service import serviceObj
+from db.entities.nmapSession import nmapSessionObj
+from db.entities.l1script import l1ScriptObj
+# Add any other entity classes as needed
 
 class Database:
     def __init__(self, dbfilename):
@@ -47,10 +56,13 @@ class Database:
         self.name = dbFileName
         self.dbsemaphore = QSemaphore(1)  # to control concurrent write access to db
         self.engine = create_engine(
-            'sqlite:///{dbFileName}'.format(dbFileName=dbFileName))
+            'sqlite:///{dbFileName}'.format(dbFileName=dbFileName),
+            connect_args={'check_same_thread': False}
+        )
         self.session = scoped_session(sessionmaker(bind=self.engine))
         self.session.configure(bind=self.engine, autoflush=False)
         self.metadata = self.base.metadata
+
         self.metadata.create_all(self.engine)
         self.metadata.echo = True
         self.metadata.bind = self.engine

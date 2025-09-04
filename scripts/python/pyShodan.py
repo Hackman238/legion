@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 from pyShodan import PyShodan
+import sys
 
 class PyShodanScript():
     def __init__(self):
@@ -12,14 +14,20 @@ class PyShodanScript():
         self.session = session
 
     def run(self):
-        print('Running PyShodan Class')
-        if self.dbHost:
+        if not self.dbHost or not hasattr(self.dbHost, "ipv4"):
+            print("No dbHost or ipv4 provided.")
+            return {}
+        ip = str(self.dbHost.ipv4)
+        return self.lookup(ip)
+
+    def lookup(self, ip):
+        try:
             pyShodanObj = PyShodan()
             pyShodanObj.apiKey = "REMOVED-SHODAN-KEY"
             pyShodanObj.createSession()
-            pyShodanResults = pyShodanObj.searchIp(self.dbHost.ipv4, allData = True)
-            if type(pyShodanResults) == type(dict()):
-                if pyShodanResults:
+            pyShodanResults = pyShodanObj.searchIp(ip, allData=True)
+            if isinstance(pyShodanResults, dict) and pyShodanResults:
+                if self.dbHost and self.session:
                     self.dbHost.latitude = pyShodanResults.get('latitude', 'unknown')
                     self.dbHost.longitude = pyShodanResults.get('longitude', 'unknown')
                     self.dbHost.asn = pyShodanResults.get('asn', 'unknown')
@@ -27,6 +35,19 @@ class PyShodanScript():
                     self.dbHost.city = pyShodanResults.get('city', 'unknown')
                     self.dbHost.countryCode = pyShodanResults.get('country_code', 'unknown')
                     self.session.add(self.dbHost)
+                print(pyShodanResults)
+                return pyShodanResults
+            else:
+                print("No results found or error in response.")
+                return {}
+        except Exception as e:
+            print(f"Error: {e}")
+            return {}
 
 if __name__ == "__main__":
-    pass
+    if len(sys.argv) < 2:
+        print("Usage: pyShodan.py <IP_ADDRESS>")
+        sys.exit(1)
+    ip = sys.argv[1]
+    script = PyShodanScript()
+    script.lookup(ip)

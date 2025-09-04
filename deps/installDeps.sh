@@ -19,3 +19,6 @@ apt-get -yqqqm --allow-unauthenticated -o DPkg::Options::="--force-overwrite" -o
 apt-get -yqqqm --allow-unauthenticated -o DPkg::Options::="--force-overwrite" -o DPkg::Options::="--force-confdef" install whatweb
 apt-get -yqqqm --allow-unauthenticated -o DPkg::Options::="--force-overwrite" -o DPkg::Options::="--force-confdef" install medusa
 apt-get -yqqqm --allow-unauthenticated -o DPkg::Options::="--force-overwrite" -o DPkg::Options::="--force-confdef" install eyewitness
+
+# Check and install EyeWitness and its dependencies
+./checkEyewitness.sh

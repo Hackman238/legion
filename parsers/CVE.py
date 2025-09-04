@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
 
 class CVE:
@@ -19,6 +19,6 @@ class CVE:
         self.url = cveData.get('url', 'unknown')
         self.source = cveData.get('source', 'unknown')
         self.severity = cveData.get('severity', 'unknown')
-        self.exploitId = cveData.get('exploitId', 'unknown')
-        self.exploit = cveData.get('exploit', 'unknown')
-        self.exploitUrl = cveData.get('exploitUrl', 'unknown')
+        self.exploitId = cveData.get('exploitId', '')
+        self.exploit = cveData.get('exploit', '')
+        self.exploitUrl = cveData.get('exploitUrl', '')

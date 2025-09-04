@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2019 Hackman238
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -30,7 +30,14 @@ class ModelHelpersTest(unittest.TestCase):
         self.assertEqual(expectedHeaders, actualHeaders)
 
     def test_resolveHeaders_WhenRoleIsNotDisplay_ReturnsNone(self):
-        self.assertIsNone(resolveHeaders(QtCore.Qt.ItemDataRole.BackgroundRole, QtCore.Qt.Orientation.Horizontal, 1, []))
+        self.assertIsNone(
+            resolveHeaders(
+                QtCore.Qt.ItemDataRole.BackgroundRole,
+                QtCore.Qt.Orientation.Horizontal,
+                1,
+                []
+            )
+        )
 
     def test_resolveHeaders_WhenRoleIsDisplayAndOrientationIsNotHz_ReturnsNone(self):
         self.assertIsNone(resolveHeaders(QtCore.Qt.ItemDataRole.DisplayRole, QtCore.Qt.Orientation.Vertical, 1, []))
@@ -41,7 +48,11 @@ class ModelHelpersTest(unittest.TestCase):
         self.assertEqual(expectedMessage, actualMessage)
 
     def test_itemInteractive_ReturnsItemFlagForEnabledSelectableEditableItem(self):
-        expectedFlags = QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEditable
+        expectedFlags = (
+            QtCore.Qt.ItemFlag.ItemIsEnabled
+            | QtCore.Qt.ItemFlag.ItemIsSelectable
+            | QtCore.Qt.ItemFlag.ItemIsEditable
+        )
         self.assertEqual(expectedFlags, itemInteractive())
 
     def test_itemSelectable_ReturnItemFlagForEnabledSelectableItem(self):

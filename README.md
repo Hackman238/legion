@@ -13,32 +13,6 @@ This is the new home of "Legion". A major release will follow very soon!
 Legion, a fork of SECFORCE's Sparta, is an open source, easy-to-use, super-extensible, and semi-automated network
 penetration testing framework that aids in discovery, reconnaissance, and exploitation of information systems.
 
-## Fix NMAP 7.92 Sefgaults under Kali
-
-Install NMAP 7.93 using the following:
-```shell
-sudo apt install snapd -y
-sudo systemctl enable --now snapd.apparmor
-sudo systemctl start snapd
-sudo snap install nmap
-sudo mv /usr/bin/nmap /usr/bin/nmap-7.92
-sudo ln -s /snap/bin/nmap /usr/bin/nmap
-```
-
-Then verify the version is 7.93 with:
-`nmap -v`
-
-Update the apparmor profile:
-`vi /var/lib/snapd/apparmor/profiles/snap.nmap.nmap`
-
-Goto line 300, create new line and add in:
-```
-owner @{HOME}/.local/share/legion/tmp/** rw,
-/etc/ssl/kali.cnf r,
-```
-
-Reboot
-
 ## 🍿 Features
 
 * Automatic recon and scanning with NMAP, whataweb, nikto, Vulners, Hydra, SMBenum, dirbuster, sslyzer, webslayer and
@@ -48,12 +22,16 @@ Reboot
 * Modular functionality allows users to easily customize Legion and automatically call their own scripts/tools.
 * Multiple custom scan configurations ideal for testing different environments of various size and complexity. 
 * Highly customizable stage scanning for ninja-like IPS evasion.
-* Automatic detection of CPEs (Common Platform Enumeration) and CVEs (Common Vulnerabilities and Exposures).
-* Ties CVEs to Exploits as detailed in Exploit-Database.
+* Automatic detection of CPEs (Common Platform Enumeration) and CVEs (Common Vulnerabilities and Exposures), now with enhanced mapping to ExploitDB including direct links to exploits.
+* Integrated screenshotting: Take, view, and manage screenshots of web services directly from the UI, with support for EyeWitness and advanced screenshot management.
 * Realtime auto-saving of project results and tasks.
+* Numerous quality of life improvements: UI enhancements, improved error handling, more robust project export, and expanded configurability.
 
 ### Notable changes from Sparta
 
+* Major overhaul of screenshotting subsystem: asynchronous operation, EyeWitness integration, deterministic filenames, and UI improvements for screenshot management.
+* Enhanced CVE mapping: CVEs now include ExploitDB IDs and direct links, with improved association to services and hosts.
+* Many quality of life improvements: better context menus, tab management, error handling, and expanded test coverage.
 * Refactored from Python 2.7 to Python 3.8+ and the elimination of deprecated and unmaintained libraries.
 * Upgraded to PyQT6, increased responsiveness, less buggy, more intuitive GUI that includes features like:
     * Task completion estimates
@@ -203,7 +181,7 @@ sudo xhost +local:docker
 The order is important for port reservation reasons. If you have WSL, HyperV, or Docker Desktop installed then please
 uninstall those features before proceeding.
 
-- Cortana / Search -> cmd -> Right click -> Run as Administrator
+- Search -> cmd -> Right click -> Run as Administrator
 - To reserve the Docker port, under CMD, run:
   ```shell
   netsh int ipv4 add excludedportrange protocol=tcp startport=2375 numberofports=1
@@ -267,6 +245,121 @@ sudo ./startLegion.sh
 
 ## 🏗 Development
 
+### Command Line Options
+
+Legion can be run in headless (CLI) mode for automation and scripting. The following command line options are available:
+
+| Option            | Description                                                                                  |
+|-------------------|----------------------------------------------------------------------------------------------|
+| `--mcp-server`    | Start the MCP server for AI integration.                                                     |
+| `--headless`      | Run Legion in headless (CLI) mode (no GUI).                                                  |
+| `--input-file`    | Path to a text file with targets (hostnames, subnets, IPs, etc.). Required in headless mode. |
+| `--discovery`     | Enable host discovery (default: enabled).                                                    |
+| `--staged-scan`   | Enable staged scan (performs a fast scan, then a service scan).                              |
+| `--output-file`   | Output file path. Supports `.legion` (project) or `.json` (exported results).                |
+| `--run-actions`   | Run scripted actions/automated attacks (including screenshots) after scan/import in CLI mode. |
+
+**Example usage:**
+
+```shell
+python legion.py --headless --input-file targets.txt --output-file results.json --run-actions
+```
+
+This will run Legion in CLI mode, import targets from `targets.txt`, perform scanning, run all configured scripted actions/automated attacks (including screenshots), and export results to `results.json`.
+
+---
+
+## 🧩 Model Context Protocol (MCP) Server Integration
+
+Legion now supports the Model Context Protocol (MCP) server, enabling advanced automation, AI integration, and programmatic control of Legion's core features via JSON-RPC.
+
+### What is the MCP Server?
+
+The MCP server exposes Legion's internal functionality as a set of programmable "tools" accessible over a JSON-RPC interface. This allows external applications, scripts, or AI agents to interact with Legion, automate workflows, and retrieve structured results.
+
+### How to Start the MCP Server
+
+Start Legion with the `--mcp-server` flag:
+
+```shell
+python legion.py --mcp-server
+```
+
+The MCP server will listen for JSON-RPC requests via stdin/stdout.
+
+### Available Tools
+
+The MCP server currently exposes the following tools:
+
+- **list_projects**: Lists all Legion project files in the temp folder.
+  - **Input:** None
+  - **Returns:** List of project filenames
+
+- **run_discovery**: Runs a quick discovery scan (nmap -F) on a target (default: localhost), imports results, and returns structured host/port/service data.
+  - **Input:** `{ "target": "host_or_ip" }` (optional, defaults to "localhost")
+  - **Returns:** Structured scan results for the target
+
+### Example JSON-RPC Requests
+
+**List available tools:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "list_tools"
+}
+```
+
+**Run a discovery scan:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "call_tool",
+  "params": {
+    "name": "run_discovery",
+    "arguments": { "target": "192.168.1.1" }
+  }
+}
+```
+
+**Sample response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "target": "192.168.1.1",
+    "results": [
+      {
+        "ip": "192.168.1.1",
+        "hostname": "host1",
+        "ports": [
+          {
+            "port": 22,
+            "state": "open",
+            "service": {
+              "name": "ssh",
+              "product": "OpenSSH"
+            }
+          }
+        ]
+      }
+    ],
+    "debug_info": { ... }
+  }
+}
+```
+
+### Use Cases
+
+- **AI Integration:** Connect Legion to AI agents for automated reconnaissance, scanning, and reporting.
+- **Automation:** Script complex workflows that require dynamic interaction with Legion's scanning and project management features.
+- **External Tooling:** Build custom dashboards, orchestration tools, or integrations with other security platforms.
+
+**Note:** The MCP server is under active development. See the source code (`app/mcp_server.py`) for the latest available tools and schemas.
+
+---
 ### Executing test cases
 
 To run all test cases, execute the following in root directory:
@@ -293,7 +386,7 @@ Legion is licensed under the GNU General Public License v3.0. Take a look at the
 
 ## ⭐️ Attribution
 
-* Fork based from http://guthub.com/GoVanguard/legion by Shane Scott.
+* Fork based from http://github.com/GoVanguard/legion by Shane Scott.
 * Refactored Python 3.6+ codebase, added feature set and ongoing development of Legion is credited
   to [Hackman238] & [sscottgvit] (Shane Scott)
 * The initial Sparta Python 2.7 codebase and application design is credited SECFORCE.

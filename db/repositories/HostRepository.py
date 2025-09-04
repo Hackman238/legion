@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -82,3 +82,21 @@ class HostRepository:
             session.add(host)
             session.commit()
         session.close()
+
+    def getHostByIP(self, ip):
+        """
+        Return the hostObj for a given IP address, or None if not found.
+        """
+        session = self.dbAdapter.session()
+        host = session.query(hostObj).filter_by(ip=str(ip)).first()
+        session.close()
+        return host
+
+    def getAllHostObjs(self):
+        """
+        Return all hostObj ORM objects in the database.
+        """
+        session = self.dbAdapter.session()
+        hosts = session.query(hostObj).all()
+        session.close()
+        return hosts

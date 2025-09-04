@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -19,6 +19,7 @@ from app.auxiliary import Filters
 from sqlalchemy import text
 from db.SqliteDbAdapter import Database
 from db.filters import applyFilters
+from db.entities.service import serviceObj
 
 
 class ServiceRepository:
@@ -47,3 +48,9 @@ class ServiceRepository:
         result = session.execute(query, {'host_ip': str(host_ip), 'port': str(port)}).first()
         session.close()
         return result
+
+    def getServiceById(self, service_id):
+        session = self.dbAdapter.session()
+        service = session.query(serviceObj).filter_by(id=service_id).first()
+        session.close()
+        return service

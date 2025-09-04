@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 from db.entities.cve import cve
 
 __author__ =  'ketchup'
@@ -29,62 +29,58 @@ class Script:
 
 
     def processVulnersScriptOutput(self, vulnersOutput):
-        output = vulnersOutput.replace('\t\t\t','\t')
-        output = output.replace('\t\t','\t')
-        output = output.replace('\t',';')
-        output = output.replace('\n;','\n')
-        output = output.replace(' ','')
-        output = output.split('\n')
-        output = [entry for entry in output if len(entry) > 1]
+        import re
 
         pyExploitDb = PyExploitDb()
         pyExploitDb.debug = False
         pyExploitDb.autoUpdate = False
         pyExploitDb.openFile()
 
-        cpeList = []
-        count = 0
-        for entry in output:
-            if 'cpe' in entry:
-                cpeList.append(entry)
-                output[count] = 'CPE'
-            count = count + 1
-
-        output = ' '.join(output)
-        output = output.split('CPE')
-        output = [entry for entry in output if len(entry) > 1]
-
         resultsDict = {}
-        counter = 0
-        for cpeEntry in cpeList:
-            resultCpeData = cpeEntry.split(':')
-            resultCpeData = [entry for entry in resultCpeData if len(entry) > 1]
-            resultCpeDetails = {}
-            resultCpeDetails['type'] = resultCpeData[1]
-            resultCpeDetails['source'] = resultCpeData[2]
-            resultCpeDetails['product'] = resultCpeData[3]
-            resultCpeDetails['version'] = resultCpeData[4]
-            resultCves = output[counter]
-            resultCves = resultCves.split(' ')
-            resultCves = [entry for entry in resultCves if len(entry) > 1]
-            resultCvesProcessed = []
-            for resultCve in resultCves:
-                resultCveDict = {}
-                resultCveData = resultCve.split(';')
-                resultCveDict['id'] = resultCveData[0]
-                resultCveDict['severity'] = resultCveData[1]
-                resultCveDict['url'] = resultCveData[2]
-                exploitResults = pyExploitDb.searchCve(resultCveData[0])
-                print(exploitResults)
-                if exploitResults:
-                    resultCveDict['exploitId'] = exploitResults['edbid']
-                    resultCveDict['exploit'] = exploitResults['exploit']
-                    resultCveDict['exploitUrl'] = "https://www.exploit-db.com/exploits/{0}".\
-                        format(resultCveDict['exploitId'])
-                resultCvesProcessed.append(resultCveDict)
-            resultCpeDetails['cves'] = resultCvesProcessed
-            resultsDict[resultCpeData[3]] = resultCpeDetails
-            count = count + 1
+        current_product = None
+        current_version = None
+        current_source = None
+        cve_list = []
+
+        # Split into lines and process
+        lines = vulnersOutput.splitlines()
+        for line in lines:
+            line = line.rstrip()
+            # CPE line (e.g. "  cpe:/a:openbsd:openssh:8.4p1:")
+            cpe_match = re.match(r'^\s*cpe:/[a-z]:([^:]+):([^:]+):([^:]+):?$', line)
+            if cpe_match:
+                # Save previous product's CVEs
+                if current_product and cve_list:
+                    resultsDict[current_product] = cve_list
+                # Start new CPE/product
+                current_product = cpe_match.group(2)
+                current_version = cpe_match.group(3)
+                current_source = cpe_match.group(1)
+                cve_list = []
+                continue
+            # CVE or exploit line (indented with tab)
+            if line.startswith('\t') or line.startswith('    '):
+                fields = line.strip().split('\t')
+                if len(fields) >= 3 and fields[0].startswith("CVE-"):
+                    cve_dict = {
+                        'id': fields[0],
+                        'severity': fields[1],
+                        'url': fields[2],
+                        'type': 'cve',
+                        'version': current_version,
+                        'source': current_source,
+                        'product': current_product
+                    }
+                    exploitResults = pyExploitDb.searchCve(fields[0])
+                    if exploitResults:
+                        cve_dict['exploitId'] = exploitResults['edbid']
+                        cve_dict['exploit'] = exploitResults['exploit']
+                        cve_dict['exploitUrl'] = "https://www.exploit-db.com/exploits/{0}".format(cve_dict['exploitId'])
+                    cve_list.append(cve_dict)
+                continue
+        # Save last product's CVEs
+        if current_product and cve_list:
+            resultsDict[current_product] = cve_list
 
         return resultsDict
 
@@ -94,21 +90,12 @@ class Script:
 
         if len(cveOutput) > 0:
            cvesResults = self.processVulnersScriptOutput(cveOutput)
+           print("NEW CVERESULTS: {0}".format(cvesResults))
 
-           for cpeEntry in cvesResults:
-               cpeData = cvesResults[cpeEntry]
-               cpeProduct = cpeEntry
-               cpeType = cpeData['type']
-               cpeVersion = cpeData['version']
-               cpeSource = cpeData['source']
-               cpeCves = cpeData['cves']
-               for cveEntry in cpeCves:
-                   cveData = cveEntry
-                   cveData['type'] = cpeType
-                   cveData['version'] = cpeVersion
-                   cveData['source'] = cpeSource
-                   cveData['product'] = cpeProduct
-                   print("NEW CVE: {0}".format(cveData))
+           for product in cvesResults:
+               serviceCpes = cvesResults[product]
+               for cveData in serviceCpes:
+                   print("NEW CVE ENTRY: {0}".format(cveData))
                    cveObj = CVE.CVE(cveData)
                    cveObjects.append(cveObj)
            return cveObjects
@@ -129,7 +116,7 @@ class Script:
             return results
         elif 'shodan-api' in scriptId:
             print("------------------------SHODAN")
-            #self.processShodanScriptOutput(self.output)
+            self.processShodanScriptOutput(self.output)
             return results
         else:
             print("-----------------------*{0}".format(scriptId))

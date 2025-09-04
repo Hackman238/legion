@@ -2,7 +2,7 @@
 
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -32,10 +32,27 @@ def flipState(targetState, widgetsToFlipOn, widgetsToFlipOff):
 
 # Progress bar primative
 class ProgressWidget(QtWidgets.QDialog):
+    canceled = QtCore.pyqtSignal()
+
+    @QtCore.pyqtSlot(str)
+    def setText(self, text):
+        self.text = text
+        self.setWindowTitle(text)
+
+    @QtCore.pyqtSlot(int)
+    def setProgress(self, progress):
+        print(f"[DEBUG] ProgressWidget.setProgress called: progress={progress}")
+        if progress > 100:
+            progress = 100
+        self.progressBar.setValue(int(progress))
+        self.progressBar.repaint()
+
     def __init__(self, text, parent=None):
         QtWidgets.QDialog.__init__(self, parent)
         self.text = text
         self.setWindowTitle(text)
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.setWindowFlags(QtCore.Qt.WindowType.Window)
         self.setupLayout()
 
     def setupLayout(self):
@@ -46,18 +63,12 @@ class ProgressWidget(QtWidgets.QDialog):
         vbox.addWidget(self.progressBar)
         hbox = QtWidgets.QHBoxLayout()
         hbox.addStretch(1)
+        self.cancelButton = QtWidgets.QPushButton("Cancel")
+        hbox.addWidget(self.cancelButton)
         vbox.addLayout(hbox)
         self.setLayout(vbox)
+        self.cancelButton.clicked.connect(self.canceled.emit)
 
-    def setProgress(self, progress):
-        if progress > 100:
-            progress = 100
-        self.progressBar.setValue(int(progress))
-
-    def setText(self, text):
-        self.text = text
-        self.setWindowTitle(text)
-        
     def reset(self, text):
         self.text = text
         self.setWindowTitle(text)

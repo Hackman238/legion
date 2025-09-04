@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -23,7 +23,7 @@ class isHttpsTest(unittest.TestCase):
     def test_isHttps_GivenAnIpAddrAndPortThatIsHttps_ReturnsTrue(self):
         with patch("urllib.request.urlopen") as urlopen, patch("urllib.request.Request") as Request:
             expectedUserAgent = 'Mozilla/5.0 (X11; Linux x86_64; rv:22.0) Gecko/20100101 Firefox/22.0 Iceweasel/22.0'
-            from app.http.isHttps import isHttps
+            from app.httputil.isHttps import isHttps
             mockOpenedUrl = MagicMock()
             Request.return_value = MagicMock()
             urlopen.return_value.read.return_value = mockOpenedUrl

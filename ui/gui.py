@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -13,6 +13,8 @@ Copyright (c) 2024 Shane Scott
 
     You should have received a copy of the GNU General Public License along with this program.
     If not, see <http://www.gnu.org/licenses/>.
+
+Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
 from PyQt6 import QtWidgets, QtGui, QtCore
@@ -50,12 +52,18 @@ class Ui_MainWindow(object):
         self.splitter.setObjectName(_fromUtf8("splitter"))
     
         # size policies
-        self.sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding
+        )
         # this specifies that the widget will keep its width when the window is resized
         self.sizePolicy.setHorizontalStretch(0)
         self.sizePolicy.setVerticalStretch(0)
         
-        self.sizePolicy2 = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.sizePolicy2 = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding
+        )
         # this specifies that the widget will expand its width when the window is resized
         self.sizePolicy2.setHorizontalStretch(1)
         self.sizePolicy2.setVerticalStretch(0)
@@ -89,7 +97,11 @@ class Ui_MainWindow(object):
 
         self.FilterApplyButton = QtWidgets.QToolButton()
         self.searchIcon = QtGui.QIcon()
-        self.searchIcon.addPixmap(QtGui.QPixmap(_fromUtf8("./images/search.png")), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        self.searchIcon.addPixmap(
+            QtGui.QPixmap(_fromUtf8("./images/search.png")),
+            QtGui.QIcon.Mode.Normal,
+            QtGui.QIcon.State.Off
+        )
         self.FilterApplyButton.setIconSize(QtCore.QSize(19, 19))
         self.FilterApplyButton.setIcon(self.searchIcon)
         self.FilterApplyButton.setToolTip('Apply filters to view')
@@ -104,7 +116,11 @@ class Ui_MainWindow(object):
 
         self.AddHostButton = QtWidgets.QToolButton()
         self.addIcon = QtGui.QIcon()
-        self.addIcon.addPixmap(QtGui.QPixmap(_fromUtf8("./images/add.png")), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        self.addIcon.addPixmap(
+            QtGui.QPixmap(_fromUtf8("./images/add.png")),
+            QtGui.QIcon.Mode.Normal,
+            QtGui.QIcon.State.Off
+        )
         self.AddHostButton.setIconSize(QtCore.QSize(19, 19))
         self.AddHostButton.setIcon(self.addIcon)
         self.AddHostButton.setToolTip('Add host')
@@ -345,10 +361,13 @@ class Ui_MainWindow(object):
         self.actionNew.setObjectName(_fromUtf8("actionNew"))
         self.actionAddHosts = QtGui.QAction(MainWindow)
         self.actionAddHosts.setObjectName(_fromUtf8("actionAddHosts"))
+        self.actionExportJson = QtGui.QAction(MainWindow)
+        self.actionExportJson.setObjectName(_fromUtf8("actionExportJson"))
         self.menuFile.addAction(self.actionNew)
         self.menuFile.addAction(self.actionOpen)
         self.menuFile.addAction(self.actionSave)
         self.menuFile.addAction(self.actionSaveAs)
+        self.menuFile.addAction(self.actionExportJson)
         self.menuFile.addSeparator()
         self.menuFile.addAction(self.actionAddHosts)
         self.menuFile.addAction(self.actionImportNmap)
@@ -425,6 +444,15 @@ class Ui_MainWindow(object):
                                                                           "Import an nmap xml file", None))
         self.actionImportNmap.setShortcut(QtWidgets.QApplication.translate("MainWindow", "Ctrl+I", None))
         self.actionSaveAs.setText(QtWidgets.QApplication.translate("MainWindow", "Save As", None))
+        self.actionExportJson.setText(QtWidgets.QApplication.translate("MainWindow", "Export as JSON", None))
+        self.actionExportJson.setToolTip(
+            QtWidgets.QApplication.translate(
+                "MainWindow",
+                "Export all results as a JSON file",
+                None
+            )
+        )
+        self.actionExportJson.setShortcut(QtWidgets.QApplication.translate("MainWindow", "Ctrl+E", None))
         self.actionNew.setText(QtWidgets.QApplication.translate("MainWindow", "New", None))
         self.actionNew.setShortcut(QtWidgets.QApplication.translate("MainWindow", "Ctrl+N", None))
         self.actionAddHosts.setText(QtWidgets.QApplication.translate("MainWindow", "Add host(s) to scope", None))

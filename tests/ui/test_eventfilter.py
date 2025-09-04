@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -85,7 +85,11 @@ class MyEventFilterTestCase(unittest.TestCase):
             self, hosts_table_view, selection_model, selected_row, mock_clipboard):
         expected_data = MagicMock()
         expected_data.toString = Mock(return_value="some clipboard data")
-        control_modifier = mock.patch.object(QApplication, 'keyboardModifiers', return_value=Qt.KeyboardModifier.ControlModifier)
+        control_modifier = mock.patch.object(
+            QApplication,
+            'keyboardModifiers',
+            return_value=Qt.KeyboardModifier.ControlModifier
+        )
         clipboard = mock.patch.object(QApplication, 'clipboard', return_value=mock_clipboard)
 
         self.mock_view.ui.HostsTableView = hosts_table_view

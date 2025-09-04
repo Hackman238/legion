@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -16,69 +16,21 @@ Copyright (c) 2024 Shane Scott
 
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
-
 import shutil
 
 from app.ApplicationInfo import getConsoleLogo
 from app.ProjectManager import ProjectManager
-from app.logging.legionLog import getStartupLogger, getDbLogger
+from app.logging.legionLog import getStartupLogger, getDbLogger, getAppLogger
 from app.shell.DefaultShell import DefaultShell
 from app.tools.nmap.DefaultNmapExporter import DefaultNmapExporter
 from db.RepositoryFactory import RepositoryFactory
-from ui.eventfilter import MyEventFilter
-from ui.ViewState import ViewState
-from ui.gui import *
-from ui.gui import Ui_MainWindow
+from app.tools.ToolCoordinator import ToolCoordinator
+from app.logic import Logic
+import os
+import sys
+import subprocess
 
 startupLog = getStartupLogger()
-
-# check for dependencies first (make sure all non-standard dependencies are checked for here)
-try:
-    from sqlalchemy.orm.scoping import ScopedSession as scoped_session
-except ImportError as e:
-    startupLog.error(
-        "Import failed. SQL Alchemy library not found. If on Ubuntu or similar try: apt-get install python3-sqlalchemy*"
-    )
-    startupLog.error(e)
-    exit(1)
-
-try:
-    from PyQt6 import QtWidgets, QtGui, QtCore
-    from PyQt6.QtCore import QCoreApplication
-except ImportError as e:
-    startupLog.error("Import failed. PyQt6 library not found. If on Ubuntu or similar try: "
-                     "apt-get install python3-pyqt5")
-    startupLog.error(e)
-    exit(1)
-
-try:
-    import qasync
-    import asyncio
-except ImportError as e:
-    startupLog.error("Import failed. Quamash or asyncio not found.")
-    startupLog.error(e)
-    exit(1)
-
-try:
-    import sys
-    from colorama import init
-
-    init(strip=not sys.stdout.isatty())
-    from termcolor import cprint
-    from pyfiglet import figlet_format
-except ImportError as e:
-    startupLog.error("Import failed. One or more of the terminal drawing libraries not found.")
-    startupLog.error(e)
-    exit(1)
-
-
-# Check Nmap version is not 7.92- it segfaults under zsh constantly
-import subprocess
-checkNmapVersion = subprocess.check_output(['nmap', '-version'])
-
-# Quite upgrade of pyExploitDb
-upgradeExploitDb = os.system('pip install pyExploitDb --upgrade > /dev/null 2>&1')
-
 
 def doPathSetup():
     import os
@@ -88,15 +40,205 @@ def doPathSetup():
     if not os.path.exists(os.path.expanduser('~/.local/share/legion/legion.conf')):
         shutil.copy('./legion.conf', os.path.expanduser('~/.local/share/legion/legion.conf'))
 
-
-from ui.view import *
-from controller.controller import *
-
-# Main application declaration and loop
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Start Legion")
+    parser.add_argument("--mcp-server", action="store_true", help="Start MCP server for AI integration")
+    parser.add_argument("--headless", action="store_true", help="Run Legion in headless (CLI) mode")
+    parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
+    parser.add_argument("--discovery", action="store_true", help="Enable host discovery (default: enabled)")
+    parser.add_argument("--staged-scan", action="store_true", help="Enable staged scan")
+    parser.add_argument("--output-file", type=str, help="Output file (.legion or .json)")
+    parser.add_argument(
+        "--run-actions",
+        action="store_true",
+        help="Run scripted actions/automated attacks after scan/import"
+    )
+    args = parser.parse_args()
+
+    if args.mcp_server:
+        # Start MCP server as a subprocess (separate stdio)
+        mcp_proc = subprocess.Popen(
+            [sys.executable, "app/mcpServer.py"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+
+    from colorama import init
+    from termcolor import cprint
+    init(strip=not sys.stdout.isatty())
     cprint(getConsoleLogo())
 
     doPathSetup()
+
+    if args.headless:
+        # --- HEADLESS CLI MODE ---
+        from app.cli_utils import import_targets_from_textfile, run_nmap_scan
+        from app.importers.NmapImporter import NmapImporter
+        import time
+
+        shell = DefaultShell()
+        dbLog = getDbLogger()
+        appLogger = getAppLogger()
+        repositoryFactory = RepositoryFactory(dbLog)
+        projectManager = ProjectManager(shell, repositoryFactory, appLogger)
+        nmapExporter = DefaultNmapExporter(shell, appLogger)
+        toolCoordinator = ToolCoordinator(shell, nmapExporter)
+        logic = Logic(shell, projectManager, toolCoordinator)
+        startupLog.info("Creating temporary project for headless mode...")
+        logic.createNewTemporaryProject()
+
+        # Import targets from input file
+        if not args.input_file or not os.path.isfile(args.input_file):
+            print("Error: --input-file is required and must exist in headless mode.", file=sys.stderr)
+            sys.exit(1)
+        session = logic.activeProject.database.session()
+        hostRepository = logic.activeProject.repositoryContainer.hostRepository
+        import_targets_from_textfile(session, hostRepository, args.input_file)
+
+        # Run nmap scan if requested
+        nmap_xml = None
+        if args.staged_scan or args.discovery:
+            # Build targets string for nmap (space-separated)
+            targets = []
+            with open(args.input_file, "r") as f:
+                for line in f:
+                    t = line.strip()
+                    if t and not t.startswith("#"):
+                        targets.append(t)
+            targets_str = " ".join(targets)
+            output_prefix = os.path.join(logic.activeProject.properties.runningFolder, f"cli-nmap-{int(time.time())}")
+            nmap_xml = run_nmap_scan(
+                targets_str,
+                output_prefix,
+                discovery=args.discovery,
+                staged=args.staged_scan
+            )
+            # Import nmap XML results into the project
+            nmapImporter = NmapImporter(None, hostRepository)
+            nmapImporter.setDB(logic.activeProject.database)
+            nmapImporter.setHostRepository(hostRepository)
+            nmapImporter.setFilename(nmap_xml)
+            nmapImporter.setOutput("")
+            nmapImporter.run()
+
+        # Run scripted actions/automated attacks if requested
+        if args.run_actions:
+            # Placeholder: will call logic.run_scripted_actions() after implementation
+            print("Running scripted actions/automated attacks (CLI)...")
+            logic.run_scripted_actions()
+
+        # Export results
+        if args.output_file:
+            if args.output_file.endswith(".json"):
+                # Export directly from the current activeProject (no temp .legion file)
+                import json
+                import base64
+                hostRepository = logic.activeProject.repositoryContainer.hostRepository
+                hosts = hostRepository.getAllHostObjs()
+                hosts_data = []
+                for host in hosts:
+                    host_dict = host.__dict__.copy()
+                    host_dict.pop('_sa_instance_state', None)
+                    # Ports/services for this host
+                    try:
+                        ports = logic.activeProject.repositoryContainer.portRepository.getPortsByHostId(host.id)
+                    except Exception:
+                        ports = []
+                    ports_data = []
+                    for port in ports:
+                        port_dict = port.__dict__.copy()
+                        port_dict.pop('_sa_instance_state', None)
+                        # Service for this port
+                        try:
+                            service = (
+                                logic.activeProject.repositoryContainer.serviceRepository.getServiceById(port.serviceId)
+                                if hasattr(port, 'serviceId') and port.serviceId
+                                else None
+                            )
+                        except Exception:
+                            service = None
+                        if service:
+                            service_dict = service.__dict__.copy()
+                            service_dict.pop('_sa_instance_state', None)
+                            port_dict['service'] = service_dict
+                        # Scripts for this port
+                        try:
+                            scripts = (
+                                logic.activeProject.repositoryContainer.scriptRepository.getScriptsByPortId(port.id)
+                                if hasattr(logic.activeProject.repositoryContainer, 'scriptRepository')
+                                else []
+                            )
+                        except Exception:
+                            scripts = []
+                        scripts_data = []
+                        for script in scripts:
+                            script_dict = script.__dict__.copy()
+                            script_dict.pop('_sa_instance_state', None)
+                            scripts_data.append(script_dict)
+                        port_dict['scripts'] = scripts_data
+                        ports_data.append(port_dict)
+                    host_dict['ports'] = ports_data
+                    # Notes for this host
+                    try:
+                        note = logic.activeProject.repositoryContainer.noteRepository.getNoteByHostId(host.id)
+                        host_dict['note'] = note.text if note else ""
+                    except Exception:
+                        host_dict['note'] = ""
+                    # CVEs for this host
+                    try:
+                        cves = logic.activeProject.repositoryContainer.cveRepository.getCVEsByHostIP(host.ip)
+                    except Exception:
+                        cves = []
+                    cves_data = []
+                    for cve in cves:
+                        cve_dict = cve.__dict__.copy()
+                        cve_dict.pop('_sa_instance_state', None)
+                        cves_data.append(cve_dict)
+                    host_dict['cves'] = cves_data
+                    hosts_data.append(host_dict)
+                # Gather screenshots
+                screenshots_dir = os.path.join(logic.activeProject.properties.outputFolder, "screenshots")
+                screenshots_data = {}
+                if os.path.isdir(screenshots_dir):
+                    for fname in os.listdir(screenshots_dir):
+                        if fname.lower().endswith(".png"):
+                            fpath = os.path.join(screenshots_dir, fname)
+                            try:
+                                with open(fpath, "rb") as f:
+                                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                                screenshots_data[fname] = b64
+                            except Exception as e:
+                                screenshots_data[fname] = f"ERROR: {e}"
+                export = {
+                    "hosts": hosts_data,
+                    "screenshots": screenshots_data
+                }
+                with open(args.output_file, "w", encoding="utf-8") as f:
+                    json.dump(export, f, indent=2)
+                print(f"Exported results as JSON to {args.output_file}")
+            elif args.output_file.endswith(".legion"):
+                # Save project as .legion file
+                projectManager.saveProjectAs(logic.activeProject, args.output_file, replace=1, projectType="legion")
+                print(f"Exported project as .legion to {args.output_file}")
+            else:
+                print("Error: --output-file must end with .json or .legion", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print("No --output-file specified, skipping export.")
+
+        print("Headless Legion run complete.")
+        sys.exit(0)
+
+    # --- GUI MODE ---
+    from ui.eventfilter import MyEventFilter
+    from ui.ViewState import ViewState
+    from ui.gui import *
+    from ui.gui import Ui_MainWindow
+    import qasync
+    import asyncio
 
     app = QApplication(sys.argv)
     loop = qasync.QEventLoop(app)
@@ -105,43 +247,39 @@ if __name__ == "__main__":
     MainWindow = QtWidgets.QMainWindow()
     Screen = QGuiApplication.primaryScreen()
     app.setWindowIcon(QIcon('./images/icons/Legion-N_128x128.svg'))
-    
     app.setStyleSheet("* { font-family: \"monospace\"; font-size: 10pt; }")
+
+    from ui.view import *
+    from controller.controller import *
 
     ui = Ui_MainWindow()
     ui.setupUi(MainWindow)
 
-    if os.geteuid()!=0:
-        startupLog.error("Legion must run as root for raw socket access. Please start legion using sudo.")
-        notice=QMessageBox()
-        notice.setIcon(QMessageBox.Icon.Critical)
-        notice.setText("Legion must run as root for raw socket access. Please start legion using sudo.")
+    # Platform-independent privilege check
+    if hasattr(os, "geteuid"):
+        if os.geteuid() != 0:
+            startupLog.error("Legion must run as root for raw socket access. Please start legion using sudo.")
+            notice = QMessageBox()
+            notice.setIcon(QMessageBox.Icon.Critical)
+            notice.setText("Legion must run as root for raw socket access. Please start legion using sudo.")
+            notice.exec()
+            exit(1)
+    elif os.name == "nt":
+        # On Windows, warn but do not exit
+        startupLog.warning("Legion may require Administrator privileges for some features on Windows.")
+        notice = QMessageBox()
+        notice.setIcon(QMessageBox.Icon.Warning)
+        notice.setText("Legion may require Administrator privileges for some features on Windows.")
         notice.exec()
-        exit(1)
 
-    if '7.92' in checkNmapVersion.decode():
-        startupLog.error("Cannot continue. NMAP version is 7.92, which has problems segfaulting under zsh.")
-        startupLog.error("Please follow the instructions at https://github.com/Hackman238/legion/ to resolve.")
-        notice=QMessageBox()
-        notice.setIcon(QMessageBox.Icon.Critical)
-        notice.setText("Cannot continue. The installed NMAP version is 7.92, which has segfaults under zsh.\nPlease follow the instructions at https://github.com/Hackman238/legion/ to resolve.")
-        notice.exec_()
-        exit(1)
-
-    # Possibly unneeded
-    #MainWindow.setStyleSheet(qss_file)
 
     shell = DefaultShell()
-
     dbLog = getDbLogger()
     appLogger = getAppLogger()
-
     repositoryFactory = RepositoryFactory(dbLog)
     projectManager = ProjectManager(shell, repositoryFactory, appLogger)
     nmapExporter = DefaultNmapExporter(shell, appLogger)
     toolCoordinator = ToolCoordinator(shell, nmapExporter)
-
-    # Model prep (logic, db and models)
     logic = Logic(shell, projectManager, toolCoordinator)
 
     startupLog.info("Creating temporary project at application start...")
@@ -151,9 +289,6 @@ if __name__ == "__main__":
     view = View(viewState, ui, MainWindow, shell, app, loop)  # View prep (gui)
     controller = Controller(view, logic)  # Controller prep (communication between model and view)
 
-    # Possibly unneeded
-    #view.qss = qss_file
-
     myFilter = MyEventFilter(view, MainWindow)  # to capture events
     app.installEventFilter(myFilter)
 
@@ -161,16 +296,32 @@ if __name__ == "__main__":
     screenCenter = Screen.availableGeometry().center()
     MainWindow.move(screenCenter - MainWindow.rect().center())
 
-    # Show main window
-    #MainWindow.showMaximized()
+    import signal
+
+    def graceful_shutdown(*args):
+        startupLog.info("Graceful shutdown initiated.")
+        try:
+            # Attempt to stop QThreads (e.g., Screenshooter)
+            if hasattr(controller, "screenshooter") and controller.screenshooter.isRunning():
+                controller.screenshooter.quit()
+                controller.screenshooter.wait(3000)
+        except Exception as e:
+            startupLog.error(f"Error during QThread shutdown: {e}")
+        try:
+            loop.stop()
+        except Exception:
+            pass
+        try:
+            app.quit()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, graceful_shutdown)
+    signal.signal(signal.SIGTERM, graceful_shutdown)
 
     startupLog.info("Legion started successfully.")
     try:
         sys.exit(loop.run_forever())
     except KeyboardInterrupt:
-        pass
-
-    #app.deleteLater()
-    #app.quit()
-    #loop.close()
-    #sys.exit()
+        graceful_shutdown()

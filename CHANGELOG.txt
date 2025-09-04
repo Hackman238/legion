@@ -1,3 +1,14 @@
+LEGION 0.4.5
+
+* Added CLI (headless) mode: Run Legion without a GUI for automation and scripting. Supports input/output files, discovery scans, staged scans, and automated actions.
+* Introduced MCP (Model Context Protocol) server: Enables programmatic and AI integration with Legion via JSON-RPC. The MCP server exposes tools such as project listing and automated discovery scans, returning structured results for external consumption. See README for detailed usage and examples.
+
+LEGION 0.4.4
+
+* Major overhaul of screenshotting subsystem: asynchronous operation, EyeWitness integration, deterministic filenames, and UI improvements for screenshot management.
+* Enhanced CVE mapping: CVEs now include ExploitDB IDs and direct links, with improved association to services and hosts.
+* Numerous quality of life improvements: better context menus, tab management, error handling, configurability, and expanded test coverage.
+
 LEGION 0.4.3
 
 * Revise NMAP import process

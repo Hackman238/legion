@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 
 __author__ = 'SECFORCE'
 __version__ = '0.1'

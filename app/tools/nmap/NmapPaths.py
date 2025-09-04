@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -17,9 +17,10 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 
-def getNmapRunningFolder(projectRunningFolder: str) -> str:
-    return f"{projectRunningFolder}/nmap"
+import os
 
+def getNmapRunningFolder(projectRunningFolder: str) -> str:
+    return os.path.normpath(os.path.join(projectRunningFolder, "nmap"))
 
 def getNmapOutputFolder(projectOutputFolder: str) -> str:
-    return f"{projectOutputFolder}/nmap"
+    return os.path.normpath(os.path.join(projectOutputFolder, "nmap"))

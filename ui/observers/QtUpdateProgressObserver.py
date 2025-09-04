@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -17,6 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 from app.actions.updateProgress.AbstractUpdateProgressObserver import AbstractUpdateProgressObserver
 from ui.ancillaryDialog import ProgressWidget
+from PyQt6 import QtCore
 
 
 class QtUpdateProgressObserver(AbstractUpdateProgressObserver):
@@ -24,12 +25,14 @@ class QtUpdateProgressObserver(AbstractUpdateProgressObserver):
         self.progressWidget = progressWidget
 
     def onStart(self) -> None:
-        self.progressWidget.show()
+        QtCore.QMetaObject.invokeMethod(self.progressWidget, "show", QtCore.Qt.ConnectionType.QueuedConnection)
 
     def onFinished(self) -> None:
-        self.progressWidget.hide()
+        QtCore.QMetaObject.invokeMethod(self.progressWidget, "hide", QtCore.Qt.ConnectionType.QueuedConnection)
 
     def onProgressUpdate(self, progress: int, title: str) -> None:
+        print(f"[DEBUG] QtUpdateProgressObserver.onProgressUpdate called: progress={progress}, title={title}")
+        # Directly call setText and setProgress, as ProgressWidget is not a QObject with registered slots
         self.progressWidget.setText(title)
         self.progressWidget.setProgress(progress)
         self.progressWidget.show()

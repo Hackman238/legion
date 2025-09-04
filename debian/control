@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Hackman238 <sscott@shanewilliamscott.com>
 Uploaders: Shane Scott <sscott@shanewilliamscott.com>
 Build-Depends: debhelper, python3, python3-requests
-Standards-Version: 0.4.3
+Standards-Version: 0.4.5
 Homepage: https://github.com/Hackman238/Legion
 
 Package: legion

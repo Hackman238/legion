@@ -6,7 +6,10 @@ class QPlainTextEditLogger(logging.Handler):
         super().__init__()
         self.widget = QtWidgets.QPlainTextEdit(parent)
         #self.widget.setReadOnly(True)
-        #self.sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        #self.sizePolicy = QtWidgets.QSizePolicy(
+        #    QtWidgets.QSizePolicy.Policy.Expanding,
+        #    QtWidgets.QSizePolicy.Policy.Expanding
+        #)
         #self.sizePolicy.setHorizontalStretch(1)
         #self.sizePolicy.setVerticalStretch(1)
         #self.widget.setSizePolicy(self.sizePolicy)

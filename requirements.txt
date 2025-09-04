@@ -1,7 +1,7 @@
 asyncio
 six
 qasync
-SQLAlchemy==1.4.50
+SQLAlchemy==1.4.51
 PyQt6
 requests
 pyfiglet
@@ -13,5 +13,6 @@ GitPython
 pandas
 flake8
 rich
-urllib3==1.23
+urllib3>=1.26.18,<2.0
 selenium==3.141.0
+webdriver-manager

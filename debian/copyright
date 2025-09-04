@@ -3,7 +3,7 @@ Upstream-Name: legion
 Source: https://github.com/Hackman238/Legion
 
 Files: *
-Copyright: 2024 Hackman238
+Copyright: 2025 Hackman238
 License: GPL-3+
 
 Files: scripts/rdp-sec-check.pl

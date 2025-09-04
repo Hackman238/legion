@@ -2,7 +2,7 @@
 
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -14,6 +14,8 @@ Copyright (c) 2024 Shane Scott
 
     You should have received a copy of the GNU General Public License along with this program.
     If not, see <http://www.gnu.org/licenses/>.
+
+Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
 import ntpath  # for file operations, to kill processes and for regex
@@ -26,6 +28,7 @@ from ui.settingsDialog import *
 from ui.configDialog import *
 from ui.helpDialog import *
 from ui.addHostDialog import *
+from ui.AddPortDialog import AddPortDialog
 from ui.ancillaryDialog import *
 from ui.models.hostmodels import *
 from ui.models.servicemodels import *
@@ -72,7 +75,22 @@ class View(QtCore.QObject):
         self.fixedTabsCount = self.ui.ServicesTabWidget.count()
         self.hostInfoWidget = HostInformationWidget(self.ui.InformationTab)
         self.filterdialog = FiltersDialog(self.ui.centralwidget)
-        self.importProgressWidget = ProgressWidget('Importing nmap..', self.ui.centralwidget)
+        # Remove ProgressWidget dialog, use status bar progress instead
+        self.importProgressBar = QtWidgets.QProgressBar()
+        self.importProgressBar.setMinimum(0)
+        self.importProgressBar.setMaximum(100)
+        self.importProgressBar.setValue(0)
+        self.importProgressBar.setVisible(False)
+        self.cancelImportButton = QtWidgets.QPushButton("Cancel Import")
+        self.cancelImportButton.setVisible(False)
+        self.cancelImportButton.clicked.connect(self.cancelImportNmap)
+        self.ui.statusbar.addPermanentWidget(self.importProgressBar)
+        self.ui.statusbar.addPermanentWidget(self.cancelImportButton)
+        self.importInProgress = False  # Track import state
+        # Connect NmapImporter progressUpdated signal to UI slot
+        if hasattr(self, "controller") and hasattr(self.controller, "nmapImporter"):
+            self.controller.nmapImporter.progressUpdated.connect(self.updateImportProgress)
+            self.controller.nmapImporter.done.connect(self.importFinished)
         self.adddialog = AddHostsDialog(self.ui.centralwidget)
         self.settingsWidget = AddSettingsDialog(self.shell, self.ui.centralwidget)
         self.helpDialog = HelpDialog(applicationInfo["name"], applicationInfo["author"], applicationInfo["copyright"],
@@ -136,6 +154,7 @@ class View(QtCore.QObject):
         self.connectSaveProjectAs()
         self.connectAddHosts()
         self.connectImportNmap()
+        self.connectExportJson()
         #self.connectSettings()
         self.connectHelp()
         self.connectConfig()
@@ -170,7 +189,7 @@ class View(QtCore.QObject):
         #self.settingsWidget.applyButton.clicked.connect(self.applySettings)
         #self.settingsWidget.cmdCancelButton.clicked.connect(self.cancelSettings)
         #self.settingsWidget.applyButton.clicked.connect(self.controller.applySettings(self.settingsWidget.settings))
-        self.tick.connect(self.importProgressWidget.setProgress)        # slot used to update the progress bar
+        #self.tick.connect(self.importProgressWidget.setProgress, QtCore.Qt.ConnectionType.QueuedConnection)
 
     #################### AUXILIARY ####################
 
@@ -233,7 +252,7 @@ class View(QtCore.QObject):
         self.ui.ToolHostsTableView.horizontalHeader().resizeSection(5,150)      # default width for Host column
     
         # process table
-        headers = ["Progress", "Elapsed", "Est. Remaining", "Display", "Pid", "Name", "Tool", "Host", "Port",
+        headers = ["Progress", "Elapsed", "Percent Complete", "Display", "Pid", "Name", "Tool", "Host", "Port",
                    "Protocol", "Command", "Start time", "OutputFile", "Output", "Status"]
         setTableProperties(self.ui.ProcessesTableView, len(headers), [1, 2, 3, 4, 5, 8, 9, 10, 13, 14, 16])
         self.ui.ProcessesTableView.setSortingEnabled(True)
@@ -268,7 +287,15 @@ class View(QtCore.QObject):
 
     def saveProcessHeaderWidth(self, index, oldSize, newSize):
         columnWidths = self.controller.getSettings().gui_process_tab_column_widths.split(',')
-        difference = abs(int(columnWidths[index]) - newSize)
+        # Ensure columnWidths has enough entries
+        while len(columnWidths) <= index:
+            columnWidths.append(str(newSize))
+        # Validate current value
+        try:
+            current_width = int(columnWidths[index])
+        except (ValueError, TypeError):
+            current_width = newSize
+        difference = abs(current_width - newSize)
         if difference >= 5:
             columnWidths[index] = str(newSize)
             self.controller.settings.gui_process_tab_column_widths = ','.join(columnWidths)
@@ -426,6 +453,13 @@ class View(QtCore.QObject):
             
     def closeProject(self):
         self.ui.statusbar.showMessage('Closing project..', msecs=1000)
+        # Wait for NmapImporter thread to finish before cleanup
+        try:
+            if hasattr(self.controller, "nmapImporter") and self.controller.nmapImporter.isRunning():
+                log.info("Waiting for NmapImporter thread to finish before closing project...")
+                self.controller.nmapImporter.wait()
+        except Exception as e:
+            log.info(f"Error waiting for NmapImporter: {e}")
         self.controller.closeProject()
         self.removeToolTabs()                                           # to make them disappear from the UI
                 
@@ -478,6 +512,14 @@ class View(QtCore.QObject):
                            nmapOptionValue = nmapOptionValueSplit[1].replace(']','')
                            nmapOptions.append(nmapOptionValue)
                 nmapOptions.append(str(self.adddialog.txtCustomOptList.text()))
+            # Hostname resolution option
+            # Remove any existing -n or -R from nmapOptions to avoid conflicts
+            nmapOptions = [opt for opt in nmapOptions if opt.strip() not in ['-n', '-R']]
+            if self.adddialog.chkResolveHostnames.isChecked():
+                nmapOptions.append('-R')
+            else:
+                nmapOptions.append('-n')
+
             for hostListEntry in hostList:
                 self.controller.addHosts(targetHosts=hostListEntry,
                                          runHostDiscovery=self.adddialog.chkDiscovery.isChecked(),
@@ -511,11 +553,83 @@ class View(QtCore.QObject):
                 return
 
             self.controller.nmapImporter.setFilename(str(filename))
+            self.importProgressBar.setValue(0)
+            log.debug(f"importNmap: setVisible(True) called, importProgressBar id={id(self.importProgressBar)}, \
+                       parent={self.importProgressBar.parent()}")
+            self.importProgressBar.setVisible(True)
+            self.cancelImportButton.setVisible(True)
+            self.importInProgress = True
             self.controller.nmapImporter.start()
             self.controller.copyNmapXMLToOutputFolder(str(filename))
         else:
             log.info('No file chosen..')
 
+    def cancelImportNmap(self):
+        try:
+            if hasattr(self.controller, "nmapImporter"):
+                log.info("Canceling Nmap import at user request.")
+                self.controller.nmapImporter.cancel()
+        except Exception as e:
+            log.info(f"Error canceling Nmap import: {e}")
+
+    def updateImportProgress(self, progress, title):
+        # If import is not in progress, always hide the bar and cancel button, and force UI update
+        if not getattr(self, "importInProgress", True):
+            self.importProgressBar.setVisible(False)
+            self.cancelImportButton.setVisible(False)
+            self.importProgressBar.repaint()
+            if hasattr(self, "ui") and hasattr(self.ui, "statusbar"):
+                self.ui.statusbar.repaint()
+            return
+        # If "Processing ports..." just reached 100%, show "Finishing up..." and hide cancel button
+        if title.lower().startswith("processing ports") and progress >= 100:
+            self.importProgressBar.setValue(100)
+            self.importProgressBar.setFormat("Finishing up... (100%)")
+            self.cancelImportButton.setVisible(False)
+            return
+        self.importProgressBar.setValue(int(progress))
+        self.importProgressBar.setFormat(f"{title} ({int(progress)}%)")
+        if "almost done" in title.lower():
+            log.debug(f"updateImportProgress: 'Almost done...' progressBar id={id(self.importProgressBar)}, \
+                      parent={self.importProgressBar.parent()}, format={self.importProgressBar.format()}, \
+                        visible={self.importProgressBar.isVisible()}")
+        # Hide the cancel button if we're finishing up, but keep the progress bar visible until import is truly done
+        if title.lower().startswith("finishing up") and progress >= 100:
+            self.cancelImportButton.setVisible(False)
+        # Only hide the progress bar when the import is truly finished, not just when any stage hits 100%
+        # The progress bar will be hidden by a separate signal/slot when the import is done.
+
+    def importFinished(self):
+        import traceback
+        log.debug("importFinished called - hiding progress bar and cancel button")
+        log.debug(f"importFinished: importProgressBar id={id(self.importProgressBar)}, \
+                  parent={self.importProgressBar.parent()}")
+        log.debug("".join(traceback.format_stack()))
+        self.importInProgress = False
+        self.importProgressBar.setVisible(False)
+        log.debug(f"importFinished: setVisible(False) called, visible={self.importProgressBar.isVisible()}")
+        self.cancelImportButton.setVisible(False)
+        log.debug(f"importFinished: cancelImportButton setVisible(False), \
+                  visible={self.cancelImportButton.isVisible()}")
+        self.importProgressBar.repaint()
+        if hasattr(self, "ui") and hasattr(self.ui, "statusbar"):
+            self.ui.statusbar.repaint()
+        # Delayed hide as failsafe
+        from PyQt6.QtCore import QTimer
+        def delayed_hide():
+            log.debug("Delayed hide of progress bar and cancel button")
+            log.debug(f"delayed_hide: importProgressBar id={id(self.importProgressBar)}, \
+                      parent={self.importProgressBar.parent()}")
+            log.debug("".join(traceback.format_stack()))
+            self.importProgressBar.setVisible(False)
+            log.debug(f"delayed_hide: setVisible(False) called, visible={self.importProgressBar.isVisible()}")
+            self.cancelImportButton.setVisible(False)
+            log.debug(f"delayed_hide: cancelImportButton setVisible(False), \
+                      visible={self.cancelImportButton.isVisible()}")
+            self.importProgressBar.repaint()
+            if hasattr(self, "ui") and hasattr(self.ui, "statusbar"):
+                self.ui.statusbar.repaint()
+        QTimer.singleShot(2000, delayed_hide)
     def connectSettings(self):
         self.ui.actionSettings.triggered.connect(self.showSettingsWidget)
 
@@ -539,8 +653,17 @@ class View(QtCore.QObject):
     def connectConfig(self):
         self.ui.actionConfig.triggered.connect(self.configDialog.show)
 
+    def connectExportJson(self):
+        self.ui.actionExportJson.triggered.connect(self.exportAsJson)
+
     def connectAppExit(self):
         self.ui.actionExit.triggered.connect(self.appExit)
+
+    def exportAsJson(self):
+        filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.ui.centralwidget, 'Export as JSON', self.controller.getCWD(), filter='JSON file (*.json)')
+        if filename:
+            self.controller.exportAsJson(filename)
 
     def appExit(self):
         if self.dealWithCurrentProject(True):   # the parameter indicates that we are exiting the application
@@ -826,12 +949,31 @@ class View(QtCore.QObject):
 
             menu, actions = self.controller.getContextMenuForHost(
                 str(self.HostsTableModel.getHostCheckStatusForRow(row)))
+            # Add Copy action
+            copyAction = menu.addAction("Copy")
+            addPortAction = menu.addAction("Add Port")
             menu.aboutToShow.connect(self.setVisible)
             menu.aboutToHide.connect(self.setInvisible)
             hostid = self.HostsTableModel.getHostIdForRow(row)
             action = menu.exec(self.ui.HostsTableView.viewport().mapToGlobal(pos))
 
-            if action:
+            if action == copyAction:
+                # Copy selected hosts' IP and Hostname to clipboard (tab-separated, one per line)
+                selected_rows = self.ui.HostsTableView.selectionModel().selectedRows()
+                clipboard_data = ""
+                for idx in selected_rows:
+                    ip = self.HostsTableModel.getHostIPForRow(idx.row())
+                    hostname = self.HostsTableModel.getHostnameForRow(idx.row()) if hasattr(self.HostsTableModel, "getHostnameForRow") else ""
+                    clipboard_data += f"{ip}\t{hostname}\n"
+                clipboard = QtWidgets.QApplication.clipboard()
+                clipboard.setText(clipboard_data.strip())
+            elif action == addPortAction:
+                dialog = AddPortDialog(self.ui.centralwidget)
+                if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+                    port_data = dialog.get_port_data()
+                    # Pass the selected host's IP and port data to the controller
+                    self.controller.addPortToHost(self.viewState.ip_clicked, port_data)
+            elif action:
                 self.controller.handleHostAction(self.viewState.ip_clicked, hostid, actions, action)
 
     ###
@@ -1072,7 +1214,7 @@ class View(QtCore.QObject):
             # Call the hostTableClick() method
             self.hostTableClick()
 
-        # Resize the OS column of the HostsTableView 
+        # Resize the OS column of the HostsTableView
         self.ui.HostsTableView.horizontalHeader().resizeSection(1, 30)
 
         # Hide colmns we don't want
@@ -1136,7 +1278,7 @@ class View(QtCore.QObject):
             self.serviceNamesTableClick()
 
     def setupToolsTableView(self):
-        headers = ["Progress", "Display", "Elapsed", "Est. Remaining", "Pid", "Name", "Tool", "Host", "Port",
+        headers = ["Progress", "Display", "Elapsed", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
                    "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
         self.ToolsTableModel = ProcessesTableModel(self, self.controller.getProcessesFromDB(
             self.viewState.filters, showProcesses='noNmap',
@@ -1184,13 +1326,13 @@ class View(QtCore.QObject):
             self.controller.getPortsAndServicesForHostFromDB(hostIP, self.viewState.filters), headers)
         self.ui.ServicesTableView.setModel(self.ServicesTableModel)
 
-        for i in range(0, len(headers)):                                # reset all the hidden columns
+        for i in range(0, len(headers)): # reset all the hidden columns
                 self.ui.ServicesTableView.setColumnHidden(i, False)
 
-        for i in [0,1,5,6,8,10,11]:                                     # hide some columns
+        for i in [0,1,5,6,8,10,11]: # hide some columns
             self.ui.ServicesTableView.setColumnHidden(i, True)
         
-        self.ServicesTableModel.sort(2, Qt.SortOrder.DescendingOrder)             # sort by port by default (override default)
+        self.ServicesTableModel.sort(2, Qt.SortOrder.DescendingOrder) # sort by port by default (override default)
 
     def updatePortsByServiceTableView(self, serviceName):
         headers = ["Host", "Port", "Port", "Protocol", "State", "HostId", "ServiceId", "Name", "Product", "Version",
@@ -1199,16 +1341,16 @@ class View(QtCore.QObject):
             self.controller.getHostsAndPortsForServiceFromDB(serviceName, self.viewState.filters), headers)
         self.ui.ServicesTableView.setModel(self.PortsByServiceTableModel)
 
-        for i in range(0, len(headers)):                                # reset all the hidden columns
+        for i in range(0, len(headers)):# reset all the hidden columns
                 self.ui.ServicesTableView.setColumnHidden(i, False)
 
-        for i in [2,5,6,7,8,10,11]:                                     # hide some columns
+        for i in [2,5,6,7,8,10,11]: # hide some columns
             self.ui.ServicesTableView.setColumnHidden(i, True)
         
-        self.ui.ServicesTableView.horizontalHeader().resizeSection(0,165)   # resize IP
-        self.ui.ServicesTableView.horizontalHeader().resizeSection(1,65)    # resize port
-        self.ui.ServicesTableView.horizontalHeader().resizeSection(3,100)   # resize protocol
-        self.PortsByServiceTableModel.sort(0, Qt.SortOrder.DescendingOrder)           # sort by IP by default (override default)
+        self.ui.ServicesTableView.horizontalHeader().resizeSection(0,165) # resize IP
+        self.ui.ServicesTableView.horizontalHeader().resizeSection(1,65) # resize port
+        self.ui.ServicesTableView.horizontalHeader().resizeSection(3,100) # resize protocol
+        self.PortsByServiceTableModel.sort(0, Qt.SortOrder.DescendingOrder) # sort by IP by default (override default)
 
     def updateInformationView(self, hostIP):
 
@@ -1300,7 +1442,7 @@ class View(QtCore.QObject):
             self.setDirty(False)
 
     def updateToolHostsTableView(self, toolname):
-        headers = ["Progress", "Display", "Elapsed", "Est. Remaining", "Pid", "Name", "Tool", "Host", "Port",
+        headers = ["Progress", "Display", "Elapsed", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
                    "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
         self.ToolHostsTableModel = ProcessesTableModel(self, self.controller.getHostsForTool(toolname), headers)
         self.ui.ToolHostsTableView.setModel(self.ToolHostsTableModel)
@@ -1379,11 +1521,33 @@ class View(QtCore.QObject):
     #################### BOTTOM PANEL INTERFACE UPDATE FUNCTIONS ####################
 
     def setupProcessesTableView(self):
-        headers = ["Progress", "Display", "Elapsed", "Est. Remaining", "Pid", "Name", "Tool", "Host", "Port",
+        headers = ["Progress", "Display", "Elapsed", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
                    "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
-        self.ProcessesTableModel = ProcessesTableModel(self,self.controller.getProcessesFromDB(
+        # Convert process rows to dicts and inject 'percent' field if missing
+        raw_processes = self.controller.getProcessesFromDB(
             self.viewState.filters, showProcesses = True, sort = self.processesTableViewSort,
-            ncol = self.processesTableViewSortColumn), headers)
+            ncol = self.processesTableViewSortColumn)
+        processes = []
+        # Get column names from the process table
+        process_columns = [
+            "pid", "id", "display", "name", "tabTitle", "hostIp", "port", "protocol", "command",
+            "startTime", "endTime", "estimatedRemaining", "elapsed", "outputfile", "status", "closed", "percent"
+        ]
+        for row in raw_processes:
+            # If row is already a dict, use as is
+            if isinstance(row, dict):
+                proc = row
+            else:
+                # Map row to dict using process_columns
+                try:
+                    proc = dict(zip(process_columns, row))
+                except Exception:
+                    proc = {}
+            # Inject 'percent' field if missing
+            if "percent" not in proc:
+                proc["percent"] = "Unknown"
+            processes.append(proc)
+        self.ProcessesTableModel = ProcessesTableModel(self, processes, headers)
         self.ui.ProcessesTableView.setModel(self.ProcessesTableModel)
         self.ProcessesTableModel.sort(15, Qt.SortOrder.DescendingOrder)
         
@@ -1435,6 +1599,8 @@ class View(QtCore.QObject):
     #################### GLOBAL INTERFACE UPDATE FUNCTION ####################
     
     # TODO: when nmap file is imported select last IP clicked (or first row if none)
+    from PyQt6 import QtCore
+    @QtCore.pyqtSlot()
     def updateInterface(self):
         self.ui_mainwindow.show()
 
@@ -1526,51 +1692,80 @@ class View(QtCore.QObject):
         return tempTextView
 
     def closeHostToolTab(self, index):
-        currentTabIndex = self.ui.ServicesTabWidget.currentIndex()      # remember the currently selected tab
-        self.ui.ServicesTabWidget.setCurrentIndex(index) # select the tab for which the cross button was clicked
+        self._closeProcessTab(
+            tabWidget=self.ui.ServicesTabWidget,
+            index=index,
+            getStatusFunc=self.controller.getProcessStatusForDBId,
+            getPidFunc=self.controller.getPidForProcess,
+            killFunc=self.controller.killProcess,
+            cancelFunc=self.controller.cancelProcess,
+            storeCloseFunc=self.controller.storeCloseTabStatusInDB,
+            hostTabsDict=self.viewState.hostTabs,
+            isBruteTab=False
+        )
 
-        currentWidget = self.ui.ServicesTabWidget.currentWidget()
-        if 'screenshot' in str(self.ui.ServicesTabWidget.currentWidget().objectName()):
-            dbId = int(currentWidget.property('dbId'))
+    def _closeProcessTab(self, tabWidget, index, getStatusFunc, getPidFunc, killFunc, cancelFunc, storeCloseFunc, hostTabsDict, isBruteTab):
+        """
+        Helper to close a process tab (host tool or brute tab) with shared logic.
+        """
+        currentTabIndex = tabWidget.currentIndex()
+        tabWidget.setCurrentIndex(index)
+        currentWidget = tabWidget.currentWidget()
+
+        # Get dbId depending on tab type
+        if not isBruteTab and 'screenshot' in str(currentWidget.objectName()):
+            dbId_prop = currentWidget.property('dbId')
+            dbId = int(dbId_prop) if dbId_prop is not None else None
+        elif not isBruteTab:
+            text_widget = currentWidget.findChild(QtWidgets.QPlainTextEdit)
+            dbId_prop = text_widget.property('dbId') if text_widget else None
+            dbId = int(dbId_prop) if dbId_prop is not None else None
         else:
-            dbId = int(currentWidget.findChild(QtWidgets.QPlainTextEdit).property('dbId'))
-        
-        pid = int(self.controller.getPidForProcess(dbId))               # the process ID (=os)
+            dbId_prop = getattr(currentWidget.display, 'property', lambda x: None)('dbId')
+            dbId = int(dbId_prop) if dbId_prop not in (None, '') else None
 
-        if str(self.controller.getProcessStatusForDBId(dbId)) == 'Running':
+        if dbId is None:
+            log.warning("No dbId found for tab being closed; skipping DB status update.")
+            tabWidget.removeTab(index)
+            return
+
+        pid = getPidFunc(dbId)
+
+        status = str(getStatusFunc(dbId))
+        if status == 'Running':
             message = "This process is still running. Are you sure you want to kill it?"
             reply = self.yesNoDialog(message, 'Confirm')
             if reply == QtWidgets.QMessageBox.StandardButton.Yes:
-                self.controller.killProcess(pid, dbId)
+                killFunc(pid, dbId)
             else:
                 return
-        
-        # TODO: duplicate code
-        if str(self.controller.getProcessStatusForDBId(dbId)) == 'Waiting':
+
+        if status == 'Waiting':
             message = "This process is waiting to start. Are you sure you want to cancel it?"
             reply = self.yesNoDialog(message, 'Confirm')
             if reply == QtWidgets.QMessageBox.StandardButton.Yes:
-                self.controller.cancelProcess(dbId)
+                cancelFunc(dbId)
             else:
                 return
 
-        # remove tab from host tabs list
-        hosttabs = []
-        for ip in self.viewState.hostTabs.keys():
-            if self.ui.ServicesTabWidget.currentWidget() in self.viewState.hostTabs[ip]:
-                hosttabs = self.viewState.hostTabs[ip]
-                hosttabs.remove(self.ui.ServicesTabWidget.currentWidget())
-                self.viewState.hostTabs.update({ip:hosttabs})
+        # Remove tab from hostTabs
+        for ip in list(hostTabsDict.keys()):
+            if currentWidget in hostTabsDict[ip]:
+                hostTabsDict[ip].remove(currentWidget)
+                hostTabsDict.update({ip: hostTabsDict[ip]})
                 break
 
-        self.controller.storeCloseTabStatusInDB(dbId)   # update the closed status in the db - getting the dbid
-        self.ui.ServicesTabWidget.removeTab(index)                      # remove the tab
-        
-        if currentTabIndex >= self.ui.ServicesTabWidget.currentIndex():     # select the initially selected tab
-            # all the tab indexes shift if we remove a tab index smaller than the current tab index
-            self.ui.ServicesTabWidget.setCurrentIndex(currentTabIndex - 1)
+        storeCloseFunc(dbId)
+        tabWidget.removeTab(index)
+
+        if currentTabIndex >= tabWidget.currentIndex():
+            tabWidget.setCurrentIndex(currentTabIndex - 1)
         else:
-            self.ui.ServicesTabWidget.setCurrentIndex(currentTabIndex)
+            tabWidget.setCurrentIndex(currentTabIndex)
+
+        # For brute tabs, add default tab if none remain
+        if isBruteTab and tabWidget.count() == 0:
+            self.createNewBruteTab('127.0.0.1', '22', 'ssh')
 
     # this function removes tabs that were created when running tools (starting from the end to avoid index problems)
     def removeToolTabs(self, position=-1):
@@ -1645,34 +1840,17 @@ class View(QtCore.QObject):
         self.ui.BruteTabWidget.setCurrentIndex(self.ui.BruteTabWidget.count()-1)
 
     def closeBruteTab(self, index):
-        currentTabIndex = self.ui.BruteTabWidget.currentIndex()         # remember the currently selected tab
-        # select the tab for which the cross button was clicked
-        self.ui.BruteTabWidget.setCurrentIndex(index)
-        
-        if not self.ui.BruteTabWidget.currentWidget().pid == -1:        # if process is running
-            if self.ProcessesTableModel.getProcessStatusForPid(self.ui.BruteTabWidget.currentWidget().pid)=="Running":
-                message = "This process is still running. Are you sure you want to kill it?"
-                reply = self.yesNoDialog(message, 'Confirm')
-                if reply == QtWidgets.QMessageBox.StandardButton.Yes:
-                    self.killBruteProcess(self.ui.BruteTabWidget.currentWidget())
-                else:
-                    return
-    
-        dbIdString = self.ui.BruteTabWidget.currentWidget().display.property('dbId')
-        if dbIdString:
-            if not dbIdString == '':
-                self.controller.storeCloseTabStatusInDB(int(dbIdString))
-
-        self.ui.BruteTabWidget.removeTab(index)                         # remove the tab
-        
-        if currentTabIndex >= self.ui.BruteTabWidget.currentIndex():    # select the initially selected tab
-            # all the tab indexes shift if we remove a tab index smaller than the current tab index
-            self.ui.BruteTabWidget.setCurrentIndex(currentTabIndex - 1)
-        else:
-            self.ui.BruteTabWidget.setCurrentIndex(currentTabIndex)
-            
-        if self.ui.BruteTabWidget.count() == 0:                         # if the last tab was removed, add default tab
-            self.createNewBruteTab('127.0.0.1', '22', 'ssh')
+        self._closeProcessTab(
+            tabWidget=self.ui.BruteTabWidget,
+            index=index,
+            getStatusFunc=lambda dbId: self.ProcessesTableModel.getProcessStatusForPid(self.ui.BruteTabWidget.currentWidget().pid),
+            getPidFunc=lambda dbId: self.ui.BruteTabWidget.currentWidget().pid,
+            killFunc=lambda pid, dbId: self.killBruteProcess(self.ui.BruteTabWidget.currentWidget()),
+            cancelFunc=lambda dbId: self.killBruteProcess(self.ui.BruteTabWidget.currentWidget()),
+            storeCloseFunc=lambda dbId: self.controller.storeCloseTabStatusInDB(int(self.ui.BruteTabWidget.currentWidget().display.property('dbId'))),
+            hostTabsDict=self.viewState.hostTabs,
+            isBruteTab=True
+        )
 
     def resetBruteTabs(self):
         count = self.ui.BruteTabWidget.count()

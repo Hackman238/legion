@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -18,6 +18,9 @@ Copyright (c) 2024 Shane Scott
 
 import signal  # for file operations, to kill processes, for regex, for subprocesses
 import subprocess
+import tempfile
+import os
+from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
 
 from app.ApplicationInfo import applicationInfo
 from app.Screenshooter import Screenshooter
@@ -30,10 +33,12 @@ from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
 
 try:
     import queue
-except:
+except Exception:
+    log.exception("Failed to import queue module")
     import Queue as queue
 from app.logic import *
 from app.settings import *
+from db.entities.port import portObj
 
 log = getAppLogger()
 
@@ -50,8 +55,8 @@ class Controller:
 
         self.loadSettings()  # creation of context menu actions from settings file and set up of various settings
         updateProgressObservable = UpdateProgressObservable()
-        updateProgressObserver = QtUpdateProgressObserver(self.view.importProgressWidget)
-        updateProgressObservable.attach(updateProgressObserver)
+        # updateProgressObserver = QtUpdateProgressObserver(self.view.importProgressWidget)
+        # updateProgressObservable.attach(updateProgressObserver)
 
         self.initNmapImporter(updateProgressObservable)
         self.initPythonImporter()
@@ -85,6 +90,8 @@ class Controller:
         self.nmapImporter.done.connect(self.view.updateProcessesTableView)
         self.nmapImporter.schedule.connect(self.scheduler)              # run automated attacks
         self.nmapImporter.log.connect(self.view.ui.LogOutputTextView.append)
+        # Connect progressUpdated signal to view's progress bar update slot
+        self.nmapImporter.progressUpdated.connect(self.view.updateImportProgress)
 
     def initPythonImporter(self):
         self.pythonImporter = PythonImporter()
@@ -209,14 +216,14 @@ class Controller:
 
     def openExistingProject(self, filename, projectType='legion'):
         self.view.closeProject()
-        self.view.importProgressWidget.reset('Opening project..')
-        self.view.importProgressWidget.show()                           # show the progress widget
+        # self.view.importProgressWidget.reset('Opening project..')
+        # self.view.importProgressWidget.show()                           # show the progress widget
         self.logic.openExistingProject(filename, projectType)
         # initialisations (globals, signals, etc)
         self.start(ntpath.basename(self.logic.activeProject.properties.projectName))
         self.view.restoreToolTabs()                                     # restores the tool tabs for each host
         self.view.hostTableClick()                                 # click on first host to restore his host tool tabs
-        self.view.importProgressWidget.hide()                           # hide the progress widget
+        # self.view.importProgressWidget.hide()                           # hide the progress widget
 
     def saveProject(self, lastHostIdClicked, notes):
         if not lastHostIdClicked == '':
@@ -246,33 +253,44 @@ class Controller:
             log.info('No hosts entered..')
             return
 
+        import os
         runningFolder = self.logic.activeProject.properties.runningFolder
+        # Use the session directory for temp files
+        session_path = getattr(self.logic.activeProject, "sessionFile", None)
+        if session_path:
+            session_dir = os.path.dirname(session_path)
+        else:
+            session_dir = runningFolder
+        # Use the tool output directory directly, not a subdirectory
+        tool_output_dir = session_dir
         if scanMode == 'Easy':
             if runStagedNmap:
                 self.runStagedNmap(targetHosts, runHostDiscovery)
             elif runHostDiscovery:
-                outputfile = getNmapRunningFolder(runningFolder) + "/" + getTimestamp() + '-host-discover'
-                if isWsl():
-                    outputfile = unixPath2Win(outputfile)
-                command = f"nmap -n -sV -O --version-light -T{str(nmapSpeed)} {targetHosts} -oA {outputfile}"
+                outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-host-discover")
+                nmapOptionsString = ' '.join(nmapOptions)
+                command = (
+                    f"nmap {nmapOptionsString} -sV -O --version-light -T{str(nmapSpeed)} "
+                    f"{targetHosts} --stats-every 10s -oA {outputfile}"
+                )
                 self.runCommand('nmap', 'nmap (discovery)', targetHosts, '', '', command, getTimestamp(True),
                                 outputfile, self.view.createNewTabForHost(str(targetHosts), 'nmap (discovery)', True))
             else:
-                outputfile = getNmapRunningFolder(runningFolder) + "/" + getTimestamp() + '-nmap-list'
-                if isWsl():
-                    outputfile = unixPath2Win(outputfile)
-                command = "nmap -n -sL -T" + str(nmapSpeed) + " " + targetHosts + " -oA " + outputfile
+                outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-list")
+                nmapOptionsString = ' '.join(nmapOptions)
+                command = (
+                    "nmap " + nmapOptionsString + " -sL -T" + str(nmapSpeed) + " " + targetHosts +
+                    " --stats-every 10s -oA " + outputfile
+                )
                 self.runCommand('nmap', 'nmap (list)', targetHosts, '', '', command, getTimestamp(True),
                                 outputfile,
                                 self.view.createNewTabForHost(str(targetHosts), 'nmap (list)', True))
         elif scanMode == 'Hard':
-            outputfile = getNmapRunningFolder(runningFolder) + "/" + getTimestamp() + '-nmap-custom'
-            if isWsl():
-                outputfile = unixPath2Win(outputfile)
+            outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-custom")
             nmapOptionsString = ' '.join(nmapOptions)
             if 'randomize' not in nmapOptionsString:
                 nmapOptionsString = nmapOptionsString + " -T" + str(nmapSpeed)
-            command = "nmap " + nmapOptionsString + " " + targetHosts + " -oA " + outputfile
+            command = "nmap " + nmapOptionsString + " " + targetHosts + " --stats-every 10s -oA " + outputfile
             self.runCommand('nmap', 'nmap (custom ' + nmapOptionsString + ')', targetHosts, '', '', command,
                             getTimestamp(True), outputfile,
                             self.view.createNewTabForHost(
@@ -314,29 +332,34 @@ class Controller:
     def handleHostAction(self, ip, hostid, actions, action):
         repositoryContainer = self.logic.activeProject.repositoryContainer
 
+        runningFolder = self.logic.activeProject.properties.runningFolder
+        # Use the session directory for temp files
+        session_path = getattr(self.logic.activeProject, "sessionFile", None)
+        if session_path:
+            session_dir = os.path.dirname(session_path)
+        else:
+            session_dir = runningFolder
+        # Use the tool output directory directly, not a subdirectory
+        tool_output_dir = session_dir
+
         if action.text() == 'Mark as checked' or action.text() == 'Mark as unchecked':
             repositoryContainer.hostRepository.toggleHostCheckStatus(ip)
             self.view.updateInterface()
             return
 
         if action.text() == 'Run nmap (staged)':
-            # if we are running nmap we need to purge previous portscan results
-            log.info('Purging previous portscan data for ' + str(ip))
-            if repositoryContainer.portRepository.getPortsByIPAndProtocol(ip, 'tcp'):
-                repositoryContainer.portRepository.deleteAllPortsAndScriptsByHostId(hostid, 'tcp')
-            if repositoryContainer.portRepository.getPortsByIPAndProtocol(ip, 'udp'):
-                repositoryContainer.portRepository.deleteAllPortsAndScriptsByHostId(hostid, 'udp')
-            self.view.updateInterface()
+            # Do not purge previous portscan data; preserve previously discovered ports/services.
+            log.info('Running nmap (staged) scan for ' + str(ip))
             self.runStagedNmap(ip, False)
             return
 
         if action.text() == 'Rescan':
-            log.info('Rescanning host {0}'.format(str(ip)))
+            log.info(f'Rescanning host {str(ip)}')
             self.runStagedNmap(ip, False)
             return
 
         if action.text() == 'Purge Results':
-            log.info('Purging previous portscan data for host {0}'.format(str(ip)))
+            log.info(f'Purging previous portscan data for host {str(ip)}')
             if repositoryContainer.portRepository.getPortsByIPAndProtocol(ip, 'tcp'):
                 repositoryContainer.portRepository.deleteAllPortsAndScriptsByHostId(hostid, 'tcp')
             if repositoryContainer.portRepository.getPortsByIPAndProtocol(ip, 'udp'):
@@ -365,25 +388,29 @@ class Controller:
                 elif 'python-script' in name:
                     invisibleTab = True
                 # remove all chars that are not alphanumeric from tool name (used in the outputfile's name)
-                outputfile = self.logic.activeProject.properties.runningFolder + "/" + \
-                             re.sub("[^0-9a-zA-Z]", "", str(name)) + "/" + getTimestamp() + "-" + \
-                             re.sub("[^0-9a-zA-Z]", "", str(self.settings.hostActions[i][1])) + "-" + ip
+                #outputfile = self.logic.activeProject.properties.runningFolder + "/" + \
+                #             re.sub("[^0-9a-zA-Z]", "", str(name)) + "/" + getTimestamp() + "-" + \
+                #             re.sub("[^0-9a-zA-Z]", "", str(self.settings.hostActions[i][1])) + "-" + ip
+                # remove all chars that are not alphanumeric from tool name (used in the outputfile's name)
+                
+                outputfile = os.path.join(
+                    tool_output_dir,
+                    f"{getTimestamp()}-{re.sub('[^0-9a-zA-Z]', '', str(self.settings.hostActions[i][1]))}-{ip}"
+                )
+                outputfile = os.path.normpath(outputfile).replace("\\", "/")
                 command = str(self.settings.hostActions[i][2])
                 command = command.replace('[IP]', ip).replace('[OUTPUT]', outputfile)
-                if 'nmap' in command:
-                    if isWsl():
-                        command = "{0} -oA {1}".format(command, unixPath2Win(outputfile))
-                    else:
-                        command = "{0} -oA {1}".format(command, outputfile)
+                #if 'nmap' in command:
+                #    if isWsl():
+                #        command = f"{command} -oA {unixPath2Win(outputfile)}"
+                #    else:
+                command = f"{command} -oA {outputfile}"
 
-                # check if same type of nmap scan has already been made and purge results before scanning
+                # check if same type of nmap scan has already been made; do not purge previous portscan results.
                 if 'nmap' in command:
-                    proto = 'tcp'
                     if '-sU' in command:
-                        proto = 'udp'
-                    # if we are running nmap we need to purge previous portscan results (of the same protocol)
-                    if repositoryContainer.portRepository.getPortsByIPAndProtocol(ip, proto):
-                        repositoryContainer.portRepository.deleteAllPortsAndScriptsByHostId(hostid, proto)
+                        pass  # Preserve previously discovered ports/services; do not delete before scan.
+                    # Preserve previously discovered ports/services; do not delete before scan.
 
                 tabTitle = self.settings.hostActions[i][1]
                 self.runCommand(name, tabTitle, ip, '', '', command, getTimestamp(True), outputfile,
@@ -438,17 +465,20 @@ class Controller:
                 for ip in targets:
                     tool = self.settings.portActions[srvc_num][1]
                     tabTitle = self.settings.portActions[srvc_num][1]+" ("+ip[1]+"/"+ip[2]+")"
-                    outputfile = self.logic.activeProject.properties.runningFolder + "/" + \
-                                 re.sub("[^0-9a-zA-Z]", "", str(tool)) + \
-                                 "/" + getTimestamp() + '-' + tool + "-" + ip[0] + "-" + ip[1]
+                    import os
+                    outputfile = os.path.join(
+                        self.logic.activeProject.properties.runningFolder,
+                        f"{getTimestamp()}-{tool}-{ip[0]}-{ip[1]}"
+                    )
+                    outputfile = os.path.normpath(outputfile).replace("\\", "/")
 
                     command = str(self.settings.portActions[srvc_num][2])
                     command = command.replace('[IP]', ip[0]).replace('[PORT]', ip[1]).replace('[OUTPUT]', outputfile)
                     if 'nmap' in command:
                         if isWsl():
-                            command = "{0} -oA {1}".format(command, unixPath2Win(outputfile))
+                            command = f"{command} -oA {unixPath2Win(outputfile)}"
                         else:
-                            command = "{0} -oA {1}".format(command, outputfile)
+                            command = f"{command} -oA {outputfile}"
 
                     if 'nmap' in command and ip[2] == 'udp':
                         command = command.replace("-sV", "-sVU")
@@ -479,10 +509,14 @@ class Controller:
 
         menu.addSeparator()
         menu.addAction("Send to Brute")
+        # Add Take screenshot action for all ports
+        menu.addAction("Take screenshot")
         menu.addSeparator()  # dummy is there because we don't need the third return value
         menu, actions, dummy = self.getContextMenuForServiceName(serviceName, menu)
         menu.addSeparator()
         menu.addAction("Run custom command")
+        # Add Delete Port action
+        # deletePortAction = menu.addAction("Delete Port")  # Unused variable removed
 
         return menu, actions, terminalActions
 
@@ -493,10 +527,41 @@ class Controller:
         action = args[2]
         restoring = args[3]
 
+        if action.text() == 'Delete Port':
+            # targets: list of [ip, port, protocol, serviceName]
+            repo_container = self.logic.activeProject.repositoryContainer
+            host_repo = repo_container.hostRepository
+            port_repo = repo_container.portRepository
+            for t in targets:
+                ip, port, protocol, _ = t
+                host = host_repo.getHostByIP(ip)
+                if host:
+                    # Attempt to delete the port by host id, port, and protocol
+                    if hasattr(port_repo, "deletePortByHostIdAndPort"):
+                        port_repo.deletePortByHostIdAndPort(host.id, port, protocol)
+                    else:
+                        # Fallback: try to find and delete the port manually
+                        session = self.logic.activeProject.database.session()
+                        port_obj = session.query(portObj).filter_by(
+                            hostId=host.id, port=port, protocol=protocol
+                        ).first()
+                        if port_obj:
+                            session.delete(port_obj)
+                            session.commit()
+            self.view.updateInterface()
+            return
+
         if action.text() == 'Send to Brute':
             for ip in targets:
                 # ip[0] is the IP, ip[1] is the port number and ip[3] is the service name
                 self.view.createNewBruteTab(ip[0], ip[1], ip[3])
+            return
+
+        if action.text() == 'Take screenshot':
+            for ip in targets:
+                url = f"{ip[0]}:{ip[1]}"
+                self.screenshooter.addToQueue(ip[0], ip[1], url)
+            self.screenshooter.start()
             return
 
         if action.text() == 'Run custom command':
@@ -602,6 +667,133 @@ class Controller:
     def getHostsForTool(self, toolName, closed='False'):
         return self.logic.activeProject.repositoryContainer.processRepository.getHostsByToolName(toolName, closed)
 
+    def exportAsJson(self, filename):
+        import json
+        import base64
+
+        try:
+            # Gather all hosts
+            hosts = self.logic.activeProject.repositoryContainer.hostRepository.getAllHostObjs()
+        except Exception as e:
+            log.error(f"Failed to fetch hosts from DB: {e}")
+            hosts = []
+
+        hosts_data = []
+        for host in hosts:
+            try:
+                host_dict = host.__dict__.copy()
+                host_dict.pop('_sa_instance_state', None)
+                # Ports/services for this host
+                try:
+                    ports = self.logic.activeProject.repositoryContainer.portRepository.getPortsByHostId(host.id)
+                except Exception as e:
+                    log.error(f"Failed to fetch ports for host {host.id}: {e}")
+                    ports = []
+                ports_data = []
+                for port in ports:
+                    try:
+                        port_dict = port.__dict__.copy()
+                        port_dict.pop('_sa_instance_state', None)
+                        # Service for this port
+                        try:
+                            service_repo = self.logic.activeProject.repositoryContainer.serviceRepository
+                            service = service_repo.getServiceById(port.serviceId) \
+                                if hasattr(port, 'serviceId') and port.serviceId else None
+                        except Exception as e:
+                            log.error(f"Failed to fetch service for port {port.id}: {e}")
+                            service = None
+                        if service:
+                            service_dict = service.__dict__.copy()
+                            service_dict.pop('_sa_instance_state', None)
+                            port_dict['service'] = service_dict
+                        # Scripts for this port
+                        try:
+                            script_repo = self.logic.activeProject.repositoryContainer.scriptRepository
+                            scripts = script_repo.getScriptsByPortId(port.id) \
+                                if hasattr(self.logic.activeProject.repositoryContainer, 'scriptRepository') else []
+                        except Exception as e:
+                            log.error(f"Failed to fetch scripts for port {port.id}: {e}")
+                            scripts = []
+                        scripts_data = []
+                        for script in scripts:
+                            try:
+                                script_dict = script.__dict__.copy()
+                                script_dict.pop('_sa_instance_state', None)
+                                scripts_data.append(script_dict)
+                            except Exception as e:
+                                log.error(f"Failed to process script for port {port.id}: {e}")
+                        port_dict['scripts'] = scripts_data
+                        ports_data.append(port_dict)
+                    except Exception as e:
+                        log.error(f"Failed to process port for host {host.id}: {e}")
+                host_dict['ports'] = ports_data
+                # Notes for this host
+                try:
+                    note = self.logic.activeProject.repositoryContainer.noteRepository.getNoteByHostId(host.id)
+                    host_dict['note'] = note.text if note else ""
+                except Exception as e:
+                    log.error(f"Failed to fetch note for host {host.id}: {e}")
+                    host_dict['note'] = ""
+                # CVEs for this host
+                try:
+                    cves = self.logic.activeProject.repositoryContainer.cveRepository.getCVEsByHostIP(host.ip)
+                except Exception as e:
+                    log.error(f"Failed to fetch CVEs for host {host.ip}: {e}")
+                    cves = []
+                cves_data = []
+                for cve in cves:
+                    try:
+                        if hasattr(cve, "__dict__"):
+                            cve_dict = cve.__dict__.copy()
+                            cve_dict.pop('_sa_instance_state', None)
+                        else:
+                            # Likely a Row object, convert to dict
+                            cve_dict = dict(cve)
+                        cves_data.append(cve_dict)
+                    except Exception as e:
+                        log.error(f"Failed to process CVE for host {host.ip}: {e}")
+                host_dict['cves'] = cves_data
+                hosts_data.append(host_dict)
+            except Exception as e:
+                log.error(f"Failed to process host {getattr(host, 'id', '?')}: {e}")
+
+        # Gather screenshots
+        screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
+        screenshots_data = {}
+        if os.path.isdir(screenshots_dir):
+            for fname in os.listdir(screenshots_dir):
+                if fname.lower().endswith(".png"):
+                    fpath = os.path.join(screenshots_dir, fname)
+                    try:
+                        with open(fpath, "rb") as f:
+                            b64 = base64.b64encode(f.read()).decode("utf-8")
+                        screenshots_data[fname] = b64
+                    except Exception as e:
+                        log.error(f"Failed to read screenshot {fname}: {e}")
+                        screenshots_data[fname] = f"ERROR: {e}"
+
+        # Attach screenshots to ports if available
+        for host in hosts_data:
+            ip = host.get("ip")
+            for port in host.get("ports", []):
+                port_num = str(port.get("port"))
+                screenshot_fname = f"{ip}-{port_num}-screenshot.png"
+                if screenshot_fname in screenshots_data:
+                    port["screenshot"] = screenshots_data[screenshot_fname]
+
+        # Compose final export
+        export = {
+            "hosts": hosts_data,
+            "screenshots": screenshots_data
+        }
+
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(export, f, indent=2)
+            log.info(f"Exported results as JSON to {filename}")
+        except Exception as e:
+            log.error(f"Failed to export JSON: {e}")
+
     #################### BOTTOM PANEL INTERFACE UPDATE FUNCTIONS ####################
 
     def getProcessesFromDB(self, filters, showProcesses='noNmap', sort='desc', ncol='id'):
@@ -611,30 +803,53 @@ class Controller:
     #################### PROCESSES ####################
 
     def checkProcessQueue(self):
-        log.debug('Queue maximum concurrent processes: {0}'.format(str(self.settings.general_max_fast_processes)))
-        log.debug('Queue processes running: {0}'.format(str(self.fastProcessesRunning)))
-        log.debug('Queue processes waiting: {0}'.format(str(self.fastProcessQueue.qsize())))
+        # New: User-configurable max concurrent scans (not just fast processes)
+        max_concurrent_scans = getattr(self.settings, "general_max_concurrent_scans", 3)
+        try:
+            max_concurrent_scans = int(max_concurrent_scans)
+        except Exception:
+            max_concurrent_scans = 3
+
+        log.debug(f'Queue maximum concurrent scans: {str(max_concurrent_scans)}')
+        log.debug(f'Queue maximum concurrent processes: {str(self.settings.general_max_fast_processes)}')
+        log.debug(f'Queue processes running: {str(self.fastProcessesRunning)}')
+        log.debug(f'Queue processes waiting: {str(self.fastProcessQueue.qsize())}')
+
+        # Count running nmap (or other scan) processes
+        running_scans = sum(1 for p in self.processes if hasattr(p, "name") and "nmap" in str(p.name).lower())
 
         if not self.fastProcessQueue.empty():
             self.processTableUiUpdateTimer.start(1000)
-            if (self.fastProcessesRunning <= int(self.settings.general_max_fast_processes)):
+            # Allow up to max_concurrent_scans nmap (or other scan) processes, and up to max_fast_processes for others
+            while (self.fastProcessesRunning < int(self.settings.general_max_fast_processes) and
+                   (running_scans < max_concurrent_scans or self.fastProcessQueue.empty())):
+                if self.fastProcessQueue.empty():
+                    break
                 next_proc = self.fastProcessQueue.get()
+                # If this is a scan, check scan concurrency
+                is_scan = hasattr(next_proc, "name") and "nmap" in str(next_proc.name).lower()
+                if is_scan and running_scans >= max_concurrent_scans:
+                    # Put back and break
+                    self.fastProcessQueue.put(next_proc)
+                    break
                 if not self.logic.activeProject.repositoryContainer.processRepository.isCancelledProcess(
                         str(next_proc.id)):
                     log.info('Running: ' + str(next_proc.command))
                     next_proc.display.clear()
                     self.processes.append(next_proc)
                     self.fastProcessesRunning += 1
+                    if is_scan:
+                        running_scans += 1
                     # Add Timeout
                     next_proc.waitForFinished(10)
                     formattedCommand = formatCommandQProcess(next_proc.command)
-                    log.debug('Up next: {0}, {1}'.format(formattedCommand[0], formattedCommand[1]))
+                    log.debug(f'Up next: {formattedCommand[0]}, {formattedCommand[1]}')
                     next_proc.start(formattedCommand[0], formattedCommand[1])
                     self.logic.activeProject.repositoryContainer.processRepository.storeProcessRunningStatus(
                         next_proc.id, getPid(next_proc))
                 elif not self.fastProcessQueue.empty():
                     log.debug('Process was canceled, checking queue again..')
-                    self.checkProcessQueue()
+                    continue
         else:
             log.info("Halting process panel update timer as all processes are finished.")
             self.processTableUiUpdateTimer.stop()
@@ -689,6 +904,45 @@ class Controller:
         timer = QElapsedTimer()
         updateElapsed = QTimer()
 
+        if 'python-script' in name:
+            log.info(f'Running python script {name}')
+            # Determine which script to run and the argument
+            import subprocess
+            import shlex
+            script_path = None
+            arg = None
+            output = ""
+            if "macvendors" in name.lower():
+                script_path = "scripts/python/macvendors.py"
+                # Try to get MAC address from hostIp or port (hostIp is used for IP, but we need MAC)
+                # Fallback: use hostIp as MAC if it looks like a MAC, else skip
+                mac = hostIp if hostIp and ":" in hostIp else ""
+                if not mac and hasattr(self, "view"):
+                    # Try to get MAC from selected host in the UI
+                    try:
+                        selected_row = self.view.ui.HostsTableView.selectionModel().selectedRows()[0].row()
+                        mac = self.view.HostsTableModel.getMacForRow(selected_row)
+                    except Exception:
+                        mac = ""
+                arg = mac
+            elif "shodan" in name.lower():
+                script_path = "scripts/python/pyShodan.py"
+                arg = hostIp
+            if script_path and arg:
+                try:
+                    cmd = f"python3 {shlex.quote(script_path)} {shlex.quote(str(arg))}"
+                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+                    output = result.stdout + ("\n" + result.stderr if result.stderr else "")
+                except Exception as e:
+                    log.exception(f"Error running script: {script_path} with arg: {arg}")
+                    output = f"Error running script: {e}"
+            else:
+                output = "No valid script or argument found."
+            # Display output in the tab
+            if textbox:
+                textbox.setPlainText(output)
+            return 0
+
         self.logic.createFolderForTool(name)
         qProcess = MyQProcess(name, tabTitle, hostIp, port, protocol, command, startTime, outputfile, textbox)
         qProcess.started.connect(timer.start)
@@ -715,16 +969,13 @@ class Controller:
         qProcess.readyReadStandardOutput.connect(lambda: qProcess.display.appendPlainText(
             str(qProcess.readAllStandardOutput().data().decode('ISO-8859-1'))))
 
-        #qProcess.readyReadStandardError.connect(lambda: qProcess.display.appendPlainText(
-        #    str(qProcess.readAllStandardError().data().decode('ISO-8859-1'))))
-
         qProcess.sigHydra.connect(self.handleHydraFindings)
         qProcess.finished.connect(lambda: self.processFinished(qProcess))
         qProcess.errorOccurred.connect(lambda: self.processCrashed(qProcess))
-        log.info("runCommand called for stage {0}".format(str(stage)))
+        log.info(f"runCommand called for stage {str(stage)}")
 
         if stage > 0 and stage < 6:  # if this is a staged nmap, launch the next stage
-            log.info("runCommand connected for stage {0}".format(str(stage)))
+            log.info(f"runCommand connected for stage {str(stage)}")
             nextStage = stage + 1
             qProcess.finished.connect(
                 lambda: self.runStagedNmap(str(hostIp), discovery=discovery, stage=nextStage,
@@ -739,9 +990,11 @@ class Controller:
         hostIp = '127.0.0.1'
         port = '22'
         protocol = 'tcp'
-        command = 'python3 /mnt/c/Users/hackm/OneDrive/Documents/Customers/GVIT/GIT/legion/test.py'
+        command = 'python3 --version'
         startTime = getTimestamp(True)
-        outputfile = '/tmp/a'
+        outputfile = tempfile.NamedTemporaryFile(delete=False).name
+        qProcess = MyQProcess(name, tabTitle, hostIp, port, protocol, command, startTime, outputfile, textbox)
+        outputfile = tempfile.NamedTemporaryFile(delete=False).name
         qProcess = MyQProcess(name, tabTitle, hostIp, port, protocol, command, startTime, outputfile, textbox)
 
         processRepository = self.logic.activeProject.repositoryContainer.processRepository
@@ -751,12 +1004,6 @@ class Controller:
         self.fastProcessQueue.put(qProcess)
 
         self.checkProcessQueue()
-
-        self.updateUI2Timer.stop()   # update the processes table
-        # while the process is running, when there's output to read, display it in the GUI
-        self.updateUI2Timer.start(900)
-        self.updateUITimer.stop()   # update the processes table
-        self.updateUITimer.start(900)
 
         qProcess.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
         qProcess.readyReadStandardOutput.connect(lambda: qProcess.display.appendPlainText(
@@ -770,13 +1017,20 @@ class Controller:
 
     # recursive function used to run nmap in different stages for quick results
     def runStagedNmap(self, targetHosts, discovery = True, stage = 1, stop = False):
-        log.info("runStagedNmap called for stage {0}".format(str(stage)))
+        import os
+        log.info(f"runStagedNmap called for stage {str(stage)}")
         runningFolder = self.logic.activeProject.properties.runningFolder
+        # Use the session directory for temp files
+        session_path = getattr(self.logic.activeProject, "sessionFile", None)
+        if session_path:
+            session_dir = os.path.dirname(session_path)
+        else:
+            session_dir = runningFolder
+        # Use the tool output directory directly, not a subdirectory
+        tool_output_dir = session_dir
         if not stop:
             textbox = self.view.createNewTabForHost(str(targetHosts), 'nmap (stage ' + str(stage) + ')', True)
-            outputfile = getNmapRunningFolder(runningFolder) + "/" + getTimestamp() + '-nmapstage' + str(stage)
-            if isWsl():
-                outputfile = unixPath2Win(outputfile)
+            outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-nmapstage{str(stage)}")
 
             if stage == 1:
                 stageData = self.settings.tools_nmap_stage1_ports
@@ -793,11 +1047,11 @@ class Controller:
             stageDataSplit = str(stageData).split('|')
             stageOp = stageDataSplit[0]
             stageOpValues = stageDataSplit[1]
-            log.debug("Stage {0} stageOp {1}".format(str(stage), str(stageOp)))
-            log.debug("Stage {0} stageOpValues {1}".format(str(stage), str(stageOpValues)))
+            log.debug(f"Stage {str(stage)} stageOp {str(stageOp)}")
+            log.debug(f"Stage {str(stage)} stageOpValues {str(stageOpValues)}")
 
             if stageOp == "" or stageOp == "NOOP" or stageOp == "SKIP":
-                log.debug("Skipping stage {0} as stageOp is {1}".format(str(stage), str(stageOp)))
+                log.debug(f"Skipping stage {str(stage)} as stageOp is {str(stageOp)}")
                 return
 
             if discovery:                                           # is it with/without host discovery?
@@ -808,9 +1062,9 @@ class Controller:
             if stageOp == 'PORTS':
                 command += '-p ' + stageOpValues + ' -vvvv ' + targetHosts + ' -oA ' + outputfile
             elif stageOp == 'NSE':
-                command = 'nmap -sV --script=' + stageOpValues + ' -vvvv ' + targetHosts + ' -oA ' + outputfile
+                command = 'nmap -sV --script=' + stageOpValues + ' -vvvv ' + targetHosts + ' --stats-every 10s -oA ' + outputfile
 
-            log.debug("Stage {0} command: {1}".format(str(stage), str(command)))
+            log.debug(f"Stage {str(stage)} command: {str(command)}")
 
             self.runCommand('nmap', 'nmap (stage ' + str(stage) + ')', str(targetHosts), '', '', command,
                             getTimestamp(True), outputfile, textbox, discovery=discovery, stage=stage, stop=stop)
@@ -819,6 +1073,16 @@ class Controller:
         # if nmap import was the first action, we need to hide the overlay (note: we shouldn't need to do this
         # every time. this can be improved)
         self.view.displayAddHostsOverlay(False)
+        # Ensure DB session is refreshed so new hosts are visible
+        try:
+            if hasattr(self.logic.activeProject, "database") and hasattr(self.logic.activeProject.database, "session"):
+                session = self.logic.activeProject.database.session()
+                session.expire_all()
+        except Exception:
+            log.exception(f"Failed to refresh DB session after import: error")
+        # Ensure UI update is queued on main thread
+        from PyQt6 import QtCore
+        QtCore.QMetaObject.invokeMethod(self.view, "updateInterface", QtCore.Qt.ConnectionType.QueuedConnection)
 
     def screenshotFinished(self, ip, port, filename):
         log.info("---------------Screenshoot done. Args %s, %s, %s" % (str(ip), str(port), str(filename)))
@@ -836,66 +1100,100 @@ class Controller:
     def processCrashed(self, proc):
         processRepository = self.logic.activeProject.repositoryContainer.processRepository
         processRepository.storeProcessCrashStatus(str(proc.id))
-        log.info('Process {qProcessId} Crashed!'.format(qProcessId=str(proc.id)))
+        log.info(f'Process {proc.id} Crashed!')
         qProcessOutput = "\n\t" + str(proc.display.toPlainText()).replace('\n', '').replace("b'", "")
         # self.view.closeHostToolTab(self, index))
         self.view.findFinishedServiceTab(str(processRepository.getPIDByProcessId(str(proc.id))))
-        log.info('Process {qProcessId} Output: {qProcessOutput}'.format(qProcessId=str(proc.id),
-                                                                        qProcessOutput=qProcessOutput))
-        log.info('Process {qProcessId} Crash Output: {qProcessOutput}'.format(qProcessId=str(proc.id),
-                                                                              qProcessOutput=proc.errorString()))
+        log.info(f'Process {proc.id} Output: {qProcessOutput}')
+        log.info(f'Process {proc.id} Crash Output: {proc.errorString()}')
+        # --- User notification for scan crash ---
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Icon.Critical)
+        msg.setWindowTitle("Scan Crashed")
+        msg.setText(
+            f"Scan process '{proc.name}' crashed!\n\nCommand: {proc.command}\n\nError: {proc.errorString()}\n\n"
+            "Check the log for more details."
+        )
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
 
     # this function handles everything after a process ends
     # def processFinished(self, qProcess, crashed=False):
     def processFinished(self, qProcess):
         processRepository = self.logic.activeProject.repositoryContainer.processRepository
         try:
-            if not processRepository.isKilledProcess(
-                    str(qProcess.id)):  # if process was not killed
-                log.debug('Process: {0}\nCommand: {1}\noutputfile: {2}'.format(str(qProcess.id), str(qProcess.command), str(qProcess.outputfile)))
+            if not processRepository.isKilledProcess(str(qProcess.id)):
+                log.debug(
+                    f'Process: {str(qProcess.id)}\n'
+                    f'Command: {str(qProcess.command)}\n'
+                    f'outputfile: {str(qProcess.outputfile)}'
+                )
                 if not qProcess.outputfile == '':
-                    # move tool output from runningfolder to output folder if there was an output file
                     outputfile = winPath2Unix(qProcess.outputfile)
-                    self.logic.toolCoordinator.saveToolOutput(self.logic.activeProject.properties.outputFolder,
-                                                          outputfile)
-                    if 'nmap' in qProcess.command: # if the process was nmap, use the parser to store it
-                        if qProcess.exitCode() == 0:                    # if the process finished successfully
-                            log.debug("qProcess.outputfile {0}".format(str(outputfile)))
-                            log.debug("self.logic.activeProject.properties.runningFolder {0}".format(
-                                str(self.logic.activeProject.properties.runningFolder)))
-                            log.debug("self.logic.activeProject.properties.outputFolder {0}".format(
-                                str(self.logic.activeProject.properties.outputFolder)))
+                    try:
+                        self.logic.toolCoordinator.saveToolOutput(
+                            self.logic.activeProject.properties.outputFolder, outputfile
+                        )
+                    except Exception:
+                        log.exception(f"Error saving tool output: {outputfile}")
+                    if 'nmap' in qProcess.command:
+                        if qProcess.exitCode() == 0:
+                            log.debug(f"qProcess.outputfile {str(outputfile)}")
+                            log.debug(
+                                f"self.logic.activeProject.properties.runningFolder "
+                                f"{str(self.logic.activeProject.properties.runningFolder)}"
+                            )
+                            log.debug(
+                                f"self.logic.activeProject.properties.outputFolder "
+                                f"{str(self.logic.activeProject.properties.outputFolder)}"
+                            )
                             newoutputfile = outputfile.replace(
                                 self.logic.activeProject.properties.runningFolder,
-                                self.logic.activeProject.properties.outputFolder)
-                            self.nmapImporter.setFilename(str(newoutputfile) + '.xml')
-                            self.nmapImporter.setOutput(str(qProcess.display.toPlainText()))
-                            self.nmapImporter.start()
+                                self.logic.activeProject.properties.outputFolder
+                            )
+                            try:
+                                self.nmapImporter.setFilename(str(newoutputfile) + '.xml')
+                                self.nmapImporter.setOutput(str(qProcess.display.toPlainText()))
+                                self.nmapImporter.start()
+                            except Exception:
+                                log.exception(f"Error starting nmapImporter for {newoutputfile}")
                     elif 'PythonScript' in qProcess.command:
                         pythonScript = str(qProcess.command).split(' ')[2]
-                        print('PythonImporter running for script: {0}'.format(pythonScript))
-                        if qProcess.exitCode() == 0:                    # if the process finished successfully
-                            self.pythonImporter.setOutput(str(qProcess.display.toPlainText()))
-                            self.pythonImporter.setHostIp(str(qProcess.hostIp))
-                            self.pythonImporter.setPythonScript(pythonScript)
-                            self.pythonImporter.start()
-                log.info("Process {qProcessId} is done!".format(qProcessId=qProcess.id))
+                        print(f'PythonImporter running for script: {pythonScript}')
+                        if qProcess.exitCode() == 0:
+                            try:
+                                self.pythonImporter.setOutput(str(qProcess.display.toPlainText()))
+                                self.pythonImporter.setHostIp(str(qProcess.hostIp))
+                                self.pythonImporter.setPythonScript(pythonScript)
+                                self.pythonImporter.start()
+                            except Exception:
+                                log.exception(f"Error starting pythonImporter for {pythonScript}")
+                log.info(f"Process {qProcess.id} is done!")
 
-            processRepository.storeProcessOutput(str(qProcess.id), qProcess.display.toPlainText())
+            try:
+                processRepository.storeProcessOutput(str(qProcess.id), qProcess.display.toPlainText())
+            except Exception:
+                log.exception(f"Error storing process output for {qProcess.id}")
 
-            if 'hydra' in qProcess.name:  # find the corresponding widget and tell it to update its UI
-                self.view.findFinishedBruteTab(str(processRepository.getPIDByProcessId(str(qProcess.id))))
+            if 'hydra' in qProcess.name:
+                try:
+                    self.view.findFinishedBruteTab(
+                        str(processRepository.getPIDByProcessId(str(qProcess.id)))
+                    )
+                except Exception:
+                    log.exception(f"Error updating brute tab for process {qProcess.id}")
 
             try:
                 self.fastProcessesRunning -= 1
                 self.checkProcessQueue()
                 self.processes.remove(qProcess)
                 self.updateUITimer.stop()
-                self.updateUITimer.start(1000)  # update the interface soon
-            except Exception as e:
-                log.info("Process Finished Cleanup Exception {e}".format(e=e))
-        except Exception as e:  # fixes bug when receiving finished signal when project is no longer open.
-            log.info("Process Finished Exception {e}".format(e=e))
+                self.updateUITimer.start(1000)
+            except Exception:
+                log.exception("Process Finished Cleanup Exception")
+        except Exception:
+            log.exception("Process Finished Exception")
             raise
 
     # when hydra finds valid credentials we need to save them and change the brute tab title to red
@@ -908,24 +1206,43 @@ class Controller:
 
     # this function parses nmap's output looking for open ports to run automated attacks on
     def scheduler(self, parser, isNmapImport):
-        if isNmapImport and self.settings.general_enable_scheduler_on_import == 'False':
-            return
-        if self.settings.general_enable_scheduler == 'True':
-            log.info('Scheduler started!')
+        try:
+            if isNmapImport and self.settings.general_enable_scheduler_on_import == 'False':
+                return
+            if self.settings.general_enable_scheduler == 'True':
+                log.info('Scheduler started!')
 
-            for h in parser.getAllHosts():
-                for p in h.all_ports():
-                    if p.state == 'open':
-                        s = p.getService()
-                        if not (s is None):
-                            self.runToolsFor(s.name, h.hostname, h.ip, p.portId, p.protocol)
+                for h in parser.getAllHosts():
+                    try:
+                        for p in h.all_ports():
+                            try:
+                                if p.state == 'open':
+                                    s = p.getService()
+                                    if not (s is None):
+                                        self.runToolsFor(s.name, h.hostname, h.ip, p.portId, p.protocol)
+                            except Exception as port_exc:
+                                log.error(f"Scheduler error for port {getattr(p, 'portId', '?')}: {port_exc}")
+                    except Exception as host_exc:
+                        log.error(f"Scheduler error for host {getattr(h, 'ip', '?')}: {host_exc}")
 
-            log.info('-----------------------------------------------')
-        log.info('Scheduler ended!')
+                log.info('-----------------------------------------------')
+            log.info('Scheduler ended!')
+        except Exception as sched_exc:
+            log.error(f"Scheduler encountered a fatal error: {sched_exc}")
+            from PyQt6.QtWidgets import QMessageBox
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Scheduler Error")
+            msg.setText(
+                "An error occurred during scheduling of automated attacks.\n\n"
+                f"Error: {sched_exc}\n\nCheck the log for more details."
+            )
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
 
     def findDuplicateTab(self, tabWidget, tabName):
         for i in range(tabWidget.count()):
-            log.debug("Tab text for {0}: {1}".format(str(i), str(tabWidget.tabText(i))))
+            log.debug(f"Tab text for {str(i)}: {str(tabWidget.tabText(i))}")
             if tabWidget.tabText(i) == tabName:
                 return True
         return False
@@ -933,8 +1250,17 @@ class Controller:
     def runToolsFor(self, service, hostname, ip, port, protocol='tcp'):
         log.info('Running tools for: ' + service + ' on ' + ip + ':' + port)
 
+        # Import here to avoid circular import issues
+        import os
+
         if service.endswith("?"):  # when nmap is not sure it will append a ?, so we need to remove it
             service=service[:-1]
+
+        # Get repositories for deduplication checks
+        repo_container = self.logic.activeProject.repositoryContainer
+        script_repo = getattr(repo_container, "scriptRepository", None)
+        port_repo = getattr(repo_container, "portRepository", None)
+        host_repo = getattr(repo_container, "hostRepository", None)
 
         for tool in self.settings.automatedAttacks:
             if service in tool[1].split(",") and protocol==tool[2]:
@@ -943,22 +1269,52 @@ class Controller:
                         url = hostname+':'+port
                     else:
                         url = ip+':'+port
-                    log.info("Screenshooter of URL: %s" % str(url))
-                    self.screenshooter.addToQueue(ip, port, url)
-                    self.screenshooter.start()
+                    # Check if screenshot already exists using deterministic filename
+                    screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
+                    deterministic_screenshot = f"{ip}-{port}-screenshot.png"
+                    screenshot_exists = False
+                    if os.path.isdir(screenshots_dir):
+                        if deterministic_screenshot in os.listdir(screenshots_dir):
+                            screenshot_exists = True
+                    if screenshot_exists:
+                        log.info(f"Skipping screenshot for {ip}:{port} (already exists)")
+                    else:
+                        log.info("Screenshooter of URL: %s" % str(url))
+                        self.screenshooter.addToQueue(ip, port, url)
+                        self.screenshooter.start()
 
                 else:
                     for a in self.settings.portActions:
                         if tool[0] == a[1]:
                             tabTitle = a[1] + " (" + port + "/" + protocol + ")"
+                            # Deduplication: check if script already ran for this host/port/tool
+                            skip_script = False
+                            if script_repo and port_repo and host_repo:
+                                # Find host and port objects
+                                db_host = host_repo.getHostByIP(ip)
+                                db_port = None
+                                if db_host:
+                                    db_port = port_repo.getPortByHostIdAndPort(db_host.id, port, protocol)
+                                if db_host and db_port:
+                                    # l1ScriptObj: scriptId, portId, hostId
+                                    existing_scripts = script_repo.getScriptsByPortId(db_port.id)
+                                    for s in existing_scripts:
+                                        if hasattr(s, "scriptId") and s.scriptId == a[1]:
+                                            skip_script = True
+                                            break
+                            if skip_script:
+                                log.info(f"Skipping script {a[1]} for {ip}:{port}/{protocol} (already exists)")
+                                break
                             # Cheese
-                            outputfile = self.logic.activeProject.properties.runningFolder + "/" + \
-                                         re.sub("[^0-9a-zA-Z]", "", str(tool[0])) + \
-                                         "/" + getTimestamp() + '-' + a[1] + "-" + ip + "-" + port
+                            outputfile = os.path.join(
+                                self.logic.activeProject.properties.runningFolder,
+                                f"{getTimestamp()}-{a[1]}-{ip}-{port}"
+                            )
+                            outputfile = os.path.normpath(outputfile).replace("\\", "/")
                             command = str(a[2])
                             command = command.replace('[IP]', ip).replace('[PORT]', port)\
                                 .replace('[OUTPUT]', outputfile)
-                            log.debug("Running tool command: {0}".format(str(command)))
+                            log.debug(f"Running tool command: {str(command)}")
 
                             if self.findDuplicateTab(self.view.ui.ServicesTabWidget, tabTitle):
                                 log.debug("Duplicate tab name. Tool might have already run.")
@@ -969,3 +1325,37 @@ class Controller:
                                             outputfile,
                                             self.view.createNewTabForHost(ip, tabTitle, not (tab == 'Hosts')))
                             break
+
+    def addPortToHost(self, host_ip, port_data):
+        """
+        Manually add a port to an existing host.
+        :param host_ip: IP address of the host (string)
+        :param port_data: dict with keys 'port', 'state', 'protocol'
+        """
+        repo_container = self.logic.activeProject.repositoryContainer
+        # Find host by IP using getHosts and filter
+        filters = self.view.viewState.filters
+        hosts = repo_container.hostRepository.getHosts(filters)
+        host = None
+        for h in hosts:
+            if hasattr(h, "ip") and h.ip == host_ip:
+                host = h
+                break
+        if not host:
+            log.error(f"Host with IP {host_ip} not found.")
+            return
+
+        # Create and add the port
+        try:
+            port_id = str(port_data.get('port', '')).strip()
+            protocol = port_data.get('protocol', '').strip()
+            state = port_data.get('state', '').strip()
+            host_id = host.id
+            new_port = portObj(port_id, protocol, state, host_id)
+            session = self.logic.activeProject.database.session()
+            session.add(new_port)
+            session.commit()
+            log.info(f"Added port {port_id}/{protocol} ({state}) to host {host_ip}")
+            self.view.updateInterface()
+        except Exception as e:
+            log.error(f"Failed to add port to host {host_ip}: {e}")

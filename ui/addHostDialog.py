@@ -2,7 +2,7 @@
 
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -39,8 +39,13 @@ class AddHostsDialog(QtWidgets.QDialog):
     def setupLayout(self):
         self.setModal(True)
         self.setWindowTitle('Add host(s) to scan seperated by semicolons')
-        flags = Qt.WindowType.Window | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint | \
-                Qt.WindowType.WindowCloseButtonHint
+        flags = (
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
         self.setWindowFlags(flags)
 
         self.resize(700, 700)
@@ -61,6 +66,12 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.lblHostExample.setFont(self.font)
         self.lblHostExample.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.spacer = QSpacerItem(15,15)
+
+        # Hostname resolution option
+        self.chkResolveHostnames = QtWidgets.QCheckBox(self)
+        self.chkResolveHostnames.setText('Resolve hostnames (DNS)')
+        self.chkResolveHostnames.setToolTip('Enable or disable DNS resolution for hostnames during scan [-R/-n]')
+        self.chkResolveHostnames.setChecked(True)
 
         self.validationLabel = QtWidgets.QLabel(self)
         self.validationLabel.setText('Invalid input. Please try again!')
@@ -161,7 +172,10 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.rdoScanOptTcpConnect.setToolTip('TCP connect() scanning [-sT]')
         self.rdoScanOptObfuscated = QtWidgets.QRadioButton(self)
         self.rdoScanOptObfuscated.setText('Obfuscated')
-        self.rdoScanOptObfuscated.setToolTip('Obfuscated scanning for avoiding Firewall and WAF detection [--data-length 5 --max-retries 2 --randomize-hosts]')
+        self.rdoScanOptObfuscated.setToolTip(
+            'Obfuscated scanning for avoiding Firewall and WAF detection \
+                [--data-length 5 --max-retries 2 --randomize-hosts]'
+        )
         self.rdoScanOptFin = QtWidgets.QRadioButton(self)
         self.rdoScanOptFin.setText('FIN')
         self.rdoScanOptFin.setToolTip('FIN scanning sends a packet with only the FIN flag set [-sF]')
@@ -259,15 +273,22 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.cmdAddButton = QPushButton('Submit', self)
         self.cmdAddButton.setMaximumSize(160, 70)
         self.addIcon = QtGui.QIcon()
-        self.addIcon.addPixmap(QtGui.QPixmap(_fromUtf8("./images/add.png")), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        self.addIcon.addPixmap(
+            QtGui.QPixmap(_fromUtf8("./images/add.png")),
+            QtGui.QIcon.Mode.Normal,
+            QtGui.QIcon.State.Off
+        )
         self.cmdAddButton.setIconSize(QtCore.QSize(19, 19))
         self.cmdAddButton.setIcon(self.addIcon)
 
         self.cmdCancelButton = QPushButton('Cancel', self)
         self.cmdCancelButton.setMaximumSize(110, 30)
         self.cancelIcon = QtGui.QIcon()
-        self.cancelIcon.addPixmap(QtGui.QPixmap(_fromUtf8("./images/minus-black.png")), QtGui.QIcon.Mode.Normal,
-                                  QtGui.QIcon.State.Off)
+        self.cancelIcon.addPixmap(
+            QtGui.QPixmap(_fromUtf8("./images/minus-black.png")),
+            QtGui.QIcon.Mode.Normal,
+            QtGui.QIcon.State.Off
+        )
         self.cmdCancelButton.setIconSize(QtCore.QSize(19, 19))
         self.cmdCancelButton.setIcon(self.cancelIcon)
 
@@ -277,6 +298,7 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.hlayout2.addWidget(self.cmdCancelButton)
         self.formLayout.addLayout(self.hlayout)
         self.formLayout.addWidget(self.lblHostExample)
+        self.formLayout.addWidget(self.chkResolveHostnames)
 
         self.formLayout.addWidget(self.validationLabel)
         self.validationLabel.hide()

@@ -2,7 +2,7 @@
 
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -18,10 +18,10 @@ Copyright (c) 2024 Shane Scott
 """
 
 import os
-from PyQt6.QtGui import *                                               # for filters dialog
+from PyQt6.QtGui import *
 from PyQt6.QtWidgets import *
 from PyQt6 import QtWidgets, QtGui
-from app.auxiliary import *                                             # for timestamps
+from app.auxiliary import *
 from six import u as unicode
 from ui.ancillaryDialog import flipState
 
@@ -36,7 +36,7 @@ class License(QtWidgets.QPlainTextEdit):
 
     def center(self):
         frameGm = self.frameGeometry()
-        centerPoint = QtGui.QGuiApplication.primaryScreen().availableGeometry().center() 
+        centerPoint = QtGui.QGuiApplication.primaryScreen().availableGeometry().center()
         frameGm.moveCenter(centerPoint)
         self.move(frameGm.topLeft())
 

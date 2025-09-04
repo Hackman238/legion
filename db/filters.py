@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -24,15 +24,20 @@ def applyFilters(filters):
     query_filter += applyPortFilters(filters)
     return query_filter
 
+def _get_filter(filters, key, default=None):
+    if isinstance(filters, dict):
+        return filters.get(key, default)
+    return getattr(filters, key, default)
+
 def applyHostsFilters(filters):
     query_filter = ""
-    if not filters.down:
+    if not _get_filter(filters, 'down'):
         query_filter += " AND hosts.status != 'down'"
-    if not filters.up:
+    if not _get_filter(filters, 'up'):
         query_filter += " AND hosts.status != 'up'"
-    if not filters.checked:
+    if not _get_filter(filters, 'checked'):
         query_filter += " AND hosts.checked != 'True'"
-    for word in filters.keywords:
+    for word in _get_filter(filters, 'keywords', []):
         query_filter += (f" AND (hosts.ip LIKE '%{sanitise(word)}%'"
                          f" OR hosts.osMatch LIKE '%{sanitise(word)}%'"
                          f" OR hosts.hostname LIKE '%{sanitise(word)}%')")
@@ -40,14 +45,14 @@ def applyHostsFilters(filters):
 
 def applyPortFilters(filters):
     query_filter = ""
-    if not filters.portopen:
+    if not _get_filter(filters, 'portopen'):
         query_filter += " AND ports.state != 'open' AND ports.state != 'open|filtered'"
-    if not filters.portclosed:
+    if not _get_filter(filters, 'portclosed'):
         query_filter += " AND ports.state != 'closed'"
-    if not filters.portfiltered:
+    if not _get_filter(filters, 'portfiltered'):
         query_filter += " AND ports.state != 'filtered' AND ports.state != 'open|filtered'"
-    if not filters.tcp:
+    if not _get_filter(filters, 'tcp'):
         query_filter += " AND ports.protocol != 'tcp'"
-    if not filters.udp:
+    if not _get_filter(filters, 'udp'):
         query_filter += " AND ports.protocol != 'udp'"
     return query_filter

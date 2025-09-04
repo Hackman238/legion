@@ -2,7 +2,7 @@
 
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -14,6 +14,8 @@ Copyright (c) 2024 Shane Scott
 
     You should have received a copy of the GNU General Public License along with this program.
     If not, see <http://www.gnu.org/licenses/>.
+
+Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
 import re
@@ -53,7 +55,7 @@ class ProcessesTableModel(QtCore.QAbstractTableModel):
             value = ''
             row = index.row()
             column = index.column()
-            processColumns = {0: 'progress', 1: 'display', 2: 'elapsed', 3: 'estimatedRemaining',
+            processColumns = {0: 'progress', 1: 'display', 2: 'elapsed', 3: 'percent',
                               4: 'pid', 5: 'name', 6: 'tabTitle', 7: 'hostIp', 8: 'port', 9: 'protocol', 10: 'command',
                               11: 'startTime', 12: 'endTime', 13: 'outputfile', 14: 'output', 15: 'status',
                               16: 'closed'}
@@ -65,15 +67,11 @@ class ProcessesTableModel(QtCore.QAbstractTableModel):
                     elapsed = round(self.__controller.controller.processMeasurements.get(pid, 0), 2)
                     value = "{0:.2f}{1}".format(float(elapsed), "s")
                 elif column == 3:
-                    status = str(self.__processes[row]['status'])
-                    if status == "Finished" or status == "Crashed" or status == "Killed":
-                        estimatedRemaining = 0
+                    percent = self.__processes[row].get('percent')
+                    if percent is not None and percent != "":
+                        value = f"{percent}%" if not str(percent).endswith("%") else str(percent)
                     else:
-                        pid = int(self.__processes[row]['pid'])
-                        elapsed = round(self.__controller.controller.processMeasurements.get(pid, 0), 2)
-                        estimatedRemaining = int(self.__processes[row]['estimatedRemaining']) - float(elapsed)
-                    value = "{0:.2f}{1}"\
-                        .format(float(estimatedRemaining), "s") if estimatedRemaining >= 0 else 'Unknown'
+                        value = "Unknown"
                 elif column == 6:
                     if not self.__processes[row]['tabTitle'] == '':
                         value = self.__processes[row]['tabTitle']
@@ -90,11 +88,9 @@ class ProcessesTableModel(QtCore.QAbstractTableModel):
                     try:
                         value = self.__processes[row][processColumns.get(int(column))]
                     except:
-                        value = "Missing data c #{0} - {1}".format(int(column), processColumns.get(int(column)))
-                        pass
+                        value = ""
             except Exception:
-                value = "Missing data c #{0} - {1}".format(int(column), processColumns.get(int(column)))
-                pass
+                value = ""
             return value
 
     def sort(self, Ncol, order):

@@ -1,6 +1,6 @@
 """
 LEGION (https://shanewilliamscott.com)
-Copyright (c) 2024 Shane Scott
+Copyright (c) 2025 Shane William Scott
 
     This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
     License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -42,15 +42,39 @@ class ToolCoordinator:
     # this function moves the specified tool output file from the temporary 'running' folder
     # to the 'tool output' folder
     def saveToolOutput(self, projectOutputFolder: str, outputFileName: str) -> None:
-        tool = self.__determineToolUsedByOutputFilename(outputFileName)
-        toolOutputFolder = f"{projectOutputFolder}/{tool}"
+        import os
+        # Determine the correct output folder for the scan output
+        # If outputFileName is inside a subdirectory (e.g., .../nmap/...), preserve it in the output folder
+        # Otherwise, move directly to the output folder
+        running_dir = os.path.dirname(outputFileName)
+        base_running = os.path.basename(running_dir)
+        # If the parent directory is "nmap", preserve it; otherwise, use the output folder directly
+        if base_running == "nmap":
+            toolOutputFolder = os.path.join(projectOutputFolder, "nmap")
+        else:
+            toolOutputFolder = projectOutputFolder
         self.__createToolOutputFolderIfNotExists(toolOutputFolder)
         self.__determineToolOutputFiles(outputFileName, toolOutputFolder)
 
     def __determineToolOutputFiles(self, outputFileName: str, toolOutputFolder: str):
+        # If outputFileName is a directory, move all files inside it to toolOutputFolder
+        if self.shell.directoryOrFileExists(outputFileName) and not self.shell.isFile(outputFileName):
+            # Move only nmap output files from the directory to the output folder, not the directory itself
+            try:
+                files = self.shell.list_files(outputFileName)
+                nmap_exts = (".xml", ".nmap", ".gnmap", ".html")
+                for f in files:
+                    import os
+                    full_path = os.path.normpath(os.path.join(outputFileName, f))
+                    if self.shell.isFile(full_path) and f.lower().endswith(nmap_exts):
+                        self.shell.move(full_path, toolOutputFolder)
+                # Optionally, remove the now-empty directory if desired
+                # self.shell.remove_directory(outputFileName)
+            except Exception as e:
+                print(f"Error moving files from {outputFileName} to {toolOutputFolder}: {e}")
         # check if the outputFilename exists, if not try .xml and .txt extensions
         # (different tools use different formats)
-        if fileExists(self.shell, outputFileName):
+        elif fileExists(self.shell, outputFileName):
             self.shell.move(outputFileName, toolOutputFolder)
         # move all the nmap files (not only the .xml)
         elif nmapFileExists(self.shell, outputFileName):
