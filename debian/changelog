@@ -33,6 +33,13 @@ legion (0.4.2-0) UNRELEASED; urgency=medium
 
  -- Shane Scott <sscot@shanewilliamscott.com>  Mon, 20 Nov 2023 12:50:55 -0600
 
+legion (0.4.7-0) UNRELEASED; urgency=medium
+
+  * Fix Unix/Windows path problem
+  * Rollback Selenkum to aboid breaking eyewitness
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Tue, 04 Sep 2025 14:25:39 -0500
+
 legion (0.4.6-0) UNRELEASED; urgency=medium
 
   * Dockerfiles updated
