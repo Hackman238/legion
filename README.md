@@ -2,6 +2,8 @@
 
 This is the new home of "Legion". A major release is out!
 
+Having [screenshot issues](#screenshot-issues)?
+
 ##
 [![Known Vulnerabilities](https://snyk.io/test/github/Hackman238/legion/badge.svg?targetFile=requirements.txt)](https://snyk.io/test/github/Hackman238/legion?targetFile=requirements.txt)
 [![Maintainability](https://api.codeclimate.com/v1/badges/c2055fddab6b95642b6e/maintainability)](https://codeclimate.com/github/Hackman238/legion/maintainability)
