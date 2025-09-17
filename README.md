@@ -229,6 +229,18 @@ uninstall those features before proceeding.
   docker images
   ```
 
+### Screenshot issues
+If you have screenshot issues run the following:
+```shell
+sudo su -
+cd /usr/share/legion
+curl -L https://raw.githubusercontent.com/nagyist/hackman238.legion/refs/heads/master/deps/checkGeckodriver.sh > checkGekodriver.sh
+curl -L https://raw.githubusercontent.com/Hackman238/legion/refs/heads/master/deps/checkEyewitness.sh > checkEyewitness.sh
+chmod +x checkGekodriver.sh; chmod +x checkEyewitness.sh
+./checkGekodriver.sh
+./checkEyewitness.sh
+```
+
 ### Traditional installation method
 
 > Please use the Docker image where possible! It's becoming very difficult to support all the various platforms and
