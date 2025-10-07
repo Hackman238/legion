@@ -2,6 +2,8 @@
 
 This is the new home of "Legion". A major release is out!
 
+Having [screenshot issues](#screenshot-issues)?
+
 ##
 [![Known Vulnerabilities](https://snyk.io/test/github/Hackman238/legion/badge.svg?targetFile=requirements.txt)](https://snyk.io/test/github/Hackman238/legion?targetFile=requirements.txt)
 [![Maintainability](https://api.codeclimate.com/v1/badges/c2055fddab6b95642b6e/maintainability)](https://codeclimate.com/github/Hackman238/legion/maintainability)
@@ -228,6 +230,18 @@ uninstall those features before proceeding.
   ```shell
   docker images
   ```
+
+### Screenshot issues
+If you have screenshot issues run the following:
+```shell
+sudo su -
+cd /tmp
+curl -L https://raw.githubusercontent.com/nagyist/hackman238.legion/refs/heads/master/deps/checkGeckodriver.sh > checkGekodriver.sh
+curl -L https://raw.githubusercontent.com/Hackman238/legion/refs/heads/master/deps/checkEyewitness.sh > checkEyewitness.sh
+chmod +x checkGekodriver.sh; chmod +x checkEyewitness.sh
+./checkGekodriver.sh
+./checkEyewitness.sh
+```
 
 ### Traditional installation method
 
