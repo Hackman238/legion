@@ -1286,6 +1286,18 @@ class View(QtCore.QObject):
             ncol=self.toolsTableViewSortColumn), headers)
         self.ui.ToolsTableView.setModel(self.ToolsTableModel)
 
+    def refreshToolsTableModel(self):
+        if not self.ToolsTableModel:
+            return
+        self.ToolsTableModel.setDataList(
+            self.controller.getProcessesFromDB(
+                self.viewState.filters,
+                showProcesses='noNmap',
+                sort=self.toolsTableViewSort,
+                ncol=self.toolsTableViewSortColumn
+            )
+        )
+
     def updateToolsTableView(self):
         if self.ui.MainTabWidget.tabText(self.ui.MainTabWidget.currentIndex()) == 'Scan' and \
                 self.ui.HostsTabWidget.tabText(self.ui.HostsTabWidget.currentIndex()) == 'Tools':

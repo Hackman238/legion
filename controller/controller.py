@@ -222,8 +222,8 @@ class Controller:
             repo_container = getattr(self.logic.activeProject, "repositoryContainer", None)
             if repo_container and hasattr(repo_container, "processRepository"):
                 repo_container.processRepository.resetDisplayStatusForOpenProcesses()
+                self.view.refreshToolsTableModel()
                 self.view.viewState.lazy_update_tools = True
-                self.view.updateToolsTableView()
         except Exception:
             log.exception("Failed to reset process display status when opening project")
 
