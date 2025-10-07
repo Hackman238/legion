@@ -94,8 +94,17 @@ class ImageViewer(QtWidgets.QWidget):
         if fileName:
             image = QtGui.QImage(fileName)
             if image.isNull():
-                QtWidgets.QMessageBox.information(self, "Image Viewer","Cannot load %s." % fileName)
-                return
+                placeholder_path = os.path.normpath(
+                    os.path.join(os.path.dirname(__file__), '..', 'images', 'no-image.png')
+                )
+                placeholder = QtGui.QImage(placeholder_path)
+                if placeholder.isNull():
+                    QtWidgets.QMessageBox.information(self, "Image Viewer","Cannot load %s." % fileName)
+                    return
+                image = placeholder
+                self.imageLabel.setToolTip(f"Unable to load screenshot: {fileName}")
+            else:
+                self.imageLabel.setToolTip("")
 
             self.imageLabel.setPixmap(QtGui.QPixmap.fromImage(image))
             self.scaleFactor = 1.0
