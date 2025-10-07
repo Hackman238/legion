@@ -19,6 +19,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 import ntpath  # for file operations, to kill processes and for regex
+from collections import OrderedDict
 
 from app.ApplicationInfo import applicationInfo, getVersion
 from app.timing import getTimestamp
@@ -1280,32 +1281,33 @@ class View(QtCore.QObject):
     def setupToolsTableView(self):
         headers = ["Progress", "Display", "Elapsed", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
                    "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
-        self.ToolsTableModel = ProcessesTableModel(self, self.controller.getProcessesFromDB(
+        tools = self.controller.getProcessesFromDB(
             self.viewState.filters, showProcesses='noNmap',
             sort=self.toolsTableViewSort,
-            ncol=self.toolsTableViewSortColumn), headers)
+            ncol=self.toolsTableViewSortColumn)
+        self.ToolsTableModel = ProcessesTableModel(self, self._dedupeTools(tools), headers)
         self.ui.ToolsTableView.setModel(self.ToolsTableModel)
 
     def refreshToolsTableModel(self):
         if not self.ToolsTableModel:
             return
-        self.ToolsTableModel.setDataList(
-            self.controller.getProcessesFromDB(
-                self.viewState.filters,
-                showProcesses='noNmap',
-                sort=self.toolsTableViewSort,
-                ncol=self.toolsTableViewSortColumn
-            )
+        tools = self.controller.getProcessesFromDB(
+            self.viewState.filters,
+            showProcesses='noNmap',
+            sort=self.toolsTableViewSort,
+            ncol=self.toolsTableViewSortColumn
         )
+        self.ToolsTableModel.setDataList(self._dedupeTools(tools))
 
     def updateToolsTableView(self):
         if self.ui.MainTabWidget.tabText(self.ui.MainTabWidget.currentIndex()) == 'Scan' and \
                 self.ui.HostsTabWidget.tabText(self.ui.HostsTabWidget.currentIndex()) == 'Tools':
-            self.ToolsTableModel.setDataList(
-                self.controller.getProcessesFromDB(self.viewState.filters,
-                                                   showProcesses = 'noNmap',
-                                                   sort = self.toolsTableViewSort,
-                                                   ncol = self.toolsTableViewSortColumn))
+            tools = self.controller.getProcessesFromDB(
+                self.viewState.filters,
+                showProcesses='noNmap',
+                sort=self.toolsTableViewSort,
+                ncol=self.toolsTableViewSortColumn)
+            self.ToolsTableModel.setDataList(self._dedupeTools(tools))
             self.ui.ToolsTableView.repaint()
             self.ui.ToolsTableView.update()
 
@@ -1328,6 +1330,16 @@ class View(QtCore.QObject):
             if not row == None:
                 self.ui.ToolsTableView.selectRow(row)
                 self.toolsTableClick()
+
+    def _dedupeTools(self, processes):
+        deduped = OrderedDict()
+        for proc in processes:
+            name = proc.get('name') if isinstance(proc, dict) else None
+            if not name:
+                continue
+            if name not in deduped:
+                deduped[name] = proc
+        return list(deduped.values())
         
     #################### RIGHT PANEL INTERFACE UPDATE FUNCTIONS ####################
     

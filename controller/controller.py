@@ -1171,6 +1171,12 @@ class Controller:
             except Exception:
                 log.exception(f"Error storing process output for {qProcess.id}")
 
+            try:
+                self.view.refreshToolsTableModel()
+                self.view.viewState.lazy_update_tools = True
+            except Exception:
+                log.exception("Failed to refresh tools table after process completion")
+
             if 'hydra' in qProcess.name:
                 try:
                     self.view.findFinishedBruteTab(
