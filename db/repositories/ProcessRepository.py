@@ -299,3 +299,13 @@ class ProcessRepository:
             p.display = 'False'
 
         return p
+
+    def resetDisplayStatusForOpenProcesses(self):
+        session = self.dbAdapter.session()
+        try:
+            session.query(process).filter_by(closed='False').update(
+                {process.display: 'True'}, synchronize_session=False
+            )
+            session.commit()
+        finally:
+            session.close()
