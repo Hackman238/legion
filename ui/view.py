@@ -19,6 +19,8 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 import ntpath  # for file operations, to kill processes and for regex
+from collections import OrderedDict
+from collections.abc import Mapping
 
 from app.ApplicationInfo import applicationInfo, getVersion
 from app.timing import getTimestamp
@@ -1284,7 +1286,7 @@ class View(QtCore.QObject):
             self.viewState.filters, showProcesses='noNmap',
             sort=self.toolsTableViewSort,
             ncol=self.toolsTableViewSortColumn)
-        self.ToolsTableModel = ProcessesTableModel(self, tools, headers)
+        self.ToolsTableModel = ProcessesTableModel(self, self._dedupeTools(tools), headers)
         self.ui.ToolsTableView.setModel(self.ToolsTableModel)
 
     def refreshToolsTableModel(self):
@@ -1296,7 +1298,7 @@ class View(QtCore.QObject):
             sort=self.toolsTableViewSort,
             ncol=self.toolsTableViewSortColumn
         )
-        self.ToolsTableModel.setDataList(processes)
+        self.ToolsTableModel.setDataList(self._dedupeTools(processes))
 
     def updateToolsTableView(self):
         if self.ui.MainTabWidget.tabText(self.ui.MainTabWidget.currentIndex()) == 'Scan' and \
@@ -1306,7 +1308,7 @@ class View(QtCore.QObject):
                 showProcesses='noNmap',
                 sort=self.toolsTableViewSort,
                 ncol=self.toolsTableViewSortColumn)
-            self.ToolsTableModel.setDataList(processes)
+            self.ToolsTableModel.setDataList(self._dedupeTools(processes))
             self.ui.ToolsTableView.repaint()
             self.ui.ToolsTableView.update()
 
@@ -1971,3 +1973,17 @@ class View(QtCore.QObject):
             if self.ui.BruteTabWidget.widget(i) == bWidget:
                 self.ui.BruteTabWidget.tabBar().setTabTextColor(i, QtGui.QColor('red'))
                 return
+    def _dedupeTools(self, processes):
+        deduped = OrderedDict()
+        for proc in processes:
+            if isinstance(proc, Mapping):
+                name = proc.get('name')
+            else:
+                name = getattr(proc, 'name', None)
+            if not name:
+                continue
+            if name not in deduped:
+                deduped[name] = dict(proc) if isinstance(proc, Mapping) else proc
+        if deduped:
+            return list(deduped.values())
+        return list(processes)
