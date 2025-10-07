@@ -26,6 +26,8 @@ penetration testing framework that aids in discovery, reconnaissance, and exploi
 * Highly customizable stage scanning for ninja-like IPS evasion.
 * Automatic detection of CPEs (Common Platform Enumeration) and CVEs (Common Vulnerabilities and Exposures), now with enhanced mapping to ExploitDB including direct links to exploits.
 * Integrated screenshotting: Take, view, and manage screenshots of web services directly from the UI, with support for EyeWitness and advanced screenshot management.
+* Optional IPv6 scanning support with automatic fallback when native IPv6 connectivity is unavailable.
+* Smarter project restores: tool tabs return exactly as you left them, Tools listings deduplicate tidily, and missing screenshots display a helpful placeholder instead of blocking dialogs.
 * Realtime auto-saving of project results and tasks.
 * Numerous quality of life improvements: UI enhancements, improved error handling, more robust project export (sqlite abd json), and expanded configurability.
 
