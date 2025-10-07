@@ -456,6 +456,7 @@ class NmapImporter(QtCore.QThread):
             # --- Begin global update objects progress calculation ---
             total_update_hosts = len(allHosts)
             update_hosts_processed = 0
+            update_progress = 0
             # --- End global update objects progress calculation ---
 
             if self.updateProgressObservable is not None:
@@ -622,9 +623,10 @@ class NmapImporter(QtCore.QThread):
                             )
                         self.progressUpdated.emit(update_progress, 'Update objects and run scripts...')
 
+            final_progress = 100 if total_update_hosts == 0 else update_progress
             if self.updateProgressObservable is not None:
                 self.updateProgressObservable.updateProgress(100, 'Almost done...')
-                self.progressUpdated.emit(update_progress, 'Almost done...')
+            self.progressUpdated.emit(final_progress, 'Almost done...')
 
             session.commit()
             self.db.dbsemaphore.release()  # we are done with the DB
