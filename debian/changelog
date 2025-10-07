@@ -40,6 +40,14 @@ legion (0.4.7-0) UNRELEASED; urgency=medium
 
  -- Shane Scott <sscott@shanewilliamscott.com>  Tue, 04 Sep 2025 14:25:39 -0500
 
+legion (0.4.8-0) UNRELEASED; urgency=medium
+
+  * Restore tool tab state correctly when re-opening sessions and deduplicate Tools tab entries
+  * Replace failed screenshot loads with a placeholder image to avoid popup dialogs
+  * Add opt-in IPv6 scanning with incompatible flag filtering and automatic connectivity fallback
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Tue, 07 Oct 2025 13:04:10 -0500
+
 legion (0.4.6-0) UNRELEASED; urgency=medium
 
   * Dockerfiles updated

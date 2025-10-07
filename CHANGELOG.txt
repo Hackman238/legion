@@ -3,6 +3,12 @@ LEGION 0.4.7
 * Fix Unix/Windows path problem
 * Rollback Selenkum to aboid breaking eyewitness
 
+LEGION 0.4.8
+
+* Restore tool tabs safely when loading existing projects and ensure Tools tab entries deduplicate correctly
+* Prevent broken screenshot popups by displaying a placeholder image when files are missing
+* Add optional IPv6 scanning support with validation, automatic flag filtering, and connectivity fallback
+
 LEGION 0.4.6
 
 * Dockerfiles updated
