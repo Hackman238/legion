@@ -263,8 +263,14 @@ class Controller:
             elif runHostDiscovery:
                 outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-host-discover"))
                 nmapOptionsString = ' '.join(nmapOptions)
+                easy_mode_discovery_flags = "-f --data-length 5 --randomize-hosts --max-retries 2"
+                discovery_prefix = ' '.join(
+                    part for part in [nmapOptionsString.strip(), easy_mode_discovery_flags] if part
+                )
+                if discovery_prefix:
+                    discovery_prefix = discovery_prefix + ' '
                 command = (
-                    f"nmap {nmapOptionsString} -sV -O --version-light -T{str(nmapSpeed)} "
+                    f"nmap {discovery_prefix}-sV -O --version-light -T{str(nmapSpeed)} "
                     f"{targetHosts} --stats-every 10s -oA {outputfile}"
                 )
                 self.runCommand('nmap', 'nmap (discovery)', targetHosts, '', '', command, getTimestamp(True),
