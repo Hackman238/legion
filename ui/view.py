@@ -529,7 +529,8 @@ class View(QtCore.QObject):
                                          runStagedNmap=self.adddialog.chkNmapStaging.isChecked(),
                                          nmapSpeed=self.adddialog.sldScanTimingSlider.value(),
                                          scanMode=scanMode,
-                                         nmapOptions=nmapOptions)
+                                         nmapOptions=nmapOptions,
+                                         enableIPv6=self.adddialog.chkEnableIPv6.isChecked())
             self.adddialog.cmdAddButton.clicked.disconnect()   # disconnect all the signals from that button
         else:
             self.adddialog.spacer.changeSize(0,0)
@@ -1897,8 +1898,15 @@ class View(QtCore.QObject):
                     return
                 else:
                     log.info('Adding host to scope here!!')
-                    self.controller.addHosts(str(bWidget.ipTextinput.text()).replace(';',' '), False, False,
-                                             "unset", "unset")
+                    self.controller.addHosts(
+                        targetHosts=str(bWidget.ipTextinput.text()).replace(';', ' '),
+                        runHostDiscovery=False,
+                        runStagedNmap=False,
+                        nmapSpeed="unset",
+                        scanMode="unset",
+                        nmapOptions=[],
+                        enableIPv6=False
+                    )
             
             bWidget.validationLabel.hide()
             bWidget.toggleRunButton()

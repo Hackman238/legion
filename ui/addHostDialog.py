@@ -61,7 +61,7 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.hlayout.addWidget(self.txtHostList)
         
         self.lblHostExample = QtWidgets.QLabel(self)
-        self.lblHostExample.setText('Ex: 192.168.1.0/24; 10.10.10.10-20; 1.2.3.4; bing.com')
+        self.lblHostExample.setText('Ex: 192.168.1.0/24; 10.10.10.10-20; 2001:db8::/64; bing.com')
         self.font = QtGui.QFont('Calibri', 10)
         self.lblHostExample.setFont(self.font)
         self.lblHostExample.setAlignment(Qt.AlignmentFlag.AlignRight)
@@ -72,6 +72,11 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.chkResolveHostnames.setText('Resolve hostnames (DNS)')
         self.chkResolveHostnames.setToolTip('Enable or disable DNS resolution for hostnames during scan [-R/-n]')
         self.chkResolveHostnames.setChecked(True)
+
+        self.chkEnableIPv6 = QtWidgets.QCheckBox(self)
+        self.chkEnableIPv6.setText('Enable IPv6 (-6)')
+        self.chkEnableIPv6.setToolTip('Add -6 to nmap commands to scan IPv6 addresses')
+        self.chkEnableIPv6.setChecked(False)
 
         self.validationLabel = QtWidgets.QLabel(self)
         self.validationLabel.setText('Invalid input. Please try again!')
@@ -299,6 +304,7 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.formLayout.addLayout(self.hlayout)
         self.formLayout.addWidget(self.lblHostExample)
         self.formLayout.addWidget(self.chkResolveHostnames)
+        self.formLayout.addWidget(self.chkEnableIPv6)
 
         self.formLayout.addWidget(self.validationLabel)
         self.validationLabel.hide()

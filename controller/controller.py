@@ -249,10 +249,14 @@ class Controller:
         clipboard.setText(data) # Assuming item.text() contains the IP or hostname
 
     @timing
-    def addHosts(self, targetHosts, runHostDiscovery, runStagedNmap, nmapSpeed, scanMode, nmapOptions = []):
+    def addHosts(self, targetHosts, runHostDiscovery, runStagedNmap, nmapSpeed, scanMode,
+                 nmapOptions=None, enableIPv6=False):
         if targetHosts == '':
             log.info('No hosts entered..')
             return
+
+        if nmapOptions is None:
+            nmapOptions = []
 
         import os
         runningFolder = normalize_path(self.logic.activeProject.properties.runningFolder)
@@ -264,9 +268,11 @@ class Controller:
             session_dir = runningFolder
         # Use the tool output directory directly, not a subdirectory
         tool_output_dir = session_dir
+        ipv6_flag = enableIPv6
+
         if scanMode == 'Easy':
             if runStagedNmap:
-                self.runStagedNmap(targetHosts, runHostDiscovery)
+                self.runStagedNmap(targetHosts, discovery=runHostDiscovery, enable_ipv6=ipv6_flag)
             elif runHostDiscovery:
                 outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-host-discover"))
                 nmapOptionsString = ' '.join(nmapOptions)
@@ -274,34 +280,55 @@ class Controller:
                 discovery_prefix = ' '.join(
                     part for part in [nmapOptionsString.strip(), easy_mode_discovery_flags] if part
                 )
+                command_parts = ["nmap"]
+                if ipv6_flag:
+                    command_parts.append("-6")
                 if discovery_prefix:
-                    discovery_prefix = discovery_prefix + ' '
-                command = (
-                    f"nmap {discovery_prefix}-sV -O --version-light -T{str(nmapSpeed)} "
-                    f"{targetHosts} --stats-every 10s -oA {outputfile}"
-                )
+                    command_parts.append(discovery_prefix)
+                command_parts.extend([
+                    "-sV", "-O", "--version-light", f"-T{str(nmapSpeed)}",
+                    targetHosts, "--stats-every", "10s", "-oA", outputfile
+                ])
+                command = ' '.join(part for part in command_parts if part)
                 self.runCommand('nmap', 'nmap (discovery)', targetHosts, '', '', command, getTimestamp(True),
-                                outputfile, self.view.createNewTabForHost(str(targetHosts), 'nmap (discovery)', True))
+                                outputfile, self.view.createNewTabForHost(str(targetHosts), 'nmap (discovery)', True),
+                                enable_ipv6=ipv6_flag)
             else:
                 outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-list"))
                 nmapOptionsString = ' '.join(nmapOptions)
-                command = (
-                    "nmap " + nmapOptionsString + " -sL -T" + str(nmapSpeed) + " " + targetHosts +
-                    " --stats-every 10s -oA " + outputfile
-                )
+                command_parts = ["nmap"]
+                if ipv6_flag:
+                    command_parts.append("-6")
+                if nmapOptionsString.strip():
+                    command_parts.append(nmapOptionsString.strip())
+                command_parts.extend([
+                    "-sL", f"-T{str(nmapSpeed)}", targetHosts, "--stats-every", "10s", "-oA", outputfile
+                ])
+                command = ' '.join(part for part in command_parts if part)
                 self.runCommand('nmap', 'nmap (list)', targetHosts, '', '', command, getTimestamp(True),
                                 outputfile,
-                                self.view.createNewTabForHost(str(targetHosts), 'nmap (list)', True))
+                                self.view.createNewTabForHost(str(targetHosts), 'nmap (list)', True),
+                                enable_ipv6=ipv6_flag)
         elif scanMode == 'Hard':
             outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-custom"))
             nmapOptionsString = ' '.join(nmapOptions)
             if 'randomize' not in nmapOptionsString:
-                nmapOptionsString = nmapOptionsString + " -T" + str(nmapSpeed)
-            command = "nmap " + nmapOptionsString + " " + targetHosts + " --stats-every 10s -oA " + outputfile
-            self.runCommand('nmap', 'nmap (custom ' + nmapOptionsString + ')', targetHosts, '', '', command,
+                nmapOptionsString = (nmapOptionsString + " " if nmapOptionsString else "") + "-T" + str(nmapSpeed)
+            command_parts = ["nmap"]
+            display_options = nmapOptionsString.strip()
+            if ipv6_flag and "-6" not in display_options.split():
+                command_parts.append("-6")
+                display_options = ("-6 " + display_options).strip()
+            if display_options:
+                command_parts.append(display_options)
+            command_parts.extend([targetHosts, "--stats-every", "10s", "-oA", outputfile])
+            command = ' '.join(part for part in command_parts if part)
+            display_label = (display_options or nmapOptionsString).strip()
+            self.runCommand('nmap', 'nmap (custom ' + display_label + ')', targetHosts, '', '', command,
                             getTimestamp(True), outputfile,
                             self.view.createNewTabForHost(
-                                str(targetHosts), 'nmap (custom ' + nmapOptionsString + ')', True))
+                                str(targetHosts), 'nmap (custom ' + display_label + ')', True),
+                            enable_ipv6=ipv6_flag)
 
     #################### CONTEXT MENUS ####################
 
@@ -876,7 +903,7 @@ class Controller:
 
     # this function creates a new process, runs the command and takes care of displaying the ouput. returns the PID
     # the last 3 parameters are only used when the command is a staged nmap
-    def runCommand(self, *args, discovery=True, stage=0, stop=False):
+    def runCommand(self, *args, discovery=True, stage=0, stop=False, enable_ipv6=False):
         def handleProcStop(*vargs):
             updateElapsed.stop()
             self.processTimers[qProcess.id] = None
@@ -975,8 +1002,16 @@ class Controller:
             log.info(f"runCommand connected for stage {str(stage)}")
             nextStage = stage + 1
             qProcess.finished.connect(
-                lambda: self.runStagedNmap(str(hostIp), discovery=discovery, stage=nextStage,
-                                           stop=processRepository.isKilledProcess(str(qProcess.id))))
+                lambda host=str(hostIp), discovery_flag=discovery, next_stage=nextStage,
+                       enable_ipv6_flag=enable_ipv6, process_id=qProcess.id:
+                self.runStagedNmap(
+                    host,
+                    discovery=discovery_flag,
+                    stage=next_stage,
+                    stop=processRepository.isKilledProcess(str(process_id)),
+                    enable_ipv6=enable_ipv6_flag
+                )
+            )
 
         return getPid(qProcess)  # return the pid so that we can kill the process if needed
 
@@ -1011,7 +1046,7 @@ class Controller:
         return getPid(qProcess)
 
     # recursive function used to run nmap in different stages for quick results
-    def runStagedNmap(self, targetHosts, discovery = True, stage = 1, stop = False):
+    def runStagedNmap(self, targetHosts, discovery=True, stage=1, stop=False, enable_ipv6=False):
         import os
         log.info(f"runStagedNmap called for stage {str(stage)}")
         runningFolder = self.logic.activeProject.properties.runningFolder
@@ -1050,19 +1085,29 @@ class Controller:
                 return
 
             if discovery:                                           # is it with/without host discovery?
-                command = "nmap -T4 -sV -sSU -O "
+                command = "nmap "
+                if enable_ipv6:
+                    command += "-6 "
+                command += "-T4 -sV -sSU -O "
             else:
-                command = "nmap -Pn -sSU "
+                command = "nmap "
+                if enable_ipv6:
+                    command += "-6 "
+                command += "-Pn -sSU "
 
             if stageOp == 'PORTS':
                 command += '-p ' + stageOpValues + ' -vvvv ' + targetHosts + ' -oA ' + outputfile
             elif stageOp == 'NSE':
-                command = 'nmap -sV --script=' + stageOpValues + ' -vvvv ' + targetHosts + ' --stats-every 10s -oA ' + outputfile
+                command = 'nmap '
+                if enable_ipv6:
+                    command += '-6 '
+                command += '-sV --script=' + stageOpValues + ' -vvvv ' + targetHosts + ' --stats-every 10s -oA ' + outputfile
 
             log.debug(f"Stage {str(stage)} command: {str(command)}")
 
             self.runCommand('nmap', 'nmap (stage ' + str(stage) + ')', str(targetHosts), '', '', command,
-                            getTimestamp(True), outputfile, textbox, discovery=discovery, stage=stage, stop=stop)
+                            getTimestamp(True), outputfile, textbox, discovery=discovery, stage=stage, stop=stop,
+                            enable_ipv6=enable_ipv6)
 
     def importFinished(self):
         # if nmap import was the first action, we need to hide the overlay (note: we shouldn't need to do this

@@ -20,7 +20,7 @@ import re
 
 def validateNmapInput(text):
     """Validate nmap input entered in Add Hosts dialog."""
-    if re.search(r'[^a-zA-Z0-9\.\/\-\s]', text) is not None:
+    if re.search(r'[^a-zA-Z0-9:.\/\-\s]', text) is not None:
         return False
     return True
 
