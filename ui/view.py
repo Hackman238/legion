@@ -1785,17 +1785,27 @@ class View(QtCore.QObject):
         progress = 100.0 / nbr
         totalprogress = 0
         self.tick.emit(int(totalprogress))
+        def _get_process_field(process_info, key, default_value=''):
+            if isinstance(process_info, dict):
+                return process_info.get(key, default_value)
+            return getattr(process_info, key, default_value)
         for t in tools:
-            if not t.tabTitle == '':
-                if 'screenshot' in str(t.tabTitle):
+            tab_title = _get_process_field(t, 'tabTitle', '')
+            if tab_title != '':
+                host_ip = _get_process_field(t, 'hostIp', '')
+                output_file = _get_process_field(t, 'outputfile', '')
+                output_content = _get_process_field(t, 'output', '')
+                process_id = _get_process_field(t, 'id', '')
+                if 'screenshot' in str(tab_title):
                     imageviewer = self.createNewTabForHost(
-                        t.hostIp, t.tabTitle, True, '',
-                        str(self.controller.getOutputFolder())+'/screenshots/'+str(t.outputfile))
-                    imageviewer.setObjectName(str(t.tabTitle))
-                    imageviewer.setProperty('dbId', str(t.id))
+                        host_ip, tab_title, True, '',
+                        str(self.controller.getOutputFolder())+'/screenshots/'+str(output_file))
+                    imageviewer.setObjectName(str(tab_title))
+                    imageviewer.setProperty('dbId', str(process_id))
                 else:
                     # True means we are restoring tabs. Set the widget's object name to the DB id of the process
-                    self.createNewTabForHost(t.hostIp, t.tabTitle, True, t.output).setProperty('dbId', str(t.id))
+                    tab_widget = self.createNewTabForHost(host_ip, tab_title, True, output_content)
+                    tab_widget.setProperty('dbId', str(process_id))
 
             totalprogress += progress                                   # update the progress bar
             self.tick.emit(int(totalprogress))
