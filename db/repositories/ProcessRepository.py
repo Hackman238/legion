@@ -194,15 +194,61 @@ class ProcessRepository:
     def getHostsByToolName(self, toolName: str, closed: str = "False"):
         session = self.dbAdapter.session()
         if closed == 'FetchAll':
-            query = text('SELECT "0", "0", "0", "0", "0", process.hostIp, process.port, process.protocol, "0", "0", '
-                         'process.outputfile, "0", "0", "0" FROM process AS process WHERE process.name=:toolName')
+            query = text(
+                'SELECT '
+                '0 AS progress, '
+                'process.display AS display, '
+                'COALESCE(process.elapsed, 0) AS elapsed, '
+                'COALESCE(process.percent, "") AS percent, '
+                'COALESCE(process.pid, "") AS pid, '
+                'COALESCE(process.name, "") AS name, '
+                'COALESCE(process.tabTitle, "") AS tabTitle, '
+                'COALESCE(process.hostIp, "") AS hostIp, '
+                'COALESCE(process.port, "") AS port, '
+                'COALESCE(process.protocol, "") AS protocol, '
+                'COALESCE(process.command, "") AS command, '
+                'COALESCE(process.startTime, "") AS startTime, '
+                'COALESCE(process.endTime, "") AS endTime, '
+                'COALESCE(process.outputfile, "") AS outputfile, '
+                'COALESCE(output.output, "") AS output, '
+                'COALESCE(process.status, "") AS status, '
+                'COALESCE(process.closed, "") AS closed, '
+                'process.id AS id '
+                'FROM process AS process '
+                'LEFT JOIN process_output AS output ON process.id = output.processId '
+                'WHERE process.name=:toolName'
+            )
+            result = session.execute(query, {'toolName': str(toolName)})
         else:
-            query = text('SELECT process.id, "0", "0", "0", "0", "0", "0", process.hostIp, process.port, '
-                         'process.protocol, "0", "0", process.outputfile, "0", "0", "0" FROM process AS process '
-                         'WHERE process.name=:toolName and process.closed="False"')
-        result = session.execute(query, {'toolName': str(toolName)}).fetchall()
+            query = text(
+                'SELECT '
+                '0 AS progress, '
+                'process.display AS display, '
+                'COALESCE(process.elapsed, 0) AS elapsed, '
+                'COALESCE(process.percent, "") AS percent, '
+                'COALESCE(process.pid, "") AS pid, '
+                'COALESCE(process.name, "") AS name, '
+                'COALESCE(process.tabTitle, "") AS tabTitle, '
+                'COALESCE(process.hostIp, "") AS hostIp, '
+                'COALESCE(process.port, "") AS port, '
+                'COALESCE(process.protocol, "") AS protocol, '
+                'COALESCE(process.command, "") AS command, '
+                'COALESCE(process.startTime, "") AS startTime, '
+                'COALESCE(process.endTime, "") AS endTime, '
+                'COALESCE(process.outputfile, "") AS outputfile, '
+                'COALESCE(output.output, "") AS output, '
+                'COALESCE(process.status, "") AS status, '
+                'COALESCE(process.closed, "") AS closed, '
+                'process.id AS id '
+                'FROM process AS process '
+                'LEFT JOIN process_output AS output ON process.id = output.processId '
+                'WHERE process.name=:toolName AND process.closed=:closed'
+            )
+            result = session.execute(query, {'toolName': str(toolName), 'closed': str(closed)})
+        rows = result.fetchall()
+        keys = result.keys()
         session.close()
-        return result
+        return [dict(zip(keys, row)) for row in rows]
 
     def storeProcessCrashStatus(self, processId: str):
         session = self.dbAdapter.session()
