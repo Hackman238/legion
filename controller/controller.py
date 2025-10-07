@@ -257,6 +257,25 @@ class Controller:
 
         if nmapOptions is None:
             nmapOptions = []
+        else:
+            nmapOptions = [opt for opt in nmapOptions if opt]
+
+        # Normalize whitespace
+        nmapOptions = [opt.strip() for opt in nmapOptions if opt.strip()]
+
+        incompatible_prefixes = ('-f', '--randomize-hosts', '--data-length')
+        if enableIPv6:
+            filtered_options = []
+            removed = []
+            for opt in nmapOptions:
+                lower = opt.lower()
+                if lower.startswith(incompatible_prefixes):
+                    removed.append(opt)
+                    continue
+                filtered_options.append(opt)
+            if removed:
+                log.info(f"Removing IPv6-incompatible nmap options: {', '.join(removed)}")
+            nmapOptions = filtered_options
 
         import os
         runningFolder = normalize_path(self.logic.activeProject.properties.runningFolder)
@@ -275,55 +294,54 @@ class Controller:
                 self.runStagedNmap(targetHosts, discovery=runHostDiscovery, enable_ipv6=ipv6_flag)
             elif runHostDiscovery:
                 outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-host-discover"))
-                nmapOptionsString = ' '.join(nmapOptions)
-                easy_mode_discovery_flags = "-f --data-length 5 --randomize-hosts --max-retries 2"
-                discovery_prefix = ' '.join(
-                    part for part in [nmapOptionsString.strip(), easy_mode_discovery_flags] if part
-                )
-                command_parts = ["nmap"]
+                easy_mode_flags = ['-f', '--data-length 5', '--randomize-hosts', '--max-retries 2']
                 if ipv6_flag:
-                    command_parts.append("-6")
-                if discovery_prefix:
-                    command_parts.append(discovery_prefix)
-                command_parts.extend([
+                    removed_easy = [flag for flag in easy_mode_flags if flag.startswith('-f') or flag.startswith('--randomize-hosts') or flag.startswith('--data-length')]
+                    if removed_easy:
+                        log.info(f"Removing IPv6-incompatible easy-mode options: {', '.join(removed_easy)}")
+                    easy_mode_flags = [flag for flag in easy_mode_flags if flag not in removed_easy]
+
+                command_tokens = ["nmap"]
+                if ipv6_flag:
+                    command_tokens.append("-6")
+                command_tokens.extend(nmapOptions)
+                command_tokens.extend(easy_mode_flags)
+                command_tokens.extend([
                     "-sV", "-O", "--version-light", f"-T{str(nmapSpeed)}",
                     targetHosts, "--stats-every", "10s", "-oA", outputfile
                 ])
-                command = ' '.join(part for part in command_parts if part)
+                command = ' '.join(token for token in command_tokens if token)
                 self.runCommand('nmap', 'nmap (discovery)', targetHosts, '', '', command, getTimestamp(True),
                                 outputfile, self.view.createNewTabForHost(str(targetHosts), 'nmap (discovery)', True),
                                 enable_ipv6=ipv6_flag)
             else:
                 outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-list"))
-                nmapOptionsString = ' '.join(nmapOptions)
-                command_parts = ["nmap"]
+                command_tokens = ["nmap"]
                 if ipv6_flag:
-                    command_parts.append("-6")
-                if nmapOptionsString.strip():
-                    command_parts.append(nmapOptionsString.strip())
-                command_parts.extend([
+                    command_tokens.append("-6")
+                command_tokens.extend(nmapOptions)
+                command_tokens.extend([
                     "-sL", f"-T{str(nmapSpeed)}", targetHosts, "--stats-every", "10s", "-oA", outputfile
                 ])
-                command = ' '.join(part for part in command_parts if part)
+                command = ' '.join(token for token in command_tokens if token)
                 self.runCommand('nmap', 'nmap (list)', targetHosts, '', '', command, getTimestamp(True),
                                 outputfile,
                                 self.view.createNewTabForHost(str(targetHosts), 'nmap (list)', True),
                                 enable_ipv6=ipv6_flag)
         elif scanMode == 'Hard':
             outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-nmap-custom"))
-            nmapOptionsString = ' '.join(nmapOptions)
-            if 'randomize' not in nmapOptionsString:
-                nmapOptionsString = (nmapOptionsString + " " if nmapOptionsString else "") + "-T" + str(nmapSpeed)
-            command_parts = ["nmap"]
-            display_options = nmapOptionsString.strip()
-            if ipv6_flag and "-6" not in display_options.split():
-                command_parts.append("-6")
-                display_options = ("-6 " + display_options).strip()
-            if display_options:
-                command_parts.append(display_options)
-            command_parts.extend([targetHosts, "--stats-every", "10s", "-oA", outputfile])
-            command = ' '.join(part for part in command_parts if part)
-            display_label = (display_options or nmapOptionsString).strip()
+            options_tokens = list(nmapOptions)
+            if not any('randomize' in opt.lower() for opt in options_tokens):
+                options_tokens.append(f"-T{str(nmapSpeed)}")
+            if ipv6_flag and not any(opt.strip().startswith('-6') for opt in options_tokens):
+                options_tokens.insert(0, '-6')
+            options_tokens = [opt for opt in options_tokens if opt]
+            options_str = ' '.join(options_tokens).strip()
+            command_tokens = ["nmap"]
+            command_tokens.extend(options_tokens)
+            command_tokens.extend([targetHosts, "--stats-every", "10s", "-oA", outputfile])
+            command = ' '.join(token for token in command_tokens if token)
+            display_label = options_str
             self.runCommand('nmap', 'nmap (custom ' + display_label + ')', targetHosts, '', '', command,
                             getTimestamp(True), outputfile,
                             self.view.createNewTabForHost(
