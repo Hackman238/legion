@@ -38,21 +38,86 @@ class ProcessRepository:
     # we are using the same model to display process information everywhere)
 
     def getProcesses(self, filters, showProcesses: Union[str, bool] = 'noNmap', sort: str = 'desc', ncol: str = 'id'):
-        # Modified: include nmap processes in the tools table
+        # Modified: return consistent column aliases across all query paths so UI models can rely on keys.
         session = self.dbAdapter.session()
         if showProcesses == 'noNmap':
-            query = text('SELECT "0", "0", "0", process.name, "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0" '
-                         'FROM process AS process WHERE process.closed = "False" '
-                         'ORDER BY process.id DESC')
+            query = text(
+                'SELECT '
+                '0 AS progress, '
+                'process.display AS display, '
+                'COALESCE(process.elapsed, 0) AS elapsed, '
+                'COALESCE(process.percent, "") AS percent, '
+                'COALESCE(process.pid, "") AS pid, '
+                'COALESCE(process.name, "") AS name, '
+                'COALESCE(process.tabTitle, "") AS tabTitle, '
+                'COALESCE(process.hostIp, "") AS hostIp, '
+                'COALESCE(process.port, "") AS port, '
+                'COALESCE(process.protocol, "") AS protocol, '
+                'COALESCE(process.command, "") AS command, '
+                'COALESCE(process.startTime, "") AS startTime, '
+                'COALESCE(process.endTime, "") AS endTime, '
+                'COALESCE(process.outputfile, "") AS outputfile, '
+                '"" AS output, '
+                'COALESCE(process.status, "") AS status, '
+                'COALESCE(process.closed, "") AS closed, '
+                'process.id AS id '
+                'FROM process AS process '
+                'WHERE process.closed = "False" '
+                'ORDER BY process.id DESC'
+            )
             result = session.execute(query)
         elif not showProcesses:
-            query = text('SELECT process.id, process.hostIp, process.tabTitle, process.outputfile, output.output '
-                         'FROM process AS process INNER JOIN process_output AS output ON process.id = output.processId '
-                         'WHERE process.display = :display AND process.closed = "False" order by process.id desc')
+            query = text(
+                'SELECT '
+                '0 AS progress, '
+                'process.display AS display, '
+                'COALESCE(process.elapsed, 0) AS elapsed, '
+                'COALESCE(process.percent, "") AS percent, '
+                'COALESCE(process.pid, "") AS pid, '
+                'COALESCE(process.name, "") AS name, '
+                'COALESCE(process.tabTitle, "") AS tabTitle, '
+                'COALESCE(process.hostIp, "") AS hostIp, '
+                'COALESCE(process.port, "") AS port, '
+                'COALESCE(process.protocol, "") AS protocol, '
+                'COALESCE(process.command, "") AS command, '
+                'COALESCE(process.startTime, "") AS startTime, '
+                'COALESCE(process.endTime, "") AS endTime, '
+                'COALESCE(process.outputfile, "") AS outputfile, '
+                'COALESCE(output.output, "") AS output, '
+                'COALESCE(process.status, "") AS status, '
+                'COALESCE(process.closed, "") AS closed, '
+                'process.id AS id '
+                'FROM process AS process '
+                'INNER JOIN process_output AS output ON process.id = output.processId '
+                'WHERE process.display = :display AND process.closed = "False" '
+                'ORDER BY process.id DESC'
+            )
             result = session.execute(query, {'display': str(showProcesses)})
         else:
             query = text(
-                'SELECT * FROM process AS process WHERE process.display=:display order by {0} {1}'.format(ncol, sort)
+                'SELECT '
+                '0 AS progress, '
+                'process.display AS display, '
+                'COALESCE(process.elapsed, 0) AS elapsed, '
+                'COALESCE(process.percent, "") AS percent, '
+                'COALESCE(process.pid, "") AS pid, '
+                'COALESCE(process.name, "") AS name, '
+                'COALESCE(process.tabTitle, "") AS tabTitle, '
+                'COALESCE(process.hostIp, "") AS hostIp, '
+                'COALESCE(process.port, "") AS port, '
+                'COALESCE(process.protocol, "") AS protocol, '
+                'COALESCE(process.command, "") AS command, '
+                'COALESCE(process.startTime, "") AS startTime, '
+                'COALESCE(process.endTime, "") AS endTime, '
+                'COALESCE(process.outputfile, "") AS outputfile, '
+                'COALESCE(output.output, "") AS output, '
+                'COALESCE(process.status, "") AS status, '
+                'COALESCE(process.closed, "") AS closed, '
+                'process.id AS id '
+                'FROM process AS process '
+                'LEFT JOIN process_output AS output ON process.id = output.processId '
+                'WHERE process.display=:display '
+                f'ORDER BY {ncol} {sort}'
             )
             result = session.execute(query, {'display': str(showProcesses)})
         rows = result.fetchall()
