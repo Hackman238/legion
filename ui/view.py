@@ -228,7 +228,7 @@ class View(QtCore.QObject):
         # tools table (left)
         headers = ["Progress", "Display", "Pid", "Tool", "Tool", "Host", "Port", "Protocol", "Command", "Start time",
                    "OutputFile", "Output", "Status"]
-        setTableProperties(self.ui.ToolsTableView, len(headers), [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+        setTableProperties(self.ui.ToolsTableView, len(headers), [0, 1, 2, 4, 7, 8, 9, 10, 11, 12, 13])
 
         # service table (right)
         headers = ["Host", "Port", "Port", "Protocol", "State", "HostId", "ServiceId", "Name", "Product", "Version",
@@ -1313,7 +1313,7 @@ class View(QtCore.QObject):
             self.viewState.lazy_update_tools = False  # to indicate that it doesn't need to be updated anymore
 
             # Hides columns we don't want to see
-            for i in [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]:  # hide some columns
+            for i in [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]:  # hide some columns
                 self.ui.ToolsTableView.setColumnHidden(i, True)
                     
             tools = []                                                  # ensure that there is always something selected
