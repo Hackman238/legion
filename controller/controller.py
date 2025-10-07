@@ -794,6 +794,9 @@ class Controller:
         return self.logic.activeProject.repositoryContainer.processRepository.getProcesses(filters, showProcesses, sort,
                                                                                            ncol)
 
+    def getProcessesForRestore(self):
+        return self.logic.activeProject.repositoryContainer.processRepository.getProcessesForRestore()
+
     #################### PROCESSES ####################
 
     def checkProcessQueue(self):
