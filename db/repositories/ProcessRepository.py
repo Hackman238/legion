@@ -62,7 +62,7 @@ class ProcessRepository:
                 'COALESCE(process.closed, "") AS closed, '
                 'process.id AS id '
                 'FROM process AS process '
-                'WHERE process.closed = "False" '
+                'WHERE process.closed = "False" AND process.display = "True" '
                 'ORDER BY process.id DESC'
             )
             result = session.execute(query)

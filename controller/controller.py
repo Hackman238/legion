@@ -214,16 +214,18 @@ class Controller:
     def openExistingProject(self, filename, projectType='legion'):
         self.view.closeProject()
         self.logic.openExistingProject(filename, projectType)
-        try:
-            repo_container = getattr(self.logic.activeProject, "repositoryContainer", None)
-            if repo_container and hasattr(repo_container, "processRepository"):
-                repo_container.processRepository.resetDisplayStatusForOpenProcesses()
-        except Exception:
-            log.exception("Failed to reset process display status when opening project")
         # initialisations (globals, signals, etc)
         self.start(os.path.basename(self.logic.activeProject.properties.projectName))
         self.view.restoreToolTabs() # restores the tool tabs for each host
         self.view.hostTableClick() # click on first host to restore his host tool tabs
+        try:
+            repo_container = getattr(self.logic.activeProject, "repositoryContainer", None)
+            if repo_container and hasattr(repo_container, "processRepository"):
+                repo_container.processRepository.resetDisplayStatusForOpenProcesses()
+                self.view.viewState.lazy_update_tools = True
+                self.view.updateToolsTableView()
+        except Exception:
+            log.exception("Failed to reset process display status when opening project")
 
     def saveProject(self, lastHostIdClicked, notes):
         if not lastHostIdClicked == '':
