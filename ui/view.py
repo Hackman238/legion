@@ -19,8 +19,6 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 import ntpath  # for file operations, to kill processes and for regex
-from collections import OrderedDict
-from collections.abc import Mapping
 
 from app.ApplicationInfo import applicationInfo, getVersion
 from app.timing import getTimestamp
@@ -1286,8 +1284,7 @@ class View(QtCore.QObject):
             self.viewState.filters, showProcesses='noNmap',
             sort=self.toolsTableViewSort,
             ncol=self.toolsTableViewSortColumn)
-        deduped_tools = self._dedupeTools(tools)
-        self.ToolsTableModel = ProcessesTableModel(self, deduped_tools, headers)
+        self.ToolsTableModel = ProcessesTableModel(self, tools, headers)
         self.ui.ToolsTableView.setModel(self.ToolsTableModel)
 
     def refreshToolsTableModel(self):
@@ -1299,10 +1296,7 @@ class View(QtCore.QObject):
             sort=self.toolsTableViewSort,
             ncol=self.toolsTableViewSortColumn
         )
-        deduped_tools = self._dedupeTools(processes)
-        if not deduped_tools and processes:
-            deduped_tools = processes
-        self.ToolsTableModel.setDataList(deduped_tools)
+        self.ToolsTableModel.setDataList(processes)
 
     def updateToolsTableView(self):
         if self.ui.MainTabWidget.tabText(self.ui.MainTabWidget.currentIndex()) == 'Scan' and \
@@ -1312,10 +1306,7 @@ class View(QtCore.QObject):
                 showProcesses='noNmap',
                 sort=self.toolsTableViewSort,
                 ncol=self.toolsTableViewSortColumn)
-            deduped_tools = self._dedupeTools(processes)
-            if not deduped_tools and processes:
-                deduped_tools = processes
-            self.ToolsTableModel.setDataList(deduped_tools)
+            self.ToolsTableModel.setDataList(processes)
             self.ui.ToolsTableView.repaint()
             self.ui.ToolsTableView.update()
 
@@ -1339,21 +1330,6 @@ class View(QtCore.QObject):
                 self.ui.ToolsTableView.selectRow(row)
                 self.toolsTableClick()
 
-    def _dedupeTools(self, processes):
-        deduped = OrderedDict()
-        for proc in processes:
-            if isinstance(proc, Mapping):
-                name = proc.get('name')
-            else:
-                name = getattr(proc, 'name', None)
-            if not name:
-                continue
-            if name not in deduped:
-                deduped[name] = dict(proc) if isinstance(proc, Mapping) else proc
-        result = list(deduped.values())
-        if not result and processes:
-            return list(processes)
-        return result
         
     #################### RIGHT PANEL INTERFACE UPDATE FUNCTIONS ####################
     
