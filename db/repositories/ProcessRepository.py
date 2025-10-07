@@ -251,6 +251,26 @@ class ProcessRepository:
         session.close()
         return [dict(zip(keys, row)) for row in rows]
 
+    def getProcessesForRestore(self):
+        session = self.dbAdapter.session()
+        query = text(
+            'SELECT '
+            'process.id AS id, '
+            'COALESCE(process.hostIp, "") AS hostIp, '
+            'COALESCE(process.tabTitle, "") AS tabTitle, '
+            'COALESCE(process.outputfile, "") AS outputfile, '
+            'COALESCE(output.output, "") AS output '
+            'FROM process AS process '
+            'LEFT JOIN process_output AS output ON process.id = output.processId '
+            'WHERE process.closed = "False" '
+            'ORDER BY process.id ASC'
+        )
+        result = session.execute(query)
+        rows = result.fetchall()
+        keys = result.keys()
+        session.close()
+        return [dict(zip(keys, row)) for row in rows]
+
     def storeProcessCrashStatus(self, processId: str):
         session = self.dbAdapter.session()
         proc = session.query(process).filter_by(id=processId).first()

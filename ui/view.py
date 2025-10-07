@@ -1778,7 +1778,7 @@ class View(QtCore.QObject):
     def restoreToolTabs(self):
         # false means we are fetching processes with display flag=False, which is the case for every process once
         # a project is closed.
-        tools = self.controller.getProcessesFromDB(self.viewState.filters, showProcesses=False)
+        tools = self.controller.getProcessesForRestore()
         nbr = len(tools)  # show a progress bar because this could take long
         if nbr==0:
             nbr=1
