@@ -24,6 +24,7 @@ import tempfile
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import QProcess, QObject, pyqtSignal, pyqtSlot, QThread, Qt
 from six import u as unicode
+import ipaddress
 
 from app.httputil.isHttps import isHttps
 from app.logging.legionLog import getAppLogger
@@ -112,14 +113,11 @@ def sortArrayWithArray(array, arrayToSort):
 # converts an IP address to an integer (for the sort function)
 def IP2Int(ip):
     try:
-        res = 0
-        ip = ip.split("/")[0]  # bug fix: remove slash if it's a range
-        o = list(map(int, ip.split('.')))
-        res = (16777216 * o[0]) + (65536 * o[1]) + (256 * o[2]) + o[3]
-    except:
+        ip_clean = str(ip).split("/")[0].strip()
+        return int(ipaddress.ip_address(ip_clean))
+    except Exception:
         log.error("Input IP {0} is not valid. Passing for now.".format(str(ip)))
-        pass
-    return res
+        return 0
 
 
 # used by the settings dialog when a user cancels and the GUI needs to be reset

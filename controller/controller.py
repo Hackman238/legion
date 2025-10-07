@@ -20,6 +20,7 @@ import signal  # for file operations, to kill processes, for regex, for subproce
 import subprocess
 import tempfile
 import os
+import socket
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
 
 from app.ApplicationInfo import applicationInfo
@@ -48,6 +49,17 @@ def normalize_path(path):
     return os.path.normpath(path).replace("\\", "/")
 
 class Controller:
+    @staticmethod
+    def _has_ipv6_connectivity():
+        try:
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            sock.settimeout(1)
+            sock.connect(("2606:4700:4700::1111", 53))
+            sock.close()
+            return True
+        except OSError as exc:
+            log.debug(f"IPv6 connectivity probe failed: {exc}")
+            return False
 
     # initialisations that will happen once - when the program is launched
     @timing
@@ -261,7 +273,15 @@ class Controller:
             nmapOptions = [opt for opt in nmapOptions if opt]
 
         # Normalize whitespace
-        nmapOptions = [opt.strip() for opt in nmapOptions if opt.strip()]
+        nmapOptions = [opt.strip() for opt in nmapOptions if opt and opt.strip()]
+
+        if enableIPv6 and not self._has_ipv6_connectivity():
+            log.warning("IPv6 connectivity test failed. Falling back to IPv4-only scanning.")
+            try:
+                self.view.ui.statusbar.showMessage('IPv6 connectivity unavailable; falling back to IPv4', 5000)
+            except Exception:
+                pass
+            enableIPv6 = False
 
         incompatible_prefixes = ('-f', '--randomize-hosts', '--data-length')
         if enableIPv6:
