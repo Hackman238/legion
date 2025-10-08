@@ -1045,8 +1045,8 @@ class Controller:
             log.info(f"runCommand connected for stage {str(stage)}")
             nextStage = stage + 1
             qProcess.finished.connect(
-                lambda host=str(hostIp).strip(), discovery_flag=discovery, next_stage=nextStage,
-                       enable_ipv6_flag=enable_ipv6, process_id=qProcess.id:
+                lambda exitCode, exitStatus, host=str(hostIp).strip(), discovery_flag=discovery,
+                       next_stage=nextStage, enable_ipv6_flag=enable_ipv6, process_id=qProcess.id:
                 self.runStagedNmap(
                     host,
                     discovery=discovery_flag,
@@ -1095,7 +1095,7 @@ class Controller:
         if not host_arg:
             log.warning(f"runStagedNmap stage {stage}: empty target host received, aborting stage.")
             return
-        log.info(f"runStagedNmap called for stage {str(stage)}")
+        log.info(f"runStagedNmap called for stage {str(stage)} targeting {host_arg}")
         runningFolder = self.logic.activeProject.properties.runningFolder
         # Use the session directory for temp files
         session_path = getattr(self.logic.activeProject, "sessionFile", None)
