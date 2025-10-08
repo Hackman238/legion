@@ -49,6 +49,26 @@ def normalize_path(path):
     return os.path.normpath(path).replace("\\", "/")
 
 class Controller:
+    def _resolve_host_and_ip(self, host_value: str):
+        display_host = host_value
+        ip_value = host_value
+        try:
+            repo_container = getattr(self.logic.activeProject, "repositoryContainer", None)
+            if repo_container and hasattr(repo_container, "hostRepository"):
+                host_repo = repo_container.hostRepository
+                host_obj = host_repo.getHostByIP(host_value)
+                if not host_obj:
+                    host_obj = host_repo.getHostByHostname(host_value)
+                if host_obj:
+                    hostname = getattr(host_obj, 'hostname', None)
+                    if hostname:
+                        display_host = hostname.strip()
+                    candidate_ip = getattr(host_obj, 'ip', None) or getattr(host_obj, 'ipv4', None)
+                    if candidate_ip:
+                        ip_value = candidate_ip.strip()
+        except Exception:
+            log.debug(f"Failed to resolve hostname for {host_value}", exc_info=True)
+        return display_host or host_value, ip_value or host_value
     @staticmethod
     def _has_ipv6_connectivity():
         try:
@@ -506,15 +526,21 @@ class Controller:
     def handleServiceNameAction(self, targets, actions, action, restoring=True):
 
         if action.text() == 'Take screenshot':
-            for ip in targets:
-                url = ip[0] + ':' + ip[1]
-                self.screenshooter.addToQueue(ip[0], ip[1], url)
+            for target in targets:
+                host_value = str(target[0])
+                port_value = str(target[1])
+                display_host, resolved_ip = self._resolve_host_and_ip(host_value)
+                url = f"{display_host}:{port_value}"
+                self.screenshooter.addToQueue(resolved_ip, port_value, url)
             self.screenshooter.start()
             return
 
         elif action.text() == 'Open in browser':
-            for ip in targets:
-                url = ip[0]+':'+ip[1]
+            for target in targets:
+                host_value = str(target[0])
+                port_value = str(target[1])
+                display_host, _ = self._resolve_host_and_ip(host_value)
+                url = f"{display_host}:{port_value}"
                 self.browser.addToQueue(url)
             self.browser.start()
             return
@@ -622,9 +648,12 @@ class Controller:
             return
 
         if action.text() == 'Take screenshot':
-            for ip in targets:
-                url = f"{ip[0]}:{ip[1]}"
-                self.screenshooter.addToQueue(ip[0], ip[1], url)
+            for target in targets:
+                host_value = str(target[0])
+                port_value = str(target[1])
+                display_host, resolved_ip = self._resolve_host_and_ip(host_value)
+                url = f"{display_host}:{port_value}"
+                self.screenshooter.addToQueue(resolved_ip, port_value, url)
             self.screenshooter.start()
             return
 
@@ -1372,22 +1401,20 @@ class Controller:
         for tool in self.settings.automatedAttacks:
             if service in tool[1].split(",") and protocol==tool[2]:
                 if tool[0] == "screenshooter":
-                    if hostname:
-                        url = hostname+':'+port
-                    else:
-                        url = ip+':'+port
+                    display_host, resolved_ip = self._resolve_host_and_ip(hostname or ip)
+                    url = f"{display_host}:{port}"
                     # Check if screenshot already exists using deterministic filename
                     screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
-                    deterministic_screenshot = f"{ip}-{port}-screenshot.png"
+                    deterministic_screenshot = f"{resolved_ip}-{port}-screenshot.png"
                     screenshot_exists = False
                     if os.path.isdir(screenshots_dir):
                         if deterministic_screenshot in os.listdir(screenshots_dir):
                             screenshot_exists = True
                     if screenshot_exists:
-                        log.info(f"Skipping screenshot for {ip}:{port} (already exists)")
+                        log.info(f"Skipping screenshot for {resolved_ip}:{port} (already exists)")
                     else:
                         log.info("Screenshooter of URL: %s" % str(url))
-                        self.screenshooter.addToQueue(ip, port, url)
+                        self.screenshooter.addToQueue(resolved_ip, port, url)
                         self.screenshooter.start()
 
                 else:

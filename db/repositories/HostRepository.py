@@ -100,6 +100,17 @@ class HostRepository:
         session.close()
         return host
 
+    def getHostByHostname(self, hostname):
+        """
+        Return the hostObj for a given hostname, or None if not found.
+        """
+        session = self.dbAdapter.session()
+        try:
+            host = session.query(hostObj).filter_by(hostname=str(hostname)).first()
+        finally:
+            session.close()
+        return host
+
     def getAllHostObjs(self):
         """
         Return all hostObj ORM objects in the database.
