@@ -1677,6 +1677,10 @@ class View(QtCore.QObject):
                     image_holder = current
                     break
                 current = current.parentWidget()
+        if image_holder is None and isinstance(widget, QtWidgets.QScrollArea):
+            candidate = widget.widget()
+            if candidate and hasattr(candidate, 'pixmap'):
+                image_holder = widget
 
         if not image_holder:
             log.info(f"No screenshot content found for tab '{tab_title}'")
@@ -1695,12 +1699,21 @@ class View(QtCore.QObject):
             filename += '.png'
 
         image_path = getattr(image_holder, 'currentImagePath', None)
+        if not image_path and hasattr(image_holder, 'parentWidget'):
+            parent = image_holder.parentWidget()
+            if parent and hasattr(parent, 'currentImagePath'):
+                image_path = getattr(parent, 'currentImagePath')
         try:
             if image_path and os.path.isfile(image_path):
                 log.info(f"Copying screenshot from {image_path} to {filename}")
                 shutil.copyfile(image_path, filename)
                 return
-            pixmap = getattr(image_holder.imageLabel, 'pixmap', lambda: None)()
+            image_label = getattr(image_holder, 'imageLabel', None)
+            if image_label is None and isinstance(image_holder, QtWidgets.QScrollArea):
+                content = image_holder.widget()
+                if isinstance(content, QtWidgets.QLabel):
+                    image_label = content
+            pixmap = image_label.pixmap() if image_label else None
             if pixmap:
                 log.info(f"Saving screenshot pixmap from tab '{tab_title}' to {filename}")
                 pixmap.save(filename, 'PNG')
@@ -1726,6 +1739,8 @@ class View(QtCore.QObject):
         if isinstance(widget, QtWidgets.QPlainTextEdit):
             self._save_tool_text(widget, tab_title)
         elif isinstance(widget, ImageViewer):
+            self._save_tool_image(widget, tab_title)
+        elif isinstance(widget, QtWidgets.QScrollArea):
             self._save_tool_image(widget, tab_title)
 
     def updateProcessesIcon(self):
@@ -1806,12 +1821,14 @@ class View(QtCore.QObject):
             hosttabs = self.viewState.hostTabs[str(ip)]
         
         if 'screenshot' in str(tabTitle):
-            hosttabs.append(tempWidget.scrollArea)                      # add the new tab to the list
+            hosttabs.append(tempWidget)                                 # store full image widget for screenshot tabs
         else:
             hosttabs.append(tempWidget)                                 # add the new tab to the list
         
         self.viewState.hostTabs.update({str(ip):hosttabs})
 
+        if 'screenshot' in str(tabTitle):
+            return tempWidget
         return tempTextView
 
 
