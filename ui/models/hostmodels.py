@@ -192,5 +192,6 @@ class HostsTableModel(QtCore.QAbstractTableModel):
             
     def getRowForIp(self, ip):
         for i in range(len(self.__hosts)):
-            if self.__hosts[i]['ip'] == ip:
+            host = self.__hosts[i]
+            if host.get('ip') == ip or host.get('ipv4') == ip or host.get('hostname') == ip:
                 return i
