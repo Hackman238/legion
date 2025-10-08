@@ -1584,15 +1584,16 @@ class View(QtCore.QObject):
         for index, width in enumerate(columnWidths):
             header.resizeSection(index, int(width))
 
-        #Hides columns we don't want to see
         showDetail = self.controller.settings.gui_process_tab_detail
-        if showDetail ==  True:
-            columnsToHide = [1, 5, 8, 9, 12, 14, 16]
+        if showDetail:
+            visible_columns = {0, 2, 3, 4, 6, 7, 11, 12, 15}
         else:
-            columnsToHide = [1, 5, 8, 9, 10, 11, 12, 13, 14, 16]
-        for i in columnsToHide:
-            self.ui.ProcessesTableView.setColumnHidden(i, True)
-        
+            visible_columns = {0, 6, 7, 15}
+
+        total_columns = self.ProcessesTableModel.columnCount(QtCore.QModelIndex())
+        for col in range(total_columns):
+            self.ui.ProcessesTableView.setColumnHidden(col, col not in visible_columns)
+
         # Force size of progress animation
         self.ui.ProcessesTableView.horizontalHeader().resizeSection(0, 125)
         self.ui.ProcessesTableView.horizontalHeader().resizeSection(15, 125)
