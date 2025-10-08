@@ -80,6 +80,7 @@ class ImageViewer(QtWidgets.QWidget):
         QtWidgets.QWidget.__init__(self, parent)
 
         self.scaleFactor = 0.0
+        self.currentImagePath = None
 
         self.imageLabel = QtWidgets.QLabel()
         self.imageLabel.setBackgroundRole(QtGui.QPalette.ColorRole.Base)
@@ -102,8 +103,10 @@ class ImageViewer(QtWidgets.QWidget):
                     QtWidgets.QMessageBox.information(self, "Image Viewer","Cannot load %s." % fileName)
                     return
                 image = placeholder
+                self.currentImagePath = placeholder_path
                 self.imageLabel.setToolTip(f"Unable to load screenshot: {fileName}")
             else:
+                self.currentImagePath = fileName
                 self.imageLabel.setToolTip("")
 
             self.imageLabel.setPixmap(QtGui.QPixmap.fromImage(image))

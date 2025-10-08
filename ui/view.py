@@ -19,6 +19,8 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 import ntpath  # for file operations, to kill processes and for regex
+import os
+import shutil
 from collections import OrderedDict
 from collections.abc import Mapping
 
@@ -147,6 +149,7 @@ class View(QtCore.QObject):
         self.displayScreenshots(False)
         # displays an overlay over the hosttableview saying 'click here to add host(s) to scope'
         self.displayAddHostsOverlay(True)
+        self._initToolTabContextMenu()
 
     def startConnections(self):  # signal initialisations (signals/slots, actions, etc)
         ### MENU ACTIONS ###
@@ -1605,6 +1608,99 @@ class View(QtCore.QObject):
 
         # Update animations
         self.updateProcessesIcon()
+
+    def _initToolTabContextMenu(self):
+        tabBar = self.ui.ServicesTabWidget.tabBar()
+        tabBar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tabBar.customContextMenuRequested.connect(self._showToolTabContextMenu)
+
+    def _showToolTabContextMenu(self, pos):
+        tabBar = self.ui.ServicesTabWidget.tabBar()
+        index = tabBar.tabAt(pos)
+        if index < 0 or index < getattr(self, 'fixedTabsCount', 0):
+            return
+
+        widget = self.ui.ServicesTabWidget.widget(index)
+        if widget is None:
+            return
+
+        menu = QtWidgets.QMenu(self.ui.ServicesTabWidget)
+        saveAction = menu.addAction('Save')
+        globalPos = tabBar.mapToGlobal(pos)
+        chosen = menu.exec(globalPos)
+        if chosen == saveAction:
+            self._saveToolTabContent(index, widget)
+
+    def _suggest_filename(self, base_name, extension):
+        safe = ''.join(ch if ch.isalnum() or ch in (' ', '_', '-') else '_' for ch in base_name or 'output')
+        safe = safe.strip().replace(' ', '_') or 'output'
+        if not safe.lower().endswith(f".{extension}"):
+            safe += f".{extension}"
+        return safe
+
+    def _save_tool_text(self, widget, tab_title):
+        text_edit = widget.findChild(QtWidgets.QPlainTextEdit)
+        if not text_edit:
+            return
+        content = text_edit.toPlainText()
+        default_path = self._suggest_filename(tab_title, 'txt')
+        filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.ui.centralwidget,
+            'Save Tool Output',
+            default_path,
+            'Text Files (*.txt);;All Files (*)'
+        )
+        if not filename:
+            return
+        if not filename.lower().endswith('.txt'):
+            filename += '.txt'
+        try:
+            with open(filename, 'w', encoding='utf-8') as fh:
+                fh.write(content)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self.ui.centralwidget,
+                'Save Failed',
+                f'Unable to save file:\n{exc}'
+            )
+
+    def _save_tool_image(self, widget, tab_title):
+        default_path = self._suggest_filename(tab_title, 'png')
+        filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.ui.centralwidget,
+            'Save Screenshot',
+            default_path,
+            'PNG Images (*.png);;All Files (*)'
+        )
+        if not filename:
+            return
+        if not filename.lower().endswith('.png'):
+            filename += '.png'
+
+        image_path = getattr(widget, 'currentImagePath', None)
+        try:
+            if image_path and os.path.isfile(image_path):
+                shutil.copyfile(image_path, filename)
+                return
+            pixmap = getattr(widget.imageLabel, 'pixmap', lambda: None)()
+            if pixmap:
+                pixmap.save(filename, 'PNG')
+            else:
+                raise IOError('No image data available.')
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self.ui.centralwidget,
+                'Save Failed',
+                f'Unable to save screenshot:\n{exc}'
+            )
+
+    def _saveToolTabContent(self, index, widget):
+        tab_title = self.ui.ServicesTabWidget.tabText(index)
+        if widget.findChild(QtWidgets.QPlainTextEdit):
+            self._save_tool_text(widget, tab_title)
+            return
+        if hasattr(widget, 'imageLabel'):
+            self._save_tool_image(widget, tab_title)
 
     def updateProcessesIcon(self):
         if self.ProcessesTableModel:
