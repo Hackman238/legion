@@ -22,12 +22,12 @@ def defaultUserAgent() -> str:
     return "Mozilla/5.0 (X11; Linux x86_64; rv:22.0) Gecko/20100101 Firefox/22.0 Iceweasel/22.0"
 
 
-def isHttps(ip, port) -> bool:
+def isHttps(host, port) -> bool:
     from urllib.error import URLError
     try:
         from urllib.request import Request, urlopen
         headers = {"User-Agent": defaultUserAgent()}
-        req = Request(f"https://{ip}:{port}", headers=headers)
+        req = Request(f"https://{host}:{port}", headers=headers)
         urlopen(req, timeout=5).read()
         return True
     except URLError as e:
