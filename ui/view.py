@@ -1582,15 +1582,20 @@ class View(QtCore.QObject):
         columnWidths = self.controller.getSettings().gui_process_tab_column_widths.split(',')
         header = self.ui.ProcessesTableView.horizontalHeader()
         for index, width in enumerate(columnWidths):
-            header.resizeSection(index, int(width))
+            try:
+                header.resizeSection(index, int(width))
+            except (ValueError, TypeError):
+                continue
 
-        showDetail = self.controller.settings.gui_process_tab_detail
+        showDetailSetting = str(self.controller.settings.gui_process_tab_detail).lower()
+        showDetail = showDetailSetting in ('true', '1', 'yes', 'on')
+
         if showDetail:
-            visible_columns = {0, 2, 3, 4, 6, 7, 11, 12, 15}
+            visible_columns = {0, 2, 3, 4, 6, 7, 11, 15}
         else:
             visible_columns = {0, 6, 7, 15}
 
-        total_columns = self.ProcessesTableModel.columnCount(QtCore.QModelIndex())
+        total_columns = self.ProcessesTableModel.columnCount(None)
         for col in range(total_columns):
             self.ui.ProcessesTableView.setColumnHidden(col, col not in visible_columns)
 
