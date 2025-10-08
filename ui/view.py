@@ -1639,8 +1639,9 @@ class View(QtCore.QObject):
         return safe
 
     def _save_tool_text(self, widget, tab_title):
-        text_edit = widget.findChild(QtWidgets.QPlainTextEdit)
+        text_edit = widget if isinstance(widget, QtWidgets.QPlainTextEdit) else widget.findChild(QtWidgets.QPlainTextEdit)
         if not text_edit:
+            log.info(f"No textual content found for tab '{tab_title}'")
             return
         content = text_edit.toPlainText()
         default_path = self._suggest_filename(tab_title, 'txt')
@@ -1655,6 +1656,7 @@ class View(QtCore.QObject):
         if not filename.lower().endswith('.txt'):
             filename += '.txt'
         try:
+            log.info(f"Saving tool output from tab '{tab_title}' to {filename}")
             with open(filename, 'w', encoding='utf-8') as fh:
                 fh.write(content)
         except Exception as exc:
@@ -1665,6 +1667,15 @@ class View(QtCore.QObject):
             )
 
     def _save_tool_image(self, widget, tab_title):
+        if hasattr(widget, 'imageLabel'):
+            image_holder = widget
+        else:
+            image_holder = widget.findChild(ImageViewer) if 'ImageViewer' in globals() else None
+
+        if not image_holder:
+            log.info(f"No screenshot content found for tab '{tab_title}'")
+            return
+
         default_path = self._suggest_filename(tab_title, 'png')
         filename, _ = QtWidgets.QFileDialog.getSaveFileName(
             self.ui.centralwidget,
@@ -1677,13 +1688,15 @@ class View(QtCore.QObject):
         if not filename.lower().endswith('.png'):
             filename += '.png'
 
-        image_path = getattr(widget, 'currentImagePath', None)
+        image_path = getattr(image_holder, 'currentImagePath', None)
         try:
             if image_path and os.path.isfile(image_path):
+                log.info(f"Copying screenshot from {image_path} to {filename}")
                 shutil.copyfile(image_path, filename)
                 return
-            pixmap = getattr(widget.imageLabel, 'pixmap', lambda: None)()
+            pixmap = getattr(image_holder.imageLabel, 'pixmap', lambda: None)()
             if pixmap:
+                log.info(f"Saving screenshot pixmap from tab '{tab_title}' to {filename}")
                 pixmap.save(filename, 'PNG')
             else:
                 raise IOError('No image data available.')
@@ -1699,7 +1712,13 @@ class View(QtCore.QObject):
         if widget.findChild(QtWidgets.QPlainTextEdit):
             self._save_tool_text(widget, tab_title)
             return
-        if hasattr(widget, 'imageLabel'):
+        if hasattr(widget, 'imageLabel') or isinstance(widget, ImageViewer):
+            self._save_tool_image(widget, tab_title)
+            return
+        # If widget is directly a QPlainTextEdit or ImageViewer
+        if isinstance(widget, QtWidgets.QPlainTextEdit):
+            self._save_tool_text(widget, tab_title)
+        elif isinstance(widget, ImageViewer):
             self._save_tool_image(widget, tab_title)
 
     def updateProcessesIcon(self):
