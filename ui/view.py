@@ -1607,8 +1607,13 @@ class View(QtCore.QObject):
             self.ui.ProcessesTableView.setColumnHidden(col, col not in visible_columns)
 
         # Force size of progress animation
-        self.ui.ProcessesTableView.horizontalHeader().resizeSection(0, 125)
-        self.ui.ProcessesTableView.horizontalHeader().resizeSection(15, 125)
+        header.resizeSection(0, 125)
+        # Give Tool and Host columns more room
+        if 6 in visible_columns:
+            header.resizeSection(6, 260)
+        if 7 in visible_columns:
+            header.resizeSection(7, 260)
+        header.resizeSection(15, 110)
 
         # Update animations
         self.updateProcessesIcon()
