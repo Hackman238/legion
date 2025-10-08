@@ -22,7 +22,7 @@ import tempfile
 import os
 import socket
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
-import sip
+from PyQt6 import sip
 
 from app.ApplicationInfo import applicationInfo
 from app.Screenshooter import Screenshooter
