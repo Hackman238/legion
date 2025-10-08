@@ -1667,22 +1667,25 @@ class View(QtCore.QObject):
             )
 
     def _save_tool_image(self, widget, tab_title):
-        image_holder = None
-        if isinstance(widget, QtWidgets.QWidget) and hasattr(widget, 'imageLabel'):
-            image_holder = widget
-        elif isinstance(widget, QtWidgets.QWidget):
-            current = widget
-            while current is not None:
-                if hasattr(current, 'imageLabel'):
-                    image_holder = current
-                    break
-                current = current.parentWidget()
-        if image_holder is None and isinstance(widget, QtWidgets.QScrollArea):
-            candidate = widget.widget()
-            if candidate and hasattr(candidate, 'pixmap'):
-                image_holder = widget
+        image_viewer = None
+        if isinstance(widget, ImageViewer):
+            image_viewer = widget
+        elif isinstance(widget, QtWidgets.QScrollArea):
+            viewer_ref = widget.property('imageViewerRef')
+            if isinstance(viewer_ref, ImageViewer):
+                image_viewer = viewer_ref
+        elif hasattr(widget, 'imageLabel') and isinstance(widget, QtWidgets.QWidget):
+            image_viewer = widget
 
-        if not image_holder:
+        if image_viewer is None and isinstance(widget, QtWidgets.QWidget):
+            parent = widget.parentWidget()
+            while parent and image_viewer is None:
+                if isinstance(parent, ImageViewer):
+                    image_viewer = parent
+                    break
+                parent = parent.parentWidget()
+
+        if image_viewer is None:
             log.info(f"No screenshot content found for tab '{tab_title}'")
             return
 
@@ -1698,21 +1701,13 @@ class View(QtCore.QObject):
         if not filename.lower().endswith('.png'):
             filename += '.png'
 
-        image_path = getattr(image_holder, 'currentImagePath', None)
-        if not image_path and hasattr(image_holder, 'parentWidget'):
-            parent = image_holder.parentWidget()
-            if parent and hasattr(parent, 'currentImagePath'):
-                image_path = getattr(parent, 'currentImagePath')
+        image_path = getattr(image_viewer, 'currentImagePath', None)
         try:
             if image_path and os.path.isfile(image_path):
                 log.info(f"Copying screenshot from {image_path} to {filename}")
                 shutil.copyfile(image_path, filename)
                 return
-            image_label = getattr(image_holder, 'imageLabel', None)
-            if image_label is None and isinstance(image_holder, QtWidgets.QScrollArea):
-                content = image_holder.widget()
-                if isinstance(content, QtWidgets.QLabel):
-                    image_label = content
+            image_label = getattr(image_viewer, 'imageLabel', None)
             pixmap = image_label.pixmap() if image_label else None
             if pixmap:
                 log.info(f"Saving screenshot pixmap from tab '{tab_title}' to {filename}")
@@ -1789,11 +1784,12 @@ class View(QtCore.QObject):
     def createNewTabForHost(self, ip, tabTitle, restoring=False, content='', filename=''):
         # TODO: use regex otherwise tools with 'screenshot' in the name are screwed.
         if 'screenshot' in str(tabTitle):
-            tempWidget = ImageViewer(self.ui.ServicesTabWidget)
+            image_viewer = ImageViewer()
+            image_viewer.setObjectName(str(tabTitle))
+            image_viewer.open(str(filename))
+            tempWidget = image_viewer.scrollArea
             tempWidget.setObjectName(str(tabTitle))
-            tempWidget.open(str(filename))
-            tempTextView = tempWidget.scrollArea
-            tempTextView.setObjectName(str(tabTitle))
+            tempWidget.setProperty('imageViewerRef', image_viewer)
         else:
             tempWidget = QtWidgets.QWidget()
             tempWidget.setObjectName(str(tabTitle))
@@ -1821,7 +1817,7 @@ class View(QtCore.QObject):
             hosttabs = self.viewState.hostTabs[str(ip)]
         
         if 'screenshot' in str(tabTitle):
-            hosttabs.append(tempWidget)                                 # store full image widget for screenshot tabs
+            hosttabs.append(tempWidget)                                 # add scroll area for screenshot tabs
         else:
             hosttabs.append(tempWidget)                                 # add the new tab to the list
         
