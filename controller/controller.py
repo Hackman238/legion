@@ -1112,9 +1112,9 @@ class Controller:
                 stageData = self.settings.tools_nmap_stage5_ports
             elif stage == 6:
                 stageData = self.settings.tools_nmap_stage6_ports
-            stageDataSplit = str(stageData).split('|')
+            stageDataSplit = str(stageData).split('|', maxsplit=1)
             stageOp = stageDataSplit[0]
-            stageOpValues = stageDataSplit[1]
+            stageOpValues = stageDataSplit[1] if len(stageDataSplit) > 1 else ''
             log.debug(f"Stage {str(stage)} stageOp {str(stageOp)}")
             log.debug(f"Stage {str(stage)} stageOpValues {str(stageOpValues)}")
 
@@ -1122,25 +1122,39 @@ class Controller:
                 log.debug(f"Skipping stage {str(stage)} as stageOp is {str(stageOp)}")
                 return
 
-            if discovery:                                           # is it with/without host discovery?
-                command = "nmap "
-                if enable_ipv6:
-                    command += "-6 "
-                command += "-T4 -sV -sSU -O "
+            command_tokens = ["nmap"]
+            if enable_ipv6:
+                command_tokens.append("-6")
+
+            if discovery:
+                command_tokens.extend(["-T4", "-sV", "-sSU", "-O"])
             else:
-                command = "nmap "
-                if enable_ipv6:
-                    command += "-6 "
-                command += "-Pn -sSU "
+                command_tokens.extend(["-Pn", "-sSU"])
 
+            stage_command_tokens = list(command_tokens)
             if stageOp == 'PORTS':
-                command += '-p ' + stageOpValues + ' -vvvv ' + targetHosts + ' -oA ' + outputfile
+                port_values = str(stageOpValues).strip()
+                if port_values:
+                    stage_command_tokens.extend(["-p", port_values])
+                stage_command_tokens.extend(["-vvvv", targetHosts, "--stats-every", "10s", "-oA", outputfile])
             elif stageOp == 'NSE':
-                command = 'nmap '
+                stage_command_tokens = ["nmap"]
                 if enable_ipv6:
-                    command += '-6 '
-                command += '-sV --script=' + stageOpValues + ' -vvvv ' + targetHosts + ' --stats-every 10s -oA ' + outputfile
+                    stage_command_tokens.append("-6")
+                stage_command_tokens.extend([
+                    "-sV",
+                    f"--script={str(stageOpValues).strip()}",
+                    "-vvvv",
+                    targetHosts,
+                    "--stats-every",
+                    "10s",
+                    "-oA",
+                    outputfile
+                ])
+            else:
+                stage_command_tokens.extend(["-vvvv", targetHosts, "--stats-every", "10s", "-oA", outputfile])
 
+            command = ' '.join(token for token in stage_command_tokens if token)
             log.debug(f"Stage {str(stage)} command: {str(command)}")
 
             self.runCommand('nmap', 'nmap (stage ' + str(stage) + ')', str(targetHosts), '', '', command,
