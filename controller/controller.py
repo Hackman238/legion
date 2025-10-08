@@ -22,6 +22,7 @@ import tempfile
 import os
 import socket
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
+import sip
 
 from app.ApplicationInfo import applicationInfo
 from app.Screenshooter import Screenshooter
@@ -1067,7 +1068,7 @@ class Controller:
 
         qProcess.sigHydra.connect(self.handleHydraFindings)
         qProcess.finished.connect(lambda: self.processFinished(qProcess))
-        qProcess.errorOccurred.connect(lambda: self.processCrashed(qProcess))
+        qProcess.errorOccurred.connect(lambda error, proc=qProcess: self.processCrashed(proc, error))
         log.info(f"runCommand called for stage {str(stage)}")
 
         if stage > 0 and stage < 6:  # if this is a staged nmap, launch the next stage
@@ -1227,22 +1228,35 @@ class Controller:
         #self.updateUITimer.stop()  # update the processes table
         #self.updateUITimer.start(900)
 
-    def processCrashed(self, proc):
+    def processCrashed(self, proc, error=None):
+        if proc is None or sip.isdeleted(proc):
+            log.warning("Received crash notification for a destroyed process object.")
+            return
         processRepository = self.logic.activeProject.repositoryContainer.processRepository
         processRepository.storeProcessCrashStatus(str(proc.id))
         log.info(f'Process {proc.id} Crashed!')
-        qProcessOutput = "\n\t" + str(proc.display.toPlainText()).replace('\n', '').replace("b'", "")
+        qProcessOutput = ""
+        if hasattr(proc, "display") and not sip.isdeleted(proc.display):
+            try:
+                qProcessOutput = "\n\t" + str(proc.display.toPlainText()).replace('\n', '').replace("b'", "")
+            except Exception:
+                qProcessOutput = ""
         # self.view.closeHostToolTab(self, index))
         self.view.findFinishedServiceTab(str(processRepository.getPIDByProcessId(str(proc.id))))
         log.info(f'Process {proc.id} Output: {qProcessOutput}')
-        log.info(f'Process {proc.id} Crash Output: {proc.errorString()}')
+        error_string = ""
+        try:
+            error_string = proc.errorString()
+        except Exception:
+            error_string = str(error) if error else ""
+        log.info(f'Process {proc.id} Crash Output: {error_string}')
         # --- User notification for scan crash ---
         from PyQt6.QtWidgets import QMessageBox
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Icon.Critical)
         msg.setWindowTitle("Scan Crashed")
         msg.setText(
-            f"Scan process '{proc.name}' crashed!\n\nCommand: {proc.command}\n\nError: {proc.errorString()}\n\n"
+            f"Scan process '{proc.name}' crashed!\n\nCommand: {proc.command}\n\nError: {error_string}\n\n"
             "Check the log for more details."
         )
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
