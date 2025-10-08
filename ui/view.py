@@ -1667,10 +1667,16 @@ class View(QtCore.QObject):
             )
 
     def _save_tool_image(self, widget, tab_title):
-        if hasattr(widget, 'imageLabel'):
+        image_holder = None
+        if isinstance(widget, QtWidgets.QWidget) and hasattr(widget, 'imageLabel'):
             image_holder = widget
-        else:
-            image_holder = widget.findChild(ImageViewer) if 'ImageViewer' in globals() else None
+        elif isinstance(widget, QtWidgets.QWidget):
+            current = widget
+            while current is not None:
+                if hasattr(current, 'imageLabel'):
+                    image_holder = current
+                    break
+                current = current.parentWidget()
 
         if not image_holder:
             log.info(f"No screenshot content found for tab '{tab_title}'")
@@ -1709,10 +1715,11 @@ class View(QtCore.QObject):
 
     def _saveToolTabContent(self, index, widget):
         tab_title = self.ui.ServicesTabWidget.tabText(index)
+        log.info(f"Tool tab save requested: index={index}, title='{tab_title}', widget={type(widget)}")
         if widget.findChild(QtWidgets.QPlainTextEdit):
             self._save_tool_text(widget, tab_title)
             return
-        if hasattr(widget, 'imageLabel') or isinstance(widget, ImageViewer):
+        if hasattr(widget, 'imageLabel'):
             self._save_tool_image(widget, tab_title)
             return
         # If widget is directly a QPlainTextEdit or ImageViewer
