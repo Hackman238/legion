@@ -1671,7 +1671,7 @@ class View(QtCore.QObject):
         if isinstance(widget, ImageViewer):
             image_viewer = widget
         elif isinstance(widget, QtWidgets.QScrollArea):
-            viewer_ref = widget.property('imageViewerRef')
+            viewer_ref = getattr(widget, '_imageViewerRef', None)
             if isinstance(viewer_ref, ImageViewer):
                 image_viewer = viewer_ref
         elif hasattr(widget, 'imageLabel') and isinstance(widget, QtWidgets.QWidget):
@@ -1789,7 +1789,7 @@ class View(QtCore.QObject):
             image_viewer.open(str(filename))
             tempWidget = image_viewer.scrollArea
             tempWidget.setObjectName(str(tabTitle))
-            tempWidget.setProperty('imageViewerRef', image_viewer)
+            tempWidget._imageViewerRef = image_viewer
         else:
             tempWidget = QtWidgets.QWidget()
             tempWidget.setObjectName(str(tabTitle))
