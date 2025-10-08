@@ -82,7 +82,12 @@ class Screenshooter(QtCore.QThread):
         if len(str(url).split('.')) == 1:
             url = '{0}:{1}'.format(str(ip), str(port))
 
-        if isHttps(ip, port):
+        host_for_https = str(url)
+        if '://' in host_for_https:
+            host_for_https = host_for_https.split('://', 1)[1]
+        host_for_https = host_for_https.split(':', 1)[0]
+
+        if isHttps(host_for_https, port):
             url = 'https://{0}'.format(url)
         else:
             url = 'http://{0}'.format(url)
