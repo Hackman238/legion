@@ -1078,11 +1078,15 @@ class View(QtCore.QObject):
                     self.controller.handlePortAction(targets, actions, terminalActions, action, restore)
             
             else:   # in case there was no port, we show the host menu (without the portscan / mark as checked)
-                menu, actions = self.controller.getContextMenuForHost(str(
-                    self.HostsTableModel.getHostCheckStatusForRow(self.HostsTableModel.getRowForIp(ip))), False)
+                host_row = self.HostsTableModel.getRowForIp(ip)
+                if host_row is None:
+                    log.warning(f"ToolHosts context menu: unable to find host row for IP {ip}")
+                    return
+                menu, actions = self.controller.getContextMenuForHost(
+                    str(self.HostsTableModel.getHostCheckStatusForRow(host_row)), False)
                 menu.aboutToShow.connect(self.setVisible)
                 menu.aboutToHide.connect(self.setInvisible)
-                hostid = self.HostsTableModel.getHostIdForRow(self.HostsTableModel.getRowForIp(ip))
+                hostid = self.HostsTableModel.getHostIdForRow(host_row)
 
                 action = menu.exec(self.ui.ToolHostsTableView.viewport().mapToGlobal(pos))
 
