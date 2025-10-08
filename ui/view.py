@@ -1789,7 +1789,7 @@ class View(QtCore.QObject):
     def createNewTabForHost(self, ip, tabTitle, restoring=False, content='', filename=''):
         # TODO: use regex otherwise tools with 'screenshot' in the name are screwed.
         if 'screenshot' in str(tabTitle):
-            tempWidget = ImageViewer()
+            tempWidget = ImageViewer(self.ui.ServicesTabWidget)
             tempWidget.setObjectName(str(tabTitle))
             tempWidget.open(str(filename))
             tempTextView = tempWidget.scrollArea
@@ -2142,3 +2142,4 @@ class View(QtCore.QObject):
         if deduped:
             return list(deduped.values())
         return list(processes)
+
