@@ -309,9 +309,14 @@ class Controller:
         tool_output_dir = session_dir
         ipv6_flag = enableIPv6
 
+        target_hosts_str = str(targetHosts).strip()
+        if not target_hosts_str:
+            log.warning("addHosts: target host string is empty, skipping scan.")
+            return
+
         if scanMode == 'Easy':
             if runStagedNmap:
-                self.runStagedNmap(targetHosts, discovery=runHostDiscovery, enable_ipv6=ipv6_flag)
+                self.runStagedNmap(target_hosts_str, discovery=runHostDiscovery, enable_ipv6=ipv6_flag)
             elif runHostDiscovery:
                 outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-host-discover"))
                 easy_mode_flags = ['-f', '--data-length 5', '--randomize-hosts', '--max-retries 2']
@@ -328,10 +333,10 @@ class Controller:
                 command_tokens.extend(easy_mode_flags)
                 command_tokens.extend([
                     "-sV", "-O", "--version-light", f"-T{str(nmapSpeed)}",
-                    targetHosts, "--stats-every", "10s", "-oA", outputfile
+                    target_hosts_str, "--stats-every", "10s", "-oA", outputfile
                 ])
                 command = ' '.join(token for token in command_tokens if token)
-                self.runCommand('nmap', 'nmap (discovery)', targetHosts, '', '', command, getTimestamp(True),
+                self.runCommand('nmap', 'nmap (discovery)', target_hosts_str, '', '', command, getTimestamp(True),
                                 outputfile, self.view.createNewTabForHost(str(targetHosts), 'nmap (discovery)', True),
                                 enable_ipv6=ipv6_flag)
             else:
@@ -341,10 +346,10 @@ class Controller:
                     command_tokens.append("-6")
                 command_tokens.extend(nmapOptions)
                 command_tokens.extend([
-                    "-sL", f"-T{str(nmapSpeed)}", targetHosts, "--stats-every", "10s", "-oA", outputfile
+                    "-sL", f"-T{str(nmapSpeed)}", target_hosts_str, "--stats-every", "10s", "-oA", outputfile
                 ])
                 command = ' '.join(token for token in command_tokens if token)
-                self.runCommand('nmap', 'nmap (list)', targetHosts, '', '', command, getTimestamp(True),
+                self.runCommand('nmap', 'nmap (list)', target_hosts_str, '', '', command, getTimestamp(True),
                                 outputfile,
                                 self.view.createNewTabForHost(str(targetHosts), 'nmap (list)', True),
                                 enable_ipv6=ipv6_flag)
@@ -359,10 +364,10 @@ class Controller:
             options_str = ' '.join(options_tokens).strip()
             command_tokens = ["nmap"]
             command_tokens.extend(options_tokens)
-            command_tokens.extend([targetHosts, "--stats-every", "10s", "-oA", outputfile])
+            command_tokens.extend([target_hosts_str, "--stats-every", "10s", "-oA", outputfile])
             command = ' '.join(token for token in command_tokens if token)
             display_label = options_str
-            self.runCommand('nmap', 'nmap (custom ' + display_label + ')', targetHosts, '', '', command,
+            self.runCommand('nmap', 'nmap (custom ' + display_label + ')', target_hosts_str, '', '', command,
                             getTimestamp(True), outputfile,
                             self.view.createNewTabForHost(
                                 str(targetHosts), 'nmap (custom ' + display_label + ')', True),
@@ -1040,7 +1045,7 @@ class Controller:
             log.info(f"runCommand connected for stage {str(stage)}")
             nextStage = stage + 1
             qProcess.finished.connect(
-                lambda host=str(hostIp), discovery_flag=discovery, next_stage=nextStage,
+                lambda host=str(hostIp).strip(), discovery_flag=discovery, next_stage=nextStage,
                        enable_ipv6_flag=enable_ipv6, process_id=qProcess.id:
                 self.runStagedNmap(
                     host,
@@ -1086,6 +1091,10 @@ class Controller:
     # recursive function used to run nmap in different stages for quick results
     def runStagedNmap(self, targetHosts, discovery=True, stage=1, stop=False, enable_ipv6=False):
         import os
+        host_arg = str(targetHosts).strip()
+        if not host_arg:
+            log.warning(f"runStagedNmap stage {stage}: empty target host received, aborting stage.")
+            return
         log.info(f"runStagedNmap called for stage {str(stage)}")
         runningFolder = self.logic.activeProject.properties.runningFolder
         # Use the session directory for temp files
@@ -1097,7 +1106,7 @@ class Controller:
         # Use the tool output directory directly, not a subdirectory
         tool_output_dir = session_dir
         if not stop:
-            textbox = self.view.createNewTabForHost(str(targetHosts), 'nmap (stage ' + str(stage) + ')', True)
+            textbox = self.view.createNewTabForHost(host_arg, 'nmap (stage ' + str(stage) + ')', True)
             outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-nmapstage{str(stage)}")
 
             if stage == 1:
@@ -1136,7 +1145,7 @@ class Controller:
                 port_values = str(stageOpValues).strip()
                 if port_values:
                     stage_command_tokens.extend(["-p", port_values])
-                stage_command_tokens.extend(["-vvvv", targetHosts, "--stats-every", "10s", "-oA", outputfile])
+                stage_command_tokens.extend(["-vvvv", host_arg, "--stats-every", "10s", "-oA", outputfile])
             elif stageOp == 'NSE':
                 stage_command_tokens = ["nmap"]
                 if enable_ipv6:
@@ -1145,19 +1154,19 @@ class Controller:
                     "-sV",
                     f"--script={str(stageOpValues).strip()}",
                     "-vvvv",
-                    targetHosts,
+                    host_arg,
                     "--stats-every",
                     "10s",
                     "-oA",
                     outputfile
                 ])
             else:
-                stage_command_tokens.extend(["-vvvv", targetHosts, "--stats-every", "10s", "-oA", outputfile])
+                stage_command_tokens.extend(["-vvvv", host_arg, "--stats-every", "10s", "-oA", outputfile])
 
             command = ' '.join(token for token in stage_command_tokens if token)
             log.debug(f"Stage {str(stage)} command: {str(command)}")
 
-            self.runCommand('nmap', 'nmap (stage ' + str(stage) + ')', str(targetHosts), '', '', command,
+            self.runCommand('nmap', 'nmap (stage ' + str(stage) + ')', host_arg, '', '', command,
                             getTimestamp(True), outputfile, textbox, discovery=discovery, stage=stage, stop=stop,
                             enable_ipv6=enable_ipv6)
 
