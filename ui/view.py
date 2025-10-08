@@ -1576,47 +1576,31 @@ class View(QtCore.QObject):
         self.ProcessesTableModel = ProcessesTableModel(self, processes, headers)
         self.ui.ProcessesTableView.setModel(self.ProcessesTableModel)
         self.ProcessesTableModel.sort(15, Qt.SortOrder.DescendingOrder)
-        
+        self._configureProcessesColumns()
+
     def updateProcessesTableView(self):
         self.ProcessesTableModel.setDataList(
-            self.controller.getProcessesFromDB(self.viewState.filters, showProcesses = True,
-                                               sort = self.processesTableViewSort,
-                                               ncol = self.processesTableViewSortColumn))
+            self.controller.getProcessesFromDB(self.viewState.filters, showProcesses=True,
+                                               sort=self.processesTableViewSort,
+                                               ncol=self.processesTableViewSortColumn))
+        self._configureProcessesColumns()
         self.ui.ProcessesTableView.repaint()
         self.ui.ProcessesTableView.update()
+        # Update animations
+        self.updateProcessesIcon()
 
-        # load the column widths from settings to persist widths between sessions
-        columnWidths = self.controller.getSettings().gui_process_tab_column_widths.split(',')
+    def _configureProcessesColumns(self):
+        if not self.ProcessesTableModel:
+            return
         header = self.ui.ProcessesTableView.horizontalHeader()
-        for index, width in enumerate(columnWidths):
-            try:
-                header.resizeSection(index, int(width))
-            except (ValueError, TypeError):
-                continue
-
-        showDetailSetting = str(self.controller.settings.gui_process_tab_detail).lower()
-        showDetail = showDetailSetting in ('true', '1', 'yes', 'on')
-
-        if showDetail:
-            visible_columns = {0, 2, 3, 4, 6, 7, 11, 15}
-        else:
-            visible_columns = {0, 6, 7, 15}
-
+        visible_columns = {0, 6, 7, 15}
         total_columns = self.ProcessesTableModel.columnCount(None)
         for col in range(total_columns):
             self.ui.ProcessesTableView.setColumnHidden(col, col not in visible_columns)
-
-        # Force size of progress animation
         header.resizeSection(0, 125)
-        # Give Tool and Host columns more room
-        if 6 in visible_columns:
-            header.resizeSection(6, 260)
-        if 7 in visible_columns:
-            header.resizeSection(7, 260)
+        header.resizeSection(6, 260)
+        header.resizeSection(7, 260)
         header.resizeSection(15, 110)
-
-        # Update animations
-        self.updateProcessesIcon()
 
     def _initToolTabContextMenu(self):
         tabBar = self.ui.ServicesTabWidget.tabBar()
