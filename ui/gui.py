@@ -317,6 +317,7 @@ class Ui_MainWindow(object):
         self.ProcessStatusFilterComboBox.addItem("")
         self.ProcessStatusFilterComboBox.addItem("")
         self.ProcessStatusFilterComboBox.addItem("")
+        self.ProcessStatusFilterComboBox.addItem("")
         self.ProcessFilterLayout.addWidget(self.ProcessStatusFilterComboBox)
         self.ProcessFilterLayout.addStretch()
         self.ProcessTabLayout.addLayout(self.ProcessFilterLayout)
@@ -453,6 +454,10 @@ class Ui_MainWindow(object):
         self.ProcessStatusFilterComboBox.setItemText(
             3,
             QtWidgets.QApplication.translate("MainWindow", "Status: Failed", None)
+        )
+        self.ProcessStatusFilterComboBox.setItemText(
+            4,
+            QtWidgets.QApplication.translate("MainWindow", "Status: Queued", None)
         )
         self.menuFile.setTitle(QtWidgets.QApplication.translate("MainWindow", "File", None))
         #self.menuSettings.setTitle(QtWidgets.QApplication.translate("MainWindow", "Settings", None))

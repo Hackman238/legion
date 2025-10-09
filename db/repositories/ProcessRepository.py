@@ -49,7 +49,8 @@ class ProcessRepository:
                     'All': [],
                     'Running': ['Running', 'Waiting'],
                     'Finished': ['Finished'],
-                    'Failed': ['Crashed', 'Cancelled', 'Killed', 'Failed']
+                    'Failed': ['Crashed', 'Cancelled', 'Killed', 'Failed'],
+                    'Queued': ['Waiting']
                 }
                 values = mapping.get(filter_value, [filter_value])
             else:
