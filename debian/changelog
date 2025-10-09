@@ -1,3 +1,12 @@
+legion (0.4.9-0) UNRELEASED; urgency=medium
+
+  * Prefer hostnames for automated screenshots (fallback to IP)
+  * Add right-click Save/export for tool tabs (text & screenshots)
+  * Process list shows only core columns with improved layout
+  * Fix tab restoration, Tools dedupe, and crash handling safeguards
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Wed, 08 Oct 2025 18:59:51 -0500
+
 legion (0.4.0-0) UNRELEASED; urgency=medium
 
   * Refactored to Python 3.8+
@@ -45,8 +54,11 @@ legion (0.4.8-0) UNRELEASED; urgency=medium
   * Restore tool tab state correctly when re-opening sessions and deduplicate Tools tab entries
   * Replace failed screenshot loads with a placeholder image to avoid popup dialogs
   * Add opt-in IPv6 scanning with incompatible flag filtering and automatic connectivity fallback
+  * Streamline process table by hiding unused columns for a cleaner view
+  * Add context-menu save support for tool results and screenshots
+  * Prefer hostnames for automated screenshots when available (fallback to IP)
 
- -- Shane Scott <sscott@shanewilliamscott.com>  Tue, 07 Oct 2025 13:04:10 -0500
+ -- Shane Scott <sscott@shanewilliamscott.com>  Wed, 08 Oct 2025 18:08:21 -0500
 
 legion (0.4.6-0) UNRELEASED; urgency=medium
 

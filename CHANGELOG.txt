@@ -1,13 +1,23 @@
-LEGION 0.4.7
+LEGION 0.4.9
 
-* Fix Unix/Windows path problem
-* Rollback Selenkum to aboid breaking eyewitness
+* Screenshooter now prefers hostnames (with HTTPS detection fix) and uses IP only as fallback
+* Tool tabs offer save/export functionality for text and screenshots
+* Process table shows only key columns with improved layout; hostname lookups fixed in tool hosts
+* UI fixes for screenshot tab restoration and consistent tab saving
 
 LEGION 0.4.8
 
 * Restore tool tabs safely when loading existing projects and ensure Tools tab entries deduplicate correctly
 * Prevent broken screenshot popups by displaying a placeholder image when files are missing
 * Add optional IPv6 scanning support with validation, automatic flag filtering, and connectivity fallback
+* Streamline process list view by hiding unused columns
+* Add a context-menu save option for tool results and screenshots
+* Screenshooter now prefers hostnames (with IP fallback) for cleaner captures
+
+LEGION 0.4.7
+
+* Fix Unix/Windows path problem
+* Rollback Selenkum to aboid breaking eyewitness
 
 LEGION 0.4.6
 

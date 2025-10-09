@@ -18,7 +18,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 
 applicationInfo = {
     "name": "LEGION",
-    "version": "0.4.8",
+    "version": "0.4.9",
     "build": '1759860135',
     "author": "Shane Scott",
     "copyright": "2025",
