@@ -20,6 +20,7 @@ from app.auxiliary import Filters
 from sqlalchemy import text
 from db.SqliteDbAdapter import Database
 from db.entities.host import hostObj
+from app.osclassification import classify_os, ORDERED_OS_CATEGORIES
 from db.filters import applyFilters, applyHostsFilters
 
 
@@ -27,40 +28,6 @@ class HostRepository:
     def __init__(self, dbAdapter: Database):
         self.dbAdapter = dbAdapter
 
-    @staticmethod
-    def _classify_os(os_match: str) -> str:
-        if not os_match:
-            return 'Unknown'
-        lowered = os_match.lower()
-        if 'windows' in lowered or 'microsoft' in lowered:
-            return 'Windows'
-        if 'freebsd' in lowered:
-            return 'FreeBSD'
-        if 'openbsd' in lowered:
-            return 'OpenBSD'
-        if 'netbsd' in lowered:
-            return 'NetBSD'
-        if 'linux' in lowered:
-            return 'Linux'
-        if 'darwin' in lowered or 'mac os' in lowered or 'osx' in lowered or 'macos' in lowered:
-            return 'Darwin'
-        if 'solaris' in lowered or 'sunos' in lowered:
-            return 'Solaris'
-        if 'aix' in lowered:
-            return 'AIX'
-        if 'hp-ux' in lowered or 'hpux' in lowered:
-            return 'HP-UX'
-        if 'cisco' in lowered or 'ios ' in lowered:
-            return 'Cisco IOS'
-        if 'vmware' in lowered or 'esxi' in lowered:
-            return 'VMware'
-        if 'android' in lowered:
-            return 'Android'
-        if 'ios' in lowered and 'apple' in lowered:
-            return 'iOS'
-        if 'unix' in lowered:
-            return 'Unix'
-        return 'Unknown'
 
     def exists(self, host: str):
         session = self.dbAdapter.session()
@@ -159,28 +126,11 @@ class HostRepository:
         hosts = self.getAllHostObjs()
         counts = {}
         for host in hosts:
-            os_category = self._classify_os(getattr(host, 'osMatch', '') or '')
+            os_category = classify_os(getattr(host, 'osMatch', '') or '')
             counts[os_category] = counts.get(os_category, 0) + 1
 
-        ordered_categories = [
-            'Windows',
-            'Linux',
-            'Darwin',
-            'FreeBSD',
-            'OpenBSD',
-            'NetBSD',
-            'Solaris',
-            'AIX',
-            'HP-UX',
-            'VMware',
-            'Cisco IOS',
-            'Android',
-            'iOS',
-            'Unix',
-            'Unknown'
-        ]
         summary = []
-        for category in ordered_categories:
+        for category in ORDERED_OS_CATEGORIES:
             count = counts.pop(category, 0)
             if count > 0 or category == 'Unknown':
                 summary.append({'os': category, 'count': count})
@@ -200,7 +150,7 @@ class HostRepository:
         results = []
         for host in hosts:
             os_match = getattr(host, 'osMatch', '') or ''
-            os_category = self._classify_os(os_match)
+            os_category = classify_os(os_match)
             if os_category.lower() == desired.lower():
                 results.append({
                     'ip': getattr(host, 'ip', '') or getattr(host, 'ipv4', ''),

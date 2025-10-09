@@ -224,13 +224,13 @@ class View(QtCore.QObject):
                    "Count", "Closed"]
         setTableProperties(self.ui.HostsTableView, len(headers), [0, 2, 4, 5, 6, 7, 8, 9, 10 , 11, 12, 13, 14, 15, 16,
                                                                   17, 18, 19, 20, 21, 22, 23, 24])
-        self.ui.HostsTableView.horizontalHeader().resizeSection(1, 30)
+        self.ui.HostsTableView.horizontalHeader().resizeSection(1, 120)
         ##
         self.HostsTableModel = HostsTableModel(self.controller.getHostsFromDB(self.viewState.filters), headers)
         # Set the model of the HostsTableView to the HostsTableModel
         self.ui.HostsTableView.setModel(self.HostsTableModel)
         # Resize the OS column
-        self.ui.HostsTableView.horizontalHeader().resizeSection(1, 30)
+        self.ui.HostsTableView.horizontalHeader().resizeSection(1, 120)
         # Sort the model by the Host column in descending order
         self.HostsTableModel.sort(3, Qt.SortOrder.DescendingOrder)
         # Connect the clicked signal of the HostsTableView to the hostTableClick() method
@@ -1241,7 +1241,7 @@ class View(QtCore.QObject):
         self.viewState.lazy_update_hosts = False
 
         ## Resize the OS column of the HostsTableView
-        #self.ui.HostsTableView.horizontalHeader().resizeSection(1, 30)
+        #self.ui.HostsTableView.horizontalHeader().resizeSection(1, 120)
 
         # Sort the model by the Host column in descending order
         self.HostsTableModel.sort(3, Qt.SortOrder.DescendingOrder)
@@ -1267,7 +1267,7 @@ class View(QtCore.QObject):
             self.hostTableClick()
 
         # Resize the OS column of the HostsTableView
-        self.ui.HostsTableView.horizontalHeader().resizeSection(1, 30)
+        self.ui.HostsTableView.horizontalHeader().resizeSection(1, 120)
 
         # Hide colmns we don't want
         for i in [0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]:
@@ -1289,7 +1289,7 @@ class View(QtCore.QObject):
         for i in [0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]:
             self.ui.HostsTableView.setColumnHidden(i, True)
 
-        self.ui.HostsTableView.horizontalHeader().resizeSection(1, 30)
+        self.ui.HostsTableView.horizontalHeader().resizeSection(1, 120)
         self.HostsTableModel.sort(3, Qt.SortOrder.DescendingOrder)
 
         self.ui.HostsTableView.repaint()

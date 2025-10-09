@@ -17,13 +17,13 @@ Copyright (c) 2025 Shane William Scott
 
 """
 
-import re
 from PyQt6 import QtWidgets, QtGui, QtCore
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import pyqtSignal, QObject
 
 from app.ModelHelpers import resolveHeaders, itemSelectable
 from app.auxiliary import *                                                 # for bubble sort
+from app.osclassification import classify_os, get_icon_path, ORDERED_OS_CATEGORIES
 
 
 class HostsTableModel(QtCore.QAbstractTableModel):
@@ -50,30 +50,9 @@ class HostsTableModel(QtCore.QAbstractTableModel):
     def data(self, index, role):                # this method takes care of how the information is displayed
         if role == QtCore.Qt.ItemDataRole.DecorationRole:    # to show the operating system icon instead of text
             if index.column() == 1:                                     # if trying to display the operating system
-                os_string = self.__hosts[index.row()]['osMatch']
-                if os_string == '':             # if there is no OS information, use the question mark icon
-                    return QtGui.QIcon("./images/question-icon.png")
-                    
-                elif re.search('[lL]inux', os_string, re.I):
-                    return QtGui.QIcon("./images/linux-icon.png")
-                
-                elif re.search('[wW]indows', os_string, re.I):
-                    return QtGui.QIcon("./images/windows-icon.png")
-                    
-                elif re.search('[cC]isco', os_string, re.I):
-                    return QtGui.QIcon("./images/cisco-big.jpg")
-                    
-                elif re.search('HP ', os_string, re.I):
-                    return QtGui.QIcon("./images/hp-icon.png")
-
-                elif re.search('[vV]x[wW]orks', os_string, re.I):
-                    return QtGui.QIcon("./images/hp-icon.png")
-                    
-                elif re.search('[vV]m[wW]are', os_string, re.I):
-                    return QtGui.QIcon("./images/vmware-big.jpg")
-                
-                else:  # if it's an unknown OS also use the question mark icon
-                    return QtGui.QIcon("./images/question-icon.png")
+                os_string = self.__hosts[index.row()].get('osMatch', '')
+                category = classify_os(os_string)
+                return QtGui.QIcon(get_icon_path(category))
 
         if role == QtCore.Qt.ItemDataRole.DisplayRole:                               # how to display each cell
             value = ''
@@ -81,6 +60,8 @@ class HostsTableModel(QtCore.QAbstractTableModel):
             column = index.column()
             if column == 0:
                 value = self.__hosts[row]['id']
+            elif column == 1:
+                value = classify_os(self.__hosts[row].get('osMatch', ''))
             elif column == 2:
                 value = self.__hosts[row]['osAccuracy']
             elif column == 3:
@@ -140,32 +121,10 @@ class HostsTableModel(QtCore.QAbstractTableModel):
                 array.append(IP2Int(self.__hosts[i]['ip']))
 
         elif Ncol == 1:                                                 # if sorting by OS
+            order_map = {cat: idx for idx, cat in enumerate(ORDERED_OS_CATEGORIES)}
             for i in range(len(self.__hosts)):
-                
-                os_string = self.__hosts[i]['osMatch']
-                if os_string == '':
-                    array.append('')
-                                    
-                elif re.search('[lL]inux', os_string, re.I):
-                    array.append('Linux')
-                
-                elif re.search('[wW]indows', os_string, re.I):
-                    array.append('Windows')
-                    
-                elif re.search('[cC]isco', os_string, re.I):
-                    array.append('Cisco')
-                    
-                elif re.search('HP ', os_string, re.I):
-                    array.append('Hp')
-
-                elif re.search('[vV]x[wW]orks', os_string, re.I):
-                    array.append('Hp')
-                    
-                elif re.search('[vV]m[wW]are', os_string, re.I):
-                    array.append('Vmware')
-                    
-                else:
-                    array.append('')
+                category = classify_os(self.__hosts[i].get('osMatch', ''))
+                array.append(order_map.get(category, len(order_map)))
 
         sortArrayWithArray(array, self.__hosts)                         # sort the array of OS
 
