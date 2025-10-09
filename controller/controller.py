@@ -890,9 +890,10 @@ class Controller:
 
     #################### BOTTOM PANEL INTERFACE UPDATE FUNCTIONS ####################
 
-    def getProcessesFromDB(self, filters, showProcesses='noNmap', sort='desc', ncol='id'):
-        return self.logic.activeProject.repositoryContainer.processRepository.getProcesses(filters, showProcesses, sort,
-                                                                                           ncol)
+    def getProcessesFromDB(self, filters, showProcesses='noNmap', sort='desc', ncol='id', status_filter=None):
+        return self.logic.activeProject.repositoryContainer.processRepository.getProcesses(
+            filters, showProcesses, sort, ncol, status_filter=status_filter
+        )
 
     def getProcessesForRestore(self):
         return self.logic.activeProject.repositoryContainer.processRepository.getProcessesForRestore()

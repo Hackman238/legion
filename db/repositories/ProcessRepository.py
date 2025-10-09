@@ -37,11 +37,48 @@ class ProcessRepository:
     # to speed up the queries we replace the columns we don't need by zeros (the reason we need all the columns is
     # we are using the same model to display process information everywhere)
 
-    def getProcesses(self, filters, showProcesses: Union[str, bool] = 'noNmap', sort: str = 'desc', ncol: str = 'id'):
+    def getProcesses(self, filters, showProcesses: Union[str, bool] = 'noNmap', sort: str = 'desc', ncol: str = 'id',
+                     status_filter=None):
         # Modified: return consistent column aliases across all query paths so UI models can rely on keys.
         session = self.dbAdapter.session()
+        def normalize_status_filter(filter_value):
+            if not filter_value:
+                return []
+            if isinstance(filter_value, str):
+                mapping = {
+                    'All': [],
+                    'Running': ['Running', 'Waiting'],
+                    'Finished': ['Finished'],
+                    'Failed': ['Crashed', 'Cancelled', 'Killed', 'Failed']
+                }
+                values = mapping.get(filter_value, [filter_value])
+            else:
+                values = [value for value in filter_value if value]
+            seen = set()
+            normalized = []
+            for value in values:
+                if value not in seen:
+                    normalized.append(value)
+                    seen.add(value)
+            return normalized
+
+        def build_status_clause(values):
+            if not values:
+                return "", {}
+            params = {}
+            placeholders = []
+            for idx, value in enumerate(values):
+                key = f"status_{idx}"
+                params[key] = value
+                placeholders.append(f":{key}")
+            clause = f" AND process.status IN ({', '.join(placeholders)})"
+            return clause, params
+
+        status_values = normalize_status_filter(status_filter)
+        status_clause, status_params = build_status_clause(status_values)
+        params = dict(status_params)
         if showProcesses == 'noNmap':
-            query = text(
+            base_query = (
                 'SELECT '
                 '0 AS progress, '
                 'COALESCE(process.display, "False") AS display, '
@@ -62,12 +99,12 @@ class ProcessRepository:
                 'COALESCE(process.closed, "") AS closed, '
                 'process.id AS id '
                 'FROM process AS process '
-                'WHERE process.closed = "False" '
-                'ORDER BY process.id DESC'
+                'WHERE process.closed = "False"'
             )
-            result = session.execute(query)
+            query = text(base_query + status_clause + ' ORDER BY process.id DESC')
+            result = session.execute(query, params)
         elif not showProcesses:
-            query = text(
+            base_query = (
                 'SELECT '
                 '0 AS progress, '
                 'process.display AS display, '
@@ -89,12 +126,13 @@ class ProcessRepository:
                 'process.id AS id '
                 'FROM process AS process '
                 'INNER JOIN process_output AS output ON process.id = output.processId '
-                'WHERE process.display = :display AND process.closed = "False" '
-                'ORDER BY process.id DESC'
+                'WHERE process.display = :display AND process.closed = "False"'
             )
-            result = session.execute(query, {'display': str(showProcesses)})
+            params['display'] = str(showProcesses)
+            query = text(base_query + status_clause + ' ORDER BY process.id DESC')
+            result = session.execute(query, params)
         else:
-            query = text(
+            base_query = (
                 'SELECT '
                 '0 AS progress, '
                 'process.display AS display, '
@@ -116,10 +154,12 @@ class ProcessRepository:
                 'process.id AS id '
                 'FROM process AS process '
                 'LEFT JOIN process_output AS output ON process.id = output.processId '
-                'WHERE process.display=:display '
-                f'ORDER BY {ncol} {sort}'
+                'WHERE process.display=:display'
             )
-            result = session.execute(query, {'display': str(showProcesses)})
+            params['display'] = str(showProcesses)
+            order_clause = f' ORDER BY {ncol} {sort}'
+            query = text(base_query + status_clause + order_clause)
+            result = session.execute(query, params)
         rows = result.fetchall()
         keys = result.keys()
         processes = [dict(zip(keys, row)) for row in rows]

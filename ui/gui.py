@@ -304,11 +304,25 @@ class Ui_MainWindow(object):
         # Process Tab
         self.ProcessTab = QtWidgets.QWidget()
         self.ProcessTab.setObjectName(_fromUtf8("ProcessesTab"))
-        self.horizontalLayout_5 = QtWidgets.QHBoxLayout(self.ProcessTab)
-        self.horizontalLayout_5.setObjectName(_fromUtf8("horizontalLayout_5"))
+        self.ProcessTabLayout = QtWidgets.QVBoxLayout(self.ProcessTab)
+        self.ProcessTabLayout.setObjectName(_fromUtf8("ProcessTabLayout"))
+        self.ProcessFilterLayout = QtWidgets.QHBoxLayout()
+        self.ProcessFilterLayout.setObjectName(_fromUtf8("ProcessFilterLayout"))
+        self.ProcessStatusFilterLabel = QtWidgets.QLabel(self.ProcessTab)
+        self.ProcessStatusFilterLabel.setObjectName(_fromUtf8("ProcessStatusFilterLabel"))
+        self.ProcessFilterLayout.addWidget(self.ProcessStatusFilterLabel)
+        self.ProcessStatusFilterComboBox = QtWidgets.QComboBox(self.ProcessTab)
+        self.ProcessStatusFilterComboBox.setObjectName(_fromUtf8("ProcessStatusFilterComboBox"))
+        self.ProcessStatusFilterComboBox.addItem("")
+        self.ProcessStatusFilterComboBox.addItem("")
+        self.ProcessStatusFilterComboBox.addItem("")
+        self.ProcessStatusFilterComboBox.addItem("")
+        self.ProcessFilterLayout.addWidget(self.ProcessStatusFilterComboBox)
+        self.ProcessFilterLayout.addStretch()
+        self.ProcessTabLayout.addLayout(self.ProcessFilterLayout)
         self.ProcessesTableView = QtWidgets.QTableView(self.ProcessTab)
         self.ProcessesTableView.setObjectName(_fromUtf8("ProcessesTableView"))
-        self.horizontalLayout_5.addWidget(self.ProcessesTableView)
+        self.ProcessTabLayout.addWidget(self.ProcessesTableView)
         self.BottomTabWidget.addTab(self.ProcessTab, _fromUtf8(""))
 
     def setupBottom2Panel(self):
@@ -426,6 +440,20 @@ class Ui_MainWindow(object):
                                         QtWidgets.QApplication.translate("MainWindow", "Log", None))
         # self.BottomTabWidget.setTabText(self.BottomTabWidget.indexOf(self.PythonTab),
         # QtWidgets.QApplication.translate("MainWindow", "Python", None)) - Disabled until future release
+        self.ProcessStatusFilterLabel.setText(QtWidgets.QApplication.translate("MainWindow", "Filter:", None))
+        self.ProcessStatusFilterComboBox.setItemText(0, QtWidgets.QApplication.translate("MainWindow", "All", None))
+        self.ProcessStatusFilterComboBox.setItemText(
+            1,
+            QtWidgets.QApplication.translate("MainWindow", "Status: Running", None)
+        )
+        self.ProcessStatusFilterComboBox.setItemText(
+            2,
+            QtWidgets.QApplication.translate("MainWindow", "Status: Finished", None)
+        )
+        self.ProcessStatusFilterComboBox.setItemText(
+            3,
+            QtWidgets.QApplication.translate("MainWindow", "Status: Failed", None)
+        )
         self.menuFile.setTitle(QtWidgets.QApplication.translate("MainWindow", "File", None))
         #self.menuSettings.setTitle(QtWidgets.QApplication.translate("MainWindow", "Settings", None))
         self.menuHelp.setTitle(QtWidgets.QApplication.translate("MainWindow", "Help", None))

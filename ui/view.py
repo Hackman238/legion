@@ -69,6 +69,7 @@ class View(QtCore.QObject):
         self.toolsTableViewSortColumn = 'id'
         self.shell = shell
         self.viewState = viewState
+        self.processStatusFilter = None
 
     # the view needs access to controller methods to link gui actions with real actions
     def setController(self, controller):
@@ -110,6 +111,13 @@ class View(QtCore.QObject):
         self.ui.ToolsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.ui.ScriptsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.ui.ToolHostsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        status_combo = self.ui.ProcessStatusFilterComboBox
+        status_combo.setItemData(0, None)
+        status_combo.setItemData(1, ["Waiting", "Running"])
+        status_combo.setItemData(2, ["Finished"])
+        status_combo.setItemData(3, ["Crashed", "Cancelled", "Killed", "Failed"])
+        status_combo.setCurrentIndex(0)
+        self.processStatusFilter = status_combo.currentData()
 
     # initialisations (globals, etc)
     def start(self, title='*untitled'):
@@ -191,6 +199,7 @@ class View(QtCore.QObject):
         self.ui.BruteTabWidget.tabCloseRequested.connect(self.closeBruteTab)
         self.ui.keywordTextInput.returnPressed.connect(self.ui.FilterApplyButton.click)
         self.filterdialog.applyButton.clicked.connect(self.updateFilter)
+        self.ui.ProcessStatusFilterComboBox.currentIndexChanged.connect(self.onProcessStatusFilterChanged)
         #self.settingsWidget.applyButton.clicked.connect(self.applySettings)
         #self.settingsWidget.cmdCancelButton.clicked.connect(self.cancelSettings)
         #self.settingsWidget.applyButton.clicked.connect(self.controller.applySettings(self.settingsWidget.settings))
@@ -1546,43 +1555,54 @@ class View(QtCore.QObject):
             
     #################### BOTTOM PANEL INTERFACE UPDATE FUNCTIONS ####################
 
-    def setupProcessesTableView(self):
-        headers = ["Progress", "Display", "Elapsed", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
-                   "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
-        # Convert process rows to dicts and inject 'percent' field if missing
-        raw_processes = self.controller.getProcessesFromDB(
-            self.viewState.filters, showProcesses = True, sort = self.processesTableViewSort,
-            ncol = self.processesTableViewSortColumn)
-        processes = []
-        # Get column names from the process table
+    def onProcessStatusFilterChanged(self, _index):
+        self.processStatusFilter = self.ui.ProcessStatusFilterComboBox.currentData()
+        if self.ProcessesTableModel is None:
+            self.setupProcessesTableView()
+        else:
+            self.updateProcessesTableView()
+
+    def _normalizeProcessRows(self, raw_processes):
         process_columns = [
             "pid", "id", "display", "name", "tabTitle", "hostIp", "port", "protocol", "command",
             "startTime", "endTime", "estimatedRemaining", "elapsed", "outputfile", "status", "closed", "percent"
         ]
+        processes = []
         for row in raw_processes:
-            # If row is already a dict, use as is
             if isinstance(row, dict):
-                proc = row
+                proc = dict(row)
             else:
-                # Map row to dict using process_columns
                 try:
                     proc = dict(zip(process_columns, row))
                 except Exception:
                     proc = {}
-            # Inject 'percent' field if missing
             if "percent" not in proc:
                 proc["percent"] = "Unknown"
             processes.append(proc)
+        return processes
+
+    def _getProcessesForDisplay(self):
+        raw_processes = self.controller.getProcessesFromDB(
+            self.viewState.filters,
+            showProcesses=True,
+            sort=self.processesTableViewSort,
+            ncol=self.processesTableViewSortColumn,
+            status_filter=self.processStatusFilter
+        )
+        return self._normalizeProcessRows(raw_processes)
+
+    def setupProcessesTableView(self):
+        headers = ["Progress", "Display", "Elapsed", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
+                   "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
+        processes = self._getProcessesForDisplay()
         self.ProcessesTableModel = ProcessesTableModel(self, processes, headers)
         self.ui.ProcessesTableView.setModel(self.ProcessesTableModel)
         self.ProcessesTableModel.sort(15, Qt.SortOrder.DescendingOrder)
         self._configureProcessesColumns()
 
     def updateProcessesTableView(self):
-        self.ProcessesTableModel.setDataList(
-            self.controller.getProcessesFromDB(self.viewState.filters, showProcesses=True,
-                                               sort=self.processesTableViewSort,
-                                               ncol=self.processesTableViewSortColumn))
+        processes = self._getProcessesForDisplay()
+        self.ProcessesTableModel.setDataList(processes)
         self._configureProcessesColumns()
         self.ui.ProcessesTableView.repaint()
         self.ui.ProcessesTableView.update()
