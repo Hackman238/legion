@@ -39,6 +39,7 @@ from ui.models.servicemodels import *
 from ui.models.scriptmodels import *
 from ui.models.cvemodels import *
 from ui.models.processmodels import *
+from ui.models.ostables import OsSummaryTableModel, OsHostsTableModel
 from app.auxiliary import *
 from six import u as unicode
 import pandas as pd
@@ -69,6 +70,7 @@ class View(QtCore.QObject):
         self.toolsTableViewSortColumn = 'id'
         self.shell = shell
         self.viewState = viewState
+        self._os_selection_model = None
         self.processStatusFilter = None
 
     # the view needs access to controller methods to link gui actions with real actions
@@ -111,6 +113,8 @@ class View(QtCore.QObject):
         self.ui.ToolsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.ui.ScriptsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.ui.ToolHostsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.ui.OsListTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.ui.OsHostsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         status_combo = self.ui.ProcessStatusFilterComboBox
         status_combo.setItemData(0, None)
         status_combo.setItemData(1, ["Waiting", "Running"])
@@ -127,8 +131,11 @@ class View(QtCore.QObject):
 
         self.ProcessesTableModel = None  # fixes bug when sorting processes for the first time
         self.ToolsTableModel = None
+        self.OsListTableModel = None
+        self.OsHostsTableModel = None
         self.setupProcessesTableView()
         self.setupToolsTableView()
+        self.setupOsTabViews()
 
         self.setMainWindowTitle(title)
         self.ui.statusbar.showMessage('Starting up..', msecs=1000)
@@ -193,6 +200,7 @@ class View(QtCore.QObject):
         self.connectToolHostsTableContextMenu()
         self.connectProcessesTableContextMenu()
         self.connectScreenshotContextMenu()
+        self.connectOsListClick()
         ### OTHER ###
         self.ui.NotesTextEdit.textChanged.connect(self.setDirty)
         self.ui.FilterApplyButton.clicked.connect(self.updateFilterKeywords)
@@ -266,7 +274,16 @@ class View(QtCore.QObject):
                    "Start time", "OutputFile", "Output", "Status"]
         setTableProperties(self.ui.ToolHostsTableView, len(headers), [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12])
         self.ui.ToolHostsTableView.horizontalHeader().resizeSection(5,150)      # default width for Host column
-    
+
+        # os list table (left)
+        headers = ["OS", "Hosts"]
+        setTableProperties(self.ui.OsListTableView, len(headers))
+        self.ui.OsListTableView.setSortingEnabled(False)
+
+        # os hosts table (right)
+        headers = ["IP", "Hostname", "OS", "Status"]
+        setTableProperties(self.ui.OsHostsTableView, len(headers))
+
         # process table
         headers = ["Progress", "Display", "Run time", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
                    "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
@@ -834,6 +851,7 @@ class View(QtCore.QObject):
     def connectTableDoubleClick(self):
         self.ui.ServicesTableView.doubleClicked.connect(self.tableDoubleClick)
         self.ui.ToolHostsTableView.doubleClicked.connect(self.tableDoubleClick)
+        self.ui.OsHostsTableView.doubleClicked.connect(self.tableDoubleClick)
         self.ui.CvesTableView.doubleClicked.connect(self.rightTableDoubleClick)
  
     def rightTableDoubleClick(self, signal):
@@ -865,6 +883,12 @@ class View(QtCore.QObject):
             row = self.ui.ToolHostsTableView.selectionModel().selectedRows()[len(
                 self.ui.ToolHostsTableView.selectionModel().selectedRows())-1].row()
             ip = self.ToolHostsTableModel.getIpForRow(row)
+        elif tab == 'OS':
+            if not self.ui.OsHostsTableView.selectionModel().selectedRows():
+                return
+            row = self.ui.OsHostsTableView.selectionModel().selectedRows()[
+                len(self.ui.OsHostsTableView.selectionModel().selectedRows())-1].row()
+            ip = self.OsHostsTableModel.getIpForRow(row)
         else:
             return
 
@@ -920,6 +944,12 @@ class View(QtCore.QObject):
                 
             elif selectedTab == 'Tools':
                 self.updateToolsTableView()
+
+            elif selectedTab == 'OS':
+                if self.viewState.lazy_update_os or not self.OsListTableModel:
+                    self.updateOsListView()
+                else:
+                    self.updateOsHostsTableView(self.viewState.os_clicked or 'Unknown')
 
             # display tool panel if we are in tools tab, hide it otherwise
             self.displayToolPanel(selectedTab == 'Tools')
@@ -1242,6 +1272,8 @@ class View(QtCore.QObject):
         for i in [0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]:
             self.ui.HostsTableView.hideColumn(i)
 
+        self.viewState.lazy_update_os = True
+
     def updateHostsTableViewX(self):
         headers = ["Id", "OS", "Accuracy", "Host", "IPv4", "IPv6", "Mac", "Status", "Hostname", "Vendor", "Uptime",
                    "Lastboot", "Distance", "CheckedHost", "Country Code", "State", "City", "Latitude", "Longitude",
@@ -1275,6 +1307,8 @@ class View(QtCore.QObject):
         if not row == None:
             self.ui.HostsTableView.selectRow(row)
             self.hostTableClick()
+
+        self.viewState.lazy_update_os = True
 
     def updateServiceNamesTableView(self):
         headers = ["Name"]
@@ -1337,7 +1371,7 @@ class View(QtCore.QObject):
             column_count = self.ToolsTableModel.columnCount(None)
             for i in range(column_count):
                 self.ui.ToolsTableView.setColumnHidden(i, i != 5)
-                    
+
             tools = []                                                  # ensure that there is always something selected
             for row in range(self.ToolsTableModel.rowCount("")):
                 tools.append(self.ToolsTableModel.getToolNameForRow(row))
@@ -1347,10 +1381,116 @@ class View(QtCore.QObject):
                 row = self.ToolsTableModel.getRowForToolName(self.viewState.tool_clicked)
             else:
                 row = 0                                                 # or select the first row
-                
+
             if not row == None:
                 self.ui.ToolsTableView.selectRow(row)
                 self.toolsTableClick()
+
+    def setupOsTabViews(self):
+        headers = ["OS", "Hosts"]
+        summary = self.controller.getOperatingSystemsSummary()
+        self.OsListTableModel = OsSummaryTableModel(summary, headers)
+        self.ui.OsListTableView.setModel(self.OsListTableModel)
+        self.ui.OsListTableView.horizontalHeader().setStretchLastSection(False)
+        self.ui.OsListTableView.horizontalHeader().resizeSection(0, 160)
+        if self.OsListTableModel.columnCount(None) > 1:
+            self.ui.OsListTableView.horizontalHeader().resizeSection(1, 80)
+        self._ensureOsSelectionModelConnection()
+
+        if summary:
+            if self.viewState.os_clicked and self.OsListTableModel.getRowForOs(self.viewState.os_clicked) is not None:
+                selected_os = self.viewState.os_clicked
+            else:
+                selected_os = summary[0].get('os')
+                self.viewState.os_clicked = selected_os
+            row = self.OsListTableModel.getRowForOs(selected_os)
+            if row is not None:
+                self.ui.OsListTableView.selectRow(row)
+        else:
+            self.viewState.os_clicked = 'Unknown'
+
+        self.updateOsHostsTableView(self.viewState.os_clicked or 'Unknown')
+        self.viewState.lazy_update_os = False
+
+    def setupOsHostsTableModel(self):
+        headers = ["IP", "Hostname", "OS", "Status"]
+        self.OsHostsTableModel = OsHostsTableModel([], headers)
+        self.ui.OsHostsTableView.setModel(self.OsHostsTableModel)
+        self.ui.OsHostsTableView.horizontalHeader().setStretchLastSection(False)
+        self.ui.OsHostsTableView.horizontalHeader().resizeSection(0, 150)
+        self.ui.OsHostsTableView.horizontalHeader().resizeSection(1, 200)
+        self.ui.OsHostsTableView.horizontalHeader().resizeSection(2, 200)
+
+    def updateOsListView(self):
+        summary = self.controller.getOperatingSystemsSummary()
+        if not self.OsListTableModel:
+            self.setupOsTabViews()
+            return
+
+        self.OsListTableModel.setEntries(summary)
+        self._ensureOsSelectionModelConnection()
+
+        if not summary:
+            self.viewState.os_clicked = 'Unknown'
+            self.updateOsHostsTableView('Unknown')
+            self.viewState.lazy_update_os = False
+            return
+
+        selected_os = self.viewState.os_clicked
+        if not selected_os and summary:
+            selected_os = summary[0].get('os')
+            self.viewState.os_clicked = selected_os
+
+        row = self.OsListTableModel.getRowForOs(selected_os)
+        if row is None and summary:
+            row = 0
+            self.viewState.os_clicked = self.OsListTableModel.getOsForRow(row)
+
+        if row is not None:
+            self.ui.OsListTableView.selectRow(row)
+
+        self.updateOsHostsTableView(self.viewState.os_clicked or 'Unknown')
+        self.viewState.lazy_update_os = False
+
+    def updateOsHostsTableView(self, os_name):
+        if not self.OsHostsTableModel:
+            self.setupOsHostsTableModel()
+        target_os = os_name or 'Unknown'
+        hosts = self.controller.getHostsForOperatingSystem(target_os)
+        self.OsHostsTableModel.setHosts(hosts)
+        self.ui.OsHostsTableView.repaint()
+        self.ui.OsHostsTableView.update()
+        if not hosts:
+            self.ui.OsHostsTableView.clearSelection()
+
+    def connectOsListClick(self):
+        self.ui.OsListTableView.clicked.connect(self.osListClick)
+        self._ensureOsSelectionModelConnection()
+
+    def _osCurrentRowChanged(self, current, _previous):
+        if not current.isValid():
+            return
+        self.osListClick(current)
+
+    def _ensureOsSelectionModelConnection(self):
+        selection_model = self.ui.OsListTableView.selectionModel()
+        if selection_model and selection_model is not self._os_selection_model:
+            if self._os_selection_model:
+                try:
+                    self._os_selection_model.currentRowChanged.disconnect(self._osCurrentRowChanged)
+                except (TypeError, RuntimeError):
+                    pass
+            selection_model.currentRowChanged.connect(self._osCurrentRowChanged)
+            self._os_selection_model = selection_model
+
+    def osListClick(self, index):
+        if not self.OsListTableModel:
+            return
+        os_name = self.OsListTableModel.getOsForRow(index.row())
+        if os_name is None:
+            return
+        self.viewState.os_clicked = os_name
+        self.updateOsHostsTableView(os_name)
 
         
     #################### RIGHT PANEL INTERFACE UPDATE FUNCTIONS ####################
@@ -1782,16 +1922,28 @@ class View(QtCore.QObject):
             self.updateHostsTableView()
             self.viewState.lazy_update_services = True
             self.viewState.lazy_update_tools = True
+            self.viewState.lazy_update_os = True
 
         elif self.ui.HostsTabWidget.tabText(self.ui.HostsTabWidget.currentIndex()) == 'Services':
             self.updateServiceNamesTableView()
             self.viewState.lazy_update_hosts = True
             self.viewState.lazy_update_tools = True
+            self.viewState.lazy_update_os = True
 
         elif self.ui.HostsTabWidget.tabText(self.ui.HostsTabWidget.currentIndex()) == 'Tools':
             self.updateToolsTableView()
             self.viewState.lazy_update_hosts = True
             self.viewState.lazy_update_services = True
+            self.viewState.lazy_update_os = True
+
+        elif self.ui.HostsTabWidget.tabText(self.ui.HostsTabWidget.currentIndex()) == 'OS':
+            if self.viewState.lazy_update_os or not self.OsListTableModel:
+                self.updateOsListView()
+            else:
+                self.updateOsHostsTableView(self.viewState.os_clicked or 'Unknown')
+            self.viewState.lazy_update_hosts = True
+            self.viewState.lazy_update_services = True
+            self.viewState.lazy_update_tools = True
         
     #################### TOOL TABS ####################
 

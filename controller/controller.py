@@ -958,6 +958,12 @@ class Controller:
     def getProcessesForRestore(self):
         return self.logic.activeProject.repositoryContainer.processRepository.getProcessesForRestore()
 
+    def getOperatingSystemsSummary(self):
+        return self.logic.activeProject.repositoryContainer.hostRepository.getOperatingSystemsSummary()
+
+    def getHostsForOperatingSystem(self, os_name: str):
+        return self.logic.activeProject.repositoryContainer.hostRepository.getHostsByOperatingSystem(os_name)
+
     #################### PROCESSES ####################
 
     def checkProcessQueue(self):
