@@ -39,6 +39,8 @@ class ViewState:
     service_clicked = ''
     # Indicator of which Tool was clicked on last (default: None)
     tool_clicked = ''
+    # Indicator of which Operating System category was clicked on last (default: None)
+    os_clicked = ''
     # Indicator of which script was clicked on last (default: None)
     script_clicked = ''
     # Indicator of which tool host was clicked on last (default: None)
@@ -48,6 +50,6 @@ class ViewState:
     lazy_update_hosts = False
     lazy_update_services = False
     lazy_update_tools = False
+    lazy_update_os = False
     # Indicator if a context menu is showing (important to avoid disrupting the user) (default: False)
     menuVisible = False
-

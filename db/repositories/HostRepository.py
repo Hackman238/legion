@@ -27,6 +27,19 @@ class HostRepository:
     def __init__(self, dbAdapter: Database):
         self.dbAdapter = dbAdapter
 
+    @staticmethod
+    def _classify_os(os_match: str) -> str:
+        if not os_match:
+            return 'Unknown'
+        lowered = os_match.lower()
+        if 'windows' in lowered or 'microsoft' in lowered:
+            return 'Windows'
+        if 'linux' in lowered:
+            return 'Linux'
+        if 'darwin' in lowered or 'mac os' in lowered or 'osx' in lowered or 'macos' in lowered:
+            return 'Darwin'
+        return 'Unknown'
+
     def exists(self, host: str):
         session = self.dbAdapter.session()
         query = text('SELECT host.ip FROM hostObj AS host WHERE host.ip == :host OR host.hostname == :host')
@@ -119,3 +132,43 @@ class HostRepository:
         hosts = session.query(hostObj).all()
         session.close()
         return hosts
+
+    def getOperatingSystemsSummary(self):
+        hosts = self.getAllHostObjs()
+        counts = {}
+        for host in hosts:
+            os_category = self._classify_os(getattr(host, 'osMatch', '') or '')
+            counts[os_category] = counts.get(os_category, 0) + 1
+
+        ordered_categories = ['Windows', 'Linux', 'Darwin', 'Unknown']
+        summary = []
+        for category in ordered_categories:
+            count = counts.pop(category, 0)
+            if count > 0 or category == 'Unknown':
+                summary.append({'os': category, 'count': count})
+
+        # Include any remaining categories that may have been introduced dynamically
+        for category in sorted(counts.keys()):
+            summary.append({'os': category, 'count': counts[category]})
+
+        if not summary:
+            summary.append({'os': 'Unknown', 'count': 0})
+
+        return summary
+
+    def getHostsByOperatingSystem(self, os_name: str):
+        desired = (os_name or 'Unknown').strip()
+        hosts = self.getAllHostObjs()
+        results = []
+        for host in hosts:
+            os_match = getattr(host, 'osMatch', '') or ''
+            os_category = self._classify_os(os_match)
+            if os_category.lower() == desired.lower():
+                results.append({
+                    'ip': getattr(host, 'ip', '') or getattr(host, 'ipv4', ''),
+                    'hostname': getattr(host, 'hostname', ''),
+                    'os': os_match,
+                    'status': getattr(host, 'status', ''),
+                })
+
+        return results

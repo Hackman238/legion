@@ -170,6 +170,20 @@ class Ui_MainWindow(object):
         self.horizontalLayout_3.addWidget(self.ToolsTableView)
         self.HostsTabWidget.addTab(self.ToolsTab, _fromUtf8(""))
 
+        self.OsTab = QtWidgets.QWidget()
+        self.OsTab.setObjectName(_fromUtf8("OsTab"))
+        self.horizontalLayout_os = QtWidgets.QHBoxLayout(self.OsTab)
+        self.horizontalLayout_os.setObjectName(_fromUtf8("horizontalLayout_os"))
+        self.OsSplitter = QtWidgets.QSplitter(self.OsTab)
+        self.OsSplitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
+        self.OsSplitter.setObjectName(_fromUtf8("OsSplitter"))
+        self.OsListTableView = QtWidgets.QTableView(self.OsSplitter)
+        self.OsListTableView.setObjectName(_fromUtf8("OsListTableView"))
+        self.OsHostsTableView = QtWidgets.QTableView(self.OsSplitter)
+        self.OsHostsTableView.setObjectName(_fromUtf8("OsHostsTableView"))
+        self.horizontalLayout_os.addWidget(self.OsSplitter)
+        self.HostsTabWidget.addTab(self.OsTab, _fromUtf8(""))
+
         # Disabled for now
         #self.CvesLeftTab = QtWidgets.QWidget()
         #self.CvesLeftTab.setObjectName(_fromUtf8("CvesLeftTab"))
@@ -421,6 +435,8 @@ class Ui_MainWindow(object):
         # QtWidgets.QApplication.translate("MainWindow", "CVEs", None))
         self.HostsTabWidget.setTabText(self.HostsTabWidget.indexOf(self.ToolsTab),
                                        QtWidgets.QApplication.translate("MainWindow", "Tools", None))
+        self.HostsTabWidget.setTabText(self.HostsTabWidget.indexOf(self.OsTab),
+                                       QtWidgets.QApplication.translate("MainWindow", "OS", None))
         self.ServicesTabWidget.setTabText(self.ServicesTabWidget.indexOf(self.ServicesRightTab),
                                           QtWidgets.QApplication.translate("MainWindow", "Services", None))
         self.ServicesTabWidget.setTabText(self.ServicesTabWidget.indexOf(self.CvesRightTab),
