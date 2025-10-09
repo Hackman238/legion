@@ -34,10 +34,32 @@ class HostRepository:
         lowered = os_match.lower()
         if 'windows' in lowered or 'microsoft' in lowered:
             return 'Windows'
+        if 'freebsd' in lowered:
+            return 'FreeBSD'
+        if 'openbsd' in lowered:
+            return 'OpenBSD'
+        if 'netbsd' in lowered:
+            return 'NetBSD'
         if 'linux' in lowered:
             return 'Linux'
         if 'darwin' in lowered or 'mac os' in lowered or 'osx' in lowered or 'macos' in lowered:
             return 'Darwin'
+        if 'solaris' in lowered or 'sunos' in lowered:
+            return 'Solaris'
+        if 'aix' in lowered:
+            return 'AIX'
+        if 'hp-ux' in lowered or 'hpux' in lowered:
+            return 'HP-UX'
+        if 'cisco' in lowered or 'ios ' in lowered:
+            return 'Cisco IOS'
+        if 'vmware' in lowered or 'esxi' in lowered:
+            return 'VMware'
+        if 'android' in lowered:
+            return 'Android'
+        if 'ios' in lowered and 'apple' in lowered:
+            return 'iOS'
+        if 'unix' in lowered:
+            return 'Unix'
         return 'Unknown'
 
     def exists(self, host: str):
@@ -140,7 +162,23 @@ class HostRepository:
             os_category = self._classify_os(getattr(host, 'osMatch', '') or '')
             counts[os_category] = counts.get(os_category, 0) + 1
 
-        ordered_categories = ['Windows', 'Linux', 'Darwin', 'Unknown']
+        ordered_categories = [
+            'Windows',
+            'Linux',
+            'Darwin',
+            'FreeBSD',
+            'OpenBSD',
+            'NetBSD',
+            'Solaris',
+            'AIX',
+            'HP-UX',
+            'VMware',
+            'Cisco IOS',
+            'Android',
+            'iOS',
+            'Unix',
+            'Unknown'
+        ]
         summary = []
         for category in ordered_categories:
             count = counts.pop(category, 0)
