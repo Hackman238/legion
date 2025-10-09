@@ -115,6 +115,7 @@ class View(QtCore.QObject):
         self.ui.ToolHostsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.ui.OsListTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.ui.OsHostsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.connectOsHostsClick()
         status_combo = self.ui.ProcessStatusFilterComboBox
         status_combo.setItemData(0, None)
         status_combo.setItemData(1, ["Waiting", "Running"])
@@ -1462,6 +1463,8 @@ class View(QtCore.QObject):
         self.ui.OsHostsTableView.update()
         if not hosts:
             self.ui.OsHostsTableView.clearSelection()
+        else:
+            self.ui.OsHostsTableView.selectRow(0)
 
     def connectOsListClick(self):
         self.ui.OsListTableView.clicked.connect(self.osListClick)
@@ -1491,6 +1494,31 @@ class View(QtCore.QObject):
             return
         self.viewState.os_clicked = os_name
         self.updateOsHostsTableView(os_name)
+
+    def connectOsHostsClick(self):
+        self.ui.OsHostsTableView.clicked.connect(self.osHostsClick)
+        self.ui.OsHostsTableView.doubleClicked.connect(self.osHostsDoubleClick)
+
+    def osHostsClick(self, index):
+        host_entry = self.OsHostsTableModel.getHostDisplay(index.row()) if self.OsHostsTableModel else None
+        if not host_entry:
+            return
+        ip = host_entry.get('ip')
+        hostname = host_entry.get('hostname')
+        identifier = ip
+        if hostname:
+            identifier = f"{ip} ({hostname})"
+        self.viewState.ip_clicked = identifier
+        host_row = self.HostsTableModel.getRowForIp(ip)
+        if host_row is not None:
+            self.ui.HostsTableView.selectRow(host_row)
+            self.hostTableClick()
+        self.viewState.os_clicked = self.OsListTableModel.getOsForRow(
+            self.ui.OsListTableView.selectionModel().currentIndex().row()
+        ) if self.OsListTableModel else ''
+
+    def osHostsDoubleClick(self, index):
+        self.osHostsClick(index)
 
         
     #################### RIGHT PANEL INTERFACE UPDATE FUNCTIONS ####################
