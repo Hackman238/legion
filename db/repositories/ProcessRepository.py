@@ -290,6 +290,28 @@ class ProcessRepository:
         session.close()
         return [dict(zip(keys, row)) for row in rows]
 
+    def getProcessById(self, process_id):
+        session = self.dbAdapter.session()
+        try:
+            proc = session.query(process).filter_by(id=process_id).first()
+            if not proc:
+                return None
+            data = {
+                'id': proc.id,
+                'name': (proc.name or '').strip(),
+                'tabTitle': (proc.tabTitle or '').strip(),
+                'hostIp': (proc.hostIp or '').strip(),
+                'port': (proc.port or '').strip(),
+                'protocol': (proc.protocol or '').strip(),
+                'command': (proc.command or '').strip(),
+                'outputfile': (proc.outputfile or '').strip(),
+                'status': (proc.status or '').strip(),
+                'display': (proc.display or '').strip(),
+            }
+            return data
+        finally:
+            session.close()
+
     def getProcessesForRestore(self):
         session = self.dbAdapter.session()
         query = text(
