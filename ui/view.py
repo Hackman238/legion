@@ -268,9 +268,9 @@ class View(QtCore.QObject):
         self.ui.ToolHostsTableView.horizontalHeader().resizeSection(5,150)      # default width for Host column
     
         # process table
-        headers = ["Progress", "Elapsed", "Percent Complete", "Display", "Pid", "Name", "Tool", "Host", "Port",
-                   "Protocol", "Command", "Start time", "OutputFile", "Output", "Status"]
-        setTableProperties(self.ui.ProcessesTableView, len(headers), [1, 2, 3, 4, 5, 8, 9, 10, 13, 14, 16])
+        headers = ["Progress", "Display", "Run time", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
+                   "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
+        setTableProperties(self.ui.ProcessesTableView, len(headers), [1, 3, 4, 5, 8, 9, 10, 13, 14, 16])
         self.ui.ProcessesTableView.setSortingEnabled(True)
 
     def setMainWindowTitle(self, title):
@@ -1579,6 +1579,8 @@ class View(QtCore.QObject):
                     proc = {}
             if "percent" not in proc:
                 proc["percent"] = "Unknown"
+            if proc.get("elapsed") in (None, ""):
+                proc["elapsed"] = 0
             processes.append(proc)
         return processes
 
@@ -1593,7 +1595,7 @@ class View(QtCore.QObject):
         return self._normalizeProcessRows(raw_processes)
 
     def setupProcessesTableView(self):
-        headers = ["Progress", "Display", "Elapsed", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
+        headers = ["Progress", "Display", "Run time", "Percent Complete", "Pid", "Name", "Tool", "Host", "Port",
                    "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
         processes = self._getProcessesForDisplay()
         self.ProcessesTableModel = ProcessesTableModel(self, processes, headers)
@@ -1614,11 +1616,12 @@ class View(QtCore.QObject):
         if not self.ProcessesTableModel:
             return
         header = self.ui.ProcessesTableView.horizontalHeader()
-        visible_columns = {0, 6, 7, 15}
+        visible_columns = {0, 2, 6, 7, 15}
         total_columns = self.ProcessesTableModel.columnCount(None)
         for col in range(total_columns):
             self.ui.ProcessesTableView.setColumnHidden(col, col not in visible_columns)
         header.resizeSection(0, 125)
+        header.resizeSection(2, 110)
         header.resizeSection(6, 260)
         header.resizeSection(7, 260)
         header.resizeSection(15, 110)

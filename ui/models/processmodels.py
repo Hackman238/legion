@@ -25,12 +25,44 @@ from app.ModelHelpers import resolveHeaders, itemInteractive
 from app.auxiliary import *                                                 # for bubble sort
 
 class ProcessesTableModel(QtCore.QAbstractTableModel):
-    
+
     def __init__(self, controller, processes = [[]], headers = [], parent = None):
         QtCore.QAbstractTableModel.__init__(self, parent)
         self.__headers = headers
         self.__processes = processes
         self.__controller = controller
+
+    @staticmethod
+    def _format_duration(seconds):
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return "00:00:00"
+        if seconds < 0:
+            seconds = 0
+        total_seconds = int(seconds)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    def _runtime_seconds_for_row(self, row):
+        proc = self.__processes[row]
+        pid_value = proc.get('pid')
+        runtime = None
+        measurements = getattr(self.__controller.controller, 'processMeasurements', {})
+        if pid_value not in (None, '', '0'):
+            try:
+                runtime = measurements.get(int(pid_value))
+            except (ValueError, TypeError):
+                runtime = measurements.get(pid_value)
+        if runtime is None or runtime == 0:
+            runtime = proc.get('elapsed')
+        if runtime in ('', None):
+            runtime = 0
+        try:
+            return float(runtime)
+        except (TypeError, ValueError):
+            return 0.0
         
     def setProcesses(self, processes):
         self.__processes = processes
@@ -63,9 +95,8 @@ class ProcessesTableModel(QtCore.QAbstractTableModel):
                 if column == 0:
                     value = ''
                 elif column == 2:
-                    pid = int(self.__processes[row]['pid'])
-                    elapsed = round(self.__controller.controller.processMeasurements.get(pid, 0), 2)
-                    value = "{0:.2f}{1}".format(float(elapsed), "s")
+                    runtime_seconds = self._runtime_seconds_for_row(row)
+                    value = self._format_duration(runtime_seconds)
                 elif column == 3:
                     percent = self.__processes[row].get('percent')
                     if percent is not None and percent != "":
@@ -97,7 +128,7 @@ class ProcessesTableModel(QtCore.QAbstractTableModel):
         self.layoutAboutToBeChanged.emit()
         array=[]
 
-        sortColumns = {5:'name', 6:'tabTitle', 11:'startTime', 12:'endTime'}
+        sortColumns = {2: 'elapsed', 5:'name', 6:'tabTitle', 11:'startTime', 12:'endTime'}
         field = sortColumns.get(int(Ncol)) or 'status'
 
         try:
@@ -113,7 +144,13 @@ class ProcessesTableModel(QtCore.QAbstractTableModel):
                         array.append(int(self.__processes[i]['port']))
             else:
                 for i in range(len(self.__processes)):
-                    array.append(self.__processes[i][field])
+                    value = self.__processes[i].get(field)
+                    if field == 'elapsed':
+                        try:
+                            value = float(value)
+                        except (TypeError, ValueError):
+                            value = 0.0
+                    array.append(value)
         
             sortArrayWithArray(array, self.__processes)  # sort the services based on the values in the array
 
