@@ -1,3 +1,11 @@
+legion (0.5.0-0) UNRELEASED; urgency=medium
+
+  * Harden Nmap importer host/port lookups so staged scans no longer crash when data is missing.
+  * Wrap raw SQL statements in SQLAlchemy text() helpers to prevent CVE refresh failures.
+  * Improve importer logging and edge-case handling for long-running scan workflows.
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Thu, 09 Oct 2025 19:30:00 -0500
+
 legion (0.4.9-0) UNRELEASED; urgency=medium
 
   * Prefer hostnames for automated screenshots (fallback to IP)

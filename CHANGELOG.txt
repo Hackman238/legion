@@ -1,3 +1,9 @@
+LEGION 0.5.0
+
+* Harden the Nmap importer to gracefully skip missing hosts and ports instead of aborting staged imports.
+* Wrap direct SQL statements with SQLAlchemy `text()` to keep CVE refreshes working across SQLAlchemy releases.
+* Expand importer logging and safeguards so long-running scans recover cleanly from unexpected edge cases.
+
 LEGION 0.4.9
 
 * Screenshooter now prefers hostnames (with HTTPS detection fix) and uses IP only as fallback

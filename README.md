@@ -2,6 +2,11 @@
 
 This is the new home of "Legion". A major release is out!
 
+**Latest release: 0.5.0 (October 2025)**
+- Nmap importer now skips missing hosts and ports gracefully, keeping staged scans running.
+- CVE refresh paths use SQLAlchemy `text()` helpers to stay compatible with recent SQLAlchemy releases.
+- Additional importer logging and safeguards improve resilience during long-running scan workflows.
+
 Having [screenshot issues](#screenshot-issues)?
 
 ##
