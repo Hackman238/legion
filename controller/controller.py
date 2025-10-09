@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import os
 import socket
+import re
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
 from PyQt6 import sip
 
@@ -31,6 +32,7 @@ from app.importers.NmapImporter import NmapImporter
 from app.importers.PythonImporter import PythonImporter
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
 from app.auxiliary import unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl
+from app.timing import getTimestamp
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
 import os
 
@@ -681,6 +683,7 @@ class Controller:
     def getContextMenuForProcess(self):
         menu = QMenu()
         menu.addAction("Kill")
+        menu.addAction("Retry")
         menu.addAction("Clear")
         return menu
 
@@ -706,6 +709,63 @@ class Controller:
         if action.text() == 'Clear':  # hide all the processes that are not running
             self.logic.activeProject.repositoryContainer.processRepository.toggleProcessDisplayStatus()
             self.view.updateProcessesTableView()
+            return
+
+        if action.text() == 'Retry':
+            process_repo = self.logic.activeProject.repositoryContainer.processRepository
+            for pid, status, proc_id in selectedProcesses:
+                if status in ('Running', 'Waiting'):
+                    log.info(f"Process {proc_id} is currently {status}; skipping retry.")
+                    continue
+                process_details = process_repo.getProcessById(proc_id)
+                if not process_details:
+                    log.warning(f"Unable to locate process details for id {proc_id}; skipping retry.")
+                    continue
+                command = process_details.get('command')
+                if not command:
+                    log.warning(f"Process id {proc_id} has no recorded command; skipping retry.")
+                    continue
+                name = process_details.get('name') or 'process'
+                tab_title = process_details.get('tabTitle') or name
+                host_ip = process_details.get('hostIp') or ''
+                port = process_details.get('port') or ''
+                protocol = process_details.get('protocol') or ''
+                outputfile = process_details.get('outputfile') or ''
+
+                host_key = host_ip if host_ip else tab_title
+                textbox = self.view.createNewTabForHost(host_key, tab_title, False)
+
+                kwargs = {}
+                stage_match = re.search(r'stage\s*(\d+)', tab_title, re.IGNORECASE)
+                if stage_match:
+                    try:
+                        stage_number = int(stage_match.group(1))
+                    except ValueError:
+                        stage_number = 0
+                else:
+                    stage_number = 0
+
+                if stage_number:
+                    discovery_flag = '-Pn' not in command
+                    enable_ipv6_flag = '-6' in command
+                    kwargs['stage'] = stage_number
+                    kwargs['discovery'] = discovery_flag
+                    kwargs['enable_ipv6'] = enable_ipv6_flag
+
+                self.runCommand(
+                    name,
+                    tab_title,
+                    host_ip,
+                    str(port) if port is not None else '',
+                    protocol,
+                    command,
+                    getTimestamp(True),
+                    outputfile,
+                    textbox,
+                    **kwargs
+                )
+            self.view.updateProcessesTableView()
+            return
 
     #################### LEFT PANEL INTERFACE UPDATE FUNCTIONS ####################
 
