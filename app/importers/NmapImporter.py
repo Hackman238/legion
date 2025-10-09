@@ -397,7 +397,18 @@ class NmapImporter(QtCore.QThread):
             self.progressUpdated.emit(0, 'Creating script objects...')
 
             for h in allHosts:  # create all script objects that need to be created
+                if h is None:
+                    self.tsLog("Encountered empty host entry while creating scripts; skipping.")
+                    appLog.warning("Skipping script creation for a null host entry from nmap report.")
+                    continue
+
                 db_host = self.hostRepository.getHostInformation(h.ip)
+                if not db_host:
+                    self.tsLog(
+                        "A host that should have been found was not. Skipping script creation for this host."
+                    )
+                    appLog.warning("Skipping script creation for host %s because it is missing in the database.", h.ip)
+                    continue
 
                 for p in h.all_ports():
                     for scr in p.getScripts():
@@ -410,12 +421,19 @@ class NmapImporter(QtCore.QThread):
                         self.tsLog("        Processing script obj {scr}".format(scr=str(scr)))
                         db_port = session.query(portObj).filter_by(hostId=db_host.id) \
                             .filter_by(portId=p.portId).filter_by(protocol=p.protocol).first()
-                        # Todo
-                        db_script = session.query(l1ScriptObj).filter_by(scriptId=scr.scriptId) \
-                            .filter_by(portId=db_port.id).first()
-                        # end todo
+                        if not db_port:
+                            self.tsLog(
+                                "Skipping script {script} for host {host} port {port}/{protocol}; port not in database.".format(
+                                    script=scr.scriptId, host=h.ip, port=p.portId, protocol=p.protocol
+                                )
+                            )
+                            appLog.warning(
+                                "Skipping script %s for host %s port %s/%s because the port is missing in the database.",
+                                scr.scriptId, h.ip, p.portId, p.protocol
+                            )
+                            continue
                         db_script = session.query(l1ScriptObj).filter_by(hostId=db_host.id) \
-                           .filter_by(portId=db_port.id).first()
+                            .filter_by(portId=db_port.id).filter_by(scriptId=scr.scriptId).first()
 
                         if not db_script:  # if this script object doesn't exist, create it
                             t_l1ScriptObj = l1ScriptObj(scr.scriptId, scr.output, db_port.id, db_host.id)
@@ -473,6 +491,11 @@ class NmapImporter(QtCore.QThread):
                         "Save your session and report a bug."
                     )
                     self.tsLog("Include your nmap file, sanitized if needed.")
+                    appLog.warning(
+                        "Host %s was expected in the database during update but could not be found; skipping.",
+                        getattr(h, "ip", "<unknown>")
+                    )
+                    continue
 
                 # Check if any vulners script is present for this host or its ports
                 has_vulners = False
@@ -565,16 +588,38 @@ class NmapImporter(QtCore.QThread):
 
                 for scr in h.getHostScripts():
                     self.tsLog("-----------------------Host SCR: {0}".format(scr.scriptId))
-                    db_host = self.hostRepository.getHostInformation(h.ip)
-                    scrProcessorResults = scr.scriptSelector(db_host)
+                    db_host_for_script = self.hostRepository.getHostInformation(h.ip)
+                    if not db_host_for_script:
+                        self.tsLog(
+                            "Skipping host script {script} for host {host}; host not found in database.".format(
+                                script=scr.scriptId, host=getattr(h, "ip", "<unknown>")
+                            )
+                        )
+                        appLog.warning(
+                            "Skipping host-level script %s for host %s because the host is missing in the database.",
+                            scr.scriptId, getattr(h, "ip", "<unknown>")
+                        )
+                        continue
+                    scrProcessorResults = scr.scriptSelector(db_host_for_script)
                     for scrProcessorResult in scrProcessorResults:
                         session.add(scrProcessorResult)
                         session.commit()
 
                 for scr in h.getScripts():
                     self.tsLog("-----------------------SCR: {0}".format(scr.scriptId))
-                    db_host = self.hostRepository.getHostInformation(h.ip)
-                    scrProcessorResults = scr.scriptSelector(db_host)
+                    db_host_for_script = self.hostRepository.getHostInformation(h.ip)
+                    if not db_host_for_script:
+                        self.tsLog(
+                            "Skipping script {script} for host {host}; host not found in database.".format(
+                                script=scr.scriptId, host=getattr(h, "ip", "<unknown>")
+                            )
+                        )
+                        appLog.warning(
+                            "Skipping generic script %s for host %s because the host is missing in the database.",
+                            scr.scriptId, getattr(h, "ip", "<unknown>")
+                        )
+                        continue
+                    scrProcessorResults = scr.scriptSelector(db_host_for_script)
                     for scrProcessorResult in scrProcessorResults:
                         session.add(scrProcessorResult)
                         session.commit()
@@ -591,16 +636,26 @@ class NmapImporter(QtCore.QThread):
                         # fetch the port
                     db_port = session.query(portObj).filter_by(hostId=db_host.id).filter_by(portId=p.portId) \
                         .filter_by(protocol=p.protocol).first()
-                    if db_port:
-                        if db_port.state != p.state:
-                            db_port.state = p.state
-                            session.add(db_port)
-                            session.commit()
-                        # if there is some new service information, update it -- might be causing issue 164
-                        if not (db_service is None) and db_port.serviceId != db_service.id:
-                            db_port.serviceId = db_service.id
-                            session.add(db_port)
-                            session.commit()
+                    if not db_port:
+                        self.tsLog(
+                            "Skipping updates for host {host} port {port}/{protocol}; port not found in database.".format(
+                                host=db_host.ip, port=p.portId, protocol=p.protocol
+                            )
+                        )
+                        appLog.warning(
+                            "Skipping updates for host %s port %s/%s because the port is missing in the database.",
+                            db_host.ip, p.portId, p.protocol
+                        )
+                        continue
+                    if db_port.state != p.state:
+                        db_port.state = p.state
+                        session.add(db_port)
+                        session.commit()
+                    # if there is some new service information, update it -- might be causing issue 164
+                    if not (db_service is None) and db_port.serviceId != db_service.id:
+                        db_port.serviceId = db_service.id
+                        session.add(db_port)
+                        session.commit()
                     # store the script results (note that existing script outputs are also kept)
                     for scr in p.getScripts():
                         db_script = session.query(l1ScriptObj).filter_by(scriptId=scr.scriptId) \
