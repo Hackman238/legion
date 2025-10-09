@@ -72,6 +72,42 @@ class Controller:
         except Exception:
             log.debug(f"Failed to resolve hostname for {host_value}", exc_info=True)
         return display_host or host_value, ip_value or host_value
+
+    def _resolve_host_record(self, identifier: str):
+        """Return the hostObj matching the provided identifier (IP, hostname, or 'ip (hostname)')."""
+        repo_container = self.logic.activeProject.repositoryContainer
+        host_repo = getattr(repo_container, "hostRepository", None)
+        if not host_repo or not identifier:
+            return None
+
+        candidates = []
+        token = identifier.strip()
+        if token:
+            candidates.append(token)
+        if '(' in token and ')' in token:
+            prefix = token.split('(', 1)[0].strip()
+            suffix = token.split('(', 1)[1].strip(' )')
+            if prefix:
+                candidates.append(prefix)
+            if suffix:
+                candidates.append(suffix)
+
+        # Ensure uniqueness while preserving order
+        seen = set()
+        normalized_candidates = []
+        for cand in candidates:
+            if cand and cand not in seen:
+                normalized_candidates.append(cand)
+                seen.add(cand)
+
+        for cand in normalized_candidates:
+            host = host_repo.getHostByIP(cand)
+            if host:
+                return host
+            host = host_repo.getHostByHostname(cand)
+            if host:
+                return host
+        return None
     @staticmethod
     def _has_ipv6_connectivity():
         try:
@@ -627,20 +663,25 @@ class Controller:
             port_repo = repo_container.portRepository
             for t in targets:
                 ip, port, protocol, _ = t
-                host = host_repo.getHostByIP(ip)
-                if host:
-                    # Attempt to delete the port by host id, port, and protocol
-                    if hasattr(port_repo, "deletePortByHostIdAndPort"):
-                        port_repo.deletePortByHostIdAndPort(host.id, port, protocol)
-                    else:
-                        # Fallback: try to find and delete the port manually
-                        session = self.logic.activeProject.database.session()
+                host = self._resolve_host_record(ip)
+                if not host:
+                    log.warning(f"Delete Port: host '{ip}' could not be resolved.")
+                    continue
+                # Attempt to delete the port by host id, port, and protocol
+                if hasattr(port_repo, "deletePortByHostIdAndPort"):
+                    port_repo.deletePortByHostIdAndPort(host.id, port, protocol)
+                else:
+                    # Fallback: try to find and delete the port manually
+                    session = self.logic.activeProject.database.session()
+                    try:
                         port_obj = session.query(portObj).filter_by(
                             hostId=host.id, port=port, protocol=protocol
                         ).first()
                         if port_obj:
                             session.delete(port_obj)
                             session.commit()
+                    finally:
+                        session.close()
             self.view.updateInterface()
             return
 
@@ -1547,17 +1588,9 @@ class Controller:
         :param host_ip: IP address of the host (string)
         :param port_data: dict with keys 'port', 'state', 'protocol'
         """
-        repo_container = self.logic.activeProject.repositoryContainer
-        # Find host by IP using getHosts and filter
-        filters = self.view.viewState.filters
-        hosts = repo_container.hostRepository.getHosts(filters)
-        host = None
-        for h in hosts:
-            if hasattr(h, "ip") and h.ip == host_ip:
-                host = h
-                break
+        host = self._resolve_host_record(host_ip)
         if not host:
-            log.error(f"Host with IP {host_ip} not found.")
+            log.error(f"Host '{host_ip}' not found.")
             return
 
         # Create and add the port
@@ -1568,9 +1601,13 @@ class Controller:
             host_id = host.id
             new_port = portObj(port_id, protocol, state, host_id)
             session = self.logic.activeProject.database.session()
-            session.add(new_port)
-            session.commit()
-            log.info(f"Added port {port_id}/{protocol} ({state}) to host {host_ip}")
+            try:
+                session.add(new_port)
+                session.commit()
+            finally:
+                session.close()
+            host_label = getattr(host, 'hostname', '') or getattr(host, 'ip', '')
+            log.info(f"Added port {port_id}/{protocol} ({state}) to host {host_label}")
             self.view.updateInterface()
         except Exception as e:
             log.error(f"Failed to add port to host {host_ip}: {e}")
