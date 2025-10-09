@@ -18,6 +18,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 import sys
 
 from PyQt6 import QtCore
+from sqlalchemy import text
 
 from app.actions.updateProgress import AbstractUpdateProgressObservable
 from app.logging.legionLog import getAppLogger
@@ -492,7 +493,7 @@ class NmapImporter(QtCore.QThread):
                 if has_vulners:
                     # Remove existing CVEs for this host
                     session.execute(
-                        "DELETE FROM cve WHERE hostId = :hostId",
+                        text("DELETE FROM cve WHERE hostId = :hostId"),
                         {'hostId': db_host.id}
                     )
                     session.commit()
@@ -648,5 +649,4 @@ class NmapImporter(QtCore.QThread):
             if self.updateProgressObservable is not None:
                 self.updateProgressObservable.finished()
             self.done.emit()
-            self.stopProgressTimer()
             raise
