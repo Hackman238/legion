@@ -116,6 +116,7 @@ class View(QtCore.QObject):
         status_combo.setItemData(1, ["Waiting", "Running"])
         status_combo.setItemData(2, ["Finished"])
         status_combo.setItemData(3, ["Crashed", "Cancelled", "Killed", "Failed"])
+        status_combo.setItemData(4, ["Waiting"])
         status_combo.setCurrentIndex(0)
         self.processStatusFilter = status_combo.currentData()
 
