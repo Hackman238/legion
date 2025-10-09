@@ -135,3 +135,8 @@ class OsHostsTableModel(QtCore.QAbstractTableModel):
         if order == QtCore.Qt.SortOrder.AscendingOrder:
             self._hosts.reverse()
         self.layoutChanged.emit()
+
+    def getHostDisplay(self, row):
+        if 0 <= row < len(self._hosts):
+            return self._hosts[row]
+        return None
