@@ -1,3 +1,10 @@
+LEGION 0.5.1
+
+* Added an OS tab (with centralized OS classifier) so Hosts and OS views share consistent labels/icons.
+* Introduced process status filtering and per-process run time to make busy queues easier to manage.
+* Allow manual port addition/removal to work reliably for host entries keyed by hostnames.
+* Update bundled `snmpbrute.py` for modern Python, fixing bytes handling and subprocess output.
+
 LEGION 0.5.0
 
 * Harden the Nmap importer to gracefully skip missing hosts and ports instead of aborting staged imports.
