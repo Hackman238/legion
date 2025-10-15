@@ -21,6 +21,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 import os, sys, socket, locale, webbrowser, \
     re, platform  # for webrequests, screenshot timeouts, timestamps, browser stuff and regex
 import tempfile
+import shlex
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import QProcess, QObject, pyqtSignal, pyqtSlot, QThread, Qt
 from six import u as unicode
@@ -92,7 +93,12 @@ def getPid(qprocess):
     return pid
 
 def formatCommandQProcess(inputCommand):
-    parts = inputCommand.split()
+    if isinstance(inputCommand, (list, tuple)):
+        parts = list(inputCommand)
+    else:
+        parts = shlex.split(inputCommand)
+    if not parts:
+        return "", []
     program = parts[0]
     arguments = parts[1:]
     return program, arguments

@@ -18,6 +18,7 @@ Copyright (c) 2025 Shane William Scott
 """
 
 import shutil
+import os
 
 from app.auxiliary import *  # for timestamp
 
@@ -29,16 +30,19 @@ log = getAppLogger()
 
 class AppSettings():
     def __init__(self):
-        # check if settings file exists and creates it if it doesn't
-        if not os.path.exists(os.path.expanduser('~/.local/share/legion/legion.conf')):
-            if not os.path.isdir(os.path.expanduser("~/.local/share/legion")):
-                os.makedirs(os.path.expanduser("~/.local/share/legion"))
-            shutil.copy('./legion.conf', os.path.expanduser('~/.local/share/legion/legion.conf'))
+        config_dir = os.path.expanduser("~/.local/share/legion")
+        config_path = os.path.join(config_dir, "legion.conf")
+        if not os.path.exists(config_path):
+            if not os.path.isdir(config_dir):
+                os.makedirs(config_dir, exist_ok=True)
+            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+            default_conf = os.path.join(repo_root, "legion.conf")
+            if os.path.exists(default_conf):
+                shutil.copy(default_conf, config_path)
+            else:
+                log.error(f"Default configuration file not found at {default_conf}.")
         log.info('Loading settings file..')
-        self.actions = QtCore.QSettings(
-            os.path.expanduser('~/.local/share/legion/legion.conf'),
-            QtCore.QSettings.Format.NativeFormat
-        )
+        self.actions = QtCore.QSettings(config_path, QtCore.QSettings.Format.NativeFormat)
 
     def getGeneralSettings(self):
         return self.getSettingsByGroup("GeneralSettings")

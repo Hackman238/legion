@@ -23,6 +23,8 @@ from PyQt6 import QtWidgets, QtGui
 from app.auxiliary import *                                             # for timestamps
 from app.timing import getTimestamp
 from six import u as unicode
+import shlex
+import os
 
 class BruteWidget(QtWidgets.QWidget):
     
@@ -336,63 +338,74 @@ class BruteWidget(QtWidgets.QWidget):
             self.passListRadio.toggle()
 
     def buildHydraCommand(self, runningfolder, userlistPath, passlistPath):
-        
+
         self.ip = self.ipTextinput.text()
         self.port = self.portTextinput.text()
         self.service = str(self.serviceComboBox.currentText())
-        self.command = "hydra " + str(self.ip) + " -s " + self.port + " -o "
-        self.outputfile = runningfolder + "/hydra/" + getTimestamp() + "-" + str(self.ip) + "-" + self.port + "-" + \
-            self.service + ".txt"
-        self.command += "\"" + self.outputfile + "\""
+
+        hydra_executable = getattr(self.settings, "tools_path_hydra", "").strip() or "hydra"
+
+        output_dir = os.path.join(runningfolder, "hydra")
+        os.makedirs(output_dir, exist_ok=True)
+
+        self.outputfile = os.path.join(
+            output_dir,
+            f"{getTimestamp()}-{self.ip}-{self.port}-{self.service}.txt"
+        )
+
+        command_parts = [
+            hydra_executable,
+            self.ip,
+            "-s",
+            self.port,
+            "-o",
+            self.outputfile,
+        ]
 
         if 'form' not in str(self.service):
             self.warningLabel.hide()
-        
-        if self.service not in self.settings.brute_no_username_services.split(","):
-            if self.singleUserRadio.isChecked():
-                self.command += " -l " + self.usersTextinput.text()
-            elif self.foundUsersRadio.isChecked():
-                self.command += " -L \"" + userlistPath+"\""
-            else:
-                self.command += " -L \"" + self.userlistTextinput.text()+"\""
-                
-        if self.service not in self.settings.brute_no_password_services.split(","):
-            if self.singlePassRadio.isChecked():
-                escaped_password = self.passwordsTextinput.text().replace('"', '\"\"\"')
-                self.command += " -p \"" + escaped_password + "\""
 
-            elif self.foundPasswordsRadio.isChecked():
-                self.command += " -P \"" + passlistPath + "\""
+        no_user_services = [svc.strip() for svc in self.settings.brute_no_username_services.split(",")]
+        no_pass_services = [svc.strip() for svc in self.settings.brute_no_password_services.split(",")]
+
+        if self.service not in no_user_services:
+            if self.singleUserRadio.isChecked():
+                command_parts.extend(["-l", self.usersTextinput.text()])
+            elif self.foundUsersRadio.isChecked():
+                command_parts.extend(["-L", userlistPath])
             else:
-                self.command += " -P \"" + self.passlistTextinput.text() + "\""
+                command_parts.extend(["-L", self.userlistTextinput.text()])
+
+        if self.service not in no_pass_services:
+            if self.singlePassRadio.isChecked():
+                command_parts.extend(["-p", self.passwordsTextinput.text()])
+            elif self.foundPasswordsRadio.isChecked():
+                command_parts.extend(["-P", passlistPath])
+            else:
+                command_parts.extend(["-P", self.passlistTextinput.text()])
 
         if self.checkBlankPass.isChecked():
-            self.command += " -e n"
+            command_parts.extend(["-e", "n"])
             if self.checkLoginAsPass.isChecked():
-                self.command += "s"
-                
+                command_parts[-1] += "s"
         elif self.checkLoginAsPass.isChecked():
-                self.command += " -e s"
-                
+            command_parts.extend(["-e", "s"])
+
         if self.checkLoopUsers.isChecked():
-            self.command += " -u"
-        
+            command_parts.append("-u")
+
         if self.checkExitOnValid.isChecked():
-            self.command += " -f"
+            command_parts.append("-f")
 
         if self.checkVerbose.isChecked():
-            self.command += " -V"
-            
-        self.command += " -t " + str(self.threadsComboBox.currentText())
-            
-        self.command += " " + self.service
+            command_parts.append("-V")
 
-#       if self.labelPath.isVisible(): # append the additional field's content, if it was visible
-        if self.checkAddMoreOptions.isChecked():
-            self.command += " "+str(self.labelPath.text()) # TODO: sanitise this?
+        command_parts.extend(["-t", str(self.threadsComboBox.currentText()), self.service])
 
-        #command = "echo "+escaped_password+" > /tmp/hydra-sub.txt"
-        #os.system(unicode(command))
+        if self.checkAddMoreOptions.isChecked() and self.labelPath.text().strip():
+            command_parts.extend(shlex.split(self.labelPath.text()))
+
+        self.command = " ".join(shlex.quote(part) for part in command_parts)
         return self.command
         
     def getPort(self):
