@@ -26,18 +26,42 @@ def import_targets_from_textfile(session, hostRepository, filename):
     Import targets (hostnames, subnets, IPs, etc.) from a text file into the database.
     Each line is treated as a target.
     """
-    with open(filename, "r") as f:
-        for line in f:
-            target = line.strip()
-            if not target or target.startswith("#"):
-                continue
-            # Only add if not already present
-            db_host = hostRepository.getHostInformation(target)
-            if not db_host:
+    added = 0
+    try:
+        with open(filename, "r", encoding="utf-8", errors="ignore") as f:
+            for line_number, line in enumerate(f, 1):
+                target = line.strip()
+                if not target or target.startswith("#"):
+                    continue
+                try:
+                    db_host = hostRepository.getHostInformation(target)
+                except Exception as repo_exc:
+                    print(
+                        f"Warning: unable to check existing host '{target}' ({filename}:{line_number}): {repo_exc}",
+                        file=sys.stderr
+                    )
+                    continue
+                if db_host:
+                    continue
                 hid = hostObj(ip=target, ipv4=target, ipv6='', macaddr='', status='', hostname=target,
                               vendor='', uptime='', lastboot='', distance='', state='', count='')
-                session.add(hid)
-                session.commit()
+                try:
+                    session.add(hid)
+                    session.commit()
+                    added += 1
+                except Exception as db_exc:
+                    session.rollback()
+                    print(
+                        f"Error importing target '{target}' ({filename}:{line_number}): {db_exc}",
+                        file=sys.stderr
+                    )
+    except FileNotFoundError:
+        print(f"Error: input file '{filename}' not found.", file=sys.stderr)
+        return 0
+    except OSError as exc:
+        print(f"Error opening input file '{filename}': {exc}", file=sys.stderr)
+        return added
+    return added
 
 def is_wsl():
     try:

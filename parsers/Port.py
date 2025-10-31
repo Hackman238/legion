@@ -19,7 +19,11 @@ class Port:
             self.portNode = PortNode
             self.portId = PortNode.getAttribute('portid')
             self.protocol = PortNode.getAttribute('protocol')
-            self.state = PortNode.getElementsByTagName('state')[0].getAttribute('state')
+            state_nodes = PortNode.getElementsByTagName('state')
+            if state_nodes:
+                self.state = state_nodes[0].getAttribute('state')
+            else:
+                self.state = 'unknown'
 
     def getService(self) -> Optional[Service.Service]:
         service_node = self.portNode.getElementsByTagName('service')

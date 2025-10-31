@@ -18,7 +18,8 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 
 from app.auxiliary import Filters
 from sqlalchemy import text
-from db.SqliteDbAdapter import Database
+from sqlalchemy.exc import DatabaseError as SADatabaseError
+from db.SqliteDbAdapter import Database, DatabaseIntegrityError
 from db.entities.host import hostObj
 from app.osclassification import classify_os, ORDERED_OS_CATEGORIES
 from db.filters import applyFilters, applyHostsFilters
@@ -118,7 +119,11 @@ class HostRepository:
         Return all hostObj ORM objects in the database.
         """
         session = self.dbAdapter.session()
-        hosts = session.query(hostObj).all()
+        try:
+            hosts = session.query(hostObj).all()
+        except SADatabaseError as exc:
+            session.close()
+            raise DatabaseIntegrityError(f"Failed to load hosts: {exc}") from exc
         session.close()
         return hosts
 

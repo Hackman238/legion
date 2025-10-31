@@ -23,7 +23,7 @@ import os
 import socket
 import re
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
-from PyQt6 import sip
+from PyQt6 import sip, QtWidgets
 
 from app.ApplicationInfo import applicationInfo
 from app.Screenshooter import Screenshooter
@@ -44,6 +44,7 @@ except Exception:
 from app.logic import *
 from app.settings import *
 from db.entities.port import portObj
+from db.SqliteDbAdapter import DatabaseIntegrityError
 
 log = getAppLogger()
 
@@ -284,7 +285,30 @@ class Controller:
 
     def openExistingProject(self, filename, projectType='legion'):
         self.view.closeProject()
-        self.logic.openExistingProject(filename, projectType)
+        try:
+            self.logic.openExistingProject(filename, projectType)
+        except DatabaseIntegrityError as exc:
+            log.error(f"Failed to open project {filename}: {exc}")
+            QtWidgets.QMessageBox.critical(
+                self.view.ui.centralwidget,
+                'Corrupted Project',
+                f"Legion detected corruption while opening '{filename}'.\n\n"
+                f"Details: {exc}\n\n"
+                "The project was not loaded. A new temporary session has been created."
+            )
+            self.logic.createNewTemporaryProject()
+            self.start()
+            return False
+        except Exception as exc:
+            log.exception(f"Unexpected error opening project {filename}")
+            QtWidgets.QMessageBox.critical(
+                self.view.ui.centralwidget,
+                'Error Opening Project',
+                f"Failed to open project '{filename}'.\n\nDetails: {exc}"
+            )
+            self.logic.createNewTemporaryProject()
+            self.start()
+            return False
         # initialisations (globals, signals, etc)
         self.start(os.path.basename(self.logic.activeProject.properties.projectName))
         self.view.restoreToolTabs() # restores the tool tabs for each host
@@ -297,13 +321,32 @@ class Controller:
                 self.view.viewState.lazy_update_tools = True
         except Exception:
             log.exception("Failed to reset process display status when opening project")
+        return True
 
     def saveProject(self, lastHostIdClicked, notes):
         if not lastHostIdClicked == '':
             self.logic.activeProject.repositoryContainer.noteRepository.storeNotes(lastHostIdClicked, notes)
 
     def saveProjectAs(self, filename, replace=0):
-        success = self.logic.saveProjectAs(filename, replace)
+        try:
+            success = self.logic.saveProjectAs(filename, replace)
+        except DatabaseIntegrityError as exc:
+            log.error(f"Failed to save project '{filename}': {exc}")
+            QtWidgets.QMessageBox.critical(
+                self.view.ui.centralwidget,
+                'Error Saving Project',
+                f"Legion was unable to save the project because the database failed an integrity check.\n\n"
+                f"Details: {exc}"
+            )
+            return False
+        except Exception as exc:
+            log.exception(f"Unexpected error saving project '{filename}'")
+            QtWidgets.QMessageBox.critical(
+                self.view.ui.centralwidget,
+                'Error Saving Project',
+                f"Unexpected error while saving project: {exc}"
+            )
+            return False
         if success:
             self.nmapImporter.setDB(self.logic.activeProject.database) # tell nmap importer which db to use
         return success

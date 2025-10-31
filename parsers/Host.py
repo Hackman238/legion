@@ -24,7 +24,9 @@ class Host:
 
     def __init__( self, HostNode ):
         self.hostNode = HostNode
-        self.status = HostNode.getElementsByTagName('status')[0].getAttribute('state')
+        status_nodes = HostNode.getElementsByTagName('status')
+        self.status = status_nodes[0].getAttribute('state') if status_nodes and \
+            status_nodes[0].hasAttribute('state') else 'unknown'
         for e in HostNode.getElementsByTagName('address'):
             if e.getAttribute('addrtype') == 'ipv4':
                 self.ipv4 = e.getAttribute('addr')
@@ -33,18 +35,29 @@ class Host:
             elif e.getAttribute('addrtype') == 'mac':
                 self.macaddr = e.getAttribute('addr')
                 self.vendor = e.getAttribute('vendor')
-        self.ip = HostNode.getElementsByTagName('address')[0].getAttribute('addr')
+        address_nodes = HostNode.getElementsByTagName('address')
+        self.ip = address_nodes[0].getAttribute('addr') if address_nodes and \
+            address_nodes[0].hasAttribute('addr') else ''
         #self.ip = self.ipv4 # for compatibility with the original library
-        if len(HostNode.getElementsByTagName('hostname')) > 0:
-            self.hostname = HostNode.getElementsByTagName('hostname')[0].getAttribute('name')
-        if len(HostNode.getElementsByTagName('uptime')) > 0:
-            self.uptime = HostNode.getElementsByTagName('uptime')[0].getAttribute('seconds')
-            self.lastboot = HostNode.getElementsByTagName('uptime')[0].getAttribute('lastboot')
-        if len(HostNode.getElementsByTagName('distance')) > 0:
-            self.distance = int(HostNode.getElementsByTagName('distance')[0].getAttribute('value'))
-        if len(HostNode.getElementsByTagName('extraports')) > 0:
-            self.state = HostNode.getElementsByTagName('extraports')[0].getAttribute('state')
-            self.count = HostNode.getElementsByTagName('extraports')[0].getAttribute('count')
+        hostname_nodes = HostNode.getElementsByTagName('hostname')
+        if hostname_nodes:
+            self.hostname = hostname_nodes[0].getAttribute('name')
+        uptime_nodes = HostNode.getElementsByTagName('uptime')
+        if uptime_nodes:
+            uptime_node = uptime_nodes[0]
+            self.uptime = uptime_node.getAttribute('seconds')
+            self.lastboot = uptime_node.getAttribute('lastboot')
+        distance_nodes = HostNode.getElementsByTagName('distance')
+        if distance_nodes and distance_nodes[0].hasAttribute('value'):
+            try:
+                self.distance = int(distance_nodes[0].getAttribute('value'))
+            except Exception:
+                self.distance = 0
+        extraports_nodes = HostNode.getElementsByTagName('extraports')
+        if extraports_nodes:
+            extraports_node = extraports_nodes[0]
+            self.state = extraports_node.getAttribute('state')
+            self.count = extraports_node.getAttribute('count')
 
     def getOs(self):
         oss = []
@@ -79,9 +92,12 @@ class Host:
         open_ports = []
 
         for portNode in self.hostNode.getElementsByTagName('port'):
-            if portNode.getAttribute('protocol') == protocol and portNode.getElementsByTagName('state')[0]\
-                    .getAttribute('state') == state:
-                open_ports.append( portNode.getAttribute('portid') )
+            if portNode.getAttribute('protocol') != protocol:
+                continue
+            state_nodes = portNode.getElementsByTagName('state')
+            if state_nodes and state_nodes[0].hasAttribute('state') and \
+                    state_nodes[0].getAttribute('state') == state:
+                open_ports.append(portNode.getAttribute('portid'))
 
         return open_ports
 
