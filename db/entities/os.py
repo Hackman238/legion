@@ -31,11 +31,21 @@ class osObj(Base):
     accuracy = Column(String)
     hostId = Column(String, ForeignKey('hostObj.id'))
 
-    def __init__(self, name, *args):
+    def __init__(
+        self,
+        name,
+        family='',
+        generation='',
+        osType='',
+        vendor='',
+        accuracy='',
+        hostId='',
+        **kwargs
+    ):
         self.name = name
-        self.family = args[0]
-        self.generation = args[1]
-        self.osType = args[2]
-        self.vendor = args[3]
-        self.accuracy = args[4]
-        self.hostId = args[5]
+        self.family = kwargs.get('family', family) or ''
+        self.generation = kwargs.get('generation', generation) or ''
+        self.osType = kwargs.get('osType', osType) or ''
+        self.vendor = kwargs.get('vendor', vendor) or ''
+        self.accuracy = kwargs.get('accuracy', accuracy) or ''
+        self.hostId = kwargs.get('hostId', hostId) or ''

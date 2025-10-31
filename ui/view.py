@@ -400,7 +400,8 @@ class View(QtCore.QObject):
                 elif '.sprt' in str(filename):
                     projectType = 'sparta'
                                 
-                self.controller.openExistingProject(filename, projectType)
+                if not self.controller.openExistingProject(filename, projectType):
+                    return
                 self.viewState.firstSave = False  # overwrite this variable because we are opening an existing file
                 # do not show the overlay because the hosttableview is already populated
                 self.displayAddHostsOverlay(False)
@@ -1086,6 +1087,31 @@ class View(QtCore.QObject):
     def connectToolHostsTableContextMenu(self):
         self.ui.ToolHostsTableView.customContextMenuRequested.connect(self.contextToolHostsTableContextMenu)
 
+    @staticmethod
+    def _extract_service_name(service_row):
+        if not service_row:
+            return ''
+        try:
+            if isinstance(service_row, dict):
+                return service_row.get('name') or service_row.get('services.name') or \
+                    (next(iter(service_row.values())) if service_row else '')
+            if hasattr(service_row, '_mapping'):
+                mapping = service_row._mapping
+                for key in ('name', 'services.name'):
+                    if key in mapping:
+                        return mapping[key]
+                try:
+                    return next(iter(mapping.values()))
+                except StopIteration:
+                    return ''
+            if isinstance(service_row, (list, tuple)):
+                return service_row[0] if service_row else ''
+            if hasattr(service_row, 'name'):
+                return service_row.name
+            return service_row[0]
+        except Exception:
+            return ''
+
     def contextToolHostsTableContextMenu(self, pos):
         if len(self.ui.ToolHostsTableView.selectionModel().selectedRows()) > 0:
             
@@ -1095,7 +1121,8 @@ class View(QtCore.QObject):
             port = self.ToolHostsTableModel.getPortForRow(row)
             
             if port:
-                serviceName = self.controller.getServiceNameForHostAndPort(ip, port)[0]
+                service_row = self.controller.getServiceNameForHostAndPort(ip, port)
+                serviceName = self._extract_service_name(service_row)
 
                 menu, actions, terminalActions = self.controller.getContextMenuForPort(str(serviceName))
                 menu.aboutToShow.connect(self.setVisible)
@@ -1108,9 +1135,12 @@ class View(QtCore.QObject):
                     targets.append([self.ToolHostsTableModel.getIpForRow(row.row()),
                                     self.ToolHostsTableModel.getPortForRow(row.row()),
                                     self.ToolHostsTableModel.getProtocolForRow(row.row()),
-                                    self.controller.getServiceNameForHostAndPort(
-                                        self.ToolHostsTableModel.getIpForRow(row.row()),
-                                        self.ToolHostsTableModel.getPortForRow(row.row()))[0]])
+                                    self._extract_service_name(
+                                        self.controller.getServiceNameForHostAndPort(
+                                            self.ToolHostsTableModel.getIpForRow(row.row()),
+                                            self.ToolHostsTableModel.getPortForRow(row.row())
+                                        )
+                                    )])
                     restore = True
 
                 action = menu.exec(self.ui.ToolHostsTableView.viewport().mapToGlobal(pos))
@@ -2335,4 +2365,3 @@ class View(QtCore.QObject):
         if deduped:
             return list(deduped.values())
         return list(processes)
-

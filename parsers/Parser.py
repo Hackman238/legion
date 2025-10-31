@@ -46,18 +46,23 @@ class Parser:
 
     def getSession(self):
         '''get this scans information, return a Session object'''
-        run_node = self.__dom.getElementsByTagName('nmaprun')[0]
-        hosts_node = self.__dom.getElementsByTagName('hosts')[0]
+        run_nodes = self.__dom.getElementsByTagName('nmaprun')
+        run_node = run_nodes[0] if run_nodes else None
+        hosts_nodes = self.__dom.getElementsByTagName('hosts')
+        hosts_node = hosts_nodes[0] if hosts_nodes else None
+        finished_nodes = self.__dom.getElementsByTagName('finished')
+        finished_node = finished_nodes[0] if finished_nodes else None
 
-        finish_time = self.__dom.getElementsByTagName('finished')[0].getAttribute('timestr')
+        finish_time = finished_node.getAttribute('timestr') if finished_node and \
+            finished_node.hasAttribute('timestr') else ''
 
-        nmapVersion = run_node.getAttribute('version')
-        startTime = run_node.getAttribute('startstr')
-        scanArgs = run_node.getAttribute('args')
+        nmapVersion = run_node.getAttribute('version') if run_node and run_node.hasAttribute('version') else ''
+        startTime = run_node.getAttribute('startstr') if run_node and run_node.hasAttribute('startstr') else ''
+        scanArgs = run_node.getAttribute('args') if run_node and run_node.hasAttribute('args') else ''
 
-        totalHosts = hosts_node.getAttribute('total')
-        upHosts = hosts_node.getAttribute('up')
-        downHosts = hosts_node.getAttribute('down')
+        totalHosts = hosts_node.getAttribute('total') if hosts_node and hosts_node.hasAttribute('total') else ''
+        upHosts = hosts_node.getAttribute('up') if hosts_node and hosts_node.hasAttribute('up') else ''
+        downHosts = hosts_node.getAttribute('down') if hosts_node and hosts_node.hasAttribute('down') else ''
 
         MySession = {'finish_time': finish_time,
                      'nmapVersion': nmapVersion,

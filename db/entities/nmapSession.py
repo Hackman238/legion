@@ -31,12 +31,25 @@ class nmapSessionObj(Base):
     upHosts = Column(String)
     downHosts = Column(String)
 
-    def __init__(self, filename, *args, **kwargs):
+    def __init__(
+        self,
+        filename,
+        startTime='',
+        finish_time='',
+        nmapVersion='unknown',
+        scanArgs='',
+        totalHosts='0',
+        upHosts='0',
+        downHosts='0',
+        **kwargs
+    ):
         self.filename = filename
-        self.startTime = args[0]
-        self.finish_time = args[1]
-        self.nmapVersion = kwargs.get('nmapVersion') or 'unknown'
-        self.scanArgs = kwargs.get('scanArgs') or ''
-        self.totalHosts = kwargs.get('total_host') or '0'
-        self.upHosts = kwargs.get('upHosts') or '0'
-        self.downHosts = kwargs.get('downHosts') or '0'
+        self.startTime = kwargs.get('startTime', startTime) or ''
+        self.finish_time = kwargs.get('finish_time', finish_time) or ''
+        self.nmapVersion = kwargs.get('nmapVersion', nmapVersion) or 'unknown'
+        self.scanArgs = kwargs.get('scanArgs', scanArgs) or ''
+        # Some legacy code may use the old 'total_host' key name
+        legacy_total = kwargs.get('total_host')
+        self.totalHosts = kwargs.get('totalHosts', legacy_total if legacy_total is not None else totalHosts) or '0'
+        self.upHosts = kwargs.get('upHosts', upHosts) or '0'
+        self.downHosts = kwargs.get('downHosts', downHosts) or '0'

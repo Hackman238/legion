@@ -192,5 +192,8 @@ class Logic:
         self.activeProject = self.projectManager.openExistingProject(projectName=filename, projectType=projectType)
 
     def saveProjectAs(self, filename, replace=0, projectType='legion') -> bool:
-        self.activeProject = self.projectManager.saveProjectAs(self.activeProject, filename, replace, projectType)
-        return True
+        project = self.projectManager.saveProjectAs(self.activeProject, filename, replace, projectType)
+        if project:
+            self.activeProject = project
+            return True
+        return False

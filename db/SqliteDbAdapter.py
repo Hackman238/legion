@@ -16,12 +16,15 @@ Copyright (c) 2025 Shane William Scott
 """
 
 from PyQt6.QtCore import QSemaphore
+import sqlite3
+from pathlib import Path
 import time
 from random import randint
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.scoping import scoped_session
+from sqlalchemy.exc import DatabaseError as SADatabaseError
 
 from app.logging.legionLog import getDbLogger
 
@@ -35,6 +38,11 @@ from db.entities.nmapSession import nmapSessionObj
 from db.entities.l1script import l1ScriptObj
 # Add any other entity classes as needed
 
+
+class DatabaseIntegrityError(Exception):
+    """Raised when the underlying SQLite database fails integrity checks."""
+
+
 class Database:
     def __init__(self, dbfilename):
         from db.database import Base
@@ -45,12 +53,16 @@ class Database:
         except Exception as e:
             self.log.error('Could not create SQLite database. Please try again.')
             self.log.info(e)
+            raise
 
     def openDB(self, dbfilename):
         try:
             self.establishSqliteConnection(dbfilename)
-        except:
+        except DatabaseIntegrityError:
+            raise
+        except Exception:
             self.log.error('Could not open SQLite database file. Is the file corrupted?')
+            raise
 
     def establishSqliteConnection(self, dbFileName: str):
         self.name = dbFileName
@@ -63,7 +75,15 @@ class Database:
         self.session.configure(bind=self.engine, autoflush=False)
         self.metadata = self.base.metadata
 
-        self.metadata.create_all(self.engine)
+        try:
+            self.metadata.create_all(self.engine)
+        except SADatabaseError as exc:
+            self.dispose()
+            raise DatabaseIntegrityError(f"Failed to initialise SQLite metadata: {exc}") from exc
+        except sqlite3.DatabaseError as exc:
+            self.dispose()
+            raise DatabaseIntegrityError(f"Failed to initialise SQLite database: {exc}") from exc
+
         self.metadata.echo = True
         self.metadata.bind = self.engine
         self.log.info(f"Established SQLite connection on file '{dbFileName}'")
@@ -91,3 +111,55 @@ class Database:
                 pass
         self.dbsemaphore.release()
         self.log.debug("DB lock released")
+
+    def dispose(self):
+        """Dispose of engine/session resources."""
+        try:
+            self.session.remove()
+        except Exception:
+            pass
+        try:
+            self.engine.dispose()
+        except Exception:
+            pass
+
+    def verify_integrity(self):
+        """
+        Run PRAGMA quick_check to ensure the database is readable. Raises DatabaseIntegrityError on failure.
+        """
+        if not self.name:
+            return True
+        try:
+            with sqlite3.connect(f"file:{self.name}?mode=ro", uri=True) as conn:
+                cursor = conn.execute("PRAGMA quick_check")
+                results = cursor.fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise DatabaseIntegrityError(f"SQLite integrity check failed: {exc}") from exc
+
+        if not results:
+            raise DatabaseIntegrityError("SQLite integrity check returned no results.")
+
+        errors = [row[0] for row in results if isinstance(row, (list, tuple)) and row and row[0].lower() != 'ok']
+        if errors:
+            raise DatabaseIntegrityError("SQLite integrity check reported issues: " + "; ".join(errors))
+        return True
+
+    def backup_to(self, destination: str):
+        """
+        Create a consistent backup of the database using SQLite's backup API.
+        Raises DatabaseIntegrityError if the backup cannot be performed.
+        """
+        if not destination:
+            raise ValueError("Destination path is required for database backup.")
+
+        destination_path = Path(destination)
+        if destination_path.parent and not destination_path.parent.exists():
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with sqlite3.connect(f"file:{self.name}?mode=ro", uri=True) as src, \
+                    sqlite3.connect(str(destination_path)) as dst:
+                src.backup(dst)
+        except sqlite3.DatabaseError as exc:
+            raise DatabaseIntegrityError(f"SQLite backup failed: {exc}") from exc
+        return str(destination_path)

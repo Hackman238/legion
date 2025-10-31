@@ -6,7 +6,14 @@ __version__=  '0.1'
 __modified_by = 'ketchup'
 
 import parsers.CVE as CVE
-from pyExploitDb import PyExploitDb
+
+try:
+    from pyExploitDb import PyExploitDb
+except Exception as import_error:
+    PyExploitDb = None
+    PY_EXPLOIT_DB_IMPORT_ERROR = import_error
+else:
+    PY_EXPLOIT_DB_IMPORT_ERROR = None
 
 class Script:
     scriptId = ''
@@ -31,10 +38,18 @@ class Script:
     def processVulnersScriptOutput(self, vulnersOutput):
         import re
 
-        pyExploitDb = PyExploitDb()
-        pyExploitDb.debug = False
-        pyExploitDb.autoUpdate = False
-        pyExploitDb.openFile()
+        pyExploitDb = None
+        if PyExploitDb is None:
+            print("[PyExploitDb] Module unavailable: {0}".format(PY_EXPLOIT_DB_IMPORT_ERROR))
+        else:
+            try:
+                pyExploitDb = PyExploitDb()
+                pyExploitDb.debug = False
+                pyExploitDb.autoUpdate = False
+                pyExploitDb.openFile()
+            except Exception as exc:
+                print("[PyExploitDb] Failed to initialise: {0}".format(exc))
+                pyExploitDb = None
 
         resultsDict = {}
         current_product = None
@@ -71,12 +86,23 @@ class Script:
                         'source': current_source,
                         'product': current_product
                     }
-                    exploitResults = pyExploitDb.searchCve(fields[0])
-                    if exploitResults:
-                        cve_dict['exploitId'] = exploitResults['edbid']
-                        cve_dict['exploit'] = exploitResults['exploit']
-                        cve_dict['exploitUrl'] = "https://www.exploit-db.com/exploits/{0}".format(cve_dict['exploitId'])
-                    cve_list.append(cve_dict)
+                    if pyExploitDb:
+                        try:
+                            exploitResults = pyExploitDb.searchCve(fields[0])
+                        except Exception as exc:
+                            print("[PyExploitDb] Lookup failed for {0}: {1}".format(fields[0], exc))
+                            exploitResults = None
+                        if isinstance(exploitResults, dict) and exploitResults:
+                            exploit_id = exploitResults.get('edbid') or exploitResults.get('id')
+                            if exploit_id:
+                                cve_dict['exploitId'] = exploit_id
+                                cve_dict['exploitUrl'] = "https://www.exploit-db.com/exploits/{0}".format(exploit_id)
+                            exploit_summary = exploitResults.get('exploit') or exploitResults.get('description') or exploitResults.get('file')
+                            if exploit_summary:
+                                cve_dict['exploit'] = exploit_summary
+                        elif exploitResults:
+                            print("[PyExploitDb] Unexpected lookup result for {0}: {1}".format(fields[0], type(exploitResults)))
+                cve_list.append(cve_dict)
                 continue
         # Save last product's CVEs
         if current_product and cve_list:
@@ -88,18 +114,23 @@ class Script:
         cveOutput = self.output
         cveObjects = []
 
-        if len(cveOutput) > 0:
-           cvesResults = self.processVulnersScriptOutput(cveOutput)
-           print("NEW CVERESULTS: {0}".format(cvesResults))
+        if not cveOutput:
+            return None
 
-           for product in cvesResults:
-               serviceCpes = cvesResults[product]
-               for cveData in serviceCpes:
-                   print("NEW CVE ENTRY: {0}".format(cveData))
-                   cveObj = CVE.CVE(cveData)
-                   cveObjects.append(cveObj)
-           return cveObjects
-        return None
+        try:
+            cvesResults = self.processVulnersScriptOutput(cveOutput)
+        except Exception as exc:
+            print("[Vulners] Failed to process script output: {0}".format(exc))
+            return []
+        print("NEW CVERESULTS: {0}".format(cvesResults))
+
+        for product in cvesResults:
+            serviceCpes = cvesResults[product]
+            for cveData in serviceCpes:
+                print("NEW CVE ENTRY: {0}".format(cveData))
+                cveObj = CVE.CVE(cveData)
+                cveObjects.append(cveObj)
+        return cveObjects
 
     def scriptSelector(self, host):
         scriptId = str(self.scriptId).lower()
@@ -107,6 +138,8 @@ class Script:
         if 'vulners' in scriptId:
             print("------------------------VULNERS")
             cveResults = self.getCves()
+            if not cveResults:
+                return results
             for cveEntry in cveResults:
                 t_cve = cve(name=cveEntry.name, url=cveEntry.url, source=cveEntry.source,
                             severity=cveEntry.severity, product=cveEntry.product, version=cveEntry.version,

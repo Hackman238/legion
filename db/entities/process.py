@@ -42,21 +42,40 @@ class process(Base):
     closed = Column(String)
     percent = Column(String)  # New: percent complete for nmap scans
 
-    def __init__(self, pid, *args):
+    def __init__(
+        self,
+        pid,
+        name='',
+        tabTitle='',
+        hostIp='',
+        port='',
+        protocol='',
+        command='',
+        startTime='',
+        endTime='',
+        outputfile='',
+        status='',
+        output=None,
+        estimatedRemaining=0,
+        elapsed=0,
+        percent=None,
+        **kwargs
+    ):
         self.display = 'True'
         self.pid = pid
-        self.name = args[0]
-        self.tabTitle = args[1]
-        self.hostIp = args[2]
-        self.port = args[3]
-        self.protocol = args[4]
-        self.command = args[5]
-        self.startTime = args[6]
-        self.endTime = args[7]
-        self.outputfile = args[8]
-        self.output = args[10]
-        self.status = args[9]
-        self.closed = 'False'
-        self.estimatedRemaining = args[11]
-        self.elapsed = args[12]
-        self.percent = args[13] if len(args) > 13 else None
+        self.name = kwargs.get('name', name) or ''
+        self.tabTitle = kwargs.get('tabTitle', tabTitle) or ''
+        self.hostIp = kwargs.get('hostIp', hostIp) or ''
+        self.port = kwargs.get('port', port) or ''
+        self.protocol = kwargs.get('protocol', protocol) or ''
+        self.command = kwargs.get('command', command) or ''
+        self.startTime = kwargs.get('startTime', startTime) or ''
+        self.endTime = kwargs.get('endTime', endTime) or ''
+        self.outputfile = kwargs.get('outputfile', outputfile) or ''
+        output_value = kwargs.get('output', output if output is not None else [])
+        self.output = output_value
+        self.status = kwargs.get('status', status) or ''
+        self.closed = kwargs.get('closed', 'False') or 'False'
+        self.estimatedRemaining = kwargs.get('estimatedRemaining', estimatedRemaining) or 0
+        self.elapsed = kwargs.get('elapsed', elapsed) or 0
+        self.percent = kwargs.get('percent', percent)

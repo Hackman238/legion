@@ -18,6 +18,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 
 import ntpath
 import os
+import shutil
 import sys
 from typing import Tuple
 
@@ -27,7 +28,8 @@ from app.auxiliary import Wordlist, getTempFolder
 from app.shell.Shell import Shell
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
 from db.RepositoryFactory import RepositoryFactory
-from db.SqliteDbAdapter import Database
+from db.SqliteDbAdapter import Database, DatabaseIntegrityError
+from sqlalchemy.exc import DatabaseError as SADatabaseError
 
 tempDirectory = getTempFolder()
 
@@ -71,6 +73,11 @@ class ProjectManager:
     def openExistingProject(self, projectName: str, projectType: str = "legion") -> Project:
         self.logger.info(f"Opening existing project: {projectName}...")
         database = self.__createDatabase(projectName)
+        try:
+            database.verify_integrity()
+        except DatabaseIntegrityError:
+            database.dispose()
+            raise
         workingDirectory = f"{ntpath.dirname(projectName)}/"
         outputFolder, _ = self.__determineOutputFolder(projectName, projectType)
         runningFolder = self.shell.create_temporary_directory(suffix="-running", prefix=projectType + '-',
@@ -81,7 +88,14 @@ class ProjectManager:
             outputFolder=outputFolder, runningFolder=runningFolder, usernamesWordList=usernameWordList,
             passwordWordList=passwordWordList, storeWordListsOnExit=True
         )
-        repositoryContainer = self.repositoryFactory.buildRepositories(database)
+        try:
+            repositoryContainer = self.repositoryFactory.buildRepositories(database)
+        except DatabaseIntegrityError:
+            database.dispose()
+            raise
+        except SADatabaseError as exc:
+            database.dispose()
+            raise DatabaseIntegrityError(f"Failed to initialise repositories: {exc}") from exc
         return Project(projectProperties, repositoryContainer, database)
 
     def closeProject(self, project: Project) -> None:
@@ -113,10 +127,38 @@ class ProjectManager:
 
         # check if filename already exists (skip the check if we want to replace the file)
         if replace == 0 and fileExists(self.shell, normalizedFileName):
-            return
+            self.logger.warning(f"File {normalizedFileName} already exists and replace flag not set; skipping save.")
+            return project
 
-        self.shell.copy(source=project.properties.projectName, destination=normalizedFileName)
-        os.system('cp -r "' + project.properties.outputFolder + '/." "' + toolOutputFolder + '"')
+        try:
+            project.database.verify_integrity()
+        except DatabaseIntegrityError as exc:
+            self.logger.error(f"Aborting save: integrity check failed for {project.properties.projectName}: {exc}")
+            raise
+
+        # perform safe SQLite backup
+        try:
+            project.database.backup_to(normalizedFileName)
+        except DatabaseIntegrityError as exc:
+            self.logger.error(f"Failed to backup database to {normalizedFileName}: {exc}")
+            raise
+
+        # Ensure the copied database is readable before proceeding
+        validation_db = None
+        try:
+            validation_db = Database(normalizedFileName)
+            validation_db.verify_integrity()
+        finally:
+            if validation_db:
+                validation_db.dispose()
+
+        # copy tool output folder contents
+        if os.path.exists(toolOutputFolder):
+            if replace:
+                shutil.rmtree(toolOutputFolder, ignore_errors=True)
+            else:
+                self.logger.info(f"Merging tool output into existing folder {toolOutputFolder}")
+        shutil.copytree(project.properties.outputFolder, toolOutputFolder, dirs_exist_ok=True)
 
         if project.properties.isTemporary:
             self.shell.remove_file(project.properties.projectName)
