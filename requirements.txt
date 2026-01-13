@@ -13,6 +13,7 @@ GitPython
 pandas
 flake8
 rich
-urllib3>=1.26.18,<2.0
+urllib3>=2.6.3
 selenium==4.9.1
 webdriver-manager
+filelock>=3.20.3 # not directly required, pinned by Snyk to avoid a vulnerability
