@@ -337,12 +337,13 @@ class Controller:
 
     def saveProject(self, lastHostIdClicked, notes):
         if lastHostIdClicked == '':
-            return
+            return True
         try:
-            self.logic.activeProject.repositoryContainer.noteRepository.storeNotes(lastHostIdClicked, notes)
+            return bool(self.logic.activeProject.repositoryContainer.noteRepository.storeNotes(lastHostIdClicked, notes))
         except Exception:
             # Notes auto-save should never crash the UI; log and continue.
             log.exception(f"Failed to store notes for host id {lastHostIdClicked}")
+            return False
 
     def saveProjectAs(self, filename, replace=0):
         try:

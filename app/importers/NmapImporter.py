@@ -95,6 +95,8 @@ class NmapImporter(QtCore.QThread):
 
     # it is necessary to get the qprocess because we need to send it back to the scheduler when we're done importing
     def run(self):
+        session = None
+        db_lock_acquired = False
         try:
             # Removed periodic progress updates (QTimer) due to threading issues.
             if self.updateProgressObservable is not None:
@@ -141,6 +143,7 @@ class NmapImporter(QtCore.QThread):
 
             self.tsLog('nmap xml report read successfully!')
             self.db.dbsemaphore.acquire()  # ensure that while this thread is running, no one else can write to the DB
+            db_lock_acquired = True
             s = nmapReport.getSession()  # nmap session info
             if s:
                 # Log latest progress/ETA if available
@@ -685,7 +688,11 @@ class NmapImporter(QtCore.QThread):
             self.progressUpdated.emit(final_progress, 'Almost done...')
 
             session.commit()
-            self.db.dbsemaphore.release()  # we are done with the DB
+            # Release the DB write lock as soon as DB operations are done; follow-up UI/scheduler work
+            # may also touch the DB.
+            if db_lock_acquired:
+                self.db.dbsemaphore.release()
+                db_lock_acquired = False
             self.tsLog(f"Finished in {str(time() - startTime)} seconds.")
             if self.updateProgressObservable is not None:
                 self.updateProgressObservable.finished()
@@ -705,3 +712,15 @@ class NmapImporter(QtCore.QThread):
                 self.updateProgressObservable.finished()
             self.done.emit()
             raise
+        finally:
+            # Always release the DB write lock (if acquired) and close the session to avoid leaked SQLite fds.
+            try:
+                if db_lock_acquired:
+                    self.db.dbsemaphore.release()
+            except Exception:
+                pass
+            try:
+                if session is not None:
+                    session.close()
+            except Exception:
+                pass

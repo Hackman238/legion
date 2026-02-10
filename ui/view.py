@@ -329,6 +329,32 @@ class View(QtCore.QObject):
         
         self.setMainWindowTitle(applicationInfo["name"] + ' ' + getVersion() + ' - ' + title + ' - ' +
                                 self.controller.getCWD())
+
+    def _autoSaveNotesIfDirty(self) -> bool:
+        """
+        Persist notes if the user has modified them (dirty=True).
+
+        Returns:
+            True if notes are saved (or no save needed); False if saving failed.
+        """
+        if not self.viewState.dirty:
+            return True
+        if not self.viewState.lastHostIdClicked:
+            return True
+
+        ok = bool(self.controller.saveProject(self.viewState.lastHostIdClicked, self.ui.NotesTextEdit.toPlainText()))
+        if ok:
+            # For non-temporary projects, clear dirty after a successful auto-save to avoid redundant writes.
+            # Temporary projects keep the dirty marker to continue prompting the user to Save As on exit.
+            if not self.controller.isTempProject():
+                self.setDirty(False)
+            return True
+
+        try:
+            self.ui.statusbar.showMessage('Failed to save notes: database unavailable', msecs=3000)
+        except Exception:
+            pass
+        return False
         
     #################### ACTIONS ####################
 
@@ -433,7 +459,9 @@ class View(QtCore.QObject):
             self.saveProjectAs()
         else:
             log.info('Saving project..')
-            self.controller.saveProject(self.viewState.lastHostIdClicked, self.ui.NotesTextEdit.toPlainText())
+            if not self.controller.saveProject(self.viewState.lastHostIdClicked, self.ui.NotesTextEdit.toPlainText()):
+                self.ui.statusbar.showMessage('Save failed: database unavailable', msecs=3000)
+                return
 
             self.setDirty(False)
             self.ui.statusbar.showMessage('Saved!', msecs=1000)
@@ -445,8 +473,9 @@ class View(QtCore.QObject):
     def saveProjectAs(self):
         self.ui.statusbar.showMessage('Saving..')
         log.info('Saving project..')
-
-        self.controller.saveProject(self.viewState.lastHostIdClicked, self.ui.NotesTextEdit.toPlainText())
+        if not self._autoSaveNotesIfDirty():
+            self.ui.statusbar.showMessage('Save failed: database unavailable', msecs=3000)
+            return
 
         filename = QtWidgets.QFileDialog.getSaveFileName(self.ui.centralwidget, 'Save project as',
                                                          self.controller.getCWD(), filter='Legion session (*.legion)',
@@ -785,10 +814,27 @@ class View(QtCore.QObject):
 
     # TODO: review - especially what tab is selected when coming from another host
     def hostTableClick(self):
+        # If the user has unsaved notes, try to store them before switching hosts. If that fails, keep the current host
+        # selected so we don't lose the note text by overwriting the notes panel with a different host's note.
+        previous_ip = self.viewState.ip_clicked
         if self.ui.HostsTableView.selectionModel().selectedRows():  # get the IP address of the selected host (if any)
             row = self.ui.HostsTableView.selectionModel().selectedRows()[len(self.ui.HostsTableView.
                                                                              selectionModel().selectedRows())-1].row()
             ip = self.HostsTableModel.getHostIPForRow(row)
+
+            # Only block navigation when we are switching to a different host.
+            if previous_ip and ip and ip != previous_ip:
+                if not self._autoSaveNotesIfDirty():
+                    # Re-select the previous host row (best-effort) and abort.
+                    prev_row = self.HostsTableModel.getRowForIp(previous_ip)
+                    if prev_row is not None:
+                        try:
+                            self.ui.HostsTableView.blockSignals(True)
+                            self.ui.HostsTableView.selectRow(prev_row)
+                        finally:
+                            self.ui.HostsTableView.blockSignals(False)
+                    return
+
             self.viewState.ip_clicked = ip
             save = self.ui.ServicesTabWidget.currentIndex()
             self.removeToolTabs()
@@ -797,6 +843,15 @@ class View(QtCore.QObject):
             self.ui.ServicesTabWidget.setCurrentIndex(save)
             self.updateRightPanel(self.viewState.ip_clicked)
         else:
+            if not self._autoSaveNotesIfDirty() and previous_ip:
+                prev_row = self.HostsTableModel.getRowForIp(previous_ip)
+                if prev_row is not None:
+                    try:
+                        self.ui.HostsTableView.blockSignals(True)
+                        self.ui.HostsTableView.selectRow(prev_row)
+                    finally:
+                        self.ui.HostsTableView.blockSignals(False)
+                return
             self.removeToolTabs()
             self.updateRightPanel('')
 
@@ -994,7 +1049,7 @@ class View(QtCore.QObject):
             elif selectedTab == 'Services':
                 self.ui.ServicesTabWidget.setCurrentIndex(0)
                 self.removeToolTabs(0)                                  # remove the tool tabs
-                self.controller.saveProject(self.viewState.lastHostIdClicked, self.ui.NotesTextEdit.toPlainText())
+                self._autoSaveNotesIfDirty()
                 if self.viewState.lazy_update_services == True:
                     self.updateServiceNamesTableView()
                 self.serviceNamesTableClick()
@@ -1770,7 +1825,6 @@ class View(QtCore.QObject):
         self.updateScriptsView(hostIP)
         self.updateCvesByHostView(hostIP)
         self.updateInformationView(hostIP)                              # populate host info tab
-        self.controller.saveProject(self.viewState.lastHostIdClicked, self.ui.NotesTextEdit.toPlainText())
 
         if hostIP:
             self.updateNotesView(self.HostsTableModel.getHostIdForRow(self.HostsTableModel.getRowForIp(hostIP)))
