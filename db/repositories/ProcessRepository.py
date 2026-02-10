@@ -162,12 +162,14 @@ class ProcessRepository:
                     'COALESCE(process.startTime, "") AS startTime, '
                     'COALESCE(process.endTime, "") AS endTime, '
                     'COALESCE(process.outputfile, "") AS outputfile, '
-                    'COALESCE(output.output, "") AS output, '
+                    # The processes table is refreshed frequently (UI timer). Do not fetch the full tool output blob
+                    # every refresh; it can be very large and makes the UI sluggish. Output is loaded on demand when
+                    # a tool tab is opened.
+                    '"" AS output, '
                     'COALESCE(process.status, "") AS status, '
                     'COALESCE(process.closed, "") AS closed, '
                     'process.id AS id '
                     'FROM process AS process '
-                    'LEFT JOIN process_output AS output ON process.id = output.processId '
                     'WHERE process.display=:display'
                 )
                 params['display'] = str(showProcesses)
