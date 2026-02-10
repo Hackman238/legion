@@ -158,6 +158,14 @@ class Controller:
         self.pythonImporter.setDB(activeProject.database)
         self.updateOutputFolder()                                       # tell screenshooter where the output folder is
         self.view.start(title)
+        # Timers are initialised once at app startup, but may be stopped during project teardown.
+        # When switching projects (not exiting), ensure the periodic process-table refresh is running again.
+        try:
+            timer = getattr(self, "processTableUiUpdateTimer", None)
+            if timer is not None and not timer.isActive():
+                timer.start(500)  # keep in sync with initTimers()
+        except Exception:
+            pass
 
     def initNmapImporter(self, updateProgressObservable: UpdateProgressObservable):
         self.nmapImporter = NmapImporter(updateProgressObservable,
@@ -357,9 +365,40 @@ class Controller:
 
     def closeProject(self):
         self.saveSettings() # backup and save config file, if necessary
-        self.screenshooter.terminate()
-        self.initScreenshooter()
-        self.view.updateProcessesTableView() # clear process table
+        # Stop timers that might try to refresh UI from a DB that is being torn down.
+        for timer in (getattr(self, "updateUITimer", None),
+                      getattr(self, "updateUI2Timer", None),
+                      getattr(self, "processTableUiUpdateTimer", None)):
+            try:
+                if timer is not None:
+                    timer.stop()
+            except Exception:
+                pass
+
+        try:
+            self.screenshooter.terminate()
+        except Exception:
+            pass
+
+        # Only re-init subsystems when we are staying in-app (e.g. opening a different project).
+        if not getattr(self.view, "_app_exit_in_progress", False):
+            self.initScreenshooter()
+
+        # Clear the process table without querying the DB (the temp DB file may be removed on close).
+        try:
+            if hasattr(self.view, "clearProcessesTableView"):
+                self.view.clearProcessesTableView()
+        except Exception:
+            log.exception("Failed to clear processes table during closeProject()")
+
+        # Dispose DB engine/session before deleting the underlying SQLite file (important on Windows/WSL too).
+        try:
+            db = getattr(self.logic.activeProject, "database", None)
+            if db and hasattr(db, "dispose"):
+                db.dispose()
+        except Exception:
+            log.exception("Failed to dispose project database during closeProject()")
+
         self.logic.projectManager.closeProject(self.logic.activeProject)
 
     def copyToClipboard(self, data):
@@ -368,7 +407,7 @@ class Controller:
 
     @timing
     def addHosts(self, targetHosts, runHostDiscovery, runStagedNmap, nmapSpeed, scanMode,
-                 nmapOptions=None, enableIPv6=False):
+                 nmapOptions=None, enableIPv6=False, easyStealth=False, includeUDP=False):
         if targetHosts == '':
             log.info('No hosts entered..')
             return
@@ -422,10 +461,20 @@ class Controller:
 
         if scanMode == 'Easy':
             if runStagedNmap:
-                self.runStagedNmap(target_hosts_str, discovery=runHostDiscovery, enable_ipv6=ipv6_flag)
+                self.runStagedNmap(
+                    target_hosts_str,
+                    discovery=runHostDiscovery,
+                    enable_ipv6=ipv6_flag,
+                    stealth=bool(easyStealth),
+                    include_udp=bool(includeUDP),
+                    version_light=(not bool(easyStealth))
+                )
             elif runHostDiscovery:
                 outputfile = normalize_path(os.path.join(tool_output_dir, f"{getTimestamp()}-host-discover"))
-                easy_mode_flags = ['-f', '--data-length 5', '--randomize-hosts', '--max-retries 2']
+                # Only use fragmentation (-f) when the user explicitly opts into Stealth.
+                easy_mode_flags = ['--data-length 5', '--randomize-hosts', '--max-retries 2']
+                if easyStealth:
+                    easy_mode_flags.insert(0, '-f')
                 if ipv6_flag:
                     removed_easy = [flag for flag in easy_mode_flags if flag.startswith('-f') or flag.startswith('--randomize-hosts') or flag.startswith('--data-length')]
                     if removed_easy:
@@ -435,10 +484,27 @@ class Controller:
                 command_tokens = ["nmap"]
                 if ipv6_flag:
                     command_tokens.append("-6")
+                # Easy mode should not rely on ping/host discovery since many hosts block probes.
+                # This prevents the common "host seems down" -> no XML host entries -> nothing imported.
+                if not any(opt.strip() == "-Pn" for opt in nmapOptions):
+                    command_tokens.append("-Pn")
                 command_tokens.extend(nmapOptions)
                 command_tokens.extend(easy_mode_flags)
+                # Easy-mode scan profile:
+                # - Stealth: TCP SYN scan only (-sS), no version detection.
+                # - Default: version detection (-sV --version-light).
+                if easyStealth:
+                    command_tokens.append("-sS")
+                    if includeUDP:
+                        command_tokens.append("-sU")
+                else:
+                    if includeUDP:
+                        # -sU overrides the default TCP scan, so explicitly add a TCP scan type too.
+                        command_tokens.extend(["-sS", "-sU"])
+                    command_tokens.extend(["-sV", "--version-light"])
+
                 command_tokens.extend([
-                    "-sV", "-O", "--version-light", f"-T{str(nmapSpeed)}",
+                    "-O", f"-T{str(nmapSpeed)}",
                     target_hosts_str, "--stats-every", "10s", "-oA", outputfile
                 ])
                 command = ' '.join(token for token in command_tokens if token)
@@ -834,7 +900,9 @@ class Controller:
                     stage_number = 0
 
                 if stage_number:
-                    discovery_flag = '-Pn' not in command
+                    # Staged scans may include -Pn even when running in "discovery" mode.
+                    # Use presence of aggressive discovery options as a proxy instead of -Pn.
+                    discovery_flag = ("-O" in command) or ("-T4" in command)
                     enable_ipv6_flag = '-6' in command
                     kwargs['stage'] = stage_number
                     kwargs['discovery'] = discovery_flag
@@ -1131,7 +1199,17 @@ class Controller:
 
     # this function creates a new process, runs the command and takes care of displaying the ouput. returns the PID
     # the last 3 parameters are only used when the command is a staged nmap
-    def runCommand(self, *args, discovery=True, stage=0, stop=False, enable_ipv6=False):
+    def runCommand(
+        self,
+        *args,
+        discovery=True,
+        stage=0,
+        stop=False,
+        enable_ipv6=False,
+        staged_stealth=None,
+        staged_include_udp=True,
+        staged_version_light=False,
+    ):
         def handleProcStop(*vargs):
             updateElapsed.stop()
             self.processTimers[qProcess.id] = None
@@ -1231,13 +1309,21 @@ class Controller:
             nextStage = stage + 1
             qProcess.finished.connect(
                 lambda exitCode, exitStatus, host=str(hostIp).strip(), discovery_flag=discovery,
-                       next_stage=nextStage, enable_ipv6_flag=enable_ipv6, process_id=qProcess.id:
+                       next_stage=nextStage,
+                       enable_ipv6_flag=enable_ipv6,
+                       process_id=qProcess.id,
+                       stealth_flag=staged_stealth,
+                       include_udp_flag=staged_include_udp,
+                       version_light_flag=staged_version_light:
                 self.runStagedNmap(
                     host,
                     discovery=discovery_flag,
                     stage=next_stage,
                     stop=processRepository.isKilledProcess(str(process_id)),
-                    enable_ipv6=enable_ipv6_flag
+                    enable_ipv6=enable_ipv6_flag,
+                    stealth=stealth_flag,
+                    include_udp=include_udp_flag,
+                    version_light=version_light_flag,
                 )
             )
 
@@ -1274,7 +1360,17 @@ class Controller:
         return getPid(qProcess)
 
     # recursive function used to run nmap in different stages for quick results
-    def runStagedNmap(self, targetHosts, discovery=True, stage=1, stop=False, enable_ipv6=False):
+    def runStagedNmap(
+        self,
+        targetHosts,
+        discovery=True,
+        stage=1,
+        stop=False,
+        enable_ipv6=False,
+        stealth=None,
+        include_udp=None,
+        version_light=False,
+    ):
         import os
         host_arg = str(targetHosts).strip()
         if not host_arg:
@@ -1316,25 +1412,90 @@ class Controller:
                 log.debug(f"Skipping stage {str(stage)} as stageOp is {str(stageOp)}")
                 return
 
+            def _tcp_only_port_spec(port_spec: str) -> str:
+                """
+                Convert an nmap -p spec like 'T:80,443,U:53,161' into a TCP-only spec.
+                Returns '' if no TCP ports remain.
+                """
+                spec = (port_spec or "").strip()
+                if not spec:
+                    return ""
+                parts = [p.strip() for p in spec.split(",") if p.strip()]
+                segs = []
+                cur_proto = None
+                cur_ports = []
+                for p in parts:
+                    if len(p) >= 2 and p[1] == ":" and p[0].upper() in ("T", "U", "S"):
+                        if cur_proto is not None:
+                            segs.append((cur_proto, cur_ports))
+                        cur_proto = p[0].upper()
+                        cur_ports = []
+                        remainder = p[2:].strip()
+                        if remainder:
+                            cur_ports.append(remainder)
+                    else:
+                        if cur_proto is None:
+                            cur_proto = "T"
+                            cur_ports = [p]
+                        else:
+                            cur_ports.append(p)
+                if cur_proto is not None:
+                    segs.append((cur_proto, cur_ports))
+
+                tcp_ports = []
+                for proto, ports in segs:
+                    if proto == "T":
+                        tcp_ports.extend([x for x in ports if x])
+                if not tcp_ports:
+                    return ""
+                return "T:" + ",".join(tcp_ports)
+
             command_tokens = ["nmap"]
             if enable_ipv6:
                 command_tokens.append("-6")
 
+            # Legacy behavior: include UDP by default in staged scans.
+            include_udp_effective = True if include_udp is None else bool(include_udp)
+            stealth_effective = stealth  # None means "legacy" (do not override -sV behavior)
+
+            # In GUI flows, targets often block ping probes: -Pn keeps targets from being skipped as "down".
+            command_tokens.append("-Pn")
             if discovery:
-                command_tokens.extend(["-T4", "-sV", "-sSU", "-O"])
+                command_tokens.append("-T4")
+                command_tokens.append("-O")
+
+            if include_udp_effective:
+                command_tokens.append("-sSU")
             else:
-                command_tokens.extend(["-Pn", "-sSU"])
+                # TCP-only staged scan
+                command_tokens.append("-sS")
+
+            # Only apply the Easy-mode stealth toggle when explicitly provided; otherwise keep legacy defaults.
+            if stealth_effective is None:
+                if discovery:
+                    command_tokens.append("-sV")
+            elif not stealth_effective:
+                command_tokens.append("-sV")
+                if version_light:
+                    command_tokens.append("--version-light")
 
             stage_command_tokens = list(command_tokens)
             if stageOp == 'PORTS':
                 port_values = str(stageOpValues).strip()
                 if port_values:
+                    if not include_udp_effective:
+                        port_values = _tcp_only_port_spec(port_values)
+                        if not port_values:
+                            log.info(f"Skipping stage {stage} for {host_arg}: UDP disabled and no TCP ports remain.")
+                            return
                     stage_command_tokens.extend(["-p", port_values])
                 stage_command_tokens.extend(["-vvvv", host_arg, "--stats-every", "10s", "-oA", outputfile])
             elif stageOp == 'NSE':
                 stage_command_tokens = ["nmap"]
                 if enable_ipv6:
                     stage_command_tokens.append("-6")
+                # Keep -Pn for NSE stages as well (hosts may block discovery probes).
+                stage_command_tokens.append("-Pn")
                 stage_command_tokens.extend([
                     "-sV",
                     f"--script={str(stageOpValues).strip()}",
@@ -1351,9 +1512,24 @@ class Controller:
             command = ' '.join(token for token in stage_command_tokens if token)
             log.debug(f"Stage {str(stage)} command: {str(command)}")
 
-            self.runCommand('nmap', 'nmap (stage ' + str(stage) + ')', host_arg, '', '', command,
-                            getTimestamp(True), outputfile, textbox, discovery=discovery, stage=stage, stop=stop,
-                            enable_ipv6=enable_ipv6)
+            self.runCommand(
+                'nmap',
+                'nmap (stage ' + str(stage) + ')',
+                host_arg,
+                '',
+                '',
+                command,
+                getTimestamp(True),
+                outputfile,
+                textbox,
+                discovery=discovery,
+                stage=stage,
+                stop=stop,
+                enable_ipv6=enable_ipv6,
+                staged_stealth=stealth_effective,
+                staged_include_udp=include_udp_effective,
+                staged_version_light=bool(version_light),
+            )
 
     def importFinished(self):
         # if nmap import was the first action, we need to hide the overlay (note: we shouldn't need to do this

@@ -41,6 +41,16 @@ class MyEventFilterTestCase(unittest.TestCase):
         self.mock_event.ignore.assert_called_once()
         self.mock_view.appExit.assert_called_once()
 
+    def test_eventFilter_whenCloseAndAppExitInProgress_LetsQtHandleClose(self):
+        self.mock_view._app_exit_in_progress = True
+        event_filter = MyEventFilter(self.mock_view, self.mock_main_window)
+        self.mock_event.type = Mock(return_value=QEvent.Type.Close)
+
+        result = event_filter.eventFilter(self.mock_main_window, self.mock_event)
+        self.assertFalse(result)
+        self.mock_event.ignore.assert_not_called()
+        self.mock_view.appExit.assert_not_called()
+
     @patch('PyQt6.QtWidgets.QTableView')
     @patch('PyQt6.QtWidgets.QAbstractItemView')
     @patch('PyQt6.QtCore.QModelIndex')

@@ -78,6 +78,17 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.chkEnableIPv6.setToolTip('Add -6 to nmap commands to scan IPv6 addresses')
         self.chkEnableIPv6.setChecked(False)
 
+        # Easy-mode scan profile toggles (kept near other global scan toggles)
+        self.chkEasyStealth = QtWidgets.QCheckBox(self)
+        self.chkEasyStealth.setText('Stealth')
+        self.chkEasyStealth.setToolTip('Easy mode: Use TCP SYN scan (-sS) and disable version detection (removes -sV/--version-light)')
+        self.chkEasyStealth.setChecked(False)
+
+        self.chkEasyIncludeUdp = QtWidgets.QCheckBox(self)
+        self.chkEasyIncludeUdp.setText('Include UDP')
+        self.chkEasyIncludeUdp.setToolTip('Easy mode: Also scan UDP (-sU). Disabled by default for speed.')
+        self.chkEasyIncludeUdp.setChecked(False)
+
         self.validationLabel = QtWidgets.QLabel(self)
         self.validationLabel.setText('Invalid input. Please try again!')
         self.validationLabel.setStyleSheet('QLabel { color: red }')
@@ -101,7 +112,9 @@ class AddHostsDialog(QtWidgets.QDialog):
 
         # Easy mode options
         self.grpEasyMode = QtWidgets.QGroupBox()
-        self.grpEasyModeWidgets = QtWidgets.QHBoxLayout()
+        self.grpEasyModeWidgets = QtWidgets.QVBoxLayout()
+        self.grpEasyModeWidgetsRow1 = QtWidgets.QHBoxLayout()
+        self.grpEasyModeWidgetsRow2 = QtWidgets.QHBoxLayout()
         self.grpEasyMode.setTitle('Easy Mode Options')
         self.chkDiscovery = QtWidgets.QCheckBox(self)
         self.chkDiscovery.setText('Run nmap host discovery')
@@ -111,8 +124,12 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.chkNmapStaging.setText('Run staged nmap scan')
         self.chkNmapStaging.setToolTip('Scan ports in stages with typical options')
         self.chkNmapStaging.toggle()
-        self.grpEasyModeWidgets.addWidget(self.chkDiscovery)
-        self.grpEasyModeWidgets.addWidget(self.chkNmapStaging)
+        self.grpEasyModeWidgetsRow1.addWidget(self.chkDiscovery)
+        self.grpEasyModeWidgetsRow1.addWidget(self.chkNmapStaging)
+        self.grpEasyModeWidgetsRow2.addWidget(self.chkEasyStealth)
+        self.grpEasyModeWidgetsRow2.addWidget(self.chkEasyIncludeUdp)
+        self.grpEasyModeWidgets.addLayout(self.grpEasyModeWidgetsRow1)
+        self.grpEasyModeWidgets.addLayout(self.grpEasyModeWidgetsRow2)
         self.grpEasyMode.setLayout(self.grpEasyModeWidgets)
         self.grpEasyMode.setEnabled(True)
 
@@ -175,6 +192,9 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.rdoScanOptTcpConnect = QtWidgets.QRadioButton(self)
         self.rdoScanOptTcpConnect.setText('TCP')
         self.rdoScanOptTcpConnect.setToolTip('TCP connect() scanning [-sT]')
+        self.rdoScanOptTcpSyn = QtWidgets.QRadioButton(self)
+        self.rdoScanOptTcpSyn.setText('TCP SYN')
+        self.rdoScanOptTcpSyn.setToolTip('TCP SYN scanning [-sS]')
         self.rdoScanOptObfuscated = QtWidgets.QRadioButton(self)
         self.rdoScanOptObfuscated.setText('Obfuscated')
         self.rdoScanOptObfuscated.setToolTip(
@@ -211,6 +231,7 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.grpScanOptWidgets = QtWidgets.QHBoxLayout()
         self.grpScanOpt.setTitle('Port Scan Options')
         self.grpScanOptWidgets.addWidget(self.rdoScanOptTcpConnect)
+        self.grpScanOptWidgets.addWidget(self.rdoScanOptTcpSyn)
         self.grpScanOptWidgets.addWidget(self.rdoScanOptObfuscated)
         self.grpScanOptWidgets.addWidget(self.rdoScanOptFin)
         self.grpScanOptWidgets.addWidget(self.rdoScanOptNull)
@@ -219,7 +240,7 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.grpScanOptWidgets.addWidget(self.rdoScanOptPingUdp)
         self.grpScanOptWidgets.addWidget(self.chkScanOptFragmentation)
         self.grpScanOpt.setLayout(self.grpScanOptWidgets)
-        self.rdoScanOptObfuscated.toggle()
+        self.rdoScanOptTcpSyn.toggle()
         self.grpScanOpt.setEnabled(False)
 
         self.spacer4 = QSpacerItem(5,5)
@@ -325,7 +346,7 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.setLayout(self.formLayout)
 
 
-        easyModeControls = [self.grpEasyMode]
+        easyModeControls = [self.grpEasyMode, self.chkEasyStealth, self.chkEasyIncludeUdp]
         hardModeControls = [self.grpScanOpt, self.grpScanOptPing, self.scanOptCustomGroup]
 
         self.rdoModeOptHard.clicked.connect(lambda: flipState(targetState = self.rdoModeOptHard.isChecked(),

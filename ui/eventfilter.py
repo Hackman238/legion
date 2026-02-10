@@ -42,6 +42,11 @@ class MyEventFilter(QObject):
         if event.type() == QEvent.Type.KeyPress and receiver in self.hosts_table_views:
             return self.filterKeyPressInHostsTableView(event.key(), receiver)
         elif event.type() == QEvent.Type.Close and receiver == self.main_window:
+            # When the user closes the main window, route through View.appExit() so we can
+            # prompt to save/discard changes and run cleanup. During an already-in-progress
+            # shutdown, let Qt handle the close normally to avoid re-entrancy/double cleanup.
+            if getattr(self.view, "_app_exit_in_progress", False) is True:
+                return False
             event.ignore()
             self.view.appExit()
             return True

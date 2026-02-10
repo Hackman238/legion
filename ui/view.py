@@ -59,6 +59,9 @@ class View(QtCore.QObject):
         self.ui_mainwindow = ui_mainwindow  # TODO: retrieve window dimensions/location from settings
         self.app = app
         self.loop = loop
+        # Guard against double-exit/double-close (Qt can emit multiple close signals during shutdown).
+        self._app_exit_in_progress = False
+        self._close_project_in_progress = False
 
         self.bottomWindowSize = 100
         self.leftPanelSize = 300
@@ -500,6 +503,9 @@ class View(QtCore.QObject):
             return False                                                # the user cancelled
             
     def closeProject(self):
+        if self._close_project_in_progress:
+            return
+        self._close_project_in_progress = True
         self.ui.statusbar.showMessage('Closing project..', msecs=1000)
         # Wait for NmapImporter thread to finish before cleanup
         try:
@@ -508,9 +514,29 @@ class View(QtCore.QObject):
                 self.controller.nmapImporter.wait()
         except Exception as e:
             log.info(f"Error waiting for NmapImporter: {e}")
-        self.controller.closeProject()
-        self.removeToolTabs()                                           # to make them disappear from the UI
-        self.resetResponderTabs()
+        try:
+            self.controller.closeProject()
+        finally:
+            # Always tear down UI state even if controller cleanup hits an edge-case.
+            self.removeToolTabs()                                           # to make them disappear from the UI
+            self.resetResponderTabs()
+            self._close_project_in_progress = False
+
+    def clearProcessesTableView(self):
+        """
+        Clear the processes table without querying the database.
+        This is important during shutdown, after the temp DB file may have been removed.
+        """
+        try:
+            if getattr(self, "ProcessesTableModel", None) is None:
+                return
+            self.ProcessesTableModel.setDataList([])
+            self._configureProcessesColumns()
+            self.ui.ProcessesTableView.repaint()
+            self.ui.ProcessesTableView.update()
+            self.updateProcessesIcon()
+        except Exception:
+            log.exception("Failed to clear processes table view")
                 
     def connectAddHosts(self):
         self.ui.actionAddHosts.triggered.connect(self.connectAddHostsDialog)
@@ -541,7 +567,8 @@ class View(QtCore.QObject):
             hostList = [hostEntry for hostEntry in hostList if len(hostEntry) > 0]
 
             hostAddOptionControls = [self.adddialog.rdoScanOptTcpConnect, self.adddialog.rdoScanOptObfuscated,
-                                     self.adddialog.rdoScanOptFin, self.adddialog.rdoScanOptNull,
+                                     self.adddialog.rdoScanOptTcpSyn, self.adddialog.rdoScanOptFin,
+                                     self.adddialog.rdoScanOptNull,
                                      self.adddialog.rdoScanOptXmas, self.adddialog.rdoScanOptPingTcp,
                                      self.adddialog.rdoScanOptPingUdp, self.adddialog.rdoScanOptPingDisable,
                                      self.adddialog.rdoScanOptPingRegular, self.adddialog.rdoScanOptPingSyn,
@@ -576,7 +603,9 @@ class View(QtCore.QObject):
                                          nmapSpeed=self.adddialog.sldScanTimingSlider.value(),
                                          scanMode=scanMode,
                                          nmapOptions=nmapOptions,
-                                         enableIPv6=self.adddialog.chkEnableIPv6.isChecked())
+                                         enableIPv6=self.adddialog.chkEnableIPv6.isChecked(),
+                                         easyStealth=self.adddialog.chkEasyStealth.isChecked(),
+                                         includeUDP=self.adddialog.chkEasyIncludeUdp.isChecked())
             self.adddialog.cmdAddButton.clicked.disconnect()   # disconnect all the signals from that button
         else:
             self.adddialog.spacer.changeSize(0,0)
@@ -723,14 +752,28 @@ class View(QtCore.QObject):
             self.controller.exportAsJson(filename)
 
     def appExit(self):
-        if self.dealWithCurrentProject(True):   # the parameter indicates that we are exiting the application
+        if self._app_exit_in_progress:
+            return
+        # Mark as in-progress early to prevent re-entrancy from subsequent QEvent.Close events.
+        self._app_exit_in_progress = True
+        try:
+            # the parameter indicates that we are exiting the application
+            if not self.dealWithCurrentProject(True):
+                # User canceled exit; allow subsequent close attempts.
+                self._app_exit_in_progress = False
+                return
             self.closeProject()
             log.info('Exiting application..')
-            #self.loop.quit()
-            #self.app.quit()
             from PyQt6.QtCore import QCoreApplication
             QCoreApplication.quit()
-            #sys.exit(0)
+        except Exception:
+            # Avoid an unhandled exception during shutdown which can leave Qt in a bad state.
+            log.exception("Unhandled exception during appExit()")
+            try:
+                from PyQt6.QtCore import QCoreApplication
+                QCoreApplication.quit()
+            except Exception:
+                pass
 
     ### TABLE ACTIONS ###
 
@@ -1804,13 +1847,27 @@ class View(QtCore.QObject):
         return processes
 
     def _getProcessesForDisplay(self):
-        raw_processes = self.controller.getProcessesFromDB(
-            self.viewState.filters,
-            showProcesses=True,
-            sort=self.processesTableViewSort,
-            ncol=self.processesTableViewSortColumn,
-            status_filter=self.processStatusFilter
-        )
+        try:
+            raw_processes = self.controller.getProcessesFromDB(
+                self.viewState.filters,
+                showProcesses=True,
+                sort=self.processesTableViewSort,
+                ncol=self.processesTableViewSortColumn,
+                status_filter=self.processStatusFilter
+            )
+        except Exception as exc:
+            # During shutdown or project teardown the temporary DB file may already be gone, which can
+            # surface as "no such table: process" when SQLite re-creates an empty file on open.
+            try:
+                from sqlalchemy.exc import OperationalError
+            except Exception:
+                OperationalError = None
+            msg = str(exc).lower()
+            if OperationalError is not None and isinstance(exc, OperationalError) and "no such table" in msg:
+                log.info("Process table not available; returning empty processes list.")
+            else:
+                log.exception("Failed to fetch processes from DB for display")
+            raw_processes = []
         return self._normalizeProcessRows(raw_processes)
 
     def setupProcessesTableView(self):
