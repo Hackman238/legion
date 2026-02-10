@@ -53,6 +53,61 @@ def normalize_path(path):
     return os.path.normpath(path).replace("\\", "/")
 
 class Controller:
+    @staticmethod
+    def _start_detached_process(command: str) -> bool:
+        """
+        Start a process detached from Legion's process group/stdio.
+
+        Rationale:
+        - Legion is often launched via `pkexec` and sometimes backgrounded from a terminal.
+        - Starting interactive shells (or apps that probe stdin) from a backgrounded job can trigger SIGTTIN
+          and suspend Legion ("suspended (tty input) pkexec legion").
+        - For GUI helpers like browsers, we want a fire-and-forget launch that cannot block or suspend Legion.
+        """
+        command = (command or "").strip()
+        if not command:
+            return False
+
+        # First try: exec directly (fast path, no shell).
+        try:
+            program, arguments = formatCommandQProcess(command)
+        except Exception:
+            program, arguments = "", []
+
+        if program:
+            try:
+                subprocess.Popen(
+                    [program, *arguments],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+                return True
+            except FileNotFoundError:
+                # Fall back to a shell for commands that rely on PATH / aliases / env expansions, or when the
+                # executable isn't directly resolvable.
+                pass
+            except Exception:
+                log.exception(f"Failed to start detached process: {command}")
+                return False
+
+        # Fallback: execute via bash for maximum compatibility with user-provided commands.
+        try:
+            subprocess.Popen(
+                ["bash", "-lc", command],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+            return True
+        except Exception:
+            log.exception(f"Failed to start detached shell command: {command}")
+            return False
+
     def _resolve_host_and_ip(self, host_value: str):
         display_host = host_value
         ip_value = host_value
@@ -833,9 +888,23 @@ class Controller:
                     command = command.replace('[IP]', ip[0]).replace('[PORT]', ip[1])
                     if "[term]" in command:
                         command = command.replace("[term]", "")
-                        subprocess.Popen(terminal + " -e './scripts/exec-in-shell " + command + "'", shell=True)
+                        if terminal:
+                            subprocess.Popen(
+                                terminal + " -e './scripts/exec-in-shell " + command + "'",
+                                shell=True,
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True,
+                                close_fds=True,
+                            )
+                        else:
+                            # No terminal configured; fall back to detached execution.
+                            self._start_detached_process(command)
                     else:
-                        subprocess.Popen("bash -c \"" + command + "; exec bash\"", shell=True)
+                        # If Legion was started in the background (common with `pkexec ... &`), running a plain
+                        # interactive shell here can SIGTTIN-suspend the whole job. Run detached instead.
+                        self._start_detached_process(command)
                 return
 
         self.handleServiceNameAction(targets, actions, action, restoring)
