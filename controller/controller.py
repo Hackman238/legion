@@ -127,10 +127,13 @@ class Controller:
         self.logic = logic
         self.view = view
         self.view.setController(self)
-        self.view.startOnce()
-        self.view.startConnections()
 
         self.loadSettings()  # creation of context menu actions from settings file and set up of various settings
+
+        self.view.startOnce()
+        self.view.startConnections()
+        if hasattr(self.view, 'settingsWidget') and self.view.settingsWidget:
+            self.view.settingsWidget.setSettings(self.settings)
         updateProgressObservable = UpdateProgressObservable()
 
         self.initNmapImporter(updateProgressObservable)
@@ -210,7 +213,8 @@ class Controller:
         self.originalSettings = Settings(self.settingsFile)
         self.logic.projectManager.setStoreWordListsOnExit(self.logic.activeProject,
             self.settings.brute_store_cleartext_passwords_on_exit == 'True')
-        self.view.settingsWidget.setSettings(Settings(self.settingsFile))
+        if hasattr(self.view, 'settingsWidget') and self.view.settingsWidget:
+            self.view.settingsWidget.setSettings(self.settings)
 
     # call this function when clicking 'apply' in the settings menu (after validation)
     def applySettings(self, newSettings):
@@ -1471,6 +1475,16 @@ class Controller:
             except Exception:
                 log.exception(f"Error storing process output for {qProcess.id}")
 
+            if qProcess.name.lower() in ('responder', 'ntlmrelay'):
+                try:
+                    self._processCredentialToolOutput(qProcess)
+                except Exception:
+                    log.exception("Failed to process credential capture output")
+                try:
+                    self.view.responderProcessFinished(str(qProcess.id))
+                except Exception:
+                    log.exception("Failed to reset responder tab state")
+
             try:
                 self.view.refreshToolsTableModel()
                 self.view.viewState.lazy_update_tools = True
@@ -1504,6 +1518,49 @@ class Controller:
             self.logic.activeProject.properties.usernamesWordList.add(username)
         for password in passlist:
             self.logic.activeProject.properties.passwordWordList.add(password)
+
+    def _processCredentialToolOutput(self, qProcess):
+        repo = getattr(self.logic.activeProject.repositoryContainer, 'credentialRepository', None)
+        if not repo:
+            return
+        output_lines = qProcess.display.toPlainText().splitlines()
+        interests = ('ntlm', 'hash', 'relay', 'captured', 'credential')
+        seen = set()
+        for line in output_lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if not any(keyword in stripped.lower() for keyword in interests):
+                continue
+            if stripped in seen:
+                continue
+            seen.add(stripped)
+            username, hash_value = self._extractCredentialData(stripped)
+            try:
+                repo.storeCapture(qProcess.name, qProcess.hostIp or '', stripped, username=username,
+                                   hash_value=hash_value)
+            except Exception:
+                log.exception("Failed to store credential capture entry")
+        try:
+            self.view.updateResponderResultsTable()
+        except Exception:
+            log.exception("Failed to refresh responder results table")
+
+    @staticmethod
+    def _extractCredentialData(line):
+        username = ''
+        hash_value = ''
+        match = re.search(r'from\s+([^:]+):\s*(.+)', line, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).split('/')[-1].split('\\')[-1]
+            username = candidate.strip()
+            hash_value = match.group(2).strip()
+            return username, hash_value
+        if '::' in line:
+            left, right = line.split('::', 1)
+            username = left.split()[-1]
+            hash_value = right.strip()
+        return username, hash_value
 
     # this function parses nmap's output looking for open ports to run automated attacks on
     def scheduler(self, parser, isNmapImport):

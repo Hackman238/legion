@@ -20,10 +20,11 @@ Copyright (c) 2025 Shane William Scott
 import os
 from PyQt6.QtGui import *                                               # for filters dialog
 from PyQt6.QtWidgets import *
-from PyQt6 import QtWidgets, QtGui
+from PyQt6 import QtWidgets, QtGui, QtCore
 from app.auxiliary import *                                             # for timestamps
 from six import u as unicode
 from ui.ancillaryDialog import flipState
+from app.settings import AppSettings
 
 class Config(QtWidgets.QPlainTextEdit):
     def __init__(self, qss, parent = None):
@@ -60,6 +61,7 @@ class ConfigDialog(QtWidgets.QDialog):
         self.form2 = QtWidgets.QVBoxLayout()
         self.tabwid = QtWidgets.QTabWidget(self)
         self.TabConfig = QtWidgets.QWidget(self)
+        self.toolsTab = QtWidgets.QWidget(self)
         self.cmdSave = QtWidgets.QPushButton("Save")
         self.cmdSave.setFixedWidth(90)
         self.cmdSave.setIcon(QtGui.QIcon('images/save.png'))
@@ -76,7 +78,10 @@ class ConfigDialog(QtWidgets.QDialog):
         self.formConfig.addRow(self.configObj)
         self.TabConfig.setLayout(self.formConfig)
 
+        self._buildToolsTab()
+
         self.tabwid.addTab(self.TabConfig,'Config')
+        self.tabwid.addTab(self.toolsTab, 'Tools')
         self.form.addRow(self.tabwid)
         self.form2.addWidget(QtWidgets.QLabel('<br>'))
         self.form2.addWidget(self.cmdSave, alignment = Qt.AlignmentFlag.AlignCenter)
@@ -89,4 +94,47 @@ class ConfigDialog(QtWidgets.QDialog):
         fileObj = open(os.path.expanduser('~/.local/share/legion/legion.conf'),'w')
         fileObj.write(self.configObj.getText())
         fileObj.close()
+        self._save_tool_settings()
         self.controller.loadSettings()
+        self.configObj.setPlainText(open(os.path.expanduser('~/.local/share/legion/legion.conf'),'r').read())
+
+    def _buildToolsTab(self):
+        layout = QtWidgets.QFormLayout()
+        settings = self.controller.getSettings()
+
+        self.responderPathEdit = QtWidgets.QLineEdit()
+        self.responderPathEdit.setText(getattr(settings, 'tools_path_responder', 'responder'))
+        responderBrowse = QtWidgets.QPushButton('Browse')
+        responderBrowse.clicked.connect(lambda: self._browse_tool(self.responderPathEdit))
+        responderRow = QtWidgets.QHBoxLayout()
+        responderRow.addWidget(self.responderPathEdit)
+        responderRow.addWidget(responderBrowse)
+        layout.addRow(QtWidgets.QLabel('Responder path'), responderRow)
+
+        self.ntlmrelayPathEdit = QtWidgets.QLineEdit()
+        self.ntlmrelayPathEdit.setText(getattr(settings, 'tools_path_ntlmrelay', 'ntlmrelayx.py'))
+        ntlmBrowse = QtWidgets.QPushButton('Browse')
+        ntlmBrowse.clicked.connect(lambda: self._browse_tool(self.ntlmrelayPathEdit))
+        ntlmRow = QtWidgets.QHBoxLayout()
+        ntlmRow.addWidget(self.ntlmrelayPathEdit)
+        ntlmRow.addWidget(ntlmBrowse)
+        layout.addRow(QtWidgets.QLabel('NTLMRelay path'), ntlmRow)
+
+        hint = QtWidgets.QLabel('Set full paths if these tools are not in $PATH. Changes take effect immediately after saving.')
+        hint.setWordWrap(True)
+        layout.addRow(hint)
+        self.toolsTab.setLayout(layout)
+
+    def _browse_tool(self, line_edit):
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select executable', '', filter='All files (*)')
+        if filename:
+            line_edit.setText(filename)
+
+    def _save_tool_settings(self):
+        config_path = os.path.expanduser('~/.local/share/legion/legion.conf')
+        qsettings = QtCore.QSettings(config_path, QtCore.QSettings.Format.NativeFormat)
+        qsettings.beginGroup('ToolSettings')
+        qsettings.setValue('responder-path', self.responderPathEdit.text().strip())
+        qsettings.setValue('ntlmrelay-path', self.ntlmrelayPathEdit.text().strip())
+        qsettings.endGroup()
+        qsettings.sync()

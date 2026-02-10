@@ -41,7 +41,7 @@ class AppSettings():
                 shutil.copy(default_conf, config_path)
             else:
                 log.error(f"Default configuration file not found at {default_conf}.")
-        log.info('Loading settings file..')
+        log.info(f"Loading settings file: {config_path}")
         self.actions = QtCore.QSettings(config_path, QtCore.QSettings.Format.NativeFormat)
 
     def getGeneralSettings(self):
@@ -158,9 +158,10 @@ class AppSettings():
         self.actions.beginGroup('ToolSettings')
         self.actions.setValue('nmap-path', newSettings.tools_path_nmap)
         self.actions.setValue('hydra-path', newSettings.tools_path_hydra)
-        self.actions.setValue('cutycapt-path', newSettings.tools_path_cutycapt)
         self.actions.setValue('texteditor-path', newSettings.tools_path_texteditor)
         self.actions.setValue('pyshodan-api-key', newSettings.tools_pyshodan_api_key)
+        self.actions.setValue('responder-path', newSettings.tools_path_responder)
+        self.actions.setValue('ntlmrelay-path', newSettings.tools_path_ntlmrelay)
         self.actions.endGroup()
 
         self.actions.beginGroup('StagedNmapSettings')
@@ -241,9 +242,12 @@ class Settings():
 
         self.tools_path_nmap = "/sbin/nmap"
         self.tools_path_hydra = "/usr/bin/hydra"
-        self.tools_path_cutycapt = "/usr/bin/cutycapt"
         self.tools_path_texteditor = "/usr/bin/xdg-open"
         self.tools_pyshodan_api_key = ""
+        self.tools_path_responder = "/usr/bin/responder"
+        self.tools_path_ntlmrelay = "/usr/bin/ntlmrelayx.py"
+        self.tools_path_responder = "responder"
+        self.tools_path_ntlmrelay = "ntlmrelayx.py"
 
         # GUI settings
         self.gui_process_tab_column_widths = "125,0,100,150,100,100,100,100,100,100,100,100,100,100,100,100,100"
@@ -298,9 +302,12 @@ class Settings():
 
                 self.tools_path_nmap = self.toolSettings['nmap-path']
                 self.tools_path_hydra = self.toolSettings['hydra-path']
-                self.tools_path_cutycapt = self.toolSettings['cutycapt-path']
                 self.tools_path_texteditor = self.toolSettings['texteditor-path']
                 self.tools_pyshodan_api_key = self.toolSettings['pyshodan-api-key']
+                self.tools_path_responder = self.toolSettings.get('responder-path', self.tools_path_responder)
+                self.tools_path_ntlmrelay = self.toolSettings.get('ntlmrelay-path', self.tools_path_ntlmrelay)
+                self.tools_path_responder = self.toolSettings.get('responder-path', self.tools_path_responder)
+                self.tools_path_ntlmrelay = self.toolSettings.get('ntlmrelay-path', self.tools_path_ntlmrelay)
 
                 # gui
                 self.gui_process_tab_column_widths = self.guiSettings['process-tab-column-widths']

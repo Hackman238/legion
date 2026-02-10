@@ -426,6 +426,136 @@ class BruteWidget(QtWidgets.QWidget):
 
         self.vlayout.addWidget(self.display)
 
+
+class ResponderWidget(QtWidgets.QWidget):
+
+    def __init__(self, settings, parent=None):
+        QtWidgets.QWidget.__init__(self, parent)
+        self.settings = settings
+        self.pid = -1
+        self.outputfile = ''
+        self._running = False
+        self.command_executable = ''
+        self.setupLayout()
+
+    def setupLayout(self):
+        self.toolCombo = QtWidgets.QComboBox()
+        self.toolCombo.addItems(['Responder', 'NTLMRelay'])
+
+        self.interfaceLabel = QtWidgets.QLabel('Interface')
+        self.interfaceInput = QtWidgets.QLineEdit()
+        self.interfaceInput.setPlaceholderText('e.g. eth0')
+        self.interfaceInput.setFixedWidth(120)
+        default_interface = os.environ.get('LEGION_INTERFACE', '')
+        if default_interface:
+            self.interfaceInput.setText(default_interface)
+
+        self.targetLabel = QtWidgets.QLabel('Target/Relay')
+        self.targetInput = QtWidgets.QLineEdit()
+        self.targetInput.setPlaceholderText('Target host (for NTLMRelay)')
+        self.targetInput.setFixedWidth(220)
+
+        self.extraLabel = QtWidgets.QLabel('Extra Args')
+        self.extraArgsInput = QtWidgets.QLineEdit()
+        self.extraArgsInput.setPlaceholderText('--analyze')
+
+        self.runButton = QPushButton('Run')
+        self.runButton.setMaximumSize(110, 30)
+        self.validationLabel = QtWidgets.QLabel('Invalid input. Please try again!')
+        self.validationLabel.setStyleSheet('QLabel { color: red }')
+        self.validationLabel.hide()
+
+        topLayout = QtWidgets.QHBoxLayout()
+        topLayout.addWidget(QtWidgets.QLabel('Tool'))
+        topLayout.addWidget(self.toolCombo)
+        topLayout.addWidget(self.interfaceLabel)
+        topLayout.addWidget(self.interfaceInput)
+        topLayout.addWidget(self.targetLabel)
+        topLayout.addWidget(self.targetInput)
+        topLayout.addWidget(self.extraLabel)
+        topLayout.addWidget(self.extraArgsInput)
+        topLayout.addWidget(self.runButton)
+        topLayout.addWidget(self.validationLabel)
+        topLayout.addStretch()
+
+        self.display = QtWidgets.QPlainTextEdit()
+        self.display.setReadOnly(True)
+        if self.settings.general_tool_output_black_background == 'True':
+            palette = self.display.palette()
+            palette.setColor(QtGui.QPalette.ColorRole.Base, Qt.GlobalColor.black)
+            palette.setColor(QtGui.QPalette.ColorRole.Text, Qt.GlobalColor.white)
+            self.display.setPalette(palette)
+            self.display.setStyleSheet('QMenu { color:black; }')
+
+        layout = QtWidgets.QVBoxLayout()
+        layout.addLayout(topLayout)
+        layout.addWidget(self.display)
+        self.setLayout(layout)
+
+    def toggleRunButton(self, running: bool):
+        self._running = running
+        self.runButton.setText('Stop' if running else 'Run')
+
+    def showValidation(self, message: str):
+        self.validationLabel.setText(message)
+        self.validationLabel.show()
+
+    def hideValidation(self):
+        self.validationLabel.hide()
+
+    def resetDisplay(self):
+        self.display.setParent(None)
+        self.display = QtWidgets.QPlainTextEdit()
+        self.display.setReadOnly(True)
+        if self.settings.general_tool_output_black_background == 'True':
+            palette = self.display.palette()
+            palette.setColor(QtGui.QPalette.ColorRole.Base, Qt.GlobalColor.black)
+            palette.setColor(QtGui.QPalette.ColorRole.Text, Qt.GlobalColor.white)
+            self.display.setPalette(palette)
+            self.display.setStyleSheet('QMenu { color:black; }')
+        self.layout().addWidget(self.display)
+
+    def buildCommand(self, runningFolder):
+        import shlex
+
+        tool = self.toolCombo.currentText().strip()
+        interface = self.interfaceInput.text().strip() or os.environ.get('LEGION_INTERFACE', '')
+        target = self.targetInput.text().strip()
+        extra = self.extraArgsInput.text().strip()
+
+        output_dir = os.path.join(runningFolder, 'responder')
+        os.makedirs(output_dir, exist_ok=True)
+        self.outputfile = os.path.join(output_dir, f"{getTimestamp()}-{tool.lower()}.txt")
+
+        if tool.lower() == 'responder':
+            if not interface:
+                raise ValueError('Network interface is required for Responder runs.')
+            executable = getattr(self.settings, 'tools_path_responder', '').strip() or 'responder'
+            self.command_executable = executable
+            parts = [executable, '-I', interface, '-w', '-F']
+            if extra:
+                parts.extend(shlex.split(extra))
+            return ' '.join(parts)
+
+        # ntlmrelayx
+        if not target:
+            raise ValueError('Target is required for NTLMRelay runs.')
+        executable = getattr(self.settings, 'tools_path_ntlmrelay', '').strip() or 'ntlmrelayx.py'
+        self.command_executable = executable
+        parts = [executable, '-t', target]
+        if extra:
+            parts.extend(shlex.split(extra))
+        return ' '.join(parts)
+
+    def getTool(self):
+        return self.toolCombo.currentText().strip()
+
+    def getSource(self):
+        return self.interfaceInput.text().strip() or os.environ.get('LEGION_INTERFACE', '')
+
+    def getTarget(self):
+        return self.targetInput.text().strip()
+
 # dialog displayed when the user clicks on the advanced filters button
 class FiltersDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):

@@ -1,11 +1,11 @@
 ## NOTICE
 
-This is the new home of "Legion". A major release is out!
+This is the new home of "Legion". A major release is out! After upgrading, visit **Help → Config** to review tool paths (Responder, NTLMRelay, etc.) and adjust any customized settings.
 
-**Latest release: 0.5.1 (October 2025)**
-- New OS tab with dedicated host lists and consistent OS badges/icons across the UI.
-- Process list gains a status filter and run-time column so long queues are easier to manage.
-- Manual port add/delete now works for hostname entries, and `snmpbrute.py` has been modernized for Python 3.
+**Latest release: 0.5.2 (November 2025)**
+- Dedicated Responder / Relay tab for launching Responder or NTLMRelay sessions with live output and one-click stop/start.
+- Captured hashes and relayed credentials are automatically parsed, stored, and displayed in a new results table per project.
+- SQLite integrity checks, safe backups, and repair tooling keep projects healthy; smoke tests now cover import, save/load, and credential workflows.
 
 Having [screenshot issues](#screenshot-issues)?
 
@@ -31,6 +31,7 @@ penetration testing framework that aids in discovery, reconnaissance, and exploi
 * Highly customizable stage scanning for ninja-like IPS evasion.
 * Automatic detection of CPEs (Common Platform Enumeration) and CVEs (Common Vulnerabilities and Exposures), now with enhanced mapping to ExploitDB including direct links to exploits.
 * Integrated screenshotting: Take, view, and manage screenshots of web services directly from the UI, with support for EyeWitness and advanced screenshot management.
+* Dedicated Responder / Relay workspace to run Responder or NTLMRelay and automatically catalogue captured hashes for each project.
 * Optional IPv6 scanning support with automatic fallback when native IPv6 connectivity is unavailable.
 * Smarter project restores: tool tabs return exactly as you left them, Tools listings deduplicate tidily, missing screenshots display a helpful placeholder instead of blocking dialogs, the process table shows only meaningful columns, and tool tabs now offer a one-click Save option. Automated screenshots prefer hostnames when available, falling back to IP when needed.
 * Realtime auto-saving of project results and tasks.

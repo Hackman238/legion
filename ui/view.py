@@ -40,6 +40,7 @@ from ui.models.scriptmodels import *
 from ui.models.cvemodels import *
 from ui.models.processmodels import *
 from ui.models.ostables import OsSummaryTableModel, OsHostsTableModel
+from ui.models.credentialmodels import CredentialCaptureModel
 from app.auxiliary import *
 from six import u as unicode
 import pandas as pd
@@ -72,6 +73,7 @@ class View(QtCore.QObject):
         self.viewState = viewState
         self._os_selection_model = None
         self.processStatusFilter = None
+        self.responderWidgets = {}
 
     # the view needs access to controller methods to link gui actions with real actions
     def setController(self, controller):
@@ -115,6 +117,7 @@ class View(QtCore.QObject):
         self.ui.ToolHostsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.ui.OsListTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.ui.OsHostsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.ui.ResponderResultsTableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.connectOsHostsClick()
         status_combo = self.ui.ProcessStatusFilterComboBox
         status_combo.setItemData(0, None)
@@ -152,6 +155,7 @@ class View(QtCore.QObject):
         self.ui.ServicesTabWidget.setCurrentIndex(0)                    # display Services tab by default
         self.ui.BottomTabWidget.setCurrentIndex(0)                      # display Log tab by default
         self.ui.BruteTabWidget.setTabsClosable(True)                    # sets all tabs as closable in bruteforcer
+        self.ui.ResponderTabWidget.setTabsClosable(True)
 
         self.ui.ServicesTabWidget.setTabsClosable(True)  # hide the close button (cross) from the fixed tabs
 
@@ -162,11 +166,13 @@ class View(QtCore.QObject):
         self.ui.ServicesTabWidget.tabBar().setTabButton(4, QTabBar.ButtonPosition.RightSide, None)
 
         self.resetBruteTabs()  # clear brute tabs (if any) and create default brute tab
+        self.resetResponderTabs()
         self.displayToolPanel(False)
         self.displayScreenshots(False)
         # displays an overlay over the hosttableview saying 'click here to add host(s) to scope'
         self.displayAddHostsOverlay(True)
         self._initToolTabContextMenu()
+        self.updateResponderResultsTable()
 
     def startConnections(self):  # signal initialisations (signals/slots, actions, etc)
         ### MENU ACTIONS ###
@@ -207,6 +213,7 @@ class View(QtCore.QObject):
         self.ui.FilterApplyButton.clicked.connect(self.updateFilterKeywords)
         self.ui.ServicesTabWidget.tabCloseRequested.connect(self.closeHostToolTab)
         self.ui.BruteTabWidget.tabCloseRequested.connect(self.closeBruteTab)
+        self.ui.ResponderTabWidget.tabCloseRequested.connect(self.closeResponderTab)
         self.ui.keywordTextInput.returnPressed.connect(self.ui.FilterApplyButton.click)
         self.filterdialog.applyButton.clicked.connect(self.updateFilter)
         self.ui.ProcessStatusFilterComboBox.currentIndexChanged.connect(self.onProcessStatusFilterChanged)
@@ -290,6 +297,12 @@ class View(QtCore.QObject):
                    "Protocol", "Command", "Start time", "End time", "OutputFile", "Output", "Status", "Closed"]
         setTableProperties(self.ui.ProcessesTableView, len(headers), [1, 3, 4, 5, 8, 9, 10, 13, 14, 16])
         self.ui.ProcessesTableView.setSortingEnabled(True)
+
+        headers = ["Captured", "Tool", "Source", "Username", "Hash", "Details"]
+        setTableProperties(self.ui.ResponderResultsTableView, len(headers))
+        self.ui.ResponderResultsTableView.setSortingEnabled(True)
+        self.credentialModel = CredentialCaptureModel([])
+        self.ui.ResponderResultsTableView.setModel(self.credentialModel)
 
     def setMainWindowTitle(self, title):
         self.ui_mainwindow.setWindowTitle(str(title))
@@ -497,6 +510,7 @@ class View(QtCore.QObject):
             log.info(f"Error waiting for NmapImporter: {e}")
         self.controller.closeProject()
         self.removeToolTabs()                                           # to make them disappear from the UI
+        self.resetResponderTabs()
                 
     def connectAddHosts(self):
         self.ui.actionAddHosts.triggered.connect(self.connectAddHostsDialog)
@@ -685,6 +699,13 @@ class View(QtCore.QObject):
 
     def connectHelp(self):
         self.ui.actionHelp.triggered.connect(self.helpDialog.show)
+        if hasattr(self.ui, 'actionRepairProject'):
+            self.ui.actionRepairProject.triggered.connect(self.showRepairDialog)
+
+    def showRepairDialog(self):
+        from ui.repairDialog import RepairDialog
+        dlg = RepairDialog(self.ui.centralwidget)
+        dlg.exec()
 
     def connectConfig(self):
         self.ui.actionConfig.triggered.connect(self.configDialog.show)
@@ -2351,6 +2372,156 @@ class View(QtCore.QObject):
             if self.ui.BruteTabWidget.widget(i) == bWidget:
                 self.ui.BruteTabWidget.tabBar().setTabTextColor(i, QtGui.QColor('red'))
                 return
+
+    def _tool_executable_exists(self, executable: str, friendly_name: str) -> bool:
+        if not executable:
+            return False
+        exists = False
+        if os.path.isabs(executable):
+            exists = os.path.isfile(executable) and os.access(executable, os.X_OK)
+        else:
+            exists = shutil.which(executable) is not None
+
+        if not exists:
+            QtWidgets.QMessageBox.warning(
+                self.ui.centralwidget,
+                f"{friendly_name} Not Found",
+                (
+                    f"{friendly_name} executable '{executable}' was not found.\n\n"
+                    "Please install the tool or set the correct path via Help > Config."
+                )
+            )
+        return exists
+
+    #################### RESPONDER / RELAY TABS ####################
+
+    def resetResponderTabs(self):
+        count = self.ui.ResponderTabWidget.count()
+        for i in range(count - 1, -1, -1):
+            self.ui.ResponderTabWidget.removeTab(i)
+        self.viewState.responderTabCount = 1
+        self.responderWidgets.clear()
+        self.createNewResponderTab()
+
+    def createNewResponderTab(self):
+        widget = ResponderWidget(self.controller.getSettings())
+        widget.runButton.clicked.connect(lambda: self.callResponder(widget))
+        label = f"Session {self.viewState.responderTabCount}"
+        self.ui.ResponderTabWidget.addTab(widget, label)
+        self.viewState.responderTabCount += 1
+        self.ui.ResponderTabWidget.setCurrentIndex(self.ui.ResponderTabWidget.count() - 1)
+
+    def closeResponderTab(self, index):
+        widget = self.ui.ResponderTabWidget.widget(index)
+        db_id = str(widget.display.property('dbId')) if widget.display.property('dbId') else ''
+
+        def status_lookup(dbId):
+            return self.controller.getProcessStatusForDBId(dbId) if dbId else 'Finished'
+
+        def pid_lookup(dbId):
+            return self.controller.getPidForProcess(dbId) if dbId else -1
+
+        self._closeProcessTab(
+            tabWidget=self.ui.ResponderTabWidget,
+            index=index,
+            getStatusFunc=status_lookup,
+            getPidFunc=pid_lookup,
+            killFunc=lambda pid, dbId: self.killResponderProcess(widget),
+            cancelFunc=lambda dbId: self.killResponderProcess(widget),
+            storeCloseFunc=lambda dbId: self.controller.storeCloseTabStatusInDB(int(dbId)) if dbId else None,
+            hostTabsDict=self.viewState.hostTabs,
+            isBruteTab=False
+        )
+        if db_id in self.responderWidgets:
+            self.responderWidgets.pop(db_id, None)
+
+    def callResponder(self, widget):
+        try:
+            command = widget.buildCommand(self.controller.getRunningFolder())
+        except ValueError as exc:
+            widget.showValidation(str(exc))
+            return
+        except Exception as exc:
+            log.exception("Failed to build responder/relay command")
+            widget.showValidation(str(exc))
+            return
+
+        tool_name = widget.getTool()
+        executable = getattr(widget, 'command_executable', '') or tool_name.lower()
+        if not self._tool_executable_exists(executable, tool_name):
+            widget.showValidation(
+                f"{tool_name} executable not found. Install it or set the path via Help > Config."
+            )
+            return
+
+        widget.hideValidation()
+        widget.resetDisplay()
+        widget.toggleRunButton(True)
+        self.ui.statusbar.showMessage(f'Launching {tool_name} session', msecs=1000)
+        widget.setObjectName(f"{tool_name.lower()}-session")
+
+        host_value = widget.getTarget() or widget.getSource() or '0.0.0.0'
+        pid = self.controller.runCommand(
+            tool_name.lower(),
+            widget.objectName(),
+            host_value,
+            widget.getTarget() or '0',
+            'tcp',
+            command,
+            getTimestamp(human=True),
+            widget.outputfile,
+            widget.display
+        )
+        widget.pid = pid
+        try:
+            widget.runButton.clicked.disconnect()
+        except Exception:
+            pass
+        widget.runButton.clicked.connect(lambda: self.killResponderProcess(widget))
+
+        db_id = widget.display.property('dbId')
+        if db_id:
+            self.responderWidgets[str(db_id)] = widget
+
+    def killResponderProcess(self, widget):
+        db_id = widget.display.property('dbId')
+        if not db_id:
+            widget.toggleRunButton(False)
+            return
+        db_id = str(db_id)
+        status = self.controller.getProcessStatusForDBId(db_id)
+        if status in ("Running", "Waiting"):
+            try:
+                pid = self.controller.getPidForProcess(db_id)
+                self.controller.killProcess(pid, db_id)
+            except Exception:
+                log.exception(f"Failed to terminate responder/relay process {db_id}")
+        self.responderProcessFinished(db_id)
+
+    def responderProcessFinished(self, db_id):
+        widget = self.responderWidgets.pop(str(db_id), None)
+        if not widget:
+            return
+        widget.toggleRunButton(False)
+        widget.pid = -1
+        try:
+            widget.runButton.clicked.disconnect()
+        except Exception:
+            pass
+        widget.runButton.clicked.connect(lambda: self.callResponder(widget))
+        widget.hideValidation()
+        self.updateResponderResultsTable()
+
+    def updateResponderResultsTable(self):
+        if not hasattr(self, 'credentialModel'):
+            return
+        captures = []
+        try:
+            captures = self.controller.logic.activeProject.repositoryContainer.credentialRepository.getAllCaptures()
+        except Exception:
+            log.exception("Failed to refresh credential capture data")
+        self.credentialModel.setCaptures(captures)
+        self.ui.ResponderResultsTableView.resizeColumnsToContents()
     def _dedupeTools(self, processes):
         deduped = OrderedDict()
         for proc in processes:

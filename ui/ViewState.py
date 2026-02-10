@@ -29,6 +29,8 @@ class ViewState:
     hostTabs = dict()
     # Indicator of the numbering of the bruteforce tabs, incremented when a new tab is added (default: 1)
     bruteTabCount = 1
+    # Indicator of the numbering of the responder/relay tabs
+    responderTabCount = 1
     # to choose what to display in each panel (default: base filters)
     filters = Filters()
     # Indicator of which host was clicked last (default: None)

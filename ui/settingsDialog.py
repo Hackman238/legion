@@ -248,7 +248,6 @@ class AddSettingsDialog(QtWidgets.QDialog):  # dialog shown when the user select
         # POPULATE TOOL PATHS TAB
         self.nmapPathInput.setText(self.settings.tools_path_nmap)
         self.hydraPathInput.setText(self.settings.tools_path_hydra)
-        self.cutycaptPathInput.setText(self.settings.tools_path_cutycapt)
         self.textEditorPathInput.setText(self.settings.tools_path_texteditor)
  
         # POPULATE STAGED NMAP TAB
@@ -607,7 +606,6 @@ class AddSettingsDialog(QtWidgets.QDialog):  # dialog shown when the user select
     def toolPathsValidate(self):
         validationPassed = self.validateFile(self.nmapPathInput)
         validationPassed = self.validateFile(self.hydraPathInput) and validationPassed
-        validationPassed = self.validateFile(self.cutycaptPathInput) and validationPassed
         validationPassed = self.validateFile(self.textEditorPathInput) and validationPassed
         return validationPassed
 
@@ -1156,15 +1154,6 @@ class AddSettingsDialog(QtWidgets.QDialog):  # dialog shown when the user select
         self.hydraPathHorLayout.addWidget(self.hydraPathInput)
         self.hydraPathHorLayout.addStretch()
         
-        self.cutycaptPathlabel = QtWidgets.QLabel()
-        self.cutycaptPathlabel.setText('Cutycapt')
-        self.cutycaptPathlabel.setFixedWidth(100)
-        self.cutycaptPathInput = QtWidgets.QLineEdit()
-        self.cutycaptPathHorLayout = QtWidgets.QHBoxLayout()
-        self.cutycaptPathHorLayout.addWidget(self.cutycaptPathlabel)
-        self.cutycaptPathHorLayout.addWidget(self.cutycaptPathInput)
-        self.cutycaptPathHorLayout.addStretch()
-        
         self.textEditorPathlabel = QtWidgets.QLabel()
         self.textEditorPathlabel.setText('Text editor')
         self.textEditorPathlabel.setFixedWidth(100)
@@ -1177,7 +1166,6 @@ class AddSettingsDialog(QtWidgets.QDialog):  # dialog shown when the user select
         self.toolsPathVerLayout = QtWidgets.QVBoxLayout()
         self.toolsPathVerLayout.addLayout(self.nmapPathHorLayout)
         self.toolsPathVerLayout.addLayout(self.hydraPathHorLayout)
-        self.toolsPathVerLayout.addLayout(self.cutycaptPathHorLayout)
         self.toolsPathVerLayout.addLayout(self.textEditorPathHorLayout)
         self.toolsPathVerLayout.addStretch()
 
@@ -1625,4 +1613,3 @@ class AddSettingsDialog(QtWidgets.QDialog):  # dialog shown when the user select
         else:
             path = QtWidgets.QFileDialog.getExistingDirectory(self, title, '/')
             self.passwordlistPath.setText(str(path))
-

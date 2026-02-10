@@ -24,6 +24,7 @@ from db.repositories.PortRepository import PortRepository
 from db.repositories.ProcessRepository import ProcessRepository
 from db.repositories.ScriptRepository import ScriptRepository
 from db.repositories.ServiceRepository import ServiceRepository
+from db.repositories.CredentialRepository import CredentialRepository
 
 
 class RepositoryContainer(NamedTuple):
@@ -34,3 +35,4 @@ class RepositoryContainer(NamedTuple):
     cveRepository: CVERepository
     noteRepository: NoteRepository
     scriptRepository: ScriptRepository
+    credentialRepository: CredentialRepository

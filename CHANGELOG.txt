@@ -1,3 +1,10 @@
+LEGION 0.5.2
+
+* Added a dedicated Responder / Relay tab for launching Responder or NTLMRelay sessions with live output and easy stop/start controls.
+* Captured hashes and relayed credentials are now parsed and stored in-project, with a new results table to review activity per host.
+* Hardened SQLite operations with integrity checks, consistent backups, and a standalone repair script to recover corrupted project files.
+* Expanded smoke-test coverage (scan import, save/load, credential capture) and enabled headless Qt execution for CI environments.
+
 LEGION 0.5.1
 
 * Added an OS tab (with centralized OS classifier) so Hosts and OS views share consistent labels/icons.

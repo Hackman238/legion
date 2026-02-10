@@ -309,6 +309,18 @@ class Ui_MainWindow(object):
         self.horizontalLayout_7.addWidget(self.BruteTabWidget)
         self.MainTabWidget.addTab(self.BruteTab, _fromUtf8(""))
 
+        self.ResponderTab = QtWidgets.QWidget()
+        self.ResponderTab.setObjectName(_fromUtf8("ResponderTab"))
+        self.responderLayout = QtWidgets.QVBoxLayout(self.ResponderTab)
+        self.responderLayout.setObjectName(_fromUtf8("responderLayout"))
+        self.ResponderTabWidget = QtWidgets.QTabWidget(self.ResponderTab)
+        self.ResponderTabWidget.setObjectName(_fromUtf8("ResponderTabWidget"))
+        self.responderLayout.addWidget(self.ResponderTabWidget)
+        self.ResponderResultsTableView = QtWidgets.QTableView(self.ResponderTab)
+        self.ResponderResultsTableView.setObjectName(_fromUtf8("ResponderResultsTableView"))
+        self.responderLayout.addWidget(self.ResponderResultsTableView)
+        self.MainTabWidget.addTab(self.ResponderTab, _fromUtf8(""))
+
     def setupBottomPanel(self):
         self.BottomTabWidget = QtWidgets.QTabWidget(self.splitter_2)
         self.BottomTabWidget.setSizeIncrement(QtCore.QSize(0, 0))
@@ -418,11 +430,17 @@ class Ui_MainWindow(object):
         self.menuHelp.addAction(self.actionConfig)
         self.menubar.addAction(self.menuHelp.menuAction())
 
+        self.actionRepairProject = QtGui.QAction(MainWindow)
+        self.actionRepairProject.setObjectName(_fromUtf8("repairProject"))
+        self.menuHelp.addAction(self.actionRepairProject)
+        self.menubar.addAction(self.menuHelp.menuAction())
+
     def setDefaultIndexes(self):
         self.MainTabWidget.setCurrentIndex(1)
         self.HostsTabWidget.setCurrentIndex(1)
         self.ServicesTabWidget.setCurrentIndex(1)
         self.BruteTabWidget.setCurrentIndex(1)
+        self.ResponderTabWidget.setCurrentIndex(0)
         self.BottomTabWidget.setCurrentIndex(0)
 
     def retranslateUi(self, MainWindow):
@@ -451,6 +469,8 @@ class Ui_MainWindow(object):
                                       QtWidgets.QApplication.translate("MainWindow", "Scan", None))
         self.MainTabWidget.setTabText(self.MainTabWidget.indexOf(self.BruteTab),
                                       QtWidgets.QApplication.translate("MainWindow", "Brute", None))
+        self.MainTabWidget.setTabText(self.MainTabWidget.indexOf(self.ResponderTab),
+                                      QtWidgets.QApplication.translate("MainWindow", "Responder / Relay", None))
         self.BottomTabWidget.setTabText(self.BottomTabWidget.indexOf(self.ProcessTab),
                                         QtWidgets.QApplication.translate("MainWindow", "Processes", None))
         self.BottomTabWidget.setTabText(self.BottomTabWidget.indexOf(self.LogTab),
@@ -511,3 +531,4 @@ class Ui_MainWindow(object):
         self.actionHelp.setShortcut(QtWidgets.QApplication.translate("MainWindow", "F1", None))
         self.actionConfig.setText(QtWidgets.QApplication.translate("MainWindow", "Config", None))
         self.actionConfig.setShortcut(QtWidgets.QApplication.translate("MainWindow", "F2", None))
+        self.actionRepairProject.setText(QtWidgets.QApplication.translate("MainWindow", "Repair Legion File", None))
