@@ -492,11 +492,21 @@ class View(QtCore.QObject):
                 filter='Legion session (*.legion);; Sparta session (*.sprt)')[0]
         
             if not filename == '':                                      # check for permissions
+                # Show immediate feedback after file selection; opening can take time.
+                try:
+                    self.ui.statusbar.showMessage('Loading saved session...')
+                    QtWidgets.QApplication.processEvents()
+                except Exception:
+                    pass
                 if not os.access(filename, os.R_OK) or not os.access(filename, os.W_OK):
                     log.info('Insufficient permissions to open this file.')
                     QtWidgets.QMessageBox.warning(self.ui.centralwidget, 'Warning',
                                                           "You don't have the necessary permissions on this file.",
                                                           "Ok")
+                    try:
+                        self.ui.statusbar.clearMessage()
+                    except Exception:
+                        pass
                     return
 
                 if '.legion' in str(filename):
@@ -505,6 +515,10 @@ class View(QtCore.QObject):
                     projectType = 'sparta'
                                 
                 if not self.controller.openExistingProject(filename, projectType):
+                    try:
+                        self.ui.statusbar.clearMessage()
+                    except Exception:
+                        pass
                     return
                 self.viewState.firstSave = False  # overwrite this variable because we are opening an existing file
                 # do not show the overlay because the hosttableview is already populated
