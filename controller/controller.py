@@ -54,6 +54,90 @@ def normalize_path(path):
 
 class Controller:
     @staticmethod
+    def _get_invoking_username() -> str:
+        """
+        Best-effort lookup of the *original* desktop user when Legion is run via pkexec/sudo.
+
+        Returns empty string if unknown/not applicable.
+        """
+        try:
+            if os.geteuid() != 0:
+                return ""
+        except Exception:
+            return ""
+
+        # pkexec sets PKEXEC_UID; sudo sets SUDO_UID/SUDO_USER. Prefer UIDs (more reliable than names).
+        uid_candidates = [
+            os.environ.get("PKEXEC_UID"),
+            os.environ.get("SUDO_UID"),
+        ]
+        for uid_raw in uid_candidates:
+            if not uid_raw:
+                continue
+            try:
+                uid = int(str(uid_raw).strip())
+            except Exception:
+                continue
+            if uid <= 0:
+                continue
+            try:
+                import pwd
+                name = pwd.getpwuid(uid).pw_name
+                if name and name != "root":
+                    return str(name)
+            except Exception:
+                continue
+
+        name = (os.environ.get("SUDO_USER") or "").strip()
+        if name and name != "root":
+            return name
+        return ""
+
+    def getFileDialogDefaultDirectory(self, fallback: str = "") -> str:
+        """
+        Return a sensible default directory for QFileDialog.
+
+        When Legion is launched via pkexec, the GUI runs as root and Qt will default dialogs to /root.
+        Prefer the invoking user's home directory in that case to match user expectations.
+        """
+        # Prefer invoking user's home when running as root.
+        try:
+            if os.geteuid() == 0:
+                invoking_user = self._get_invoking_username()
+                if invoking_user:
+                    import pwd
+                    home = pwd.getpwnam(invoking_user).pw_dir
+                    if home and os.path.isdir(home):
+                        return home
+        except Exception:
+            pass
+
+        # Otherwise fall back to the caller-provided directory if it exists.
+        try:
+            if fallback:
+                if os.path.isdir(fallback):
+                    return fallback
+                parent = os.path.dirname(str(fallback))
+                if parent and os.path.isdir(parent):
+                    return parent
+        except Exception:
+            pass
+
+        # Default to current user's home.
+        try:
+            home = os.path.expanduser("~")
+            if home and os.path.isdir(home):
+                return home
+        except Exception:
+            pass
+
+        # Final fallback: current working directory.
+        try:
+            return os.getcwd()
+        except Exception:
+            return ""
+
+    @staticmethod
     def _start_detached_process(command: str) -> bool:
         """
         Start a process detached from Legion's process group/stdio.
@@ -67,6 +151,26 @@ class Controller:
         command = (command or "").strip()
         if not command:
             return False
+
+        # If Legion is running as root (pkexec), launch GUI helpers as the invoking desktop user.
+        invoking_user = Controller._get_invoking_username()
+        if invoking_user:
+            try:
+                subprocess.Popen(
+                    ["runuser", "-u", invoking_user, "-m", "--", "bash", "-lc", command],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+                return True
+            except FileNotFoundError:
+                # runuser missing; fall back to root execution.
+                pass
+            except Exception:
+                log.exception(f"Failed to start detached command as user '{invoking_user}': {command}")
+                # Fall back to root execution (may still work on systems where root has X access).
 
         # First try: exec directly (fast path, no shell).
         try:
@@ -252,6 +356,72 @@ class Controller:
     def initBrowserOpener(self):
         self.browser = BrowserOpener()                                  # browser opener object (different thread)
         self.browser.log.connect(self.view.ui.LogOutputTextView.append)
+
+    @staticmethod
+    def _host_for_url(display_host: str, resolved_ip: str) -> str:
+        """
+        Prefer hostname when it's meaningful; fall back to IP for placeholders like "unknown".
+        """
+        host = (display_host or "").strip()
+        if not host or host.lower() == "unknown":
+            return (resolved_ip or "").strip() or host
+        return host
+
+    def _open_urls_in_firefox_async(self, targets, firefox_command_template: str):
+        """
+        Open target URLs using the configured Firefox command, but ensure scheme (http/https) is present.
+
+        Runs in a background thread to avoid UI freezes from HTTPS probing.
+        """
+        import threading
+
+        def worker():
+            import time as _time
+            import shlex as _shlex
+            from app.httputil.isHttps import isHttps
+
+            first = True
+            for target in targets:
+                try:
+                    host_value = str(target[0])
+                    port_value = str(target[1])
+                    display_host, resolved_ip = self._resolve_host_and_ip(host_value)
+                    host_for_url = self._host_for_url(display_host, resolved_ip)
+
+                    # Probe using the IP when possible (avoids DNS issues for non-resolvable hostnames).
+                    host_for_probe = (resolved_ip or host_for_url).strip()
+                    scheme = "https" if isHttps(host_for_probe, port_value) else "http"
+                    full_url = f"{scheme}://{host_for_url}:{port_value}"
+
+                    # Respect any user-provided Firefox flags by taking the configured command and replacing
+                    # a bare host:port token with the fully qualified URL.
+                    template = (firefox_command_template or "firefox").strip()
+                    template = template.replace("[IP]", host_for_url).replace("[PORT]", port_value)
+                    template = template.replace("[term]", "").strip()
+                    program, args = formatCommandQProcess(template)
+                    tokens_to_strip = {
+                        f"{host_value}:{port_value}",
+                        f"{display_host}:{port_value}",
+                        f"{resolved_ip}:{port_value}",
+                        f"{host_for_url}:{port_value}",
+                        f"http://{host_for_url}:{port_value}",
+                        f"https://{host_for_url}:{port_value}",
+                    }
+                    filtered_args = [a for a in (args or []) if str(a).strip() not in tokens_to_strip]
+                    tokens = [program or "firefox", *filtered_args, full_url]
+                    cmd = " ".join(_shlex.quote(str(t)) for t in tokens if t is not None and str(t).strip())
+
+                    log.info(f"Opening in firefox: {full_url}")
+                    self._start_detached_process(cmd)
+                    if first:
+                        _time.sleep(2)
+                        first = False
+                    else:
+                        _time.sleep(0.5)
+                except Exception:
+                    log.exception("Failed to open URL in firefox")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # these timers are used to prevent from updating the UI several times within a short time period -
     # which freezes the UI
@@ -743,7 +913,7 @@ class Controller:
                 host_value = str(target[0])
                 port_value = str(target[1])
                 display_host, resolved_ip = self._resolve_host_and_ip(host_value)
-                url = f"{display_host}:{port_value}"
+                url = f"{self._host_for_url(display_host, resolved_ip)}:{port_value}"
                 self.screenshooter.addToQueue(resolved_ip, port_value, url)
             self.screenshooter.start()
             return
@@ -752,8 +922,8 @@ class Controller:
             for target in targets:
                 host_value = str(target[0])
                 port_value = str(target[1])
-                display_host, _ = self._resolve_host_and_ip(host_value)
-                url = f"{display_host}:{port_value}"
+                display_host, resolved_ip = self._resolve_host_and_ip(host_value)
+                url = f"{self._host_for_url(display_host, resolved_ip)}:{port_value}"
                 self.browser.addToQueue(url)
             self.browser.start()
             return
@@ -870,7 +1040,7 @@ class Controller:
                 host_value = str(target[0])
                 port_value = str(target[1])
                 display_host, resolved_ip = self._resolve_host_and_ip(host_value)
-                url = f"{display_host}:{port_value}"
+                url = f"{self._host_for_url(display_host, resolved_ip)}:{port_value}"
                 self.screenshooter.addToQueue(resolved_ip, port_value, url)
             self.screenshooter.start()
             return
@@ -883,6 +1053,17 @@ class Controller:
         for i in range(0,len(terminalActions)):
             if action == terminalActions[i][1]:
                 srvc_num = terminalActions[i][0]
+                try:
+                    terminal_action_key = str(self.settings.portTerminalActions[srvc_num][1]).strip().lower()
+                except Exception:
+                    terminal_action_key = ""
+                if terminal_action_key == "firefox":
+                    try:
+                        template = str(self.settings.portTerminalActions[srvc_num][2])
+                    except Exception:
+                        template = "firefox"
+                    self._open_urls_in_firefox_async(targets, template)
+                    return
                 for ip in targets:
                     command = str(self.settings.portTerminalActions[srvc_num][2])
                     command = command.replace('[IP]', ip[0]).replace('[PORT]', ip[1])

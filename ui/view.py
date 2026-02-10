@@ -486,8 +486,9 @@ class View(QtCore.QObject):
 
     def openExistingProject(self):
         if self.dealWithCurrentProject():
+            dialog_dir = self.controller.getFileDialogDefaultDirectory(self.controller.getCWD())
             filename = QtWidgets.QFileDialog.getOpenFileName(
-                self.ui.centralwidget, 'Open project', self.controller.getCWD(),
+                self.ui.centralwidget, 'Open project', dialog_dir,
                 filter='Legion session (*.legion);; Sparta session (*.sprt)')[0]
         
             if not filename == '':                                      # check for permissions
@@ -538,8 +539,9 @@ class View(QtCore.QObject):
             self.ui.statusbar.showMessage('Save failed: database unavailable', msecs=3000)
             return
 
+        dialog_dir = self.controller.getFileDialogDefaultDirectory(self.controller.getCWD())
         filename = QtWidgets.QFileDialog.getSaveFileName(self.ui.centralwidget, 'Save project as',
-                                                         self.controller.getCWD(), filter='Legion session (*.legion)',
+                                                         dialog_dir, filter='Legion session (*.legion)',
                                                          options=QtWidgets.QFileDialog.Option.DontConfirmOverwrite)[0]
             
         while not filename =='':
@@ -565,7 +567,7 @@ class View(QtCore.QObject):
                     self.controller.saveProjectAs(filename, 1)          # replace
                     break
 
-            filename = QtWidgets.QFileDialog.getSaveFileName(self.ui.centralwidget, 'Save project as', '.',
+            filename = QtWidgets.QFileDialog.getSaveFileName(self.ui.centralwidget, 'Save project as', dialog_dir,
                                                              filter='Legion session (*.legion)',
                                                              options=QtWidgets.QFileDialog.Option.DontConfirmOverwrite)[0]
 
@@ -715,8 +717,9 @@ class View(QtCore.QObject):
 
     def importNmap(self):
         self.ui.statusbar.showMessage('Importing nmap xml..', msecs=1000)
+        dialog_dir = self.controller.getFileDialogDefaultDirectory(self.controller.getCWD())
         filename = QtWidgets.QFileDialog.getOpenFileName(self.ui.centralwidget, 'Choose nmap file',
-                                                         self.controller.getCWD(), filter='XML file (*.xml)')[0]
+                                                         dialog_dir, filter='XML file (*.xml)')[0]
         log.info('Importing nmap xml from {0}...'.format(str(filename)))
         if not filename == '':
             if not os.access(filename, os.R_OK):                        # check for read permissions on the xml file
@@ -829,7 +832,8 @@ class View(QtCore.QObject):
 
     def showRepairDialog(self):
         from ui.repairDialog import RepairDialog
-        dlg = RepairDialog(self.ui.centralwidget)
+        dialog_dir = self.controller.getFileDialogDefaultDirectory(self.controller.getCWD())
+        dlg = RepairDialog(self.ui.centralwidget, default_dir=dialog_dir)
         dlg.exec()
 
     def connectConfig(self):
@@ -842,8 +846,9 @@ class View(QtCore.QObject):
         self.ui.actionExit.triggered.connect(self.appExit)
 
     def exportAsJson(self):
+        dialog_dir = self.controller.getFileDialogDefaultDirectory(self.controller.getCWD())
         filename, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self.ui.centralwidget, 'Export as JSON', self.controller.getCWD(), filter='JSON file (*.json)')
+            self.ui.centralwidget, 'Export as JSON', dialog_dir, filter='JSON file (*.json)')
         if filename:
             self.controller.exportAsJson(filename)
 
@@ -2058,7 +2063,10 @@ class View(QtCore.QObject):
             log.info(f"No textual content found for tab '{tab_title}'")
             return
         content = text_edit.toPlainText()
+        dialog_dir = self.controller.getFileDialogDefaultDirectory(self.controller.getCWD())
         default_path = self._suggest_filename(tab_title, 'txt')
+        if dialog_dir:
+            default_path = os.path.join(dialog_dir, default_path)
         filename, _ = QtWidgets.QFileDialog.getSaveFileName(
             self.ui.centralwidget,
             'Save Tool Output',
@@ -2103,7 +2111,10 @@ class View(QtCore.QObject):
             log.info(f"No screenshot content found for tab '{tab_title}'")
             return
 
+        dialog_dir = self.controller.getFileDialogDefaultDirectory(self.controller.getCWD())
         default_path = self._suggest_filename(tab_title, 'png')
+        if dialog_dir:
+            default_path = os.path.join(dialog_dir, default_path)
         filename, _ = QtWidgets.QFileDialog.getSaveFileName(
             self.ui.centralwidget,
             'Save Screenshot',

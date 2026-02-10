@@ -126,7 +126,10 @@ class ConfigDialog(QtWidgets.QDialog):
         self.toolsTab.setLayout(layout)
 
     def _browse_tool(self, line_edit):
-        filename, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select executable', '', filter='All files (*)')
+        dialog_dir = self.controller.getFileDialogDefaultDirectory(os.path.expanduser("~"))
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, 'Select executable', dialog_dir, filter='All files (*)'
+        )
         if filename:
             line_edit.setText(filename)
 

@@ -23,11 +23,12 @@ from PyQt6 import QtWidgets, QtGui, QtCore
 
 
 class RepairDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, default_dir: str = ""):
         super().__init__(parent)
         self.setWindowTitle('Repair Legion File')
         self.setModal(True)
         self.resize(540, 300)
+        self._default_dir = (default_dir or "").strip()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -70,8 +71,9 @@ class RepairDialog(QtWidgets.QDialog):
         layout.addLayout(button_layout)
 
     def _browse_file(self):
+        start_dir = self._default_dir or os.path.expanduser("~")
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, 'Select Legion Project', '', filter='Legion project (*.legion)' )
+            self, 'Select Legion Project', start_dir, filter='Legion project (*.legion)' )
         if not filename:
             return
         self.file_edit.setText(filename)
