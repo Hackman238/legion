@@ -1217,8 +1217,19 @@ class Controller:
         staged_version_light=False,
     ):
         def handleProcStop(*vargs):
-            updateElapsed.stop()
-            self.processTimers[qProcess.id] = None
+            try:
+                updateElapsed.stop()
+            except Exception:
+                pass
+            try:
+                updateElapsed.deleteLater()
+            except Exception:
+                pass
+            try:
+                self.processTimers.pop(qProcess.id, None)
+            except Exception:
+                # Best-effort fallback; avoid crashing during shutdown paths.
+                self.processTimers[qProcess.id] = None
             procTime = timer.elapsed() / 1000
             qProcess.elapsed = procTime
             self.logic.activeProject.repositoryContainer.processRepository.storeProcessRunningElapsedTime(qProcess.id,
@@ -1692,6 +1703,24 @@ class Controller:
         except Exception:
             log.exception("Process Finished Exception")
             raise
+        finally:
+            # QProcess instances are not parented; without explicit cleanup they can keep OS pipes open
+            # and eventually hit "Too many open files" (seen as GWakeup pipe creation failures).
+            try:
+                pid = getPid(qProcess)
+                if pid:
+                    self.processMeasurements.pop(pid, None)
+            except Exception:
+                pass
+            try:
+                # Ensure the process object releases its channels.
+                qProcess.close()
+            except Exception:
+                pass
+            try:
+                qProcess.deleteLater()
+            except Exception:
+                pass
 
     # when hydra finds valid credentials we need to save them and change the brute tab title to red
     def handleHydraFindings(self, bWidget, userlist, passlist):
