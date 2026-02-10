@@ -367,62 +367,6 @@ class Controller:
             return (resolved_ip or "").strip() or host
         return host
 
-    def _open_urls_in_firefox_async(self, targets, firefox_command_template: str):
-        """
-        Open target URLs using the configured Firefox command, but ensure scheme (http/https) is present.
-
-        Runs in a background thread to avoid UI freezes from HTTPS probing.
-        """
-        import threading
-
-        def worker():
-            import time as _time
-            import shlex as _shlex
-            from app.httputil.isHttps import isHttps
-
-            first = True
-            for target in targets:
-                try:
-                    host_value = str(target[0])
-                    port_value = str(target[1])
-                    display_host, resolved_ip = self._resolve_host_and_ip(host_value)
-                    host_for_url = self._host_for_url(display_host, resolved_ip)
-
-                    # Probe using the IP when possible (avoids DNS issues for non-resolvable hostnames).
-                    host_for_probe = (resolved_ip or host_for_url).strip()
-                    scheme = "https" if isHttps(host_for_probe, port_value) else "http"
-                    full_url = f"{scheme}://{host_for_url}:{port_value}"
-
-                    # Respect any user-provided Firefox flags by taking the configured command and replacing
-                    # a bare host:port token with the fully qualified URL.
-                    template = (firefox_command_template or "firefox").strip()
-                    template = template.replace("[IP]", host_for_url).replace("[PORT]", port_value)
-                    template = template.replace("[term]", "").strip()
-                    program, args = formatCommandQProcess(template)
-                    tokens_to_strip = {
-                        f"{host_value}:{port_value}",
-                        f"{display_host}:{port_value}",
-                        f"{resolved_ip}:{port_value}",
-                        f"{host_for_url}:{port_value}",
-                        f"http://{host_for_url}:{port_value}",
-                        f"https://{host_for_url}:{port_value}",
-                    }
-                    filtered_args = [a for a in (args or []) if str(a).strip() not in tokens_to_strip]
-                    tokens = [program or "firefox", *filtered_args, full_url]
-                    cmd = " ".join(_shlex.quote(str(t)) for t in tokens if t is not None and str(t).strip())
-
-                    log.info(f"Opening in firefox: {full_url}")
-                    self._start_detached_process(cmd)
-                    if first:
-                        _time.sleep(2)
-                        first = False
-                    else:
-                        _time.sleep(0.5)
-                except Exception:
-                    log.exception("Failed to open URL in firefox")
-
-        threading.Thread(target=worker, daemon=True).start()
-
     # these timers are used to prevent from updating the UI several times within a short time period -
     # which freezes the UI
     def initTimers(self):
@@ -977,6 +921,9 @@ class Controller:
         terminalActions = []  # custom terminal actions from settings file
         # if wildcard or the command is valid for this specific service or if the command is valid for all services
         for a in self.settings.portTerminalActions:
+            # Deprecated/removed: use "Open in browser" instead.
+            if str(a[1]).strip().lower() == "firefox":
+                continue
             if serviceName is None or serviceName == '*' or serviceName in a[3].split(",") or a[3] == '':
                 terminalActions.append([self.settings.portTerminalActions.index(a), menu.addAction(a[0])])
 
@@ -1053,17 +1000,6 @@ class Controller:
         for i in range(0,len(terminalActions)):
             if action == terminalActions[i][1]:
                 srvc_num = terminalActions[i][0]
-                try:
-                    terminal_action_key = str(self.settings.portTerminalActions[srvc_num][1]).strip().lower()
-                except Exception:
-                    terminal_action_key = ""
-                if terminal_action_key == "firefox":
-                    try:
-                        template = str(self.settings.portTerminalActions[srvc_num][2])
-                    except Exception:
-                        template = "firefox"
-                    self._open_urls_in_firefox_async(targets, template)
-                    return
                 for ip in targets:
                     command = str(self.settings.portTerminalActions[srvc_num][2])
                     command = command.replace('[IP]', ip[0]).replace('[PORT]', ip[1])
