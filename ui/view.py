@@ -2163,9 +2163,25 @@ class View(QtCore.QObject):
                 processIconName = directStatus.get(status) or defaultStatus
                 processIcon = './images/{processIconName}.gif'.format(processIconName=processIconName)
 
-                self.runningWidget = ImagePlayer(processIcon)
-                self.ui.ProcessesTableView.setIndexWidget(self.ui.ProcessesTableView.model().index(row,0),
-                                                          self.runningWidget)
+                index = self.ui.ProcessesTableView.model().index(row, 0)
+                existing = self.ui.ProcessesTableView.indexWidget(index)
+
+                # Avoid recreating QMovie/GIF widgets on every refresh; only replace when the icon changed.
+                try:
+                    if isinstance(existing, ImagePlayer) and getattr(existing, "movie", None):
+                        if existing.movie.fileName() == processIcon:
+                            continue
+                except Exception:
+                    pass
+
+                try:
+                    if existing is not None:
+                        existing.deleteLater()
+                except Exception:
+                    pass
+
+                runningWidget = ImagePlayer(processIcon)
+                self.ui.ProcessesTableView.setIndexWidget(index, runningWidget)
 
     #################### GLOBAL INTERFACE UPDATE FUNCTION ####################
     
