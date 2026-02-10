@@ -21,6 +21,8 @@ from six import u as unicode
 
 from db.entities.note import note
 
+from sqlalchemy.exc import OperationalError
+
 
 class NoteRepository:
     def __init__(self, dbAdapter: Database, log):
@@ -29,20 +31,40 @@ class NoteRepository:
 
     def getNoteByHostId(self, hostId):
         session = self.dbAdapter.session()
-        result = session.query(note).filter_by(hostId=str(hostId)).first()
-        session.close()
-        return result
+        try:
+            return session.query(note).filter_by(hostId=str(hostId)).first()
+        except OperationalError:
+            # Typically indicates DB unavailable (e.g., "unable to open database file").
+            return None
+        finally:
+            session.close()
 
     def storeNotes(self, hostId, notes):
         session = self.dbAdapter.session()
-        if len(notes) == 0:
-            notes = unicode("".format(hostId=hostId))
-        self.log.debug("Storing notes for {hostId}, Notes {notes}".format(hostId=hostId, notes=notes))
-        t_note = self.getNoteByHostId(hostId)
-        if t_note:
-            t_note.text = unicode(notes)
-        else:
-            t_note = note(hostId, unicode(notes))
-        session.add(t_note)
-        session.commit()
-        session.close()
+        try:
+            if len(notes) == 0:
+                notes = unicode("".format(hostId=hostId))
+            self.log.debug("Storing notes for {hostId}, Notes {notes}".format(hostId=hostId, notes=notes))
+
+            # Use the same session for lookup + write to avoid scoped_session re-entrancy issues.
+            t_note = session.query(note).filter_by(hostId=str(hostId)).first()
+            if t_note:
+                t_note.text = unicode(notes)
+            else:
+                t_note = note(hostId, unicode(notes))
+            session.add(t_note)
+            session.commit()
+            return True
+        except OperationalError as exc:
+            # Harden against cases where the DB cannot be opened (e.g. "Too many open files", perms, missing path).
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            try:
+                self.log.warning(f"Failed to store notes for host {hostId}: {exc}")
+            except Exception:
+                pass
+            return False
+        finally:
+            session.close()

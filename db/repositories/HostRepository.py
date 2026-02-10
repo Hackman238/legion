@@ -19,6 +19,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 from app.auxiliary import Filters
 from sqlalchemy import text
 from sqlalchemy.exc import DatabaseError as SADatabaseError
+from sqlalchemy.exc import OperationalError
 from db.SqliteDbAdapter import Database, DatabaseIntegrityError
 from db.entities.host import hostObj
 from app.osclassification import classify_os, ORDERED_OS_CATEGORIES
@@ -32,76 +33,102 @@ class HostRepository:
 
     def exists(self, host: str):
         session = self.dbAdapter.session()
-        query = text('SELECT host.ip FROM hostObj AS host WHERE host.ip == :host OR host.hostname == :host')
-        result = session.execute(query, {'host': str(host)}).fetchall()
-        session.close()
-        return True if result else False
+        try:
+            query = text('SELECT host.ip FROM hostObj AS host WHERE host.ip == :host OR host.hostname == :host')
+            result = session.execute(query, {'host': str(host)}).fetchall()
+            return True if result else False
+        except OperationalError:
+            return False
+        finally:
+            session.close()
 
     def getHosts(self, filters):
         session = self.dbAdapter.session()
-        query = 'SELECT * FROM hostObj AS hosts WHERE 1=1'
-        query += applyHostsFilters(filters)
-        query = text(query)
-        result = session.execute(query)
-        rows = result.fetchall()
-        # Get column names from result metadata
-        keys = result.keys()
-        # Convert each row (tuple) to a dict
-        hosts = [dict(zip(keys, row)) for row in rows]
-        session.close()
-        return hosts
+        try:
+            query = 'SELECT * FROM hostObj AS hosts WHERE 1=1'
+            query += applyHostsFilters(filters)
+            query = text(query)
+            result = session.execute(query)
+            rows = result.fetchall()
+            # Get column names from result metadata
+            keys = result.keys()
+            # Convert each row (tuple) to a dict
+            return [dict(zip(keys, row)) for row in rows]
+        except OperationalError:
+            return []
+        finally:
+            session.close()
 
     def getHostsAndPortsByServiceName(self, service_name, filters: Filters):
         session = self.dbAdapter.session()
-        query = ("SELECT hosts.ip,ports.portId,ports.protocol,ports.state,ports.hostId,ports.serviceId,"
-                 "services.name,services.product,services.version,services.extrainfo,services.fingerprint "
-                 "FROM portObj AS ports "
-                 "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
-                 "LEFT OUTER JOIN serviceObj AS services ON services.id=ports.serviceId "
-                 "WHERE services.name=:service_name")
-        query += applyFilters(filters)
-        query = text(query)
-        result = session.execute(query, {'service_name': str(service_name)})
-        rows = result.fetchall()
-        keys = result.keys()
-        services = [dict(zip(keys, row)) for row in rows]
-        session.close()
-        return services
+        try:
+            query = ("SELECT hosts.ip,ports.portId,ports.protocol,ports.state,ports.hostId,ports.serviceId,"
+                     "services.name,services.product,services.version,services.extrainfo,services.fingerprint "
+                     "FROM portObj AS ports "
+                     "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
+                     "LEFT OUTER JOIN serviceObj AS services ON services.id=ports.serviceId "
+                     "WHERE services.name=:service_name")
+            query += applyFilters(filters)
+            query = text(query)
+            result = session.execute(query, {'service_name': str(service_name)})
+            rows = result.fetchall()
+            keys = result.keys()
+            return [dict(zip(keys, row)) for row in rows]
+        except OperationalError:
+            return []
+        finally:
+            session.close()
 
     def getHostInformation(self, host_ip_address: str):
         session = self.dbAdapter.session()
-        result = session.query(hostObj).filter_by(ip=str(host_ip_address)).first()
-        session.close()
-        return result
+        try:
+            return session.query(hostObj).filter_by(ip=str(host_ip_address)).first()
+        except OperationalError:
+            return None
+        finally:
+            session.close()
 
     def deleteHost(self, hostIP):
         session = self.dbAdapter.session()
-        host = session.query(hostObj).filter_by(ip=str(hostIP)).first()
-        if host:
-            session.delete(host)
-            session.commit()
-        session.close()
+        try:
+            host = session.query(hostObj).filter_by(ip=str(hostIP)).first()
+            if host:
+                session.delete(host)
+                session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def toggleHostCheckStatus(self, ipAddress):
         session = self.dbAdapter.session()
-        host = session.query(hostObj).filter_by(ip=ipAddress).first()
-        if host:
-            if host.checked == 'False':
-                host.checked = 'True'
-            else:
-                host.checked = 'False'
-            session.add(host)
-            session.commit()
-        session.close()
+        try:
+            host = session.query(hostObj).filter_by(ip=ipAddress).first()
+            if host:
+                if host.checked == 'False':
+                    host.checked = 'True'
+                else:
+                    host.checked = 'False'
+                session.add(host)
+                session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def getHostByIP(self, ip):
         """
         Return the hostObj for a given IP address, or None if not found.
         """
         session = self.dbAdapter.session()
-        host = session.query(hostObj).filter_by(ip=str(ip)).first()
-        session.close()
-        return host
+        try:
+            return session.query(hostObj).filter_by(ip=str(ip)).first()
+        except OperationalError:
+            return None
+        finally:
+            session.close()
 
     def getHostByHostname(self, hostname):
         """
@@ -110,6 +137,8 @@ class HostRepository:
         session = self.dbAdapter.session()
         try:
             host = session.query(hostObj).filter_by(hostname=str(hostname)).first()
+        except OperationalError:
+            return None
         finally:
             session.close()
         return host
@@ -122,9 +151,9 @@ class HostRepository:
         try:
             hosts = session.query(hostObj).all()
         except SADatabaseError as exc:
-            session.close()
             raise DatabaseIntegrityError(f"Failed to load hosts: {exc}") from exc
-        session.close()
+        finally:
+            session.close()
         return hosts
 
     def getOperatingSystemsSummary(self):

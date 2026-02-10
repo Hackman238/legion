@@ -17,6 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 from app.auxiliary import Filters
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from db.SqliteDbAdapter import Database
 from db.filters import applyFilters
 from db.entities.service import serviceObj
@@ -28,32 +29,42 @@ class ServiceRepository:
 
     def getServiceNames(self, filters: Filters):
         session = self.dbAdapter.session()
-        query = ("SELECT DISTINCT service.name FROM serviceObj as service "
-                 "INNER JOIN portObj as ports "
-                 "INNER JOIN hostObj AS hosts "
-                 "ON hosts.id = ports.hostId AND service.id=ports.serviceId WHERE 1=1")
-        query += applyFilters(filters)
-        query += ' ORDER BY service.name ASC'
-        query = text(query)
-        result = session.execute(query)
-        rows = result.fetchall()
-        keys = result.keys()
-        services = [dict(zip(keys, row)) for row in rows]
-        session.close()
-        return services
+        try:
+            query = ("SELECT DISTINCT service.name FROM serviceObj as service "
+                     "INNER JOIN portObj as ports "
+                     "INNER JOIN hostObj AS hosts "
+                     "ON hosts.id = ports.hostId AND service.id=ports.serviceId WHERE 1=1")
+            query += applyFilters(filters)
+            query += ' ORDER BY service.name ASC'
+            query = text(query)
+            result = session.execute(query)
+            rows = result.fetchall()
+            keys = result.keys()
+            return [dict(zip(keys, row)) for row in rows]
+        except OperationalError:
+            # Database unavailable (e.g. "unable to open database file").
+            return []
+        finally:
+            session.close()
 
     def getServiceNamesByHostIPAndPort(self, host_ip, port):
         session = self.dbAdapter.session()
-        query = text("SELECT services.name FROM serviceObj AS services "
-                     "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
-                     "INNER JOIN portObj AS ports ON services.id=ports.serviceId "
-                     "WHERE hosts.ip=:host_ip and ports.portId = :port")
-        result = session.execute(query, {'host_ip': str(host_ip), 'port': str(port)}).first()
-        session.close()
-        return result
+        try:
+            query = text("SELECT services.name FROM serviceObj AS services "
+                         "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
+                         "INNER JOIN portObj AS ports ON services.id=ports.serviceId "
+                         "WHERE hosts.ip=:host_ip and ports.portId = :port")
+            return session.execute(query, {'host_ip': str(host_ip), 'port': str(port)}).first()
+        except OperationalError:
+            return None
+        finally:
+            session.close()
 
     def getServiceById(self, service_id):
         session = self.dbAdapter.session()
-        service = session.query(serviceObj).filter_by(id=service_id).first()
-        session.close()
-        return service
+        try:
+            return session.query(serviceObj).filter_by(id=service_id).first()
+        except OperationalError:
+            return None
+        finally:
+            session.close()

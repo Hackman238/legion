@@ -17,6 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from db.SqliteDbAdapter import Database
 
 
@@ -26,13 +27,16 @@ class CVERepository:
 
     def getCVEsByHostIP(self, hostIP):
         session = self.dbAdapter.session()
-        query = text('SELECT cves.name, cves.severity, cves.product, cves.version, cves.url, cves.source, '
-                     'cves.exploitId, cves.exploit, cves.exploitUrl FROM cve AS cves '
-                     'INNER JOIN hostObj AS hosts ON hosts.id = cves.hostId '
-                     'WHERE hosts.ip = :hostIP')
-        result = session.execute(query, {'hostIP': str(hostIP)})
-        rows = result.fetchall()
-        keys = result.keys()
-        cves = [dict(zip(keys, row)) for row in rows]
-        session.close()
-        return cves
+        try:
+            query = text('SELECT cves.name, cves.severity, cves.product, cves.version, cves.url, cves.source, '
+                         'cves.exploitId, cves.exploit, cves.exploitUrl FROM cve AS cves '
+                         'INNER JOIN hostObj AS hosts ON hosts.id = cves.hostId '
+                         'WHERE hosts.ip = :hostIP')
+            result = session.execute(query, {'hostIP': str(hostIP)})
+            rows = result.fetchall()
+            keys = result.keys()
+            return [dict(zip(keys, row)) for row in rows]
+        except OperationalError:
+            return []
+        finally:
+            session.close()

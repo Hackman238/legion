@@ -17,6 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from db.SqliteDbAdapter import Database
 from db.entities.l1script import l1ScriptObj
 
@@ -27,29 +28,38 @@ class ScriptRepository:
 
     def getScriptsByPortId(self, port_id):
         session = self.dbAdapter.session()
-        scripts = session.query(l1ScriptObj).filter_by(portId=port_id).all()
-        session.close()
-        return scripts
+        try:
+            return session.query(l1ScriptObj).filter_by(portId=port_id).all()
+        except OperationalError:
+            return []
+        finally:
+            session.close()
 
 
     def getScriptsByHostIP(self, hostIP):
         session = self.dbAdapter.session()
-        query = text("SELECT host.id, host.scriptId, port.portId, port.protocol FROM l1ScriptObj AS host "
-                     "INNER JOIN hostObj AS hosts ON hosts.id = host.hostId "
-                     "LEFT OUTER JOIN portObj AS port ON port.id = host.portId WHERE hosts.ip=:hostIP")
-        result = session.execute(query, {'hostIP': str(hostIP)})
-        rows = result.fetchall()
-        keys = result.keys()
-        scripts = [dict(zip(keys, row)) for row in rows]
-        session.close()
-        return scripts
+        try:
+            query = text("SELECT host.id, host.scriptId, port.portId, port.protocol FROM l1ScriptObj AS host "
+                         "INNER JOIN hostObj AS hosts ON hosts.id = host.hostId "
+                         "LEFT OUTER JOIN portObj AS port ON port.id = host.portId WHERE hosts.ip=:hostIP")
+            result = session.execute(query, {'hostIP': str(hostIP)})
+            rows = result.fetchall()
+            keys = result.keys()
+            return [dict(zip(keys, row)) for row in rows]
+        except OperationalError:
+            return []
+        finally:
+            session.close()
 
     def getScriptOutputById(self, scriptDBId):
         session = self.dbAdapter.session()
-        query = text("SELECT script.output FROM l1ScriptObj as script WHERE script.id = :scriptDBId")
-        result = session.execute(query, {'scriptDBId': str(scriptDBId)})
-        rows = result.fetchall()
-        keys = result.keys()
-        outputs = [dict(zip(keys, row)) for row in rows]
-        session.close()
-        return outputs
+        try:
+            query = text("SELECT script.output FROM l1ScriptObj as script WHERE script.id = :scriptDBId")
+            result = session.execute(query, {'scriptDBId': str(scriptDBId)})
+            rows = result.fetchall()
+            keys = result.keys()
+            return [dict(zip(keys, row)) for row in rows]
+        except OperationalError:
+            return []
+        finally:
+            session.close()
