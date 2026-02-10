@@ -21,6 +21,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 import ntpath  # for file operations, to kill processes and for regex
 import os
 import shutil
+import time
 from collections import OrderedDict
 from collections.abc import Mapping
 
@@ -77,6 +78,12 @@ class View(QtCore.QObject):
         self._os_selection_model = None
         self.processStatusFilter = None
         self.responderWidgets = {}
+        # Notes auto-save (minutes interval configurable via `notes-autosave-minutes`).
+        self._notes_autosave_timer = QtCore.QTimer(self)
+        self._notes_autosave_timer.setSingleShot(False)
+        self._notes_autosave_timer.timeout.connect(self._onNotesAutoSaveTimeout)
+        self._notes_autosave_interval_ms = 0
+        self._notes_autosave_last_at = 0.0
 
     # the view needs access to controller methods to link gui actions with real actions
     def setController(self, controller):
@@ -130,6 +137,7 @@ class View(QtCore.QObject):
         status_combo.setItemData(4, ["Waiting"])
         status_combo.setCurrentIndex(0)
         self.processStatusFilter = status_combo.currentData()
+        self._configureNotesAutoSaveTimer()
 
     # initialisations (globals, etc)
     def start(self, title='*untitled'):
@@ -176,6 +184,7 @@ class View(QtCore.QObject):
         self.displayAddHostsOverlay(True)
         self._initToolTabContextMenu()
         self.updateResponderResultsTable()
+        self._configureNotesAutoSaveTimer()
 
     def startConnections(self):  # signal initialisations (signals/slots, actions, etc)
         ### MENU ACTIONS ###
@@ -330,9 +339,54 @@ class View(QtCore.QObject):
         self.setMainWindowTitle(applicationInfo["name"] + ' ' + getVersion() + ' - ' + title + ' - ' +
                                 self.controller.getCWD())
 
-    def _autoSaveNotesIfDirty(self) -> bool:
+    def _configureNotesAutoSaveTimer(self):
+        """
+        Configure the notes autosave interval from settings.
+
+        Config key: `GeneralSettings/notes-autosave-minutes`
+        """
+        minutes_raw = "2"
+        try:
+            settings = self.controller.getSettings()
+            minutes_raw = getattr(settings, "general_notes_autosave_minutes", minutes_raw)
+        except Exception:
+            pass
+
+        try:
+            minutes = float(minutes_raw)
+        except Exception:
+            minutes = 2.0
+
+        interval_ms = int(max(0.0, minutes) * 60_000)
+        self._notes_autosave_interval_ms = interval_ms
+
+        # Allow users to disable by setting 0.
+        if interval_ms <= 0:
+            try:
+                if self._notes_autosave_timer.isActive():
+                    self._notes_autosave_timer.stop()
+            except Exception:
+                pass
+            return
+
+        try:
+            self._notes_autosave_timer.setInterval(interval_ms)
+            if not self._notes_autosave_timer.isActive():
+                self._notes_autosave_timer.start()
+        except Exception:
+            log.exception("Failed to configure notes auto-save timer")
+
+    def _onNotesAutoSaveTimeout(self):
+        # Avoid running while the project is closing/exiting.
+        if getattr(self, "_close_project_in_progress", False) or getattr(self, "_app_exit_in_progress", False):
+            return
+        self._autoSaveNotesIfDirty(force=False)
+
+    def _autoSaveNotesIfDirty(self, force: bool = False) -> bool:
         """
         Persist notes if the user has modified them (dirty=True).
+
+        When `force` is False, this will only attempt a save if at least the configured autosave interval has elapsed.
 
         Returns:
             True if notes are saved (or no save needed); False if saving failed.
@@ -342,8 +396,15 @@ class View(QtCore.QObject):
         if not self.viewState.lastHostIdClicked:
             return True
 
+        if not force and self._notes_autosave_interval_ms > 0:
+            min_seconds = float(self._notes_autosave_interval_ms) / 1000.0
+            now = time.monotonic()
+            if (now - float(self._notes_autosave_last_at)) < min_seconds:
+                return True
+
         ok = bool(self.controller.saveProject(self.viewState.lastHostIdClicked, self.ui.NotesTextEdit.toPlainText()))
         if ok:
+            self._notes_autosave_last_at = time.monotonic()
             # For non-temporary projects, clear dirty after a successful auto-save to avoid redundant writes.
             # Temporary projects keep the dirty marker to continue prompting the user to Save As on exit.
             if not self.controller.isTempProject():
@@ -473,7 +534,7 @@ class View(QtCore.QObject):
     def saveProjectAs(self):
         self.ui.statusbar.showMessage('Saving..')
         log.info('Saving project..')
-        if not self._autoSaveNotesIfDirty():
+        if not self._autoSaveNotesIfDirty(force=True):
             self.ui.statusbar.showMessage('Save failed: database unavailable', msecs=3000)
             return
 
@@ -536,6 +597,11 @@ class View(QtCore.QObject):
             return
         self._close_project_in_progress = True
         self.ui.statusbar.showMessage('Closing project..', msecs=1000)
+        try:
+            if getattr(self, "_notes_autosave_timer", None) is not None:
+                self._notes_autosave_timer.stop()
+        except Exception:
+            pass
         # Wait for NmapImporter thread to finish before cleanup
         try:
             if hasattr(self.controller, "nmapImporter") and self.controller.nmapImporter.isRunning():
@@ -748,6 +814,7 @@ class View(QtCore.QObject):
     def applySettings(self):
         if self.settingsWidget.applySettings():
             self.controller.applySettings(self.settingsWidget.settings)
+            self._configureNotesAutoSaveTimer()
             self.settingsWidget.hide()
 
     def cancelSettings(self):
@@ -824,7 +891,7 @@ class View(QtCore.QObject):
 
             # Only block navigation when we are switching to a different host.
             if previous_ip and ip and ip != previous_ip:
-                if not self._autoSaveNotesIfDirty():
+                if not self._autoSaveNotesIfDirty(force=True):
                     # Re-select the previous host row (best-effort) and abort.
                     prev_row = self.HostsTableModel.getRowForIp(previous_ip)
                     if prev_row is not None:
@@ -843,7 +910,7 @@ class View(QtCore.QObject):
             self.ui.ServicesTabWidget.setCurrentIndex(save)
             self.updateRightPanel(self.viewState.ip_clicked)
         else:
-            if not self._autoSaveNotesIfDirty() and previous_ip:
+            if not self._autoSaveNotesIfDirty(force=True) and previous_ip:
                 prev_row = self.HostsTableModel.getRowForIp(previous_ip)
                 if prev_row is not None:
                     try:

@@ -411,11 +411,14 @@ class ProcessRepository:
 
     def storeProcessRunningElapsedTime(self, processId: str, elapsed):
         session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=processId).first()
-        if proc:
-            proc.elapsed = elapsed
-            session.add(proc)
-            session.commit()
+        try:
+            proc = session.query(process).filter_by(id=processId).first()
+            if proc:
+                proc.elapsed = elapsed
+                session.add(proc)
+                session.commit()
+        finally:
+            session.close()
 
     def storeProcessPercent(self, processId: str, percent):
         """Update the percent field for a process."""

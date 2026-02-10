@@ -142,6 +142,7 @@ class AppSettings():
         self.actions.setValue('enable-scheduler-on-import', newSettings.general_enable_scheduler_on_import)
         self.actions.setValue('max-fast-processes', newSettings.general_max_fast_processes)
         self.actions.setValue('max-slow-processes', newSettings.general_max_slow_processes)
+        self.actions.setValue('notes-autosave-minutes', newSettings.general_notes_autosave_minutes)
         self.actions.endGroup()
 
         self.actions.beginGroup('BruteSettings')
@@ -214,6 +215,8 @@ class Settings():
         self.general_enable_scheduler = "True"
         self.general_max_fast_processes = "10"
         self.general_max_slow_processes = "10"
+        # Notes auto-save interval. Set to "0" to disable.
+        self.general_notes_autosave_minutes = "2"
 
         # brute
         self.brute_store_cleartext_passwords_on_exit = "True"
@@ -281,6 +284,10 @@ class Settings():
                 self.general_enable_scheduler_on_import = self.generalSettings['enable-scheduler-on-import']
                 self.general_max_fast_processes = self.generalSettings['max-fast-processes']
                 self.general_max_slow_processes = self.generalSettings['max-slow-processes']
+                self.general_notes_autosave_minutes = self.generalSettings.get(
+                    'notes-autosave-minutes',
+                    self.general_notes_autosave_minutes
+                )
 
                 # brute
                 self.brute_store_cleartext_passwords_on_exit = self.bruteSettings['store-cleartext-passwords-on-exit']
