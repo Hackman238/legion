@@ -51,21 +51,36 @@ class PythonImporter(QtCore.QThread):
         self.output = output
 
     def run(self): # it is necessary to get the qprocess to send it back to the scheduler when we're done
+        session = None
+        db_lock_acquired = False
         try:
             session = self.db.session()
             startTime = time()
             self.db.dbsemaphore.acquire() # ensure that while this thread is running, no one else can write to the DB
+            db_lock_acquired = True
             self.setPythonScript(self.pythonScript)
             db_host = session.query(hostObj).filter_by(ip = self.hostIp).first()
             self.pythonScriptObj.setDbHost(db_host)
             self.pythonScriptObj.setSession(session)
             self.pythonScriptObj.run()
             session.commit()
-            self.db.dbsemaphore.release()                               # we are done with the DB
+            if db_lock_acquired:
+                self.db.dbsemaphore.release()                               # we are done with the DB
+                db_lock_acquired = False
             self.tsLog('Finished in ' + str(time() - startTime) + ' seconds.')
             self.done.emit()
 
         except Exception as e:
             self.tsLog(e)
             raise
-            self.done.emit()
+        finally:
+            try:
+                if db_lock_acquired:
+                    self.db.dbsemaphore.release()
+            except Exception:
+                pass
+            try:
+                if session is not None:
+                    session.close()
+            except Exception:
+                pass
