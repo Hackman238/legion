@@ -18,10 +18,13 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 
 from typing import Union
 
+import time
+
 from six import u as unicode
 
 from app.timing import getTimestamp
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from db.SqliteDbAdapter import Database
 from db.entities.process import process
 from db.entities.processOutput import process_output
@@ -31,6 +34,10 @@ class ProcessRepository:
     def __init__(self, dbAdapter: Database, log):
         self.dbAdapter = dbAdapter
         self.log = log
+        # getProcesses() is called frequently via UI timers; throttle repeated DB errors.
+        self._get_processes_last_error_at = 0.0
+        self._get_processes_last_error_msg = ""
+        self._db_unavailable_until = 0.0
 
     # the showProcesses flag is used to ensure we don't display processes in the process table after we have cleared
     # them or when an existing project is opened.
@@ -40,132 +47,161 @@ class ProcessRepository:
     def getProcesses(self, filters, showProcesses: Union[str, bool] = 'noNmap', sort: str = 'desc', ncol: str = 'id',
                      status_filter=None):
         # Modified: return consistent column aliases across all query paths so UI models can rely on keys.
-        session = self.dbAdapter.session()
-        def normalize_status_filter(filter_value):
-            if not filter_value:
-                return []
-            if isinstance(filter_value, str):
-                mapping = {
-                    'All': [],
-                    'Running': ['Running', 'Waiting'],
-                    'Finished': ['Finished'],
-                    'Failed': ['Crashed', 'Cancelled', 'Killed', 'Failed'],
-                    'Queued': ['Waiting']
-                }
-                values = mapping.get(filter_value, [filter_value])
+        now = time.monotonic()
+        if self._db_unavailable_until and now < self._db_unavailable_until:
+            return []
+        session = None
+        try:
+            session = self.dbAdapter.session()
+
+            def normalize_status_filter(filter_value):
+                if not filter_value:
+                    return []
+                if isinstance(filter_value, str):
+                    mapping = {
+                        'All': [],
+                        'Running': ['Running', 'Waiting'],
+                        'Finished': ['Finished'],
+                        'Failed': ['Crashed', 'Cancelled', 'Killed', 'Failed'],
+                        'Queued': ['Waiting']
+                    }
+                    values = mapping.get(filter_value, [filter_value])
+                else:
+                    values = [value for value in filter_value if value]
+                seen = set()
+                normalized = []
+                for value in values:
+                    if value not in seen:
+                        normalized.append(value)
+                        seen.add(value)
+                return normalized
+
+            def build_status_clause(values):
+                if not values:
+                    return "", {}
+                params = {}
+                placeholders = []
+                for idx, value in enumerate(values):
+                    key = f"status_{idx}"
+                    params[key] = value
+                    placeholders.append(f":{key}")
+                clause = f" AND process.status IN ({', '.join(placeholders)})"
+                return clause, params
+
+            status_values = normalize_status_filter(status_filter)
+            status_clause, status_params = build_status_clause(status_values)
+            params = dict(status_params)
+            if showProcesses == 'noNmap':
+                base_query = (
+                    'SELECT '
+                    '0 AS progress, '
+                    'COALESCE(process.display, "False") AS display, '
+                    'COALESCE(process.elapsed, 0) AS elapsed, '
+                    'COALESCE(process.percent, "") AS percent, '
+                    'COALESCE(process.pid, "") AS pid, '
+                    'COALESCE(process.name, "") AS name, '
+                    'COALESCE(process.tabTitle, "") AS tabTitle, '
+                    'COALESCE(process.hostIp, "") AS hostIp, '
+                    'COALESCE(process.port, "") AS port, '
+                    'COALESCE(process.protocol, "") AS protocol, '
+                    'COALESCE(process.command, "") AS command, '
+                    'COALESCE(process.startTime, "") AS startTime, '
+                    'COALESCE(process.endTime, "") AS endTime, '
+                    'COALESCE(process.outputfile, "") AS outputfile, '
+                    '"" AS output, '
+                    'COALESCE(process.status, "") AS status, '
+                    'COALESCE(process.closed, "") AS closed, '
+                    'process.id AS id '
+                    'FROM process AS process '
+                    'WHERE process.closed = "False"'
+                )
+                query = text(base_query + status_clause + ' ORDER BY process.id DESC')
+                result = session.execute(query, params)
+            elif not showProcesses:
+                base_query = (
+                    'SELECT '
+                    '0 AS progress, '
+                    'process.display AS display, '
+                    'COALESCE(process.elapsed, 0) AS elapsed, '
+                    'COALESCE(process.percent, "") AS percent, '
+                    'COALESCE(process.pid, "") AS pid, '
+                    'COALESCE(process.name, "") AS name, '
+                    'COALESCE(process.tabTitle, "") AS tabTitle, '
+                    'COALESCE(process.hostIp, "") AS hostIp, '
+                    'COALESCE(process.port, "") AS port, '
+                    'COALESCE(process.protocol, "") AS protocol, '
+                    'COALESCE(process.command, "") AS command, '
+                    'COALESCE(process.startTime, "") AS startTime, '
+                    'COALESCE(process.endTime, "") AS endTime, '
+                    'COALESCE(process.outputfile, "") AS outputfile, '
+                    'COALESCE(output.output, "") AS output, '
+                    'COALESCE(process.status, "") AS status, '
+                    'COALESCE(process.closed, "") AS closed, '
+                    'process.id AS id '
+                    'FROM process AS process '
+                    'INNER JOIN process_output AS output ON process.id = output.processId '
+                    'WHERE process.display = :display AND process.closed = "False"'
+                )
+                params['display'] = str(showProcesses)
+                query = text(base_query + status_clause + ' ORDER BY process.id DESC')
+                result = session.execute(query, params)
             else:
-                values = [value for value in filter_value if value]
-            seen = set()
-            normalized = []
-            for value in values:
-                if value not in seen:
-                    normalized.append(value)
-                    seen.add(value)
-            return normalized
-
-        def build_status_clause(values):
-            if not values:
-                return "", {}
-            params = {}
-            placeholders = []
-            for idx, value in enumerate(values):
-                key = f"status_{idx}"
-                params[key] = value
-                placeholders.append(f":{key}")
-            clause = f" AND process.status IN ({', '.join(placeholders)})"
-            return clause, params
-
-        status_values = normalize_status_filter(status_filter)
-        status_clause, status_params = build_status_clause(status_values)
-        params = dict(status_params)
-        if showProcesses == 'noNmap':
-            base_query = (
-                'SELECT '
-                '0 AS progress, '
-                'COALESCE(process.display, "False") AS display, '
-                'COALESCE(process.elapsed, 0) AS elapsed, '
-                'COALESCE(process.percent, "") AS percent, '
-                'COALESCE(process.pid, "") AS pid, '
-                'COALESCE(process.name, "") AS name, '
-                'COALESCE(process.tabTitle, "") AS tabTitle, '
-                'COALESCE(process.hostIp, "") AS hostIp, '
-                'COALESCE(process.port, "") AS port, '
-                'COALESCE(process.protocol, "") AS protocol, '
-                'COALESCE(process.command, "") AS command, '
-                'COALESCE(process.startTime, "") AS startTime, '
-                'COALESCE(process.endTime, "") AS endTime, '
-                'COALESCE(process.outputfile, "") AS outputfile, '
-                '"" AS output, '
-                'COALESCE(process.status, "") AS status, '
-                'COALESCE(process.closed, "") AS closed, '
-                'process.id AS id '
-                'FROM process AS process '
-                'WHERE process.closed = "False"'
-            )
-            query = text(base_query + status_clause + ' ORDER BY process.id DESC')
-            result = session.execute(query, params)
-        elif not showProcesses:
-            base_query = (
-                'SELECT '
-                '0 AS progress, '
-                'process.display AS display, '
-                'COALESCE(process.elapsed, 0) AS elapsed, '
-                'COALESCE(process.percent, "") AS percent, '
-                'COALESCE(process.pid, "") AS pid, '
-                'COALESCE(process.name, "") AS name, '
-                'COALESCE(process.tabTitle, "") AS tabTitle, '
-                'COALESCE(process.hostIp, "") AS hostIp, '
-                'COALESCE(process.port, "") AS port, '
-                'COALESCE(process.protocol, "") AS protocol, '
-                'COALESCE(process.command, "") AS command, '
-                'COALESCE(process.startTime, "") AS startTime, '
-                'COALESCE(process.endTime, "") AS endTime, '
-                'COALESCE(process.outputfile, "") AS outputfile, '
-                'COALESCE(output.output, "") AS output, '
-                'COALESCE(process.status, "") AS status, '
-                'COALESCE(process.closed, "") AS closed, '
-                'process.id AS id '
-                'FROM process AS process '
-                'INNER JOIN process_output AS output ON process.id = output.processId '
-                'WHERE process.display = :display AND process.closed = "False"'
-            )
-            params['display'] = str(showProcesses)
-            query = text(base_query + status_clause + ' ORDER BY process.id DESC')
-            result = session.execute(query, params)
-        else:
-            base_query = (
-                'SELECT '
-                '0 AS progress, '
-                'process.display AS display, '
-                'COALESCE(process.elapsed, 0) AS elapsed, '
-                'COALESCE(process.percent, "") AS percent, '
-                'COALESCE(process.pid, "") AS pid, '
-                'COALESCE(process.name, "") AS name, '
-                'COALESCE(process.tabTitle, "") AS tabTitle, '
-                'COALESCE(process.hostIp, "") AS hostIp, '
-                'COALESCE(process.port, "") AS port, '
-                'COALESCE(process.protocol, "") AS protocol, '
-                'COALESCE(process.command, "") AS command, '
-                'COALESCE(process.startTime, "") AS startTime, '
-                'COALESCE(process.endTime, "") AS endTime, '
-                'COALESCE(process.outputfile, "") AS outputfile, '
-                'COALESCE(output.output, "") AS output, '
-                'COALESCE(process.status, "") AS status, '
-                'COALESCE(process.closed, "") AS closed, '
-                'process.id AS id '
-                'FROM process AS process '
-                'LEFT JOIN process_output AS output ON process.id = output.processId '
-                'WHERE process.display=:display'
-            )
-            params['display'] = str(showProcesses)
-            order_clause = f' ORDER BY {ncol} {sort}'
-            query = text(base_query + status_clause + order_clause)
-            result = session.execute(query, params)
-        rows = result.fetchall()
-        keys = result.keys()
-        processes = [dict(zip(keys, row)) for row in rows]
-        session.close()
-        return processes
+                base_query = (
+                    'SELECT '
+                    '0 AS progress, '
+                    'process.display AS display, '
+                    'COALESCE(process.elapsed, 0) AS elapsed, '
+                    'COALESCE(process.percent, "") AS percent, '
+                    'COALESCE(process.pid, "") AS pid, '
+                    'COALESCE(process.name, "") AS name, '
+                    'COALESCE(process.tabTitle, "") AS tabTitle, '
+                    'COALESCE(process.hostIp, "") AS hostIp, '
+                    'COALESCE(process.port, "") AS port, '
+                    'COALESCE(process.protocol, "") AS protocol, '
+                    'COALESCE(process.command, "") AS command, '
+                    'COALESCE(process.startTime, "") AS startTime, '
+                    'COALESCE(process.endTime, "") AS endTime, '
+                    'COALESCE(process.outputfile, "") AS outputfile, '
+                    'COALESCE(output.output, "") AS output, '
+                    'COALESCE(process.status, "") AS status, '
+                    'COALESCE(process.closed, "") AS closed, '
+                    'process.id AS id '
+                    'FROM process AS process '
+                    'LEFT JOIN process_output AS output ON process.id = output.processId '
+                    'WHERE process.display=:display'
+                )
+                params['display'] = str(showProcesses)
+                order_clause = f' ORDER BY {ncol} {sort}'
+                query = text(base_query + status_clause + order_clause)
+                result = session.execute(query, params)
+            rows = result.fetchall()
+            keys = result.keys()
+            return [dict(zip(keys, row)) for row in rows]
+        except OperationalError as exc:
+            msg = str(exc)
+            now = time.monotonic()
+            # Back off briefly to avoid a tight exception loop when the DB is unavailable.
+            self._db_unavailable_until = max(self._db_unavailable_until, now + 5.0)
+            if (now - self._get_processes_last_error_at) > 30.0 or msg != self._get_processes_last_error_msg:
+                # Avoid full tracebacks for expected DB availability issues.
+                self.log.warning(f"Failed to fetch processes from DB: {exc}")
+                self._get_processes_last_error_at = now
+                self._get_processes_last_error_msg = msg
+            return []
+        except Exception as exc:
+            msg = str(exc)
+            now = time.monotonic()
+            if (now - self._get_processes_last_error_at) > 30.0 or msg != self._get_processes_last_error_msg:
+                self.log.exception("Failed to fetch processes from DB")
+                self._get_processes_last_error_at = now
+                self._get_processes_last_error_msg = msg
+            return []
+        finally:
+            try:
+                if session is not None:
+                    session.close()
+            except Exception:
+                pass
 
     def storeProcess(self, proc):
         session = self.dbAdapter.session()
