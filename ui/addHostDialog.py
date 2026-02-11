@@ -89,6 +89,24 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.chkEasyIncludeUdp.setToolTip('Easy mode: Also scan UDP (-sU). Disabled by default for speed.')
         self.chkEasyIncludeUdp.setChecked(False)
 
+        self.chkBroadDiscovery = QtWidgets.QCheckBox(self)
+        self.chkBroadDiscovery.setText('Broad RFC1918 Discovery (Balanced)')
+        self.chkBroadDiscovery.setToolTip(
+            'Large private CIDR discovery: probe sampled IPs per subnet, then expand only active subnets.'
+        )
+        self.chkBroadDiscovery.setChecked(False)
+
+        self.lblBroadSampleSize = QtWidgets.QLabel(self)
+        self.lblBroadSampleSize.setText('Sample IPs/subnet')
+        self.lblBroadSampleSize.setEnabled(False)
+        self.cmbBroadSampleSize = QtWidgets.QComboBox(self)
+        self.cmbBroadSampleSize.addItems(['16', '32', '64', '128'])
+        self.cmbBroadSampleSize.setCurrentText('32')
+        self.cmbBroadSampleSize.setToolTip(
+            'Number of probe IPs per subnet during broad discovery canary phase.'
+        )
+        self.cmbBroadSampleSize.setEnabled(False)
+
         self.validationLabel = QtWidgets.QLabel(self)
         self.validationLabel.setText('Invalid input. Please try again!')
         self.validationLabel.setStyleSheet('QLabel { color: red }')
@@ -115,6 +133,7 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.grpEasyModeWidgets = QtWidgets.QVBoxLayout()
         self.grpEasyModeWidgetsRow1 = QtWidgets.QHBoxLayout()
         self.grpEasyModeWidgetsRow2 = QtWidgets.QHBoxLayout()
+        self.grpEasyModeWidgetsRow3 = QtWidgets.QHBoxLayout()
         self.grpEasyMode.setTitle('Easy Mode Options')
         self.chkDiscovery = QtWidgets.QCheckBox(self)
         self.chkDiscovery.setText('Run nmap host discovery')
@@ -128,8 +147,12 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.grpEasyModeWidgetsRow1.addWidget(self.chkNmapStaging)
         self.grpEasyModeWidgetsRow2.addWidget(self.chkEasyStealth)
         self.grpEasyModeWidgetsRow2.addWidget(self.chkEasyIncludeUdp)
+        self.grpEasyModeWidgetsRow3.addWidget(self.chkBroadDiscovery)
+        self.grpEasyModeWidgetsRow3.addWidget(self.lblBroadSampleSize)
+        self.grpEasyModeWidgetsRow3.addWidget(self.cmbBroadSampleSize)
         self.grpEasyModeWidgets.addLayout(self.grpEasyModeWidgetsRow1)
         self.grpEasyModeWidgets.addLayout(self.grpEasyModeWidgetsRow2)
+        self.grpEasyModeWidgets.addLayout(self.grpEasyModeWidgetsRow3)
         self.grpEasyMode.setLayout(self.grpEasyModeWidgets)
         self.grpEasyMode.setEnabled(True)
 
@@ -346,12 +369,49 @@ class AddHostsDialog(QtWidgets.QDialog):
         self.setLayout(self.formLayout)
 
 
-        easyModeControls = [self.grpEasyMode, self.chkEasyStealth, self.chkEasyIncludeUdp]
+        def _toggle_broad_discovery_controls(checked: bool):
+            self.lblBroadSampleSize.setEnabled(bool(checked))
+            self.cmbBroadSampleSize.setEnabled(bool(checked))
+            broad_scope_active = bool(checked) and self.rdoModeOptEasy.isChecked()
+            # Broad RFC1918 mode auto-selects scope, so manual host entry is disabled.
+            self.lblHost.setEnabled(not broad_scope_active)
+            self.txtHostList.setEnabled(not broad_scope_active)
+            self.lblHostExample.setEnabled(not broad_scope_active)
+            if broad_scope_active:
+                self.txtHostList.setPlaceholderText('Using RFC1918 defaults: 10/8, 172.16/12, 192.168/16')
+            else:
+                self.txtHostList.setPlaceholderText('')
+            # Broad mode is discovery-focused; keep staged scan disabled to avoid noisy bulk port scans.
+            if checked:
+                self.chkDiscovery.setChecked(True)
+                self.chkDiscovery.setEnabled(False)
+                self.chkNmapStaging.setChecked(False)
+                self.chkNmapStaging.setEnabled(False)
+            else:
+                self.chkDiscovery.setEnabled(True)
+                self.chkNmapStaging.setEnabled(True)
+
+        self.chkBroadDiscovery.toggled.connect(_toggle_broad_discovery_controls)
+
+        easyModeControls = [
+            self.grpEasyMode,
+            self.chkEasyStealth,
+            self.chkEasyIncludeUdp,
+            self.chkBroadDiscovery,
+            self.lblBroadSampleSize,
+            self.cmbBroadSampleSize,
+        ]
         hardModeControls = [self.grpScanOpt, self.grpScanOptPing, self.scanOptCustomGroup]
 
-        self.rdoModeOptHard.clicked.connect(lambda: flipState(targetState = self.rdoModeOptHard.isChecked(),
-                                                              widgetsToFlipOn = hardModeControls,
-                                                              widgetsToFlipOff = easyModeControls))
-        self.rdoModeOptEasy.clicked.connect(lambda: flipState(targetState = self.rdoModeOptEasy.isChecked(),
-                                                              widgetsToFlipOn = easyModeControls,
-                                                              widgetsToFlipOff = hardModeControls))
+        self.rdoModeOptHard.clicked.connect(lambda *_: (
+            flipState(targetState = self.rdoModeOptHard.isChecked(),
+                      widgetsToFlipOn = hardModeControls,
+                      widgetsToFlipOff = easyModeControls),
+            _toggle_broad_discovery_controls(self.chkBroadDiscovery.isChecked())
+        ))
+        self.rdoModeOptEasy.clicked.connect(lambda *_: (
+            flipState(targetState = self.rdoModeOptEasy.isChecked(),
+                      widgetsToFlipOn = easyModeControls,
+                      widgetsToFlipOff = hardModeControls),
+            _toggle_broad_discovery_controls(self.chkBroadDiscovery.isChecked())
+        ))

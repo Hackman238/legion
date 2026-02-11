@@ -1,5 +1,11 @@
 LEGION 0.5.2
 
+* Easy mode host discovery now defaults to `-Pn` so hosts that block ping probes are still scanned/imported.
+* Easy mode adds explicit `Stealth` and `Include UDP` toggles, with stealth behavior tied to `-sS` and fragmentation (`-f`) only when stealth is enabled.
+* Easy mode adds `Broad RFC1918 Discovery (Balanced)` with selectable canary sample sizes (`16`, `32`, `64`, `128`) and automatic RFC1918 target defaults (`10/8`, `172.16/12`, `192.168/16`) when broad mode is selected.
+* Broad discovery now runs in controlled canary/full chunks to provide progressive imports and avoid sparse, long-gap updates during very large subnet sweeps.
+* Hard mode defaults the Port Scan Options selection to `TCP SYN` (`-sS`).
+* Improved process/database hardening to reduce shutdown/load edge-case crashes (including descriptor pressure and transient SQLite operational failures).
 * Added a dedicated Responder / Relay tab for launching Responder or NTLMRelay sessions with live output and easy stop/start controls.
 * Captured hashes and relayed credentials are now parsed and stored in-project, with a new results table to review activity per host.
 * Hardened SQLite operations with integrity checks, consistent backups, and a standalone repair script to recover corrupted project files.

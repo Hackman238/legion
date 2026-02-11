@@ -7,6 +7,13 @@ This is the new home of "Legion". A major release is out! After upgrading, visit
 - Captured hashes and relayed credentials are automatically parsed, stored, and displayed in a new results table per project.
 - SQLite integrity checks, safe backups, and repair tooling keep projects healthy; smoke tests now cover import, save/load, and credential workflows.
 
+**Recent additions in main (post-0.5.2)**
+- Easy mode host discovery now includes `-Pn` by default, improving discovery/import for hosts that block ping probes.
+- Easy mode now exposes `Stealth` (`-sS`) and `Include UDP` toggles directly in the Add Hosts dialog.
+- New Easy mode `Broad RFC1918 Discovery (Balanced)` with selectable canary sample sizes (`16/32/64/128`) and automatic defaults for `10/8`, `172.16/12`, and `192.168/16` when enabled.
+- Broad RFC1918 discovery now runs canary/full scans in controlled chunks for more frequent incremental imports on large ranges.
+- Additional process/DB hardening improves resilience against descriptor pressure and transient SQLite open failures.
+
 Having [screenshot issues](#screenshot-issues)?
 
 ##
@@ -33,6 +40,7 @@ penetration testing framework that aids in discovery, reconnaissance, and exploi
 * Integrated screenshotting: Take, view, and manage screenshots of web services directly from the UI, with support for EyeWitness and advanced screenshot management.
 * Dedicated Responder / Relay workspace to run Responder or NTLMRelay and automatically catalogue captured hashes for each project.
 * Optional IPv6 scanning support with automatic fallback when native IPv6 connectivity is unavailable.
+* Easy mode supports explicit `Stealth` (`-sS`) and `Include UDP` options, with broad private-range discovery via `Broad RFC1918 Discovery (Balanced)` for large internal environments.
 * Smarter project restores: tool tabs return exactly as you left them, Tools listings deduplicate tidily, missing screenshots display a helpful placeholder instead of blocking dialogs, the process table shows only meaningful columns, and tool tabs now offer a one-click Save option. Automated screenshots prefer hostnames when available, falling back to IP when needed.
 * Realtime auto-saving of project results and tasks.
 * Numerous quality of life improvements: UI enhancements, improved error handling, more robust project export (sqlite abd json), and expanded configurability.
