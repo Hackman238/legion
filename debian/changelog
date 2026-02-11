@@ -1,11 +1,19 @@
-legion (0.5.1-0) UNRELEASED; urgency=medium
+legion (0.5.2-0) UNRELEASED; urgency=medium
 
   * Standardize OS detection and icons across the Hosts/OS tabs with a shared classifier.
-  * Add the new OS tab and per-status process filters/run-time column for better workflow visibility.
+  * Add the OS tab and per-status process filters/run-time column for better workflow visibility.
   * Fix manual port add/delete routines so they work for hostname entries.
   * Refresh snmpbrute.py for modern Python to resolve bytes vs str errors.
+  * Add a dedicated Responder / Relay tab with live output and stop/start controls.
+  * Parse/store captured hashes and relayed credentials in-project with per-host review support.
+  * Harden SQLite operations with integrity checks, backups, and repair tooling.
+  * Expand smoke tests for import, save/load, and credential workflows (including headless Qt usage in CI).
+  * Easy mode now defaults host discovery to -Pn and adds Stealth (-sS) and Include UDP toggles.
+  * Add Broad RFC1918 Discovery (Balanced) with selectable sample sizes (16/32/64/128), automatic RFC1918 defaults (10/8, 172.16/12, 192.168/16), and controlled canary/full chunking for progressive imports on large ranges.
+  * Default Hard mode Port Scan Option to TCP SYN (-sS).
+  * Improve process/database hardening for shutdown/load edge cases, descriptor pressure, and transient SQLite open failures.
 
- -- Shane Scott <sscott@shanewilliamscott.com>  Fri, 10 Oct 2025 19:45:00 -0500
+ -- Shane Scott <sscott@shanewilliamscott.com>  Wed, 11 Feb 2026 10:12:00 -0600
 
 legion (0.5.0-0) UNRELEASED; urgency=medium
 
