@@ -22,6 +22,8 @@ import tempfile
 import os
 import socket
 import re
+import ipaddress
+import xml.etree.ElementTree as ET
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
 from PyQt6 import sip, QtWidgets
 
@@ -580,9 +582,390 @@ class Controller:
         clipboard = QtWidgets.QApplication.clipboard()
         clipboard.setText(data) # Assuming item.text() contains the IP or hostname
 
+    @staticmethod
+    def _parse_private_ipv4_network(target_hosts: str):
+        target = (target_hosts or "").strip()
+        # Broad-discovery mode is intended for CIDR subnet inputs, not single hosts/ranges.
+        if "/" not in target:
+            return None
+        try:
+            network = ipaddress.ip_network(target, strict=False)
+        except ValueError:
+            return None
+        if network.version != 4:
+            return None
+        if not network.is_private:
+            return None
+        if int(network.num_addresses) <= 1:
+            return None
+        return network
+
+    @staticmethod
+    def _sample_ipv4_targets(network: ipaddress.IPv4Network, sample_size: int):
+        """
+        Return deterministic, evenly distributed probe IPs for a subnet.
+        """
+        sample_size = max(1, int(sample_size))
+        first = int(network.network_address)
+        last = int(network.broadcast_address)
+        if network.num_addresses > 2:
+            start = first + 1
+            end = last - 1
+        else:
+            # /31 and /32 have no broadcast semantics for practical probing.
+            start = first
+            end = last
+        if end < start:
+            return []
+        usable = (end - start) + 1
+        count = min(sample_size, usable)
+        if count <= 0:
+            return []
+        if count == 1:
+            return [str(ipaddress.ip_address(start))]
+        seen = set()
+        targets = []
+        for i in range(count):
+            offset = (i * usable) // count
+            candidate = start + offset
+            if candidate > end:
+                candidate = end
+            if candidate not in seen:
+                seen.add(candidate)
+                targets.append(str(ipaddress.ip_address(candidate)))
+        return targets
+
+    @staticmethod
+    def _extract_up_ips_from_nmap_xml(xml_path: str):
+        up_ips = set()
+        if not xml_path or not os.path.exists(xml_path):
+            return up_ips
+        try:
+            root = ET.parse(xml_path).getroot()
+        except Exception as exc:
+            log.warning(f"Failed to parse nmap XML '{xml_path}': {exc}")
+            return up_ips
+        for host in root.findall("host"):
+            status = host.find("status")
+            if status is None or status.get("state") != "up":
+                continue
+            for address in host.findall("address"):
+                addr = (address.get("addr") or "").strip()
+                addr_type = (address.get("addrtype") or "").strip().lower()
+                if not addr:
+                    continue
+                if addr_type in ("ipv4", "ipv6"):
+                    up_ips.add(addr)
+                    break
+        return up_ips
+
+    @staticmethod
+    def _balanced_discovery_base_tokens(nmap_speed, resolve_hostnames=False):
+        try:
+            timing = int(nmap_speed)
+        except Exception:
+            timing = 3
+        # Keep the profile semi-stealth and practical by clamping extremes.
+        timing = max(2, min(timing, 4))
+        tokens = [
+            "-sn",
+            "-R" if resolve_hostnames else "-n",
+            "-PE",
+            "-PP",
+            "-PS22,80,443,445,3389",
+            "-PA80,443",
+            "--max-retries", "1",
+            "--host-timeout", "5s",
+            "--randomize-hosts",
+            f"-T{timing}",
+        ]
+        return tokens
+
+    @staticmethod
+    def _chunk_targets(targets, max_chunks=24, min_chunk_size=128):
+        if not targets:
+            return []
+        try:
+            max_chunks = max(1, int(max_chunks))
+        except Exception:
+            max_chunks = 24
+        try:
+            min_chunk_size = max(1, int(min_chunk_size))
+        except Exception:
+            min_chunk_size = 128
+        total = len(targets)
+        chunk_size = max(min_chunk_size, (total + max_chunks - 1) // max_chunks)
+        return [targets[i:i + chunk_size] for i in range(0, total, chunk_size)]
+
+    def _run_broad_rfc1918_discovery(self, target_hosts, nmap_speed, nmap_options, sample_probe_size, tool_output_dir):
+        network = self._parse_private_ipv4_network(str(target_hosts))
+        if network is None:
+            return False
+
+        try:
+            sample_probe_size = int(sample_probe_size)
+        except Exception:
+            sample_probe_size = 32
+        if sample_probe_size not in (16, 32, 64, 128):
+            sample_probe_size = 32
+
+        # Use /24 canary units for moderate scopes; step up to /20 for very large ranges.
+        total_24_units = 1 if network.prefixlen >= 24 else (2 ** (24 - network.prefixlen))
+        unit_prefix = 24 if total_24_units <= 2048 else 20
+        if network.prefixlen >= unit_prefix:
+            discovery_units = [network]
+        else:
+            discovery_units = list(network.subnets(new_prefix=unit_prefix))
+        if not discovery_units:
+            return False
+
+        resolve_hostnames = any(str(opt).strip() == "-R" for opt in (nmap_options or []))
+        base_tokens = self._balanced_discovery_base_tokens(nmap_speed, resolve_hostnames=resolve_hostnames)
+
+        active_units = set()
+        units_prefix = discovery_units[0].prefixlen if all(
+            u.prefixlen == discovery_units[0].prefixlen for u in discovery_units
+        ) else None
+        units_lookup = set(discovery_units)
+
+        unit_targets = []
+        for subnet in discovery_units:
+            unit_targets.extend(self._sample_ipv4_targets(subnet, sample_probe_size))
+        if not unit_targets:
+            log.info(f"Broad discovery skipped for {network}: no probe targets generated.")
+            return True
+
+        # Dedupe while preserving order.
+        seen_targets = set()
+        canary_targets = []
+        for target in unit_targets:
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            canary_targets.append(target)
+        stats = {"units_total": len(discovery_units), "units_active": 0}
+
+        log.info(
+            f"Broad RFC1918 discovery started for {network} "
+            f"(unit=/{unit_prefix}, sample={sample_probe_size}, "
+            f"units={len(discovery_units)}, canary-targets={len(canary_targets)})."
+        )
+        try:
+            self.view.ui.statusbar.showMessage(
+                f"Broad discovery: probing {len(discovery_units)} subnets (sample {sample_probe_size})...",
+                5000
+            )
+        except Exception:
+            pass
+
+        def map_ip_to_unit(ip_str: str):
+            if units_prefix is not None:
+                try:
+                    candidate = ipaddress.ip_network(f"{ip_str}/{units_prefix}", strict=False)
+                except ValueError:
+                    return None
+                if candidate in units_lookup:
+                    return candidate
+                return None
+            try:
+                ip_addr = ipaddress.ip_address(ip_str)
+            except ValueError:
+                return None
+            for subnet in discovery_units:
+                if ip_addr in subnet:
+                    return subnet
+            return None
+
+        canary_chunks = self._chunk_targets(canary_targets, max_chunks=24, min_chunk_size=1024)
+        if not canary_chunks:
+            log.warning(f"Broad discovery skipped for {network}: no canary chunks generated.")
+            return True
+
+        def write_chunk_target_file(items, label, phase, batch_no, total_batches):
+            path = normalize_path(
+                os.path.join(tool_output_dir, f"{getTimestamp()}-{phase}-targets-{batch_no:03d}.txt")
+            )
+            try:
+                with open(path, "w", encoding="utf-8") as target_file:
+                    target_file.write("\n".join(str(item) for item in items))
+                    target_file.write("\n")
+                return path
+            except OSError as exc:
+                log.warning(
+                    f"Failed to create broad discovery {phase} target list "
+                    f"({batch_no}/{total_batches}, {label}): {exc}"
+                )
+                return None
+
+        def remove_file_safely(path):
+            if not path:
+                return
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                log.debug(f"Unable to remove temporary broad discovery file: {path}")
+
+        def finish_broad_discovery(full_batches=0):
+            active_count = len(active_units)
+            stats["units_active"] = active_count
+            message = (
+                f"Broad discovery complete: {active_count}/{stats['units_total']} subnets active "
+                f"({full_batches} full-scan batch(es))."
+            )
+            log.info(message)
+            try:
+                self.view.ui.statusbar.showMessage(message, 7000)
+            except Exception:
+                pass
+
+        def launch_full_discovery():
+            if not active_units:
+                log.info(f"Broad discovery found no active subnets in {network}.")
+                finish_broad_discovery(full_batches=0)
+                return
+
+            active_list = sorted(active_units, key=lambda n: int(n.network_address))
+            min_full_chunk_size = 64 if unit_prefix <= 20 else 32
+            full_chunks = self._chunk_targets(
+                [str(subnet) for subnet in active_list],
+                max_chunks=24,
+                min_chunk_size=min_full_chunk_size
+            )
+            total_full_batches = len(full_chunks)
+            if total_full_batches <= 0:
+                finish_broad_discovery(full_batches=0)
+                return
+
+            def run_full_chunk(index):
+                if index >= total_full_batches:
+                    finish_broad_discovery(full_batches=total_full_batches)
+                    return
+
+                batch_no = index + 1
+                batch_targets = full_chunks[index]
+                target_file = write_chunk_target_file(
+                    batch_targets, str(network), "broad-full", batch_no, total_full_batches
+                )
+                if not target_file:
+                    run_full_chunk(index + 1)
+                    return
+
+                outputfile = normalize_path(
+                    os.path.join(tool_output_dir, f"{getTimestamp()}-broad-full-{batch_no:03d}")
+                )
+                command_tokens = [
+                    "nmap", *base_tokens, "-iL", target_file,
+                    "--stats-every", "10s", "-oA", outputfile
+                ]
+                command = " ".join(token for token in command_tokens if token)
+                try:
+                    self.view.ui.statusbar.showMessage(
+                        f"Broad discovery full scan {batch_no}/{total_full_batches} for {network}...",
+                        4000
+                    )
+                except Exception:
+                    pass
+
+                def on_full_finished(proc, *_args, chunk_file=target_file, next_index=index + 1):
+                    remove_file_safely(chunk_file)
+                    if proc.exitCode() != 0:
+                        log.warning(
+                            f"Broad discovery full batch {batch_no}/{total_full_batches} "
+                            f"exited with code {proc.exitCode()} for {network}."
+                        )
+                    run_full_chunk(next_index)
+
+                self.runCommand(
+                    "nmap",
+                    f"nmap (broad full {batch_no}/{total_full_batches})",
+                    str(network),
+                    "",
+                    "",
+                    command,
+                    getTimestamp(True),
+                    outputfile,
+                    self.view.createNewTabForHost(
+                        str(network),
+                        f"nmap (broad full {batch_no}/{total_full_batches})",
+                        True
+                    ),
+                    completion_handler=on_full_finished,
+                )
+
+            run_full_chunk(0)
+
+        total_canary_batches = len(canary_chunks)
+
+        def run_canary_chunk(index):
+            if index >= total_canary_batches:
+                launch_full_discovery()
+                return
+
+            batch_no = index + 1
+            batch_targets = canary_chunks[index]
+            target_file = write_chunk_target_file(
+                batch_targets, str(network), "broad-canary", batch_no, total_canary_batches
+            )
+            if not target_file:
+                run_canary_chunk(index + 1)
+                return
+
+            outputfile = normalize_path(
+                os.path.join(tool_output_dir, f"{getTimestamp()}-broad-canary-{batch_no:03d}")
+            )
+            canary_command_tokens = [
+                "nmap", *base_tokens, "-iL", target_file,
+                "--stats-every", "10s", "-oA", outputfile
+            ]
+            canary_command = " ".join(token for token in canary_command_tokens if token)
+            try:
+                self.view.ui.statusbar.showMessage(
+                    f"Broad discovery canary {batch_no}/{total_canary_batches} for {network}...",
+                    4000
+                )
+            except Exception:
+                pass
+
+            def on_canary_finished(proc, *_args, chunk_file=target_file, next_index=index + 1):
+                xml_path = f"{proc.outputfile}.xml"
+                for up_ip in self._extract_up_ips_from_nmap_xml(xml_path):
+                    subnet = map_ip_to_unit(up_ip)
+                    if subnet is not None:
+                        active_units.add(subnet)
+                remove_file_safely(chunk_file)
+                if proc.exitCode() != 0:
+                    log.warning(
+                        f"Broad discovery canary batch {batch_no}/{total_canary_batches} "
+                        f"exited with code {proc.exitCode()} for {network}."
+                    )
+                run_canary_chunk(next_index)
+
+            self.runCommand(
+                "nmap",
+                f"nmap (broad canary {batch_no}/{total_canary_batches})",
+                str(network),
+                "",
+                "",
+                canary_command,
+                getTimestamp(True),
+                outputfile,
+                self.view.createNewTabForHost(
+                    str(network),
+                    f"nmap (broad canary {batch_no}/{total_canary_batches})",
+                    True
+                ),
+                completion_handler=on_canary_finished,
+            )
+
+        run_canary_chunk(0)
+
+        return True
+
     @timing
     def addHosts(self, targetHosts, runHostDiscovery, runStagedNmap, nmapSpeed, scanMode,
-                 nmapOptions=None, enableIPv6=False, easyStealth=False, includeUDP=False):
+                 nmapOptions=None, enableIPv6=False, easyStealth=False, includeUDP=False,
+                 broadRFC1918=False, broadSampleSize=32):
         if targetHosts == '':
             log.info('No hosts entered..')
             return
@@ -635,6 +1018,21 @@ class Controller:
             return
 
         if scanMode == 'Easy':
+            if broadRFC1918:
+                if enableIPv6:
+                    log.info("Broad RFC1918 discovery is IPv4-only; ignoring IPv6 toggle for this run.")
+                if runStagedNmap:
+                    log.info("Broad RFC1918 discovery selected: staged nmap is disabled for this run.")
+                if self._run_broad_rfc1918_discovery(
+                    target_hosts_str,
+                    nmapSpeed,
+                    nmapOptions,
+                    broadSampleSize,
+                    tool_output_dir,
+                ):
+                    return
+                log.info("Broad RFC1918 discovery requested but target is not a private IPv4 CIDR; falling back to normal Easy mode.")
+
             if runStagedNmap:
                 self.runStagedNmap(
                     target_hosts_str,
@@ -1401,6 +1799,7 @@ class Controller:
         staged_stealth=None,
         staged_include_udp=True,
         staged_version_light=False,
+        completion_handler=None,
     ):
         def handleProcStop(*vargs):
             try:
@@ -1505,6 +1904,13 @@ class Controller:
         qProcess.sigHydra.connect(self.handleHydraFindings)
         qProcess.finished.connect(lambda: self.processFinished(qProcess))
         qProcess.errorOccurred.connect(lambda error, proc=qProcess: self.processCrashed(proc, error))
+        if completion_handler:
+            def _safe_completion_callback(exitCode, exitStatus, proc=qProcess, cb=completion_handler):
+                try:
+                    cb(proc, exitCode, exitStatus)
+                except Exception:
+                    log.exception("runCommand completion handler failed")
+            qProcess.finished.connect(_safe_completion_callback)
         log.info(f"runCommand called for stage {str(stage)}")
 
         if stage > 0 and stage < 6:  # if this is a staged nmap, launch the next stage

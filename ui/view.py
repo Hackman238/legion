@@ -665,17 +665,32 @@ class View(QtCore.QObject):
         hostListStr = str(self.adddialog.txtHostList.toPlainText()).replace(';',' ')
         nmapOptions = []
         scanMode = 'Unset'
+        broad_discovery_selected = self.adddialog.chkBroadDiscovery.isChecked()
+        default_rfc1918_targets = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']
+        input_is_valid = broad_discovery_selected or validateNmapInput(hostListStr)
 
-        if validateNmapInput(hostListStr):
+        if input_is_valid:
             self.adddialog.close()
-            hostList = []
-            splitTypes = [';', ' ', '\n']
+            if broad_discovery_selected:
+                hostList = list(default_rfc1918_targets)
+                log.info(
+                    'Broad RFC1918 discovery selected. '
+                    f'Using defaults: {", ".join(default_rfc1918_targets)}'
+                )
+                self.ui.statusbar.showMessage(
+                    'Broad discovery targets defaulted to RFC1918 ranges '
+                    '(10/8, 172.16/12, 192.168/16).',
+                    msecs=6000
+                )
+            else:
+                hostList = []
+                splitTypes = [';', ' ', '\n']
 
-            for splitType in splitTypes:
-                hostListStr = hostListStr.replace(splitType, ';')
+                for splitType in splitTypes:
+                    hostListStr = hostListStr.replace(splitType, ';')
 
-            hostList = hostListStr.split(';')
-            hostList = [hostEntry for hostEntry in hostList if len(hostEntry) > 0]
+                hostList = hostListStr.split(';')
+                hostList = [hostEntry for hostEntry in hostList if len(hostEntry) > 0]
 
             hostAddOptionControls = [self.adddialog.rdoScanOptTcpConnect, self.adddialog.rdoScanOptObfuscated,
                                      self.adddialog.rdoScanOptTcpSyn, self.adddialog.rdoScanOptFin,
@@ -708,6 +723,10 @@ class View(QtCore.QObject):
                 nmapOptions.append('-n')
 
             for hostListEntry in hostList:
+                try:
+                    broad_sample_size = int(self.adddialog.cmbBroadSampleSize.currentText())
+                except Exception:
+                    broad_sample_size = 32
                 self.controller.addHosts(targetHosts=hostListEntry,
                                          runHostDiscovery=self.adddialog.chkDiscovery.isChecked(),
                                          runStagedNmap=self.adddialog.chkNmapStaging.isChecked(),
@@ -716,7 +735,9 @@ class View(QtCore.QObject):
                                          nmapOptions=nmapOptions,
                                          enableIPv6=self.adddialog.chkEnableIPv6.isChecked(),
                                          easyStealth=self.adddialog.chkEasyStealth.isChecked(),
-                                         includeUDP=self.adddialog.chkEasyIncludeUdp.isChecked())
+                                         includeUDP=self.adddialog.chkEasyIncludeUdp.isChecked(),
+                                         broadRFC1918=broad_discovery_selected,
+                                         broadSampleSize=broad_sample_size)
             self.adddialog.cmdAddButton.clicked.disconnect()   # disconnect all the signals from that button
         else:
             self.adddialog.spacer.changeSize(0,0)
