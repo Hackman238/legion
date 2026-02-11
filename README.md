@@ -2,12 +2,10 @@
 
 This is the new home of "Legion". A major release is out! After upgrading, visit **Help → Config** to review tool paths (Responder, NTLMRelay, etc.) and adjust any customized settings.
 
-**Latest release: 0.5.2 (November 2025)**
+**Latest release: 0.5.2**
 - Dedicated Responder / Relay tab for launching Responder or NTLMRelay sessions with live output and one-click stop/start.
 - Captured hashes and relayed credentials are automatically parsed, stored, and displayed in a new results table per project.
 - SQLite integrity checks, safe backups, and repair tooling keep projects healthy; smoke tests now cover import, save/load, and credential workflows.
-
-**Recent additions in main (post-0.5.2)**
 - Easy mode host discovery now includes `-Pn` by default, improving discovery/import for hosts that block ping probes.
 - Easy mode now exposes `Stealth` (`-sS`) and `Include UDP` toggles directly in the Add Hosts dialog.
 - New Easy mode `Broad RFC1918 Discovery (Balanced)` with selectable canary sample sizes (`16/32/64/128`) and automatic defaults for `10/8`, `172.16/12`, and `192.168/16` when enabled.
