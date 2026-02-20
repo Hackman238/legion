@@ -22,20 +22,36 @@ def defaultUserAgent() -> str:
     return "Mozilla/5.0 (X11; Linux x86_64; rv:22.0) Gecko/20100101 Firefox/22.0 Iceweasel/22.0"
 
 
+def _is_certificate_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    cert_tokens = [
+        "certificate verify failed",
+        "self-signed certificate",
+        "unknown ca",
+        "certificate has expired",
+        "hostname mismatch",
+        "certificate",
+    ]
+    return any(token in lowered for token in cert_tokens)
+
+
 def isHttps(host, port) -> bool:
     from urllib.error import URLError
     try:
         from urllib.request import Request, urlopen
         headers = {"User-Agent": defaultUserAgent()}
         req = Request(f"https://{host}:{port}", headers=headers)
-        urlopen(req, timeout=5).read()
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        urlopen(req, timeout=5, context=context).read(1)
         return True
     except URLError as e:
-        reason = str(e.reason)
-        print("urlerror" + reason)
-        if 'Forbidden' in reason or 'certificate verify failed' in reason:
+        reason = str(getattr(e, "reason", e))
+        if 'Forbidden' in reason or _is_certificate_error(reason):
             return True
         return False
     except ssl.CertificateError:
-        print("ssl")
         return True
+    except ssl.SSLError as e:
+        return _is_certificate_error(str(e))

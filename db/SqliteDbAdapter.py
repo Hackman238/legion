@@ -157,6 +157,17 @@ class Database:
         if destination_path.parent and not destination_path.parent.exists():
             destination_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Backing up a SQLite file onto itself can hang indefinitely.
+        # Treat same-path backup as a no-op.
+        try:
+            src_norm = Path(self.name).resolve()
+            dst_norm = destination_path.resolve()
+        except Exception:
+            src_norm = Path(str(self.name or "")).absolute()
+            dst_norm = destination_path.absolute()
+        if src_norm == dst_norm:
+            return str(destination_path)
+
         try:
             with sqlite3.connect(f"file:{self.name}?mode=ro", uri=True) as src, \
                     sqlite3.connect(str(destination_path)) as dst:

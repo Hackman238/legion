@@ -17,6 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 import unittest
 from unittest.mock import patch, MagicMock
+from urllib.error import URLError
 
 
 class isHttpsTest(unittest.TestCase):
@@ -29,3 +30,15 @@ class isHttpsTest(unittest.TestCase):
             urlopen.return_value.read.return_value = mockOpenedUrl
             self.assertTrue(isHttps("some-ip", "8080"))
             Request.assert_called_with("https://some-ip:8080", headers={"User-Agent": expectedUserAgent})
+
+    def test_isHttps_GivenCertVerifyError_ReturnsTrue(self):
+        with patch("urllib.request.urlopen", side_effect=URLError("certificate verify failed")), \
+                patch("urllib.request.Request"):
+            from app.httputil.isHttps import isHttps
+            self.assertTrue(isHttps("some-ip", "443"))
+
+    def test_isHttps_GivenWrongVersionError_ReturnsFalse(self):
+        with patch("urllib.request.urlopen", side_effect=URLError("wrong version number")), \
+                patch("urllib.request.Request"):
+            from app.httputil.isHttps import isHttps
+            self.assertFalse(isHttps("some-ip", "443"))

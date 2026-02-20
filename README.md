@@ -14,6 +14,43 @@ This is the new home of "Legion". A major release is out! After upgrading, visit
 
 Having [screenshot issues](#screenshot-issues)?
 
+## Web Interface Preview (Flask)
+
+Legion now includes an in-progress local web interface scaffold (localhost only):
+
+```shell
+python3 legion.py --web --web-port 5000
+```
+
+The web path currently includes:
+- live websocket/polling dashboard,
+- scheduler mode/provider configuration,
+- project lifecycle actions (new temp, open, save-as),
+- target import, Nmap XML import, and Nmap scan job submission,
+- background job status tracking for long-running web-triggered tasks,
+- hosts/services/tools workspace APIs and UI panels,
+- host detail workflows for notes, scripts, CVEs, and screenshots,
+- dangerous scheduler-action approval queue with approve/reject and family pre-approval.
+- process controls in web (`kill`, `retry`, `hide`, clear non-running) with live-updating output viewer.
+
+The web path is still in active development and will continue to expand toward full Qt feature parity.
+Scheduler AI preferences are stored in plaintext at `${LEGION_HOME:-~/.local/share/legion}/scheduler-ai.json`.
+
+### Kali Side-By-Side Dev Install (No Package Overwrite)
+
+To install a separate development copy on Kali without overwriting the packaged `legion`, use:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/Hackman238/legion/main/scripts/install-kali-side-by-side.sh | bash
+```
+
+This creates:
+- source + venv under `~/.local/opt/legion-web-dev`
+- isolated Legion data/config under `~/.local/share/legion-web-dev`
+- launcher `~/.local/bin/legion-web-dev`
+
+`legion-web-dev` sets `LEGION_HOME=~/.local/share/legion-web-dev` automatically, so config/autosave/scheduler data stays separated from native Legion defaults.
+
 ##
 [![Known Vulnerabilities](https://snyk.io/test/github/Hackman238/legion/badge.svg?targetFile=requirements.txt)](https://snyk.io/test/github/Hackman238/legion?targetFile=requirements.txt)
 [![Maintainability](https://api.codeclimate.com/v1/badges/c2055fddab6b95642b6e/maintainability)](https://codeclimate.com/github/Hackman238/legion/maintainability)
@@ -27,7 +64,7 @@ penetration testing framework that aids in discovery, reconnaissance, and exploi
 
 ## 🍿 Features
 
-* Automatic recon and scanning with NMAP, whataweb, nikto, Vulners, Hydra, SMBenum, dirbuster, sslyzer, webslayer and
+* Automatic recon and scanning with NMAP, whatweb, nikto, Vulners, `nmap --script vuln`, nuclei, Hydra, SMBenum, feroxbuster/gobuster, sslyzer, webslayer and
   more (with almost 100 auto-scheduled scripts).
 * Easy to use graphical interface with rich context menus and panels that allow pentesters to quickly find and exploit
   attack vectors on hosts.
@@ -406,7 +443,7 @@ The configuration of selected ports and associated terminal actions can be easil
 > [SchedulerSettings] defines what actions will occur automatically based upon port scan results.
 
 ```shell
-sudoedit /root/.local/share/legion/legion.conf
+sudoedit "${LEGION_HOME:-~/.local/share/legion}/legion.conf"
 ```
 
 ## ⚖️ License

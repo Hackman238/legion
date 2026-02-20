@@ -21,7 +21,15 @@ from PyQt6 import QtCore
 from sqlalchemy import text
 
 from app.actions.updateProgress import AbstractUpdateProgressObservable
+from app.hostsfile import add_temporary_host_alias
 from app.logging.legionLog import getAppLogger
+from app.nmap_enrichment import (
+    infer_hostname_from_nmap_data,
+    infer_os_from_service_inventory,
+    infer_os_from_nmap_scripts,
+    is_unknown_hostname,
+    is_unknown_os_match,
+)
 from db.entities.host import hostObj
 from db.entities.l1script import l1ScriptObj
 from db.entities.nmapSession import nmapSessionObj
@@ -545,8 +553,14 @@ class NmapImporter(QtCore.QThread):
                     db_host.macaddr = h.macaddr
                 if not h.status == '':
                     db_host.status = h.status
-                if db_host.hostname == '' and not h.hostname == '':
-                    db_host.hostname = h.hostname
+                script_records = self._collect_script_records(h)
+                inferred_hostname = infer_hostname_from_nmap_data(getattr(h, "hostname", ""), script_records)
+                if is_unknown_hostname(getattr(db_host, "hostname", "")) and inferred_hostname:
+                    db_host.hostname = inferred_hostname
+                    self.tsLog(f"Inferred hostname for {db_host.ip}: {inferred_hostname}")
+                    added, reason = add_temporary_host_alias(db_host.ip, inferred_hostname)
+                    if not added:
+                        self.tsLog(f"Skipped /etc/hosts update for {db_host.ip} ({inferred_hostname}): {reason}")
                 if db_host.vendor == '' and not h.vendor == '':
                     db_host.vendor = h.vendor
                 if db_host.uptime == '' and not h.uptime == '':
@@ -585,6 +599,17 @@ class NmapImporter(QtCore.QThread):
                     if not tmp_name == '' and not tmp_accuracy == '0':
                         db_host.osMatch = tmp_name
                         db_host.osAccuracy = tmp_accuracy
+
+                if is_unknown_os_match(getattr(db_host, "osMatch", "")):
+                    inferred_os = infer_os_from_nmap_scripts(script_records)
+                    if not inferred_os:
+                        service_records = self._collect_service_records(h)
+                        inferred_os = infer_os_from_service_inventory(service_records)
+                    if inferred_os:
+                        db_host.osMatch = inferred_os
+                        if not str(getattr(db_host, "osAccuracy", "") or "").strip():
+                            db_host.osAccuracy = "85"
+                        self.tsLog(f"Inferred OS for {db_host.ip} from scripts: {inferred_os}")
 
                 session.add(db_host)
                 session.commit()
@@ -724,3 +749,40 @@ class NmapImporter(QtCore.QThread):
                     session.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def _collect_script_records(host_report):
+        records = []
+
+        def _append_script(script_obj):
+            if script_obj is None:
+                return
+            script_id = str(getattr(script_obj, "scriptId", "") or "")
+            output = str(getattr(script_obj, "output", "") or "")
+            if script_id and output:
+                records.append((script_id, output))
+
+        for script_obj in (host_report.getHostScripts() or []):
+            _append_script(script_obj)
+        for script_obj in (host_report.getScripts() or []):
+            _append_script(script_obj)
+        for port_obj in (host_report.all_ports() or []):
+            for script_obj in (port_obj.getScripts() or []):
+                _append_script(script_obj)
+
+        return records
+
+    @staticmethod
+    def _collect_service_records(host_report):
+        records = []
+        for port_obj in (host_report.all_ports() or []):
+            service_obj = port_obj.getService()
+            if service_obj is None:
+                continue
+            records.append((
+                str(getattr(service_obj, "name", "") or ""),
+                str(getattr(service_obj, "product", "") or ""),
+                str(getattr(service_obj, "version", "") or ""),
+                str(getattr(service_obj, "extrainfo", "") or ""),
+            ))
+        return records

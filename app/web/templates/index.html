@@ -1,0 +1,1230 @@
+{% extends "base.html" %}
+{% block title %}Legion Web Console{% endblock %}
+{% block content %}
+<main class="grid">
+    <section class="panel panel-full">
+        <div class="panel-header">
+            <h2>Project</h2>
+            <p id="project-name">{{ snapshot.project.name }}</p>
+        </div>
+        <div class="scheduler-meta">
+            <span class="chip">Type: <strong id="project-kind">{{ "temporary" if snapshot.project.is_temporary else "saved" }}</strong></span>
+            <span class="chip">Scheduler: <strong id="scheduler-mode">{{ snapshot.scheduler.mode }}</strong></span>
+            <span class="chip">Goal: <strong id="scheduler-goal">{{ snapshot.scheduler.goal_profile }}</strong></span>
+            <span class="chip">Preapproved Families: <strong id="scheduler-families">{{ snapshot.scheduler.preapproved_families_count }}</strong></span>
+        </div>
+        <p class="meta-note" id="project-output-folder">{{ snapshot.project.output_folder }}</p>
+        <p class="meta-note" id="project-running-folder">{{ snapshot.project.running_folder }}</p>
+        <p class="meta-note">{{ snapshot.scheduler.cloud_notice }}</p>
+        <p class="meta-note">Action status: <span id="action-status">Idle</span></p>
+        <p class="meta-note">Workspace status: <span id="workspace-status">Idle</span></p>
+    </section>
+
+    <section class="panel panel-full ribbon-panel">
+        <div class="ribbon">
+            <div class="ribbon-group">
+                <button id="ribbon-launch-wizard-button" class="ribbon-btn" type="button" title="Run the workspace startup wizard">
+                    <i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i>
+                    <span>Workspace Wizard</span>
+                </button>
+                <button id="ribbon-scheduler-settings-button" class="ribbon-btn" type="button" title="Open scheduler settings">
+                    <i class="fa-solid fa-sliders" aria-hidden="true"></i>
+                    <span>Scheduler</span>
+                </button>
+                <button id="ribbon-report-provider-settings-button" class="ribbon-btn" type="button" title="Open project report provider settings">
+                    <i class="fa-solid fa-upload" aria-hidden="true"></i>
+                    <span>Report Provider</span>
+                </button>
+                <button id="ribbon-app-settings-button" class="ribbon-btn" type="button" title="Open and edit legion.conf settings">
+                    <i class="fa-solid fa-gear" aria-hidden="true"></i>
+                    <span>App Settings</span>
+                </button>
+            </div>
+            <div class="ribbon-group">
+                <div class="ribbon-menu" data-ribbon-menu="workspace">
+                    <button
+                        id="ribbon-workspace-menu-button"
+                        class="ribbon-btn ribbon-btn-menu"
+                        type="button"
+                        title="Workspace lifecycle options"
+                        data-ribbon-menu-toggle="workspace"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <i class="fa-solid fa-folder-tree" aria-hidden="true"></i>
+                        <span>Workspace</span>
+                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                    </button>
+                    <div id="ribbon-workspace-menu" class="ribbon-submenu" role="menu" aria-label="Workspace options">
+                        <button id="ribbon-workspace-new-action-button" class="ribbon-submenu-item" type="button" title="Create a new temporary workspace">New Workspace</button>
+                        <button id="ribbon-workspace-open-action-button" class="ribbon-submenu-item" type="button" title="Open an existing .legion workspace">Open Workspace</button>
+                        <button id="ribbon-workspace-save-action-button" class="ribbon-submenu-item" type="button" title="Save using the current workspace path">Save</button>
+                        <button id="ribbon-workspace-save-as-action-button" class="ribbon-submenu-item" type="button" title="Choose a destination path and save">Save As</button>
+                        <button id="ribbon-workspace-download-action-button" class="ribbon-submenu-item" type="button" title="Download a ZIP containing session and tool output folders">Download</button>
+                        <button id="ribbon-workspace-restore-action-button" class="ribbon-submenu-item" type="button" title="Restore a previously downloaded session ZIP and open it">Restore ZIP</button>
+                    </div>
+                </div>
+                <div class="ribbon-menu" data-ribbon-menu="import">
+                    <button
+                        id="ribbon-import-menu-button"
+                        class="ribbon-btn ribbon-btn-menu"
+                        type="button"
+                        title="Import options"
+                        data-ribbon-menu-toggle="import"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <i class="fa-solid fa-file-import" aria-hidden="true"></i>
+                        <span>Import Data</span>
+                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                    </button>
+                    <div id="ribbon-import-menu" class="ribbon-submenu" role="menu" aria-label="Import options">
+                        <button id="ribbon-import-xml-action-button" class="ribbon-submenu-item" type="button" title="Import scan results from an Nmap XML file">Import XML</button>
+                        <button id="ribbon-import-targets-action-button" class="ribbon-submenu-item" type="button" title="Import target hosts/subnets from a text file">Import Targets TXT</button>
+                    </div>
+                </div>
+                <div class="ribbon-menu" data-ribbon-menu="export">
+                    <button
+                        id="ribbon-export-menu-button"
+                        class="ribbon-btn ribbon-btn-menu"
+                        type="button"
+                        title="Export options"
+                        data-ribbon-menu-toggle="export"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <i class="fa-solid fa-file-export" aria-hidden="true"></i>
+                        <span>Export Data</span>
+                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                    </button>
+                    <div id="ribbon-export-menu" class="ribbon-submenu" role="menu" aria-label="Export options">
+                        <button id="ribbon-export-json-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as JSON">Export JSON</button>
+                        <button id="ribbon-export-csv-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as CSV">Export CSV</button>
+                        <button id="ribbon-export-project-report-json-action-button" class="ribbon-submenu-item" type="button" title="Export full project AI report as JSON">Export Project AI Report JSON</button>
+                        <button id="ribbon-export-project-report-md-action-button" class="ribbon-submenu-item" type="button" title="Export full project AI report as Markdown">Export Project AI Report Markdown</button>
+                        <button id="ribbon-export-project-report-push-action-button" class="ribbon-submenu-item" type="button" title="Push full project AI report to configured delivery endpoint">Push Project AI Report</button>
+                        <button id="ribbon-export-ai-reports-action-button" class="ribbon-submenu-item" type="button" title="Download all host AI reports (JSON and Markdown) as a ZIP">Export Host AI Reports ZIP</button>
+                    </div>
+                </div>
+                <div class="ribbon-menu" data-ribbon-menu="scans">
+                    <button
+                        id="ribbon-scans-menu-button"
+                        class="ribbon-btn ribbon-btn-menu"
+                        type="button"
+                        title="Scan actions"
+                        data-ribbon-menu-toggle="scans"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <i class="fa-solid fa-magnifying-glass-chart" aria-hidden="true"></i>
+                        <span>Scans</span>
+                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                    </button>
+                    <div id="ribbon-scans-menu" class="ribbon-submenu" role="menu" aria-label="Scan options">
+                        <button id="ribbon-scan-add-action-button" class="ribbon-submenu-item" type="button" title="Open the Nmap scan wizard">Add Scan</button>
+                        <button id="ribbon-scan-manual-action-button" class="ribbon-submenu-item" type="button" title="Run a manual tool against a host and port">Manual Scan</button>
+                    </div>
+                </div>
+                <div class="ribbon-menu" data-ribbon-menu="misc">
+                    <button
+                        id="ribbon-misc-menu-button"
+                        class="ribbon-btn ribbon-btn-menu"
+                        type="button"
+                        title="Miscellaneous workspace actions"
+                        data-ribbon-menu-toggle="misc"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <i class="fa-solid fa-toolbox" aria-hidden="true"></i>
+                        <span>Misc</span>
+                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                    </button>
+                    <div id="ribbon-misc-menu" class="ribbon-submenu" role="menu" aria-label="Misc options">
+                        <button id="ribbon-misc-host-selection-action-button" class="ribbon-submenu-item" type="button" title="Open host selection and notes">Host Selection</button>
+                        <button id="ribbon-misc-script-cve-action-button" class="ribbon-submenu-item" type="button" title="Open Add Script/CVE form">Add Script/CVE</button>
+                    </div>
+                </div>
+                <div class="ribbon-menu" data-ribbon-menu="logging">
+                    <button
+                        id="ribbon-logging-menu-button"
+                        class="ribbon-btn ribbon-btn-menu"
+                        type="button"
+                        title="View logs and diagnostics"
+                        data-ribbon-menu-toggle="logging"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <i class="fa-solid fa-clipboard-list" aria-hidden="true"></i>
+                        <span>Logging</span>
+                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                    </button>
+                    <div id="ribbon-logging-menu" class="ribbon-submenu" role="menu" aria-label="Logging options">
+                        <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View AI provider request and response logs">AI Provider</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="state-cache" aria-hidden="true">
+        <input id="project-open-path" type="text">
+        <input id="project-save-path" type="text">
+        <input id="project-save-replace" type="checkbox" checked>
+        <input id="project-restore-zip-file" type="file" accept=".zip,application/zip">
+        <input id="targets-file-path" type="text">
+        <input id="nmap-xml-path" type="text">
+        <input id="nmap-xml-run-actions" type="checkbox">
+    </div>
+
+    <section class="panel stat-card">
+        <h3>Hosts</h3>
+        <p id="stat-hosts">{{ snapshot.summary.hosts }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>Open Ports</h3>
+        <p id="stat-open-ports">{{ snapshot.summary.open_ports }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>Services</h3>
+        <p id="stat-services">{{ snapshot.summary.services }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>CVEs</h3>
+        <p id="stat-cves">{{ snapshot.summary.cves }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>Running Jobs</h3>
+        <p id="stat-running">{{ snapshot.summary.running_processes }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>Finished Jobs</h3>
+        <p id="stat-finished">{{ snapshot.summary.finished_processes }}</p>
+    </section>
+    <section class="panel">
+        <div class="panel-header">
+            <h2>Hosts</h2>
+            <p id="host-count">{{ snapshot.hosts | length }}</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>IP</th>
+                    <th>Hostname</th>
+                    <th>Status</th>
+                    <th>OS</th>
+                    <th>Open Ports</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody id="hosts-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2>Processes</h2>
+            <p id="process-count">{{ snapshot.processes | length }}</p>
+        </div>
+        <div class="scheduler-actions">
+            <button id="process-clear-finished-button" type="button">Hide Finished/Failed</button>
+            <button id="process-clear-all-button" type="button">Hide All Non-Running</button>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Target</th>
+                    <th>Status</th>
+                    <th>%</th>
+                    <th>ETA</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="processes-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2>Services</h2>
+            <p id="service-count">{{ snapshot.services | length }}</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Service</th>
+                    <th>Hosts</th>
+                    <th>Ports</th>
+                    <th>Protocols</th>
+                </tr>
+                </thead>
+                <tbody id="services-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2>Tools</h2>
+            <p id="tool-count">{{ snapshot.tools | length }}</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>Tool ID</th>
+                    <th>Runs</th>
+                    <th>Last Status</th>
+                    <th>Danger</th>
+                </tr>
+                </thead>
+                <tbody id="tools-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel panel-full">
+        <div class="panel-header">
+            <h2>Host Detail</h2>
+            <p id="host-detail-name"></p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Port</th>
+                    <th>Protocol</th>
+                    <th>State</th>
+                    <th>Service</th>
+                    <th>Product</th>
+                    <th>Banner</th>
+                    <th>Screenshot</th>
+                </tr>
+                </thead>
+                <tbody id="host-detail-ports"></tbody>
+            </table>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Script DB ID</th>
+                    <th>Script ID</th>
+                    <th>Output</th>
+                    <th>Action</th>
+                </tr>
+                </thead>
+                <tbody id="host-detail-scripts"></tbody>
+            </table>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>CVE ID</th>
+                    <th>Name</th>
+                    <th>Severity</th>
+                    <th>Product</th>
+                    <th>URL</th>
+                    <th>Action</th>
+                </tr>
+                </thead>
+                <tbody id="host-detail-cves"></tbody>
+            </table>
+        </div>
+        <div class="panel-header">
+            <h3>AI Technologies</h3>
+            <p id="host-ai-tech-count">0</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Version</th>
+                    <th>CPE</th>
+                    <th>Evidence</th>
+                </tr>
+                </thead>
+                <tbody id="host-detail-ai-technologies"></tbody>
+            </table>
+        </div>
+        <div class="panel-header">
+            <h3>AI Findings</h3>
+            <p id="host-ai-finding-count">0</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Title</th>
+                    <th>CVE</th>
+                    <th>CVSS</th>
+                    <th>Evidence</th>
+                </tr>
+                </thead>
+                <tbody id="host-detail-ai-findings"></tbody>
+            </table>
+        </div>
+        <div class="panel-header">
+            <h3>AI Manual Tests</h3>
+            <p id="host-ai-manual-count">0</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Why</th>
+                    <th>Command</th>
+                    <th>Scope Note</th>
+                </tr>
+                </thead>
+                <tbody id="host-detail-ai-manual-tests"></tbody>
+            </table>
+        </div>
+        <div class="panel-header">
+            <h3>AI Analysis Status</h3>
+            <p id="host-ai-analysis-status"></p>
+        </div>
+        <div class="host-ai-report-actions">
+            <button id="host-ai-export-json-button" type="button">Export AI Report JSON</button>
+            <button id="host-ai-export-md-button" type="button">Export AI Report Markdown</button>
+        </div>
+        <div class="panel-header">
+            <h3>Screenshots</h3>
+            <p id="host-screenshot-count">0</p>
+        </div>
+        <div id="host-detail-screenshots" class="screenshot-list"></div>
+    </section>
+
+    <section class="panel panel-full">
+        <div class="panel-header">
+            <h2>Scheduler Decisions</h2>
+            <p id="decision-count">{{ snapshot.scheduler_decisions | length }}</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Target</th>
+                    <th>Tool</th>
+                    <th>Mode</th>
+                    <th>Approved</th>
+                    <th>Executed</th>
+                    <th>Reason</th>
+                    <th>Family</th>
+                </tr>
+                </thead>
+                <tbody id="decisions-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel panel-full">
+        <div class="panel-header">
+            <h2>Dangerous Action Approvals</h2>
+            <p id="approval-count">{{ snapshot.scheduler_approvals | length }}</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Target</th>
+                    <th>Tool</th>
+                    <th>Categories</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="approvals-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel panel-full">
+        <div class="panel-header">
+            <h2>Jobs</h2>
+            <p id="job-count">{{ snapshot.jobs | length }}</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Started</th>
+                    <th>Finished</th>
+                    <th>Error</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="jobs-body"></tbody>
+            </table>
+        </div>
+    </section>
+</main>
+
+<div id="process-output-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal" role="dialog" aria-modal="true" aria-labelledby="process-output-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="process-output-modal-title">Process Output</h2>
+            <p id="process-output-meta">No process selected</p>
+            <button id="process-output-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="modal-actions">
+            <button id="process-output-refresh-button" type="button">Refresh</button>
+            <button id="process-output-copy-button" type="button">Copy to Clipboard</button>
+            <button id="process-output-download-button" type="button">Download .txt</button>
+        </div>
+        <div class="process-command-block">
+            <div class="process-command-header">
+                <span>Command</span>
+                <button id="process-output-command-copy" type="button" title="Copy command" aria-label="Copy command">
+                    <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                </button>
+            </div>
+            <div id="process-output-command" class="process-command-text"></div>
+        </div>
+        <label>
+            Output
+            <textarea id="process-output-text" rows="18" readonly></textarea>
+        </label>
+    </div>
+</div>
+
+<div id="script-output-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal" role="dialog" aria-modal="true" aria-labelledby="script-output-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="script-output-modal-title">Script Output</h2>
+            <p id="script-output-meta">No script selected</p>
+            <button id="script-output-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="modal-actions">
+            <button id="script-output-copy-button" type="button">Copy to Clipboard</button>
+            <button id="script-output-download-button" type="button">Download .txt</button>
+        </div>
+        <div class="process-command-block">
+            <div class="process-command-header">
+                <span>Command</span>
+                <button id="script-output-command-copy" type="button" title="Copy command" aria-label="Copy command">
+                    <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                </button>
+            </div>
+            <div id="script-output-command" class="process-command-text"></div>
+        </div>
+        <label>
+            Output
+            <textarea id="script-output-text" rows="18" readonly></textarea>
+        </label>
+    </div>
+</div>
+
+<div id="screenshot-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal screenshot-modal" role="dialog" aria-modal="true" aria-labelledby="screenshot-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="screenshot-modal-title">Screenshot</h2>
+            <p id="screenshot-modal-meta">No screenshot selected</p>
+            <button id="screenshot-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="modal-actions">
+            <button id="screenshot-copy-button" type="button">Copy to Clipboard</button>
+            <button id="screenshot-download-button" type="button">Download .png</button>
+        </div>
+        <div class="screenshot-modal-body">
+            <img id="screenshot-modal-image" alt="Selected screenshot preview">
+        </div>
+    </div>
+</div>
+
+<div id="nmap-scan-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal scan-modal" role="dialog" aria-modal="true" aria-labelledby="nmap-scan-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="nmap-scan-modal-title">Run Nmap Scan</h2>
+            <p>Scans > Add Scan</p>
+            <button id="nmap-scan-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div id="nmap-scan-block" class="action-block">
+            <div id="nmap-wizard" class="nmap-wizard">
+                <div class="wizard-steps">
+                    <button id="nmap-wizard-indicator-1" type="button" class="wizard-step is-active" data-wizard-goto="1">1. Mode</button>
+                    <button id="nmap-wizard-indicator-2" type="button" class="wizard-step" data-wizard-goto="2">2. Targets</button>
+                    <button id="nmap-wizard-indicator-3" type="button" class="wizard-step" data-wizard-goto="3">3. Options</button>
+                </div>
+
+                <section id="nmap-wizard-step-1" class="wizard-page is-active" data-wizard-step="1">
+                    <div class="mode-grid">
+                        <label class="mode-card">
+                            <input type="radio" name="nmap-scan-mode" value="rfc1918_discovery">
+                            <strong>RFC1918 Discovery</strong>
+                            <span>Internal network discovery-first scanning.</span>
+                        </label>
+                        <label class="mode-card">
+                            <input type="radio" name="nmap-scan-mode" value="easy" checked>
+                            <strong>Easy Mode</strong>
+                            <span>Balanced scan for quick service visibility.</span>
+                        </label>
+                        <label class="mode-card">
+                            <input type="radio" name="nmap-scan-mode" value="hard">
+                            <strong>Hard Mode</strong>
+                            <span>Deeper and slower enumeration.</span>
+                        </label>
+                    </div>
+                </section>
+
+                <section id="nmap-wizard-step-2" class="wizard-page" data-wizard-step="2">
+                    <label>
+                        Targets (hosts, subnets, ranges; space or comma separated)
+                        <textarea id="nmap-targets" rows="3" placeholder="192.168.1.10 192.168.1.0/24"></textarea>
+                    </label>
+                    <label class="checkbox">
+                        <input id="nmap-include-rfc1918" type="checkbox">
+                        Add selected RFC1918 ranges automatically
+                    </label>
+                    <div class="wizard-subgrid">
+                        <label class="checkbox">
+                            <input id="nmap-rfc-10" type="checkbox" checked>
+                            10.0.0.0/8
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-172" type="checkbox" checked>
+                            172.16.0.0/12
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-192" type="checkbox" checked>
+                            192.168.0.0/16
+                        </label>
+                    </div>
+                </section>
+
+                <section id="nmap-wizard-step-3" class="wizard-page" data-wizard-step="3">
+                    <div id="nmap-options-rfc1918_discovery" class="mode-options is-active" data-mode-options="rfc1918_discovery">
+                        <h4>RFC1918 Discovery Options</h4>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-discovery" type="checkbox" checked>
+                            Use host discovery probes
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-host-discovery-only" type="checkbox" checked>
+                            Host discovery only (`-sn`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-arp-ping" type="checkbox">
+                            Prefer ARP discovery (`-PR`) where applicable
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-skip-dns" type="checkbox" checked>
+                            Skip reverse DNS lookups (`-n`)
+                        </label>
+                        <label>
+                            Timing Template
+                            <select id="nmap-rfc-timing">
+                                <option value="T2">T2</option>
+                                <option value="T3" selected>T3</option>
+                                <option value="T4">T4</option>
+                            </select>
+                        </label>
+                        <label>
+                            Top Ports (used if discovery-only is disabled)
+                            <input id="nmap-rfc-top-ports" type="number" min="1" max="65535" value="100">
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-service-detection" type="checkbox">
+                            Enable service detection (`-sV`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-default-scripts" type="checkbox">
+                            Run default scripts (`-sC`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-os-detection" type="checkbox">
+                            Enable OS detection (`-O`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-rfc-force-pn" type="checkbox">
+                            Treat hosts as online (`-Pn`)
+                        </label>
+                    </div>
+
+                    <div id="nmap-options-easy" class="mode-options" data-mode-options="easy">
+                        <h4>Easy Mode Options</h4>
+                        <label class="checkbox">
+                            <input id="nmap-easy-discovery" type="checkbox" checked>
+                            Use host discovery probes
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-easy-skip-dns" type="checkbox" checked>
+                            Skip reverse DNS lookups (`-n`)
+                        </label>
+                        <label>
+                            Timing Template
+                            <select id="nmap-easy-timing">
+                                <option value="T2">T2</option>
+                                <option value="T3" selected>T3</option>
+                                <option value="T4">T4</option>
+                            </select>
+                        </label>
+                        <label>
+                            Top Ports
+                            <input id="nmap-easy-top-ports" type="number" min="1" max="65535" value="1000">
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-easy-service-detection" type="checkbox" checked>
+                            Enable service detection (`-sV`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-easy-default-scripts" type="checkbox" checked>
+                            Run default scripts (`-sC`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-easy-os-detection" type="checkbox">
+                            Enable OS detection (`-O`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-easy-force-pn" type="checkbox">
+                            Treat hosts as online (`-Pn`)
+                        </label>
+                    </div>
+
+                    <div id="nmap-options-hard" class="mode-options" data-mode-options="hard">
+                        <h4>Hard Mode Options</h4>
+                        <label class="checkbox">
+                            <input id="nmap-hard-discovery" type="checkbox">
+                            Use host discovery probes
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-hard-skip-dns" type="checkbox" checked>
+                            Skip reverse DNS lookups (`-n`)
+                        </label>
+                        <label>
+                            Timing Template
+                            <select id="nmap-hard-timing">
+                                <option value="T2">T2</option>
+                                <option value="T3">T3</option>
+                                <option value="T4" selected>T4</option>
+                            </select>
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-hard-full-ports" type="checkbox" checked>
+                            Scan full TCP port range (`-p-`)
+                        </label>
+                        <label>
+                            Top Ports (used if full-range is disabled)
+                            <input id="nmap-hard-top-ports" type="number" min="1" max="65535" value="1000">
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-hard-aggressive" type="checkbox">
+                            Aggressive profile (`-A`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-hard-service-detection" type="checkbox" checked>
+                            Enable service detection (`-sV`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-hard-default-scripts" type="checkbox" checked>
+                            Run default scripts (`-sC`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-hard-os-detection" type="checkbox" checked>
+                            Enable OS detection (`-O`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-hard-force-pn" type="checkbox">
+                            Treat hosts as online (`-Pn`)
+                        </label>
+                        <label class="checkbox">
+                            <input id="nmap-hard-vuln-scripts" type="checkbox">
+                            Run vulnerability script set (`--script vuln`)
+                        </label>
+                    </div>
+                </section>
+
+                <div class="wizard-nav">
+                    <button id="nmap-wizard-back" type="button">Back</button>
+                    <button id="nmap-wizard-next" type="button">Next</button>
+                </div>
+            </div>
+
+            <label>
+                Extra Nmap Arguments
+                <input id="nmap-args" type="text" placeholder="-p- --reason">
+            </label>
+            <label class="checkbox">
+                <input id="nmap-run-actions" type="checkbox" checked>
+                Run scripted actions after scan
+            </label>
+            <div class="scheduler-actions">
+                <button id="nmap-scan-button" type="button" disabled>Start Nmap Scan Job</button>
+            </div>
+            <p class="meta-note" id="nmap-command-preview"></p>
+        </div>
+    </div>
+</div>
+
+<div id="manual-scan-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal manual-scan-modal" role="dialog" aria-modal="true" aria-labelledby="manual-scan-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="manual-scan-modal-title">Manual Tool Run</h2>
+            <p>Scans > Manual Scan</p>
+            <button id="manual-scan-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block">
+            <label>
+                Target Host IP
+                <input id="workspace-tool-host-ip" type="text" placeholder="10.0.0.10">
+            </label>
+            <label>
+                Port
+                <input id="workspace-tool-port" type="text" placeholder="445">
+            </label>
+            <label>
+                Protocol
+                <select id="workspace-tool-protocol">
+                    <option value="tcp">tcp</option>
+                    <option value="udp">udp</option>
+                </select>
+            </label>
+            <label>
+                Tool
+                <select id="workspace-tool-select"></select>
+            </label>
+            <div class="scheduler-actions">
+                <button id="workspace-run-tool-button" type="button">Run Tool</button>
+                <button id="workspace-run-scheduler-button" type="button">Run Scheduler Now</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="host-selection-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal host-selection-modal" role="dialog" aria-modal="true" aria-labelledby="host-selection-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="host-selection-modal-title">Host Selection</h2>
+            <p>Misc > Host Selection</p>
+            <button id="host-selection-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block">
+            <label>
+                Host
+                <select id="workspace-host-select"></select>
+            </label>
+            <div class="scheduler-actions">
+                <button id="workspace-refresh-button" type="button">Refresh Workspace Data</button>
+            </div>
+            <label>
+                Host Note
+                <textarea id="workspace-note" rows="5" placeholder="Host notes..."></textarea>
+            </label>
+            <div class="scheduler-actions">
+                <button id="workspace-save-note-button" type="button">Save Note</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="script-cve-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal script-cve-modal" role="dialog" aria-modal="true" aria-labelledby="script-cve-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="script-cve-modal-title">Add Script/CVE</h2>
+            <p>Misc > Add Script/CVE</p>
+            <button id="script-cve-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block">
+            <label>
+                Script ID
+                <input id="workspace-script-id" type="text" placeholder="smb-enum-users.nse">
+            </label>
+            <label>
+                Script Port
+                <input id="workspace-script-port" type="text" placeholder="445">
+            </label>
+            <label>
+                Script Protocol
+                <select id="workspace-script-protocol">
+                    <option value="tcp">tcp</option>
+                    <option value="udp">udp</option>
+                </select>
+            </label>
+            <label>
+                Script Output
+                <textarea id="workspace-script-output" rows="3"></textarea>
+            </label>
+            <div class="scheduler-actions">
+                <button id="workspace-add-script-button" type="button">Add Script</button>
+            </div>
+            <label>
+                CVE Name
+                <input id="workspace-cve-name" type="text" placeholder="CVE-2025-0001">
+            </label>
+            <label>
+                CVE Severity
+                <input id="workspace-cve-severity" type="text" placeholder="high">
+            </label>
+            <div class="scheduler-actions">
+                <button id="workspace-add-cve-button" type="button">Add CVE</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="scheduler-settings-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal scheduler-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="scheduler-modal-title">Scheduler Settings</h2>
+            <p id="scheduler-save-status">Idle</p>
+            <button id="scheduler-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <form id="scheduler-form" class="scheduler-form">
+            <label>
+                Mode
+                <select id="scheduler-mode-select" name="mode">
+                    <option value="deterministic">deterministic</option>
+                    <option value="ai">ai</option>
+                </select>
+            </label>
+            <label>
+                Goal Profile
+                <select id="scheduler-goal-select" name="goal_profile">
+                    <option value="internal_asset_discovery">internal_asset_discovery</option>
+                    <option value="external_pentest">external_pentest</option>
+                </select>
+            </label>
+            <label>
+                AI Provider
+                <select id="scheduler-provider-select" name="provider">
+                    <option value="none">none</option>
+                    <option value="lm_studio">lm_studio</option>
+                    <option value="openai">openai</option>
+                    <option value="claude">claude</option>
+                </select>
+            </label>
+            <label>
+                Max Concurrent Scheduler Tools
+                <input id="scheduler-concurrency-input" type="number" min="1" max="16" step="1" name="max_concurrency">
+            </label>
+            <label>
+                Max Jobs Retained
+                <input id="scheduler-max-jobs-input" type="number" min="20" max="2000" step="1" name="max_jobs">
+            </label>
+            <label>
+                LM Studio Base URL
+                <input id="provider-lmstudio-baseurl" type="text" name="lm_studio_base_url">
+            </label>
+            <label>
+                LM Studio Model
+                <input id="provider-lmstudio-model" type="text" name="lm_studio_model">
+            </label>
+            <label>
+                LM Studio API Key
+                <input id="provider-lmstudio-apikey" type="password" name="lm_studio_api_key">
+            </label>
+            <label class="checkbox">
+                <input id="provider-lmstudio-enabled" type="checkbox" name="lm_studio_enabled">
+                LM Studio Enabled
+            </label>
+            <label>
+                OpenAI Base URL
+                <input id="provider-openai-baseurl" type="text" name="openai_base_url">
+            </label>
+            <label>
+                OpenAI Model
+                <input id="provider-openai-model" type="text" name="openai_model">
+            </label>
+            <label>
+                OpenAI API Key
+                <input id="provider-openai-apikey" type="password" name="openai_api_key">
+            </label>
+            <label class="checkbox">
+                <input id="provider-openai-enabled" type="checkbox" name="openai_enabled">
+                OpenAI Enabled
+            </label>
+            <label>
+                Claude Base URL
+                <input id="provider-claude-baseurl" type="text" name="claude_base_url">
+            </label>
+            <label>
+                Claude Model
+                <input id="provider-claude-model" type="text" name="claude_model">
+            </label>
+            <label>
+                Claude API Key
+                <input id="provider-claude-apikey" type="password" name="claude_api_key">
+            </label>
+            <label class="checkbox">
+                <input id="provider-claude-enabled" type="checkbox" name="claude_enabled">
+                Claude Enabled
+            </label>
+            <fieldset class="danger-group">
+                <legend>Dangerous Categories</legend>
+                <label class="checkbox">
+                    <input id="danger-exploit_execution" type="checkbox" value="exploit_execution">
+                    exploit_execution
+                </label>
+                <label class="checkbox">
+                    <input id="danger-credential_bruteforce" type="checkbox" value="credential_bruteforce">
+                    credential_bruteforce
+                </label>
+                <label class="checkbox">
+                    <input id="danger-network_flooding" type="checkbox" value="network_flooding">
+                    network_flooding
+                </label>
+                <label class="checkbox">
+                    <input id="danger-destructive_write_actions" type="checkbox" value="destructive_write_actions">
+                    destructive_write_actions
+                </label>
+            </fieldset>
+            <div class="scheduler-actions">
+                <button id="scheduler-test-provider-button" type="button">Test Provider</button>
+                <button id="scheduler-save-button" type="submit">Save Scheduler Preferences</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="report-provider-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal report-provider-modal" role="dialog" aria-modal="true" aria-labelledby="report-provider-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="report-provider-modal-title">Report Provider Settings</h2>
+            <p id="report-provider-save-status">Idle</p>
+            <button id="report-provider-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <form id="report-provider-form" class="scheduler-form">
+            <label>
+                Project Report Provider Name
+                <input id="project-report-provider-name" type="text" name="project_report_provider_name" placeholder="e.g. siem-prod">
+            </label>
+            <label>
+                Project Report Endpoint
+                <input id="project-report-endpoint" type="text" name="project_report_endpoint" placeholder="https://example/api/report">
+            </label>
+            <label>
+                Project Report HTTP Method
+                <select id="project-report-method" name="project_report_method">
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                </select>
+            </label>
+            <label>
+                Project Report Format
+                <select id="project-report-format" name="project_report_format">
+                    <option value="json">json</option>
+                    <option value="md">md</option>
+                </select>
+            </label>
+            <label>
+                Project Report Timeout (seconds)
+                <input id="project-report-timeout" type="number" min="5" max="300" step="1" name="project_report_timeout">
+            </label>
+            <label class="checkbox">
+                <input id="project-report-mtls-enabled" type="checkbox" name="project_report_mtls_enabled">
+                Project Report mTLS Enabled
+            </label>
+            <label>
+                Project Report mTLS Client Cert Path
+                <input id="project-report-mtls-cert" type="text" name="project_report_mtls_cert" placeholder="/path/to/client.crt">
+            </label>
+            <label>
+                Project Report mTLS Client Key Path
+                <input id="project-report-mtls-key" type="text" name="project_report_mtls_key" placeholder="/path/to/client.key">
+            </label>
+            <label>
+                Project Report mTLS CA Cert Path (optional)
+                <input id="project-report-mtls-ca" type="text" name="project_report_mtls_ca" placeholder="/path/to/ca.crt">
+            </label>
+            <label class="project-report-headers-label">
+                Project Report Headers (JSON object)
+                <textarea id="project-report-headers" rows="4" name="project_report_headers" placeholder="{\"X-API-Key\":\"...\"}"></textarea>
+            </label>
+            <div class="scheduler-actions">
+                <button id="project-report-save-button" type="submit">Save Report Provider Settings</button>
+                <button id="project-report-push-button" type="button">Push Project Report</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="app-settings-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="settings-modal-title">Application Settings</h2>
+            <p id="settings-config-path">legion.conf</p>
+            <button id="settings-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p class="meta-note">Edit `legion.conf` directly. Saving reloads settings for subsequent actions.</p>
+        <label>
+            Config Text
+            <textarea id="settings-config-text" rows="18"></textarea>
+        </label>
+        <p id="settings-config-status" class="meta-note"></p>
+        <div class="modal-actions">
+            <button id="settings-config-refresh-button" type="button">Reload</button>
+            <button id="settings-config-save-button" type="button">Save Config</button>
+        </div>
+    </div>
+</div>
+
+<div id="provider-logs-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal provider-logs-modal" role="dialog" aria-modal="true" aria-labelledby="provider-logs-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="provider-logs-modal-title">AI Provider Logs</h2>
+            <p id="provider-logs-meta">No logs loaded</p>
+            <button id="provider-logs-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="modal-actions">
+            <button id="provider-logs-refresh-button" type="button">Refresh</button>
+            <button id="provider-logs-copy-button" type="button">Copy to Clipboard</button>
+            <button id="provider-logs-download-button" type="button">Download .txt</button>
+        </div>
+        <label>
+            Log Output
+            <textarea id="provider-logs-text" rows="20" readonly></textarea>
+        </label>
+    </div>
+</div>
+
+<div id="host-remove-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal host-remove-modal" role="dialog" aria-modal="true" aria-labelledby="host-remove-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="host-remove-modal-title">Remove Host</h2>
+            <p id="host-remove-modal-meta">This action deletes host data from the current workspace.</p>
+            <button id="host-remove-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p class="meta-note">Remove host and associated scans, scripts, CVEs, scheduler decisions, and screenshots?</p>
+        <p id="host-remove-modal-target" class="meta-note"></p>
+        <div class="modal-actions">
+            <button id="host-remove-modal-cancel" type="button">Cancel</button>
+            <button id="host-remove-modal-confirm" type="button">Remove Host</button>
+        </div>
+    </div>
+</div>
+
+<div id="startup-wizard-overlay" class="startup-wizard-overlay" aria-hidden="true">
+    <div class="startup-wizard" role="dialog" aria-modal="true" aria-labelledby="startup-wizard-title">
+        <div class="panel-header modal-header">
+            <h2 id="startup-wizard-title">Workspace Setup</h2>
+            <p id="startup-wizard-meta">Step 1 of 4</p>
+        </div>
+
+        <section id="startup-step-1" class="startup-step is-active" data-startup-step="1">
+            <h3>Project</h3>
+            <p class="meta-note">Start a new temporary project or open an existing `.legion` file.</p>
+            <label class="mode-card">
+                <input id="startup-project-new" type="radio" name="startup-project-action" value="new" checked>
+                <strong>New Temporary Project</strong>
+                <span>Create a fresh temporary workspace now.</span>
+            </label>
+            <label class="mode-card">
+                <input id="startup-project-open" type="radio" name="startup-project-action" value="open">
+                <strong>Open Existing Project</strong>
+                <span>Load an existing `.legion` project file.</span>
+            </label>
+            <label>
+                Existing Project Path
+                <input id="startup-project-open-path" type="text" placeholder="/path/to/project.legion">
+            </label>
+        </section>
+
+        <section id="startup-step-2" class="startup-step" data-startup-step="2">
+            <h3>Imports</h3>
+            <p class="meta-note">Import optional seed data before scanning.</p>
+            <label class="checkbox">
+                <input id="startup-import-targets-enabled" type="checkbox">
+                Import Targets File
+            </label>
+            <label>
+                Targets File Path
+                <input id="startup-import-targets-path" type="text" placeholder="/path/to/targets.txt">
+            </label>
+            <label class="checkbox">
+                <input id="startup-import-xml-enabled" type="checkbox">
+                Import Nmap XML
+            </label>
+            <label>
+                Nmap XML Path
+                <input id="startup-import-xml-path" type="text" placeholder="/path/to/scan.xml">
+            </label>
+            <label class="checkbox">
+                <input id="startup-import-xml-run-actions" type="checkbox">
+                Run scripted actions after XML import
+            </label>
+        </section>
+
+        <section id="startup-step-3" class="startup-step" data-startup-step="3">
+            <h3>Scheduler</h3>
+            <p class="meta-note">Choose the scheduling strategy before entering the workspace.</p>
+            <label>
+                Mode
+                <select id="startup-scheduler-mode">
+                    <option value="deterministic">deterministic</option>
+                    <option value="ai">ai</option>
+                </select>
+            </label>
+            <label>
+                Goal Profile
+                <select id="startup-scheduler-goal">
+                    <option value="internal_asset_discovery">internal_asset_discovery</option>
+                    <option value="external_pentest">external_pentest</option>
+                </select>
+            </label>
+            <label>
+                AI Provider
+                <select id="startup-scheduler-provider">
+                    <option value="none">none</option>
+                    <option value="lm_studio">lm_studio</option>
+                    <option value="openai">openai</option>
+                    <option value="claude">claude</option>
+                </select>
+            </label>
+        </section>
+
+        <section id="startup-step-4" class="startup-step" data-startup-step="4">
+            <h3>Ready</h3>
+            <p class="meta-note">Setup is complete. Continue to workspace and launch Scans > Add Scan.</p>
+            <div id="startup-summary" class="startup-summary"></div>
+        </section>
+
+        <p id="startup-wizard-status" class="meta-note"></p>
+        <div class="modal-actions">
+            <button id="startup-wizard-skip" type="button">Skip Setup</button>
+            <button id="startup-wizard-back" type="button">Back</button>
+            <button id="startup-wizard-next" type="button">Continue</button>
+        </div>
+    </div>
+</div>
+{% endblock %}

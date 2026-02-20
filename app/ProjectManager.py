@@ -124,6 +124,14 @@ class ProjectManager:
     def saveProjectAs(self, project: Project, fileName: str, replace=0, projectType="legion") -> Project:
         self.logger.info(f"Saving project {project.properties.projectName}...")
         toolOutputFolder, normalizedFileName = self.__determineOutputFolder(fileName, projectType)
+        source_project_name = str(project.properties.projectName or "")
+        source_output_folder = str(project.properties.outputFolder or "")
+
+        same_db_path = self._same_path(normalizedFileName, source_project_name)
+        same_output_folder = self._same_path(toolOutputFolder, source_output_folder)
+        if same_db_path and same_output_folder:
+            self.logger.info("Save target matches current project path; skipping SaveAs copy/reopen.")
+            return project
 
         # check if filename already exists (skip the check if we want to replace the file)
         if replace == 0 and fileExists(self.shell, normalizedFileName):
@@ -153,19 +161,36 @@ class ProjectManager:
                 validation_db.dispose()
 
         # copy tool output folder contents
-        if os.path.exists(toolOutputFolder):
-            if replace:
-                shutil.rmtree(toolOutputFolder, ignore_errors=True)
-            else:
-                self.logger.info(f"Merging tool output into existing folder {toolOutputFolder}")
-        shutil.copytree(project.properties.outputFolder, toolOutputFolder, dirs_exist_ok=True)
+        if same_output_folder:
+            self.logger.info("Output folder already matches destination; skipping copy.")
+        else:
+            if os.path.exists(toolOutputFolder):
+                if replace:
+                    shutil.rmtree(toolOutputFolder, ignore_errors=True)
+                else:
+                    self.logger.info(f"Merging tool output into existing folder {toolOutputFolder}")
+            shutil.copytree(project.properties.outputFolder, toolOutputFolder, dirs_exist_ok=True)
 
-        if project.properties.isTemporary:
+        if project.properties.isTemporary and not same_db_path:
             self.shell.remove_file(project.properties.projectName)
+        if project.properties.isTemporary and not same_output_folder:
             self.shell.remove_directory(project.properties.outputFolder)
 
         self.logger.info(f"Project saved as {normalizedFileName}.")
+        if same_db_path:
+            return project
         return self.openExistingProject(normalizedFileName, projectType)
+
+    @staticmethod
+    def _same_path(path_a: str, path_b: str) -> bool:
+        if not path_a or not path_b:
+            return False
+        try:
+            return os.path.samefile(path_a, path_b)
+        except Exception:
+            a = os.path.normcase(os.path.realpath(str(path_a)))
+            b = os.path.normcase(os.path.realpath(str(path_b)))
+            return a == b
 
     def __createDatabase(self, projectName: str = None) -> Database:
         if projectName:

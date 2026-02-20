@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Legion Web{% endblock %}</title>
+    <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+        referrerpolicy="no-referrer"
+    >
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/legion.css') }}">
+</head>
+<body>
+<div class="background-glow"></div>
+{% if console_logo_art %}
+<div class="logo-watermark" aria-hidden="true">
+    <pre>{{ console_logo_art }}</pre>
+</div>
+{% endif %}
+<div class="shell">
+    <header class="topbar">
+        <div>
+            <p class="eyebrow">LEGION</p>
+            <h1>Web Console</h1>
+        </div>
+        <div class="topbar-meta">
+            <span class="chip">localhost only</span>
+            <span class="chip">No auth</span>
+            <span class="chip" id="live-status">Live</span>
+        </div>
+    </header>
+    {% block content %}{% endblock %}
+</div>
+<script id="initial-snapshot" type="application/json">{{ snapshot | tojson }}</script>
+<script>window.LEGION_WS_ENABLED = {{ "true" if ws_enabled else "false" }};</script>
+<script src="{{ url_for('static', filename='js/legion.js') }}" defer></script>
+</body>
+</html>

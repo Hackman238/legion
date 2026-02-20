@@ -97,6 +97,7 @@ class ProcessRepository:
                     '0 AS progress, '
                     'COALESCE(process.display, "False") AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
+                    'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
@@ -123,6 +124,7 @@ class ProcessRepository:
                     '0 AS progress, '
                     'process.display AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
+                    'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
@@ -151,6 +153,7 @@ class ProcessRepository:
                     '0 AS progress, '
                     'process.display AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
+                    'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
@@ -224,29 +227,39 @@ class ProcessRepository:
 
     def storeProcessOutput(self, process_id: str, output: str):
         session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=process_id).first()
+        try:
+            proc = session.query(process).filter_by(id=process_id).first()
 
-        if not proc:
-            session.close()
-            return False
+            if not proc:
+                return False
 
-        proc_output = session.query(process_output).filter_by(id=process_id).first()
-        if proc_output:
+            # process_output is keyed by processId (FK), not by its own row id.
+            proc_output = session.query(process_output).filter_by(processId=process_id).first()
+            if not proc_output:
+                proc_output = process_output()
+                try:
+                    proc_output.processId = int(process_id)
+                except (TypeError, ValueError):
+                    proc_output.processId = process_id
+
             self.log.info("Storing process output into db: {0}".format(str(proc_output)))
             proc_output.output = unicode(output)
             session.add(proc_output)
 
-        proc.endTime = getTimestamp(True)
+            proc.endTime = getTimestamp(True)
+            proc.estimatedRemaining = 0
 
-        if proc.status == "Killed" or proc.status == "Cancelled" or proc.status == "Crashed":
-            #session.commit() # Needed?
-            session.close()
-            return True
-        else:
-            proc.status = 'Finished'
+            if proc.status not in {"Killed", "Cancelled", "Crashed"}:
+                proc.status = 'Finished'
+                proc.percent = "100"
             session.add(proc)
             session.commit()
-        session.close()
+            return True
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def getStatusByProcessId(self, process_id: str):
         return self.getFieldByProcessId("status", process_id)
@@ -278,6 +291,7 @@ class ProcessRepository:
                 '0 AS progress, '
                 'process.display AS display, '
                 'COALESCE(process.elapsed, 0) AS elapsed, '
+                'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
                 'COALESCE(process.percent, "") AS percent, '
                 'COALESCE(process.pid, "") AS pid, '
                 'COALESCE(process.name, "") AS name, '
@@ -304,6 +318,7 @@ class ProcessRepository:
                 '0 AS progress, '
                 'process.display AS display, '
                 'COALESCE(process.elapsed, 0) AS elapsed, '
+                'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
                 'COALESCE(process.percent, "") AS percent, '
                 'COALESCE(process.pid, "") AS pid, '
                 'COALESCE(process.name, "") AS name, '
@@ -377,6 +392,7 @@ class ProcessRepository:
         if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
             proc.status = 'Crashed'
             proc.endTime = getTimestamp(True)
+            proc.estimatedRemaining = 0
             session.add(proc)
             session.commit()
         session.close()
@@ -387,6 +403,7 @@ class ProcessRepository:
         if proc:
             proc.status = 'Cancelled'
             proc.endTime = getTimestamp(True)
+            proc.estimatedRemaining = 0
             session.add(proc)
             session.commit()
         session.close()
@@ -397,6 +414,7 @@ class ProcessRepository:
         if proc and not proc.status == 'Finished':
             proc.status = 'Killed'
             proc.endTime = getTimestamp(True)
+            proc.estimatedRemaining = 0
             session.add(proc)
             session.commit()
         session.close()
@@ -424,13 +442,31 @@ class ProcessRepository:
 
     def storeProcessPercent(self, processId: str, percent):
         """Update the percent field for a process."""
+        self.storeProcessProgress(processId, percent=percent)
+
+    def storeProcessEstimatedRemaining(self, processId: str, estimated_remaining):
+        self.storeProcessProgress(processId, estimated_remaining=estimated_remaining)
+
+    def storeProcessProgress(self, processId: str, percent=None, estimated_remaining=None):
         session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=processId).first()
-        if proc:
-            proc.percent = percent
+        try:
+            proc = session.query(process).filter_by(id=processId).first()
+            if not proc:
+                return
+
+            if percent is not None:
+                proc.percent = str(percent)
+
+            if estimated_remaining is not None:
+                try:
+                    proc.estimatedRemaining = max(0, int(float(estimated_remaining)))
+                except Exception:
+                    pass
+
             session.add(proc)
             session.commit()
-        session.close()
+        finally:
+            session.close()
 
     def storeCloseStatus(self, processId):
         session = self.dbAdapter.session()

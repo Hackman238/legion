@@ -35,6 +35,9 @@ from app.importers.PythonImporter import PythonImporter
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
 from app.auxiliary import unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl
 from app.timing import getTimestamp
+from app.scheduler.audit import log_scheduler_decision
+from app.scheduler.config import SchedulerConfigManager
+from app.scheduler.planner import SchedulerPlanner
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
 import os
 
@@ -290,6 +293,8 @@ class Controller:
         self.view.setController(self)
 
         self.loadSettings()  # creation of context menu actions from settings file and set up of various settings
+        self.schedulerConfig = SchedulerConfigManager()
+        self.schedulerPlanner = SchedulerPlanner(self.schedulerConfig)
 
         self.view.startOnce()
         self.view.startConnections()
@@ -2408,6 +2413,65 @@ class Controller:
                 return True
         return False
 
+    def _recordScheduledDecision(self, decision, service, ip, port, protocol, approved, executed, reason):
+        try:
+            record = {
+                "timestamp": getTimestamp(True),
+                "host_ip": str(ip),
+                "port": str(port),
+                "protocol": str(protocol),
+                "service": str(service),
+                "scheduler_mode": str(decision.mode),
+                "goal_profile": str(decision.goal_profile),
+                "tool_id": str(decision.tool_id),
+                "label": str(decision.label),
+                "command_family_id": str(decision.family_id),
+                "danger_categories": ",".join(decision.danger_categories),
+                "requires_approval": "True" if decision.requires_approval else "False",
+                "approved": "True" if approved else "False",
+                "executed": "True" if executed else "False",
+                "reason": str(reason or ""),
+                "rationale": str(decision.rationale),
+            }
+            log_scheduler_decision(self.logic.activeProject.database, record)
+        except Exception:
+            log.exception("Failed to persist scheduler decision log entry")
+
+    def _promptDangerousActionApproval(self, decision, service, ip, port):
+        if not decision.requires_approval:
+            return True
+        if self.schedulerConfig.is_family_preapproved(decision.family_id):
+            return True
+
+        category_text = ", ".join(decision.danger_categories) if decision.danger_categories else "unknown"
+        message = QMessageBox()
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("Dangerous Scheduled Command")
+        message.setText(
+            "Scheduler identified a potentially dangerous command.\n\n"
+            f"Target: {ip}:{port} ({service})\n"
+            f"Tool: {decision.tool_id}\n"
+            f"Risk categories: {category_text}\n\n"
+            "Choose whether to run this command."
+        )
+        run_once_btn = message.addButton("Run Once", QMessageBox.ButtonRole.AcceptRole)
+        always_btn = message.addButton("Always Allow Family", QMessageBox.ButtonRole.YesRole)
+        skip_btn = message.addButton("Skip", QMessageBox.ButtonRole.RejectRole)
+        message.setDefaultButton(run_once_btn)
+        message.exec()
+        clicked = message.clickedButton()
+
+        if clicked == always_btn:
+            self.schedulerConfig.approve_family(decision.family_id, {
+                "tool_id": decision.tool_id,
+                "label": decision.label,
+                "danger_categories": decision.danger_categories,
+            })
+            return True
+        if clicked == run_once_btn:
+            return True
+        return False
+
     def runToolsFor(self, service, hostname, ip, port, protocol='tcp'):
         log.info('Running tools for: ' + service + ' on ' + ip + ':' + port)
 
@@ -2415,75 +2479,110 @@ class Controller:
         import os
 
         if service.endswith("?"):  # when nmap is not sure it will append a ?, so we need to remove it
-            service=service[:-1]
+            service = service[:-1]
 
         # Get repositories for deduplication checks
         repo_container = self.logic.activeProject.repositoryContainer
         script_repo = getattr(repo_container, "scriptRepository", None)
         port_repo = getattr(repo_container, "portRepository", None)
         host_repo = getattr(repo_container, "hostRepository", None)
+        decisions = self.schedulerPlanner.plan_actions(service, protocol, self.settings)
+        if not decisions:
+            return
 
-        for tool in self.settings.automatedAttacks:
-            if service in tool[1].split(",") and protocol==tool[2]:
-                if tool[0] == "screenshooter":
-                    display_host, resolved_ip = self._resolve_host_and_ip(hostname or ip)
-                    url = f"{display_host}:{port}"
-                    # Check if screenshot already exists using deterministic filename
-                    screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
-                    deterministic_screenshot = f"{resolved_ip}-{port}-screenshot.png"
-                    screenshot_exists = False
-                    if os.path.isdir(screenshots_dir):
-                        if deterministic_screenshot in os.listdir(screenshots_dir):
-                            screenshot_exists = True
-                    if screenshot_exists:
-                        log.info(f"Skipping screenshot for {resolved_ip}:{port} (already exists)")
-                    else:
-                        log.info("Screenshooter of URL: %s" % str(url))
-                        self.screenshooter.addToQueue(resolved_ip, port, url)
-                        self.screenshooter.start()
+        for decision in decisions:
+            approved = True
+            if decision.requires_approval:
+                approved = self._promptDangerousActionApproval(decision, service, ip, port)
+                if not approved:
+                    self._recordScheduledDecision(
+                        decision, service, ip, port, protocol, approved=False, executed=False,
+                        reason="blocked: approval denied"
+                    )
+                    continue
 
+            if decision.tool_id == "screenshooter":
+                display_host, resolved_ip = self._resolve_host_and_ip(hostname or ip)
+                url = f"{display_host}:{port}"
+                screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
+                deterministic_screenshot = f"{resolved_ip}-{port}-screenshot.png"
+                screenshot_exists = False
+                if os.path.isdir(screenshots_dir):
+                    if deterministic_screenshot in os.listdir(screenshots_dir):
+                        screenshot_exists = True
+                if screenshot_exists:
+                    log.info(f"Skipping screenshot for {resolved_ip}:{port} (already exists)")
+                    self._recordScheduledDecision(
+                        decision, service, ip, port, protocol, approved=approved, executed=False,
+                        reason="skipped: screenshot already exists"
+                    )
                 else:
-                    for a in self.settings.portActions:
-                        if tool[0] == a[1]:
-                            tabTitle = a[1] + " (" + port + "/" + protocol + ")"
-                            # Deduplication: check if script already ran for this host/port/tool
-                            skip_script = False
-                            if script_repo and port_repo and host_repo:
-                                # Find host and port objects
-                                db_host = host_repo.getHostByIP(ip)
-                                db_port = None
-                                if db_host:
-                                    db_port = port_repo.getPortByHostIdAndPort(db_host.id, port, protocol)
-                                if db_host and db_port:
-                                    # l1ScriptObj: scriptId, portId, hostId
-                                    existing_scripts = script_repo.getScriptsByPortId(db_port.id)
-                                    for s in existing_scripts:
-                                        if hasattr(s, "scriptId") and s.scriptId == a[1]:
-                                            skip_script = True
-                                            break
-                            if skip_script:
-                                log.info(f"Skipping script {a[1]} for {ip}:{port}/{protocol} (already exists)")
-                                break
-                            # Cheese
-                            outputfile = os.path.join(
-                                self.logic.activeProject.properties.runningFolder,
-                                f"{getTimestamp()}-{a[1]}-{ip}-{port}"
-                            )
-                            outputfile = os.path.normpath(outputfile).replace("\\", "/")
-                            command = str(a[2])
-                            command = command.replace('[IP]', ip).replace('[PORT]', port)\
-                                .replace('[OUTPUT]', outputfile)
-                            log.debug(f"Running tool command: {str(command)}")
+                    log.info("Screenshooter of URL: %s" % str(url))
+                    self.screenshooter.addToQueue(resolved_ip, port, url)
+                    self.screenshooter.start()
+                    self._recordScheduledDecision(
+                        decision, service, ip, port, protocol, approved=approved, executed=True,
+                        reason="queued"
+                    )
+                continue
 
-                            if self.findDuplicateTab(self.view.ui.ServicesTabWidget, tabTitle):
-                                log.debug("Duplicate tab name. Tool might have already run.")
+            executed = False
+            reason = "skipped: no matching port action"
+
+            for a in self.settings.portActions:
+                if decision.tool_id != a[1]:
+                    continue
+
+                tabTitle = a[1] + " (" + port + "/" + protocol + ")"
+                skip_script = False
+                if script_repo and port_repo and host_repo:
+                    db_host = host_repo.getHostByIP(ip)
+                    db_port = None
+                    if db_host:
+                        db_port = port_repo.getPortByHostIdAndPort(db_host.id, port, protocol)
+                    if db_host and db_port:
+                        existing_scripts = script_repo.getScriptsByPortId(db_port.id)
+                        for s in existing_scripts:
+                            if hasattr(s, "scriptId") and s.scriptId == a[1]:
+                                skip_script = True
                                 break
-                            tab = self.view.ui.HostsTabWidget.tabText(self.view.ui.HostsTabWidget.currentIndex())
-                            self.runCommand(tool[0], tabTitle, ip, port, protocol, command,
-                                            getTimestamp(True),
-                                            outputfile,
-                                            self.view.createNewTabForHost(ip, tabTitle, not (tab == 'Hosts')))
-                            break
+                if skip_script:
+                    log.info(f"Skipping script {a[1]} for {ip}:{port}/{protocol} (already exists)")
+                    reason = "skipped: script already exists"
+                    break
+
+                outputfile = os.path.join(
+                    self.logic.activeProject.properties.runningFolder,
+                    f"{getTimestamp()}-{a[1]}-{ip}-{port}"
+                )
+                outputfile = os.path.normpath(outputfile).replace("\\", "/")
+                command_template = decision.command_template or str(a[2])
+                command = command_template.replace('[IP]', ip).replace('[PORT]', port).replace('[OUTPUT]', outputfile)
+                log.debug(f"Running tool command: {str(command)}")
+
+                if self.findDuplicateTab(self.view.ui.ServicesTabWidget, tabTitle):
+                    log.debug("Duplicate tab name. Tool might have already run.")
+                    reason = "skipped: duplicate tab"
+                    break
+                tab = self.view.ui.HostsTabWidget.tabText(self.view.ui.HostsTabWidget.currentIndex())
+                self.runCommand(
+                    decision.tool_id,
+                    tabTitle,
+                    ip,
+                    port,
+                    protocol,
+                    command,
+                    getTimestamp(True),
+                    outputfile,
+                    self.view.createNewTabForHost(ip, tabTitle, not (tab == 'Hosts'))
+                )
+                executed = True
+                reason = "queued"
+                break
+
+            self._recordScheduledDecision(
+                decision, service, ip, port, protocol, approved=approved, executed=executed, reason=reason
+            )
 
     def addPortToHost(self, host_ip, port_data):
         """

@@ -24,9 +24,9 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from PyQt6 import QtCore
 
 from app.logging.legionLog import getAppLogger
+from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.httputil.isHttps import isHttps
 from app.timing import getTimestamp
-from app.auxiliary import isKali
 
 logger = getAppLogger()
 
@@ -87,56 +87,56 @@ class Screenshooter(QtCore.QThread):
             host_for_https = host_for_https.split('://', 1)[1]
         host_for_https = host_for_https.split(':', 1)[0]
 
-        if isHttps(host_for_https, port):
-            url = 'https://{0}'.format(url)
-        else:
-            url = 'http://{0}'.format(url)
-
-        self.tsLog('Taking Screenshot of: {0}'.format(str(url)))
-
-        # Use eyewitness under Kali.
-        # Use webdriver if not Kali.
-        # Once eyewitness is more broadly available, the counter case can be eliminated.
-        if isKali():
-            eyewitness_path = "/usr/bin/eyewitness"
-        else:
-            eyewitness_path = "/usr/local/bin/eyewitness"
-
-        import tempfile
-        import subprocess
+        prefer_https = bool(isHttps(host_for_https, port))
+        host_port = str(url)
+        url_candidates = [
+            'https://{0}'.format(host_port),
+            'http://{0}'.format(host_port),
+        ] if prefer_https else [
+            'http://{0}'.format(host_port),
+            'https://{0}'.format(host_port),
+        ]
+        self.tsLog('Taking Screenshot of: {0}'.format(str(url_candidates[0])))
 
         try:
-            tmpOutputfolder = tempfile.mkdtemp(dir=self.outputfolder)
-            if not os.path.isfile(eyewitness_path):
-                raise FileNotFoundError("EyeWitness not found at /usr/bin/eyewitness. Please install it.")
+            capture = None
+            failure_capture = None
+            for current_url in url_candidates:
+                current_capture = run_eyewitness_capture(
+                    url=current_url,
+                    output_parent_dir=self.outputfolder,
+                    delay=5,
+                    use_xvfb=True,
+                    timeout=180,
+                )
+                if current_capture.get("ok"):
+                    capture = current_capture
+                    break
+                failure_capture = current_capture
+                if str(current_capture.get("reason", "") or "") == "eyewitness missing":
+                    break
 
-            command = (
-                'xvfb-run -a {eyewitness} --single {url} --no-prompt --web --delay 5 -d {outputfolder}'
-            ).format(
-                eyewitness=eyewitness_path,
-                url=url,
-                outputfolder=tmpOutputfolder
-            )
-            self.tsLog(f'Executing: {command}')
-            # Flake8: break up long command string if needed
-            p = subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            p.wait()  # wait for command to finish
+            if not capture:
+                failed = failure_capture or {}
+                reason = str(failed.get("reason", "") or "")
+                if reason == "eyewitness missing":
+                    raise FileNotFoundError("EyeWitness executable was not found.")
+                detail = summarize_eyewitness_failure(failed.get("attempts", []))
+                if detail:
+                    raise FileNotFoundError(
+                        f"No screenshot PNG found in EyeWitness output. Last error: {detail}"
+                    )
+                raise FileNotFoundError("No screenshot PNG found in EyeWitness output.")
 
-            screens_dir = os.path.join(tmpOutputfolder, 'screens')
-            if not os.path.isdir(screens_dir):
-                raise FileNotFoundError(f"EyeWitness did not create expected directory: {screens_dir}")
+            command = capture.get("command", [])
+            if command:
+                self.tsLog(f"Executing: {' '.join(command)}")
+            src_path = str(capture.get("screenshot_path", "") or "")
+            if not src_path or not os.path.isfile(src_path):
+                raise FileNotFoundError("EyeWitness did not return a usable screenshot file.")
 
-            files = [f for f in os.listdir(screens_dir) if f.lower().endswith('.png')]
-            if not files:
-                raise FileNotFoundError(f"No screenshot PNG found in {screens_dir}. EyeWitness may have failed.")
-
-            fileName = files[0]
-            # Remove prefix in a way compatible with all Python versions
-            if tmpOutputfolder.startswith(self.outputfolder):
-                rel_tmp = tmpOutputfolder[len(self.outputfolder):].lstrip(os.sep)
-            else:
-                rel_tmp = tmpOutputfolder
-            outputfile = os.path.join(rel_tmp, 'screens', fileName)
+            fileName = os.path.basename(src_path)
+            outputfile = os.path.relpath(src_path, self.outputfolder)
             # Normalize for DB/UI
             normalized_outputfile = outputfile.replace("\\", "/")
             outputfile = normalized_outputfile
@@ -146,7 +146,6 @@ class Screenshooter(QtCore.QThread):
             deterministic_path = os.path.join(self.outputfolder, deterministic_name)
             try:
                 import shutil
-                src_path = os.path.join(tmpOutputfolder, 'screens', fileName)
                 shutil.copy2(src_path, deterministic_path)
                 self.tsLog(
                 f"Copied screenshot to deterministic filename: {deterministic_path}"

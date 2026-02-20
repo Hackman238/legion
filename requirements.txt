@@ -4,6 +4,8 @@ qasync
 SQLAlchemy==1.4.51
 PyQt6
 requests
+Flask
+Flask-Sock
 pyfiglet
 colorama
 termcolor

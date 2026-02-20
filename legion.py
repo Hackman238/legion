@@ -21,6 +21,7 @@ import shutil
 from app.ApplicationInfo import getConsoleLogo
 from app.ProjectManager import ProjectManager
 from app.logging.legionLog import getStartupLogger, getDbLogger, getAppLogger
+from app.paths import ensure_legion_home, get_legion_backup_dir, get_legion_conf_path
 from app.shell.DefaultShell import DefaultShell
 from app.tools.nmap.DefaultNmapExporter import DefaultNmapExporter
 from db.RepositoryFactory import RepositoryFactory
@@ -34,11 +35,14 @@ startupLog = getStartupLogger()
 
 def doPathSetup():
     import os
-    if not os.path.isdir(os.path.expanduser("~/.local/share/legion/backup")):
-        os.makedirs(os.path.expanduser("~/.local/share/legion/backup"))
+    ensure_legion_home()
+    backup_dir = get_legion_backup_dir()
+    conf_path = get_legion_conf_path()
+    if not os.path.isdir(backup_dir):
+        os.makedirs(backup_dir, exist_ok=True)
 
-    if not os.path.exists(os.path.expanduser('~/.local/share/legion/legion.conf')):
-        shutil.copy('./legion.conf', os.path.expanduser('~/.local/share/legion/legion.conf'))
+    if not os.path.exists(conf_path):
+        shutil.copy('./legion.conf', conf_path)
 
 if __name__ == "__main__":
     import argparse
@@ -46,6 +50,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start Legion")
     parser.add_argument("--mcp-server", action="store_true", help="Start MCP server for AI integration")
     parser.add_argument("--headless", action="store_true", help="Run Legion in headless (CLI) mode")
+    parser.add_argument("--web", action="store_true", help="Run Legion with the local Flask web interface")
+    parser.add_argument("--web-port", type=int, default=5000, help="Local web interface port (localhost only)")
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
     parser.add_argument("--discovery", action="store_true", help="Enable host discovery (default: enabled)")
     parser.add_argument("--staged-scan", action="store_true", help="Enable staged scan")
@@ -72,6 +78,18 @@ if __name__ == "__main__":
     cprint(getConsoleLogo())
 
     doPathSetup()
+
+    if args.web:
+        from app.web import create_app
+        from app.web.bootstrap import create_default_logic
+        from app.web.runtime import WebRuntime
+
+        startupLog.info("Starting Legion web interface on http://127.0.0.1:%s", args.web_port)
+        logic = create_default_logic()
+        runtime = WebRuntime(logic)
+        web_app = create_app(runtime)
+        web_app.run(host="127.0.0.1", port=args.web_port, debug=False, use_reloader=False)
+        sys.exit(0)
 
     if args.headless:
         # --- HEADLESS CLI MODE ---
