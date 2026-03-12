@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL="${LEGION_REPO_URL:-https://github.com/Hackman238/legion.git}"
-BRANCH="${LEGION_BRANCH:-main}"
+BRANCH="${LEGION_BRANCH:-master}"
 INSTALL_DIR="${LEGION_DEV_INSTALL_DIR:-$HOME/.local/opt/legion-web-dev}"
 DATA_DIR="${LEGION_DEV_DATA_DIR:-$HOME/.local/share/legion-web-dev}"
 BIN_DIR="${LEGION_DEV_BIN_DIR:-$HOME/.local/bin}"

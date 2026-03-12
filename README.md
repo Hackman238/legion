@@ -41,7 +41,7 @@ Scheduler AI preferences are stored in plaintext at `${LEGION_HOME:-~/.local/sha
 To install a separate development copy on Kali without overwriting the packaged `legion`, use:
 
 ```shell
-curl -fsSL https://raw.githubusercontent.com/Hackman238/legion/main/scripts/install-kali-side-by-side.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Hackman238/legion/master/scripts/install-kali-side-by-side.sh | bash
 ```
 
 This creates:
