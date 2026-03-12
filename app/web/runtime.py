@@ -52,6 +52,7 @@ from app.scheduler.config import SchedulerConfigManager
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
 from app.scheduler.providers import get_provider_logs, test_provider_connection
 from app.scheduler.risk import classify_command_danger
+from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
 from app.settings import AppSettings, Settings
 from app.timing import getTimestamp
 from app.web.jobs import WebJobManager
@@ -178,6 +179,7 @@ _DIG_DEEPER_MAX_RUNTIME_SECONDS = 900
 _DIG_DEEPER_MAX_TOTAL_ACTIONS = 24
 _DIG_DEEPER_TASK_TIMEOUT_SECONDS = 180
 _PROCESS_READER_EXIT_GRACE_SECONDS = 2.0
+_PROCESS_CRASH_MIN_RUNTIME_SECONDS = 5.0
 _AI_HOST_UPDATE_MIN_CONFIDENCE = 70.0
 
 
@@ -4978,8 +4980,9 @@ class WebRuntime:
             screenshots_dir = os.path.join(project.properties.outputFolder, "screenshots")
             os.makedirs(screenshots_dir, exist_ok=True)
 
-        host_port = f"{host_ip}:{port}"
-        prefer_https = bool(isHttps(host_ip, port))
+        target_host = choose_preferred_host(self._hostname_for_ip(host_ip), host_ip)
+        host_port = f"{target_host}:{port}"
+        prefer_https = bool(isHttps(target_host, port))
         url_candidates = [
             f"https://{host_port}",
             f"http://{host_port}",
@@ -5160,7 +5163,25 @@ class WebRuntime:
         killed = False
         flush_due_at = started_at
         elapsed_due_at = started_at
+        last_output_at = started_at
         process_exited_at = None
+
+        def _store_failure_status(status_name: str):
+            if str(status_name) == "Crashed":
+                process_repo.storeProcessCrashStatus(str(process_id))
+            else:
+                process_repo.storeProcessProblemStatus(str(process_id))
+
+        def _classify_nonzero_exit(returncode_value: int, runtime_seconds: float) -> str:
+            try:
+                code = int(returncode_value)
+            except (TypeError, ValueError):
+                return "Problem"
+
+            signal_terminated = code < 0 or 128 <= code <= 192
+            if signal_terminated and float(runtime_seconds) >= float(_PROCESS_CRASH_MIN_RUNTIME_SECONDS):
+                return "Crashed"
+            return "Problem"
 
         def _reader(pipe):
             try:
@@ -5214,6 +5235,8 @@ class WebRuntime:
                         )
 
                 now = time.monotonic()
+                if changed:
+                    last_output_at = now
                 if changed and now >= flush_due_at:
                     self._write_process_output_partial(int(process_id), "".join(output_parts))
                     flush_due_at = now + 0.5
@@ -5244,7 +5267,7 @@ class WebRuntime:
                     except Exception:
                         self._signal_process_tree(proc, force=True)
 
-                if (now - started_at) > int(timeout) and proc.poll() is None:
+                if (now - last_output_at) > int(timeout) and proc.poll() is None:
                     timed_out = True
                     self._signal_process_tree(proc, force=True)
 
@@ -5282,12 +5305,13 @@ class WebRuntime:
                 output_parts.append(str(chunk))
 
             combined_output = "".join(output_parts)
+            runtime_seconds = max(0.0, float((process_exited_at or time.monotonic()) - started_at))
             if timed_out:
-                combined_output += f"\n[timeout after {int(timeout)}s]"
-                process_repo.storeProcessCrashStatus(str(process_id))
+                combined_output += f"\n[timeout after {int(timeout)}s without output]"
+                process_repo.storeProcessProblemStatus(str(process_id))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
-                return False, f"failed: timeout after {int(timeout)}s", int(process_id)
+                return False, f"failed: timeout after {int(timeout)}s without output", int(process_id)
 
             if killed:
                 process_repo.storeProcessKillStatus(str(process_id))
@@ -5296,7 +5320,7 @@ class WebRuntime:
                 return False, "killed", int(process_id)
 
             if int(proc.returncode or 0) != 0:
-                process_repo.storeProcessCrashStatus(str(process_id))
+                _store_failure_status(_classify_nonzero_exit(proc.returncode, runtime_seconds))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
                 return False, f"failed: exit {proc.returncode}", int(process_id)
@@ -5313,7 +5337,7 @@ class WebRuntime:
             process_repo.storeProcessOutput(str(process_id), combined_output)
             return True, "completed", int(process_id)
         except Exception as exc:
-            process_repo.storeProcessCrashStatus(str(process_id))
+            process_repo.storeProcessProblemStatus(str(process_id))
             try:
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
             except Exception:
@@ -5753,7 +5777,7 @@ class WebRuntime:
         for row in trimmed:
             status = str(row.get("status", "") or "")
             status_lower = status.strip().lower()
-            terminal = status_lower in {"finished", "crashed", "cancelled", "killed", "failed"}
+            terminal = status_lower in {"finished", "crashed", "problem", "cancelled", "killed", "failed"}
             estimated_remaining = row.get("estimatedRemaining", 0)
             if terminal:
                 estimated_remaining = 0
@@ -6044,6 +6068,15 @@ class WebRuntime:
             return ""
         return str(action[2])
 
+    def _hostname_for_ip(self, host_ip: str) -> str:
+        try:
+            project = self._require_active_project()
+            host_repo = getattr(getattr(project, "repositoryContainer", None), "hostRepository", None)
+            host_obj = host_repo.getHostByIP(str(host_ip)) if host_repo else None
+            return str(getattr(host_obj, "hostname", "") or "")
+        except Exception:
+            return ""
+
     def _build_command(self, template: str, host_ip: str, port: str, protocol: str, tool_id: str) -> Tuple[str, str]:
         project = self._require_active_project()
         running_folder = project.properties.runningFolder
@@ -6059,9 +6092,14 @@ class WebRuntime:
             normalized_tool = str(tool_id or "").strip().lower()
             scheme = "https" if "https-wapiti" in normalized_tool else "http"
             command = AppSettings._ensure_wapiti_command(command, scheme=scheme)
-        command = command.replace("[IP]", str(host_ip)).replace("[PORT]", str(port)).replace("[OUTPUT]", outputfile)
-        if "nmap" in command and "-oA" not in command:
-            command = f"{command} -oA {outputfile}"
+        command, _target_host = apply_preferred_target_placeholders(
+            command,
+            hostname=self._hostname_for_ip(host_ip),
+            ip=str(host_ip),
+            port=str(port),
+            output=outputfile,
+        )
+        command = AppSettings._ensure_nmap_output_argument(command, outputfile)
         if "nmap" in command and str(protocol).lower() == "udp":
             command = command.replace("-sV", "-sVU")
         return command, outputfile

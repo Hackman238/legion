@@ -70,6 +70,8 @@ class SettingsMigrationTest(unittest.TestCase):
                 port_actions = {row[1]: row for row in app_settings.getPortActions()}
                 nuclei_cmd = str(port_actions["nuclei-web"][2])
                 self.assertIn("nuclei -as", nuclei_cmd)
+                self.assertNotIn("-silent", nuclei_cmd)
+                self.assertNotIn("-no-color", nuclei_cmd)
 
                 scheduler_ids = {row[0] for row in app_settings.getSchedulerSettings()}
                 self.assertIn("web-content-discovery", scheduler_ids)
@@ -91,6 +93,8 @@ class SettingsMigrationTest(unittest.TestCase):
         self.assertIn("/tmp/scan-nuclei-web-1.2.3.4.txt", normalized)
         self.assertNotIn("nuclei -as >/dev/null", normalized)
         self.assertNotIn("nuclei -as-web", normalized)
+        self.assertNotIn("-silent", normalized)
+        self.assertNotIn("-no-color", normalized)
 
     def test_wapiti_normalization_fixes_missing_url_argument_and_inserts_port(self):
         from app.settings import AppSettings
@@ -184,12 +188,32 @@ class SettingsMigrationTest(unittest.TestCase):
                 vuln_command = str(port_actions["nmap-vuln.nse"][2])
                 self.assertIn("--script=vuln,vulners", vuln_command)
                 self.assertIn("||", vuln_command)
+                self.assertEqual(vuln_command.count("-oA [OUTPUT]"), 2)
 
                 scheduler_actions = {row[0]: row for row in app_settings.getSchedulerSettings()}
                 screenshooter_scope = str(scheduler_actions["screenshooter"][1])
                 self.assertIn("ms-wbt-server", screenshooter_scope)
                 self.assertIn("vmrdp", screenshooter_scope)
                 self.assertIn("vnc", screenshooter_scope)
+
+    def test_nmap_output_normalization_adds_output_to_grouped_commands_only(self):
+        from app.settings import AppSettings
+
+        grouped = (
+            "(nmap -Pn -n -sV -p [PORT] --script=vuln,vulners [IP] || "
+            "nmap -Pn -n -sV -p [PORT] --script=vuln [IP])"
+        )
+        normalized = AppSettings._ensure_nmap_output_argument(grouped, "[OUTPUT]")
+
+        self.assertEqual(normalized.count("-oA [OUTPUT]"), 2)
+        self.assertNotIn(") -oA [OUTPUT]", normalized)
+
+        wrapped = "(command -v nmap >/dev/null 2>&1 && nmap -Pn [IP]) || echo nmap not found"
+        wrapped_normalized = AppSettings._ensure_nmap_output_argument(wrapped, "[OUTPUT]")
+
+        self.assertIn("command -v nmap >/dev/null 2>&1", wrapped_normalized)
+        self.assertIn("&& nmap -Pn [IP] -oA [OUTPUT])", wrapped_normalized)
+        self.assertNotIn("command -v nmap >/dev/null 2>&1 -oA [OUTPUT]", wrapped_normalized)
 
 
 if __name__ == "__main__":

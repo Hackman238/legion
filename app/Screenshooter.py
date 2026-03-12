@@ -78,10 +78,6 @@ class Screenshooter(QtCore.QThread):
             self.run()
 
     def save(self, url, ip, port, outputfile):
-        # Handle single node URI case by pivot to IP
-        if len(str(url).split('.')) == 1:
-            url = '{0}:{1}'.format(str(ip), str(port))
-
         host_for_https = str(url)
         if '://' in host_for_https:
             host_for_https = host_for_https.split('://', 1)[1]

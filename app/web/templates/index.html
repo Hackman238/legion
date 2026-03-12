@@ -228,7 +228,7 @@
             <p id="process-count">{{ snapshot.processes | length }}</p>
         </div>
         <div class="scheduler-actions">
-            <button id="process-clear-finished-button" type="button">Hide Finished/Failed</button>
+            <button id="process-clear-finished-button" type="button">Hide Finished/Issues</button>
             <button id="process-clear-all-button" type="button">Hide All Non-Running</button>
         </div>
         <div class="table-wrap">
@@ -501,7 +501,7 @@
         </div>
         <label>
             Output
-            <textarea id="process-output-text" rows="18" readonly></textarea>
+            <div id="process-output-text" class="ansi-output-view" role="textbox" aria-readonly="true"></div>
         </label>
     </div>
 </div>
@@ -530,7 +530,7 @@
         </div>
         <label>
             Output
-            <textarea id="script-output-text" rows="18" readonly></textarea>
+            <div id="script-output-text" class="ansi-output-view" role="textbox" aria-readonly="true"></div>
         </label>
     </div>
 </div>
@@ -1099,7 +1099,7 @@
         </div>
         <label>
             Log Output
-            <textarea id="provider-logs-text" rows="20" readonly></textarea>
+            <div id="provider-logs-text" class="ansi-output-view" role="textbox" aria-readonly="true"></div>
         </label>
     </div>
 </div>

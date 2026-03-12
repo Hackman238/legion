@@ -249,7 +249,7 @@ class ProcessRepository:
             proc.endTime = getTimestamp(True)
             proc.estimatedRemaining = 0
 
-            if proc.status not in {"Killed", "Cancelled", "Crashed"}:
+            if proc.status not in {"Killed", "Cancelled", "Crashed", "Problem"}:
                 proc.status = 'Finished'
                 proc.percent = "100"
             session.add(proc)
@@ -391,6 +391,17 @@ class ProcessRepository:
         proc = session.query(process).filter_by(id=processId).first()
         if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
             proc.status = 'Crashed'
+            proc.endTime = getTimestamp(True)
+            proc.estimatedRemaining = 0
+            session.add(proc)
+            session.commit()
+        session.close()
+
+    def storeProcessProblemStatus(self, processId: str):
+        session = self.dbAdapter.session()
+        proc = session.query(process).filter_by(id=processId).first()
+        if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
+            proc.status = 'Problem'
             proc.endTime = getTimestamp(True)
             proc.estimatedRemaining = 0
             session.add(proc)

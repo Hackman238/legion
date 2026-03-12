@@ -13,6 +13,7 @@ const processOutputState = {
     offset: 0,
     complete: true,
     status: "",
+    text: "",
     modalOpen: false,
     refreshTimer: null,
     refreshInFlight: false,
@@ -145,6 +146,177 @@ function makeCell(value) {
     return td;
 }
 
+const ANSI_FG_CLASS_BY_CODE = {
+    30: "ansi-fg-black",
+    31: "ansi-fg-red",
+    32: "ansi-fg-green",
+    33: "ansi-fg-yellow",
+    34: "ansi-fg-blue",
+    35: "ansi-fg-magenta",
+    36: "ansi-fg-cyan",
+    37: "ansi-fg-white",
+    90: "ansi-fg-bright-black",
+    91: "ansi-fg-bright-red",
+    92: "ansi-fg-bright-green",
+    93: "ansi-fg-bright-yellow",
+    94: "ansi-fg-bright-blue",
+    95: "ansi-fg-bright-magenta",
+    96: "ansi-fg-bright-cyan",
+    97: "ansi-fg-bright-white",
+};
+
+const ANSI_BG_CLASS_BY_CODE = {
+    40: "ansi-bg-black",
+    41: "ansi-bg-red",
+    42: "ansi-bg-green",
+    43: "ansi-bg-yellow",
+    44: "ansi-bg-blue",
+    45: "ansi-bg-magenta",
+    46: "ansi-bg-cyan",
+    47: "ansi-bg-white",
+    100: "ansi-bg-bright-black",
+    101: "ansi-bg-bright-red",
+    102: "ansi-bg-bright-green",
+    103: "ansi-bg-bright-yellow",
+    104: "ansi-bg-bright-blue",
+    105: "ansi-bg-bright-magenta",
+    106: "ansi-bg-bright-cyan",
+    107: "ansi-bg-bright-white",
+};
+
+function escapeHtml(text) {
+    return String(text || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function resetAnsiState(state) {
+    state.bold = false;
+    state.fg = "";
+    state.bg = "";
+}
+
+function applyAnsiSgrCodes(codes, state) {
+    const values = Array.isArray(codes) && codes.length ? codes : [0];
+    for (let index = 0; index < values.length; index += 1) {
+        const code = Number(values[index]);
+        if (!Number.isFinite(code)) {
+            continue;
+        }
+        if (code === 0) {
+            resetAnsiState(state);
+            continue;
+        }
+        if (code === 1) {
+            state.bold = true;
+            continue;
+        }
+        if (code === 22) {
+            state.bold = false;
+            continue;
+        }
+        if (code === 39) {
+            state.fg = "";
+            continue;
+        }
+        if (code === 49) {
+            state.bg = "";
+            continue;
+        }
+        if (ANSI_FG_CLASS_BY_CODE[code]) {
+            state.fg = ANSI_FG_CLASS_BY_CODE[code];
+            continue;
+        }
+        if (ANSI_BG_CLASS_BY_CODE[code]) {
+            state.bg = ANSI_BG_CLASS_BY_CODE[code];
+            continue;
+        }
+        if (code === 38 || code === 48 || code === 58) {
+            const mode = Number(values[index + 1]);
+            if (mode === 5) {
+                index += 2;
+            } else if (mode === 2) {
+                index += 4;
+            }
+        }
+    }
+}
+
+function ansiClassesForState(state) {
+    const classes = ["ansi-segment"];
+    if (state.bold) {
+        classes.push("ansi-bold");
+    }
+    if (state.fg) {
+        classes.push(state.fg);
+    }
+    if (state.bg) {
+        classes.push(state.bg);
+    }
+    return classes.join(" ");
+}
+
+function ansiTextToHtml(text) {
+    const raw = String(text || "").replace(/\r\n/g, "\n");
+    const sgrPattern = /\u001b\[([0-9;]*)m/g;
+    const state = {bold: false, fg: "", bg: ""};
+    let cursor = 0;
+    let html = "";
+
+    raw.replace(sgrPattern, (match, params, offset) => {
+        if (offset > cursor) {
+            const chunk = raw.slice(cursor, offset);
+            html += `<span class="${ansiClassesForState(state)}">${escapeHtml(chunk)}</span>`;
+        }
+        const codes = String(params || "")
+            .split(";")
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0)
+            .map((value) => parseInt(value, 10))
+            .filter((value) => Number.isFinite(value));
+        applyAnsiSgrCodes(codes, state);
+        cursor = offset + match.length;
+        return match;
+    });
+
+    if (cursor < raw.length) {
+        html += `<span class="${ansiClassesForState(state)}">${escapeHtml(raw.slice(cursor))}</span>`;
+    }
+
+    return html || "";
+}
+
+function renderAnsiOutput(nodeId, text) {
+    const node = document.getElementById(nodeId);
+    if (!node) {
+        return;
+    }
+    const nearBottom = Math.abs((node.scrollTop + node.clientHeight) - node.scrollHeight) < 24;
+    node.innerHTML = ansiTextToHtml(text || "");
+    if (nearBottom) {
+        node.scrollTop = node.scrollHeight;
+    }
+}
+
+function formatTargetLabel(host, port = "", protocol = "") {
+    const hostText = String(host || "").trim();
+    const portText = String(port || "").trim();
+    const protocolText = String(protocol || "").trim();
+    if (!portText && !protocolText) {
+        return hostText;
+    }
+    if (!protocolText) {
+        return `${hostText}:${portText}`;
+    }
+    if (!portText) {
+        return hostText ? `${hostText}/${protocolText}` : `/${protocolText}`;
+    }
+    return `${hostText}:${portText}/${protocolText}`;
+}
+
 function summarizeBannerText(raw, maxLen = 160) {
     const normalized = String(raw || "").replace(/\s+/g, " ").trim();
     if (!normalized) {
@@ -203,6 +375,20 @@ function isProcessRunning(status) {
     return normalized === "running" || normalized === "waiting";
 }
 
+function getProcessStatusClass(status) {
+    const normalized = String(status || "").trim().toLowerCase();
+    if (normalized === "running") {
+        return "process-status-running";
+    }
+    if (normalized === "crashed") {
+        return "process-status-crashed";
+    }
+    if (normalized === "problem") {
+        return "process-status-problem";
+    }
+    return "";
+}
+
 function setActionStatus(text, isError = false) {
     const node = document.getElementById("action-status");
     if (!node) {
@@ -242,6 +428,81 @@ function renderProject(project) {
     }
 }
 
+function clearHostDetailView({resetForms = true} = {}) {
+    workspaceState.hostDetail = null;
+    setText("host-detail-name", "");
+    setValue("workspace-note", "");
+    setValue("workspace-tool-host-ip", "");
+
+    if (resetForms) {
+        setValue("workspace-tool-port", "");
+        setValue("workspace-tool-protocol", "tcp");
+        setValue("workspace-script-id", "");
+        setValue("workspace-script-port", "");
+        setValue("workspace-script-protocol", "tcp");
+        setValue("workspace-script-output", "");
+        setValue("workspace-cve-name", "");
+        setValue("workspace-cve-severity", "");
+    }
+
+    [
+        "host-detail-ports",
+        "host-detail-scripts",
+        "host-detail-cves",
+        "host-detail-ai-technologies",
+        "host-detail-ai-findings",
+        "host-detail-ai-manual-tests",
+        "host-detail-screenshots",
+    ].forEach((id) => {
+        const node = document.getElementById(id);
+        if (node) {
+            node.innerHTML = "";
+        }
+    });
+
+    setText("host-ai-analysis-status", "");
+    setText("host-ai-tech-count", 0);
+    setText("host-ai-finding-count", 0);
+    setText("host-ai-manual-count", 0);
+    setText("host-screenshot-count", 0);
+}
+
+function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {}) {
+    workspaceState.hosts = [];
+    workspaceState.services = [];
+    workspaceState.tools = [];
+    workspaceState.toolsHydrated = false;
+    workspaceState.toolsLoading = false;
+    workspaceState.selectedHostId = null;
+    workspaceState.hostDetail = null;
+
+    renderSummary({
+        hosts: 0,
+        open_ports: 0,
+        services: 0,
+        cves: 0,
+        running_processes: 0,
+        finished_processes: 0,
+    });
+    renderHosts([]);
+    renderServices([]);
+    renderTools([]);
+    renderProcesses([]);
+    renderDecisions([]);
+    renderApprovals([]);
+    renderJobs([]);
+    clearHostDetailView({resetForms: true});
+    closeProcessOutputModal(true);
+    closeScriptOutputModal(true);
+    closeScreenshotModal(true);
+    closeHostRemoveModalAction(true);
+
+    if (clearProjectPaths) {
+        setValue("project-open-path", "");
+        setValue("project-save-path", "");
+    }
+}
+
 function renderHostSelector(hosts) {
     const select = document.getElementById("workspace-host-select");
     if (!select) {
@@ -259,6 +520,7 @@ function renderHostSelector(hosts) {
 
     if (!hosts.length) {
         workspaceState.selectedHostId = null;
+        clearHostDetailView({resetForms: true});
         return;
     }
 
@@ -422,11 +684,15 @@ function renderProcesses(processes) {
         tr.dataset.processId = String(process.id || "");
         tr.appendChild(makeCell(process.id));
         tr.appendChild(makeCell(process.name));
-        const target = `${process.hostIp || ""}:${process.port || ""}/${process.protocol || ""}`;
+        const target = formatTargetLabel(process.hostIp, process.port, process.protocol);
         tr.appendChild(makeCell(target));
         const statusCell = document.createElement("td");
         const statusWrap = document.createElement("span");
         statusWrap.className = "process-status";
+        const statusClass = getProcessStatusClass(process.status);
+        if (statusClass) {
+            statusWrap.classList.add(statusClass);
+        }
         if (isProcessRunning(process.status)) {
             const spinner = document.createElement("span");
             spinner.className = "process-spinner";
@@ -491,7 +757,8 @@ function setProcessOutputMeta(text) {
 }
 
 function setProcessOutputText(text) {
-    setValue("process-output-text", text || "");
+    processOutputState.text = String(text || "");
+    renderAnsiOutput("process-output-text", processOutputState.text);
 }
 
 function setProcessOutputCommand(text) {
@@ -503,7 +770,8 @@ function setScriptOutputMeta(text) {
 }
 
 function setScriptOutputText(text) {
-    setValue("script-output-text", text || "");
+    scriptOutputState.output = String(text || "");
+    renderAnsiOutput("script-output-text", scriptOutputState.output);
 }
 
 function setScriptOutputCommand(text) {
@@ -645,15 +913,18 @@ async function applyStartupProjectStep() {
         if (!path) {
             throw new Error("Existing project path is required.");
         }
-        await postJson("/api/project/open", {path});
+        const body = await postJson("/api/project/open", {path});
+        resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: false});
+        setValue("project-save-path", "");
+        renderProject(body?.project || {});
         setValue("project-open-path", path);
         startupWizardState.summary.project = `opened ${path}`;
     } else {
-        await postJson("/api/project/new-temp", {});
+        const body = await postJson("/api/project/new-temp", {});
+        resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: true});
+        renderProject(body?.project || {});
         startupWizardState.summary.project = "created new temporary project";
     }
-    workspaceState.selectedHostId = null;
-    workspaceState.hostDetail = null;
     await Promise.all([pollSnapshot(), refreshWorkspace(), loadApprovals()]);
 }
 
@@ -1130,7 +1401,7 @@ async function restoreWorkspaceBundleSelectedAction(event) {
         }
 
         setActionStatus("Workspace restored");
-        workspaceState.hostDetail = null;
+        resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: false});
         await refreshWorkspace();
         await Promise.all([pollSnapshot(), loadApprovals()]);
     } catch (err) {
@@ -1346,6 +1617,7 @@ function closeProcessOutputModal(resetSelection = true) {
         processOutputState.offset = 0;
         processOutputState.complete = true;
         processOutputState.status = "";
+        processOutputState.text = "";
         setProcessOutputMeta("No process selected");
         setProcessOutputCommand("");
         setProcessOutputText("");
@@ -1483,7 +1755,7 @@ async function refreshProcessOutputAction(force = false, reset = false) {
 }
 
 async function copyProcessOutputAction() {
-    const text = getValue("process-output-text");
+    const text = processOutputState.text || "";
     await copyTextToClipboard(text, "Process output copied to clipboard", "No process output to copy");
 }
 
@@ -1494,7 +1766,7 @@ async function copyProcessCommandAction() {
 }
 
 async function copyScriptOutputAction() {
-    const text = getValue("script-output-text");
+    const text = scriptOutputState.output || "";
     await copyTextToClipboard(text, "Script output copied to clipboard", "No script output to copy");
 }
 
@@ -1556,7 +1828,7 @@ async function copyTextToClipboard(text, successMessage, emptyMessage) {
 }
 
 function downloadProcessOutputAction() {
-    const text = getValue("process-output-text");
+    const text = processOutputState.text || "";
     if (!text) {
         setWorkspaceStatus("No process output to download", true);
         return;
@@ -1575,7 +1847,7 @@ function downloadProcessOutputAction() {
 }
 
 function downloadScriptOutputAction() {
-    const text = getValue("script-output-text");
+    const text = scriptOutputState.output || "";
     if (!text) {
         setWorkspaceStatus("No script output to download", true);
         return;
@@ -1628,7 +1900,7 @@ async function loadProviderLogsAction() {
         const payload = await fetchJson("/api/scheduler/provider/logs?limit=400");
         providerLogsState.text = String(payload.text || "");
         providerLogsState.count = Array.isArray(payload.logs) ? payload.logs.length : 0;
-        setValue("provider-logs-text", providerLogsState.text);
+        renderAnsiOutput("provider-logs-text", providerLogsState.text);
         setText(
             "provider-logs-meta",
             `Entries ${providerLogsState.count} | bytes ${providerLogsState.text.length}`
@@ -1636,19 +1908,19 @@ async function loadProviderLogsAction() {
     } catch (err) {
         const message = `Failed to load provider logs: ${err.message}`;
         providerLogsState.text = message;
-        setValue("provider-logs-text", message);
+        renderAnsiOutput("provider-logs-text", message);
         setText("provider-logs-meta", "Load failed");
         setWorkspaceStatus(message, true);
     }
 }
 
 async function copyProviderLogsAction() {
-    const text = getValue("provider-logs-text");
+    const text = providerLogsState.text || "";
     await copyTextToClipboard(text, "Provider logs copied to clipboard", "No provider logs to copy");
 }
 
 function downloadProviderLogsAction() {
-    const text = getValue("provider-logs-text");
+    const text = providerLogsState.text || "";
     if (!text) {
         setWorkspaceStatus("No provider logs to download", true);
         return;
@@ -1750,7 +2022,7 @@ async function loadProcessOutput(processId, reset = true) {
     setProcessOutputCommand(payload.command || "");
     const chunk = payload.output_chunk || "";
     const nextOffset = Number(payload.next_offset || 0);
-    const current = getValue("process-output-text");
+    const current = processOutputState.text || "";
     if (chunk) {
         setProcessOutputText(`${current}${chunk}`);
     } else if (reset && payload.output) {
@@ -1800,7 +2072,7 @@ async function closeProcessAction(processId) {
 async function clearProcessesAction(resetAll) {
     try {
         await postJson("/api/processes/clear", {reset_all: Boolean(resetAll)});
-        setWorkspaceStatus(resetAll ? "Hidden all non-running processes" : "Hidden finished/failed processes");
+        setWorkspaceStatus(resetAll ? "Hidden all non-running processes" : "Hidden finished/issues processes");
         await pollSnapshot();
     } catch (err) {
         setWorkspaceStatus(`Clear failed: ${err.message}`, true);
@@ -1848,7 +2120,7 @@ function renderDecisions(decisions) {
     body.innerHTML = "";
     (decisions || []).forEach((decision) => {
         const tr = document.createElement("tr");
-        const target = `${decision.host_ip || ""}:${decision.port || ""}/${decision.protocol || ""}`;
+        const target = formatTargetLabel(decision.host_ip, decision.port, decision.protocol);
         tr.appendChild(makeCell(decision.timestamp || ""));
         tr.appendChild(makeCell(target));
         tr.appendChild(makeCell(decision.tool_id || decision.label || ""));
@@ -1897,7 +2169,7 @@ function renderApprovals(approvals) {
         actionsCell.appendChild(rejectBtn);
         actionsCell.appendChild(familyLabel);
 
-        const target = `${item.host_ip || ""}:${item.port || ""}/${item.protocol || ""}`;
+        const target = formatTargetLabel(item.host_ip, item.port, item.protocol);
         tr.appendChild(makeCell(item.id || ""));
         tr.appendChild(makeCell(target));
         tr.appendChild(makeCell(item.tool_id || item.label || ""));
@@ -2849,9 +3121,10 @@ async function testSchedulerProviderAction(event) {
 async function createNewTemporaryProject() {
     setActionStatus("Creating temporary project...");
     try {
-        await postJson("/api/project/new-temp", {});
+        const body = await postJson("/api/project/new-temp", {});
         setActionStatus("Created temporary project");
-        workspaceState.hostDetail = null;
+        resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: true});
+        renderProject(body?.project || {});
         await refreshWorkspace();
         await Promise.all([pollSnapshot(), loadApprovals()]);
     } catch (err) {
@@ -2867,9 +3140,11 @@ async function openProject() {
     }
     setActionStatus("Opening project...");
     try {
-        await postJson("/api/project/open", {path});
+        const body = await postJson("/api/project/open", {path});
         setActionStatus("Project opened");
-        workspaceState.hostDetail = null;
+        resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: false});
+        setValue("project-save-path", "");
+        renderProject(body?.project || {});
         await refreshWorkspace();
         await Promise.all([pollSnapshot(), loadApprovals()]);
     } catch (err) {

@@ -73,6 +73,39 @@ class ProcessRepositoryStoreOutputTest(unittest.TestCase):
         self.assertEqual(0, mock_proc.estimatedRemaining)
         self.session.commit.assert_called_once()
 
+    def test_storeProcessProblemStatus_sets_eta_to_zero(self):
+        mock_proc = MagicMock()
+        mock_proc.status = "Running"
+        query = MagicMock()
+        query.filter_by.return_value.first.return_value = mock_proc
+        self.session.query.return_value = query
+
+        self.repository.storeProcessProblemStatus("20")
+
+        self.assertEqual("Problem", mock_proc.status)
+        self.assertEqual(0, mock_proc.estimatedRemaining)
+        self.session.commit.assert_called_once()
+
+    def test_storeProcessOutput_keeps_problem_status(self):
+        mock_proc = MagicMock()
+        mock_proc.status = "Problem"
+
+        proc_query = MagicMock()
+        proc_query.filter_by.return_value.first.return_value = mock_proc
+
+        mock_output = MagicMock()
+        output_query = MagicMock()
+        output_query.filter_by.return_value.first.return_value = mock_output
+
+        self.session.query.side_effect = [proc_query, output_query]
+
+        result = self.repository.storeProcessOutput("13", "problem output")
+
+        self.assertTrue(result)
+        self.assertEqual("Problem", mock_proc.status)
+        self.assertEqual(0, mock_proc.estimatedRemaining)
+        self.session.commit.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

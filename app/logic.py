@@ -28,6 +28,7 @@ import sys
 from app.Project import Project
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.logging.legionLog import getAppLogger
+from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
 from app.tools.ToolCoordinator import ToolCoordinator
 from app.shell.Shell import Shell
 from app.tools.nmap.NmapPaths import getNmapOutputFolder
@@ -88,7 +89,7 @@ class Logic:
         hosts = repo_container.hostRepository.getAllHostObjs()
         for host in hosts:
             ip = getattr(host, "ip", None)
-            # hostname = getattr(host, "hostname", None)
+            hostname = getattr(host, "hostname", None)
             if not ip:
                 continue
             # For each port
@@ -127,8 +128,9 @@ class Logic:
 
                     if decision.tool_id == "screenshooter":
                         try:
-                            url = f"{ip}:{port_num}"
-                            if isHttps(ip, port_num):
+                            target_host = choose_preferred_host(hostname, ip)
+                            url = f"{target_host}:{port_num}"
+                            if isHttps(target_host, port_num):
                                 url = f"https://{url}"
                             else:
                                 url = f"http://{url}"
@@ -208,11 +210,16 @@ class Logic:
                         command_template = AppSettings._ensure_nuclei_auto_scan(command_template)
                     if str(decision.tool_id).strip().lower() == "web-content-discovery":
                         command_template = AppSettings._ensure_web_content_discovery_command(command_template)
-                    command = command_template.replace("[IP]", ip).replace("[PORT]", port_num)
                     runningFolder = self.activeProject.properties.runningFolder
                     outputfile = os.path.join(runningFolder, f"{getTimestamp()}-{decision.tool_id}-{ip}-{port_num}")
                     outputfile = os.path.normpath(outputfile).replace("\\", "/")
-                    command = command.replace("[OUTPUT]", outputfile)
+                    command, _target_host = apply_preferred_target_placeholders(
+                        command_template,
+                        hostname=str(hostname or ""),
+                        ip=str(ip),
+                        port=port_num,
+                        output=outputfile,
+                    )
                     print(f"[+] Running tool '{decision.tool_id}' for {ip}:{port_num}/{protocol}: {command}")
                     try:
                         result = subprocess.run(

@@ -63,13 +63,13 @@ class AppSettings():
         "echo feroxbuster/gobuster not found"
     )
     NMAP_VULN_COMMAND = (
-        "(nmap -Pn -n -sV -p [PORT] --script=vuln,vulners --stats-every 15s [IP] || "
-        "nmap -Pn -n -sV -p [PORT] --script=vuln --stats-every 15s [IP])"
+        "(nmap -Pn -n -sV -p [PORT] --script=vuln,vulners --stats-every 15s [IP] -oA [OUTPUT] || "
+        "nmap -Pn -n -sV -p [PORT] --script=vuln --stats-every 15s [IP] -oA [OUTPUT])"
     )
     NUCLEI_WEB_COMMAND = (
         "(command -v nuclei >/dev/null 2>&1 && "
-        "(nuclei -as -u https://[IP]:[PORT] -ni -silent -no-color -o [OUTPUT].txt || "
-        "nuclei -as -u http://[IP]:[PORT] -ni -silent -no-color -o [OUTPUT].txt)) || "
+        "(nuclei -as -u https://[IP]:[PORT] -ni -o [OUTPUT].txt || "
+        "nuclei -as -u http://[IP]:[PORT] -ni -o [OUTPUT].txt)) || "
         "echo nuclei not found"
     )
     NIKTO_COMMAND = "nikto -o [OUTPUT].txt -p [PORT] -h [IP] -C all"
@@ -309,7 +309,11 @@ class AppSettings():
             return raw
         # Only patch direct scan invocations (`nuclei -u ...`), not probe checks
         # like `command -v nuclei` and not tokens embedded in output filenames.
-        return re.sub(r"(?i)\bnuclei\b(?!\s+-as\b)(?=\s+-u\b)", "nuclei -as", raw)
+        normalized = re.sub(r"(?i)\bnuclei\b(?!\s+-as\b)(?=\s+-u\b)", "nuclei -as", raw)
+        normalized = re.sub(r"(?i)(?<!\S)--?silent\b", "", normalized)
+        normalized = re.sub(r"(?i)(?<!\S)--?no-color\b", "", normalized)
+        normalized = re.sub(r"[ \t]{2,}", " ", normalized)
+        return normalized
 
     @staticmethod
     def _ensure_nmap_vuln_command(command: str) -> str:
@@ -319,28 +323,98 @@ class AppSettings():
         if "vuln" not in raw.lower():
             return raw
 
-        if "||" in raw and "vulners" in raw.lower():
+        normalized = raw
+        if "||" not in raw or "vulners" not in raw.lower():
+            with_vulners = re.sub(
+                r"(?i)--script(?:=|\s+)vuln\b",
+                "--script=vuln,vulners",
+                raw,
+                count=1,
+            )
+            if with_vulners == raw and "vulners" not in raw.lower():
+                return raw
+
+            fallback = re.sub(
+                r"(?i)--script(?:=|\s+)vuln(?:,vulners)?\b",
+                "--script=vuln",
+                with_vulners,
+                count=1,
+            )
+
+            if with_vulners == fallback:
+                normalized = with_vulners
+            else:
+                normalized = f"({with_vulners} || {fallback})"
+
+        return AppSettings._ensure_nmap_output_argument(normalized, "[OUTPUT]")
+
+    @staticmethod
+    def _ensure_nmap_output_argument(command: str, output_target: str) -> str:
+        raw = str(command or "")
+        output = str(output_target or "").strip()
+        if "nmap" not in raw.lower() or not output:
             return raw
 
-        with_vulners = re.sub(
-            r"(?i)--script(?:=|\s+)vuln\b",
-            "--script=vuln,vulners",
-            raw,
-            count=1,
-        )
-        if with_vulners == raw and "vulners" not in raw.lower():
-            return raw
+        separators = {"||", "&&", ";", "|", "(", ")", "\n"}
+        parts = []
+        start = 0
+        index = 0
+        quote = ""
+        escaped = False
 
-        fallback = re.sub(
-            r"(?i)--script(?:=|\s+)vuln(?:,vulners)?\b",
-            "--script=vuln",
-            with_vulners,
-            count=1,
-        )
+        while index < len(raw):
+            char = raw[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+            if char == "\\" and quote != "'":
+                escaped = True
+                index += 1
+                continue
+            if quote:
+                if char == quote:
+                    quote = ""
+                index += 1
+                continue
+            if char in ("'", '"'):
+                quote = char
+                index += 1
+                continue
+            if raw.startswith("||", index) or raw.startswith("&&", index):
+                parts.append(raw[start:index])
+                parts.append(raw[index:index + 2])
+                index += 2
+                start = index
+                continue
+            if char in ";|()\n":
+                parts.append(raw[start:index])
+                parts.append(char)
+                index += 1
+                start = index
+                continue
+            index += 1
+        parts.append(raw[start:])
 
-        if with_vulners == fallback:
-            return with_vulners
-        return f"({with_vulners} || {fallback})"
+        updated_parts = []
+        nmap_prefix = re.compile(r"(?i)^(?:(?:sudo|doas|env|timeout|nice|ionice)\b[^\n;|&()]*?\s+)*nmap\b")
+        has_output = re.compile(r"(?i)(?:^|\s)-oA(?:\s|$)")
+
+        for part in parts:
+            if part in separators:
+                updated_parts.append(part)
+                continue
+
+            stripped = part.strip()
+            if not stripped or has_output.search(stripped) or not nmap_prefix.match(stripped):
+                updated_parts.append(part)
+                continue
+
+            leading = part[:len(part) - len(part.lstrip())]
+            trailing = part[len(part.rstrip()):]
+            updated_parts.append(f"{leading}{stripped} -oA {output}{trailing}")
+
+        return "".join(updated_parts)
 
     @staticmethod
     def _ensure_scope_contains_services(scope: str, required_services):

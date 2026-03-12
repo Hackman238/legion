@@ -115,6 +115,10 @@ class ProcessRepositoryTest(unittest.TestCase):
             self):
         self.whenProcessDoesNotFinishGracefully("Crashed")
 
+    def test_storeProcessOutput_WhenProvidedExistingProcessIdAndOutputButProcProblem_StoresOutputButStatusNotUpdated(
+            self):
+        self.whenProcessDoesNotFinishGracefully("Problem")
+
     def test_getStatusByProcessId_WhenGivenProcId_FetchesProcessStatus(self):
         expectedQuery = 'SELECT process.status FROM process AS process WHERE process.id=?'
         self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll([['Running']])
@@ -188,6 +192,11 @@ class ProcessRepositoryTest(unittest.TestCase):
         self.mockProcessStatusAndReturnSingle("Running")
         self.processRepository.storeProcessCancelStatus("some-process-id")
         self.assertProcessStatusUpdatedTo("Cancelled")
+
+    def test_storeProcessProblemStatus_WhenProvidedProcessId_StoresProcessProblemStatus(self):
+        self.mockProcessStatusAndReturnSingle("Running")
+        self.processRepository.storeProcessProblemStatus("some-process-id")
+        self.assertProcessStatusUpdatedTo("Problem")
 
     def test_storeProcessRunningStatus_WhenProvidedProcessId_StoresProcessRunningStatus(self):
         self.mockProcessStatusAndReturnSingle("Waiting")
@@ -288,7 +297,7 @@ class ProcessRepositoryTest(unittest.TestCase):
     def assertProcessStatusUpdatedTo(self, expected_status: str):
         self.assertEqual(expected_status, self.mockProcess.status)
         self.mockDbSession.add.assert_called_once_with(self.mockProcess)
-        self.mockDbAdapter.commit.assert_called_once()
+        self.mockDbSession.commit.assert_called_once()
 
     def whenProcessDoesNotFinishGracefully(self, process_status: str):
         from db.entities.process import process
@@ -302,5 +311,5 @@ class ProcessRepositoryTest(unittest.TestCase):
 
         self.processRepository.storeProcessOutput("some_process_id", "this is some cool output")
 
-        self.mockDbSession.add.assert_called_once_with(expected_process_output)
-        self.mockDbAdapter.commit.assert_called_once()
+        self.assertIn(mock.call(expected_process_output), self.mockDbSession.add.call_args_list)
+        self.mockDbSession.commit.assert_called_once()

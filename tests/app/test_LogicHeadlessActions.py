@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 
 class LogicHeadlessActionsTest(unittest.TestCase):
+    @patch("app.screenshot_targets.socket.getaddrinfo")
     @patch("subprocess.run")
     @patch("app.settings.AppSettings")
     @patch("app.settings.Settings")
@@ -11,11 +12,16 @@ class LogicHeadlessActionsTest(unittest.TestCase):
             self,
             mock_settings_cls,
             _mock_app_settings_cls,
-            mock_subprocess_run
+            mock_subprocess_run,
+            mock_getaddrinfo,
     ):
         from app.logic import Logic
+        from app.screenshot_targets import resolve_hostname_addresses
 
-        host = SimpleNamespace(id=1, ip="10.0.0.5")
+        resolve_hostname_addresses.cache_clear()
+        mock_getaddrinfo.return_value = [("family", "socktype", "proto", "", ("10.0.0.5", 0))]
+
+        host = SimpleNamespace(id=1, ip="10.0.0.5", hostname="dc01.local")
         port = SimpleNamespace(portId="445", protocol="tcp", state="open", serviceId=9)
         service = SimpleNamespace(name="smb")
 
@@ -47,7 +53,7 @@ class LogicHeadlessActionsTest(unittest.TestCase):
 
         self.assertTrue(mock_subprocess_run.called)
         command = mock_subprocess_run.call_args[0][0]
-        self.assertIn("10.0.0.5:445", command)
+        self.assertIn("dc01.local:445", command)
 
 
 if __name__ == "__main__":

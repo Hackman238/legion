@@ -38,6 +38,7 @@ from app.timing import getTimestamp
 from app.scheduler.audit import log_scheduler_decision
 from app.scheduler.config import SchedulerConfigManager
 from app.scheduler.planner import SchedulerPlanner
+from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
 import os
 
@@ -367,12 +368,26 @@ class Controller:
     @staticmethod
     def _host_for_url(display_host: str, resolved_ip: str) -> str:
         """
-        Prefer hostname when it's meaningful; fall back to IP for placeholders like "unknown".
+        Prefer a resolvable hostname; otherwise fall back to IP.
         """
-        host = (display_host or "").strip()
-        if not host or host.lower() == "unknown":
-            return (resolved_ip or "").strip() or host
-        return host
+        return choose_preferred_host(display_host, resolved_ip)
+
+    def _apply_target_placeholders(
+            self,
+            template: str,
+            host_value: str,
+            port: str = None,
+            output: str = None,
+    ) -> str:
+        display_host, resolved_ip = self._resolve_host_and_ip(host_value)
+        command, _target_host = apply_preferred_target_placeholders(
+            template,
+            hostname=str(display_host or ""),
+            ip=str(resolved_ip or ""),
+            port=port,
+            output=output,
+        )
+        return command
 
     # these timers are used to prevent from updating the UI several times within a short time period -
     # which freezes the UI
@@ -1219,8 +1234,8 @@ class Controller:
                     f"{getTimestamp()}-{re.sub('[^0-9a-zA-Z]', '', str(self.settings.hostActions[i][1]))}-{ip}"
                 ))
                 command = str(self.settings.hostActions[i][2])
-                command = command.replace('[IP]', ip).replace('[OUTPUT]', outputfile)
-                command = f"{command} -oA {outputfile}"
+                command = self._apply_target_placeholders(command, ip, output=outputfile)
+                command = AppSettings._ensure_nmap_output_argument(command, outputfile)
 
                 tabTitle = self.settings.hostActions[i][1]
                 self.runCommand(name, tabTitle, ip, '', '', command, getTimestamp(True), outputfile,
@@ -1296,9 +1311,8 @@ class Controller:
 
                     command = str(self.settings.portActions[srvc_num][2])
                     # Insert normalized outputfile into command
-                    command = command.replace('[IP]', ip[0]).replace('[PORT]', ip[1]).replace('[OUTPUT]', outputfile)
-                    if 'nmap' in command:
-                        command = f"{command} -oA {outputfile}"
+                    command = self._apply_target_placeholders(command, ip[0], port=ip[1], output=outputfile)
+                    command = AppSettings._ensure_nmap_output_argument(command, outputfile)
 
                     if 'nmap' in command and ip[2] == 'udp':
                         command = command.replace("-sV", "-sVU")
@@ -1405,7 +1419,7 @@ class Controller:
                 srvc_num = terminalActions[i][0]
                 for ip in targets:
                     command = str(self.settings.portTerminalActions[srvc_num][2])
-                    command = command.replace('[IP]', ip[0]).replace('[PORT]', ip[1])
+                    command = self._apply_target_placeholders(command, ip[0], port=ip[1])
                     if "[term]" in command:
                         command = command.replace("[term]", "")
                         if terminal:
@@ -2503,7 +2517,7 @@ class Controller:
 
             if decision.tool_id == "screenshooter":
                 display_host, resolved_ip = self._resolve_host_and_ip(hostname or ip)
-                url = f"{display_host}:{port}"
+                url = f"{self._host_for_url(display_host, resolved_ip)}:{port}"
                 screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
                 deterministic_screenshot = f"{resolved_ip}-{port}-screenshot.png"
                 screenshot_exists = False
@@ -2557,7 +2571,7 @@ class Controller:
                 )
                 outputfile = os.path.normpath(outputfile).replace("\\", "/")
                 command_template = decision.command_template or str(a[2])
-                command = command_template.replace('[IP]', ip).replace('[PORT]', port).replace('[OUTPUT]', outputfile)
+                command = self._apply_target_placeholders(command_template, hostname or ip, port=port, output=outputfile)
                 log.debug(f"Running tool command: {str(command)}")
 
                 if self.findDuplicateTab(self.view.ui.ServicesTabWidget, tabTitle):

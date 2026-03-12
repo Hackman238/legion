@@ -1,5 +1,12 @@
+import collections
+import collections.abc
 import unittest
 from types import SimpleNamespace
+
+
+for _name in ("Mapping", "MutableMapping", "Sequence"):
+    if not hasattr(collections, _name):
+        setattr(collections, _name, getattr(collections.abc, _name))
 
 
 class _DummyProcessRepo:
@@ -39,7 +46,7 @@ class WebRuntimeProcessDisplayTest(unittest.TestCase):
                             "hostIp": "10.0.0.6",
                             "port": "443",
                             "protocol": "tcp",
-                            "status": "Crashed",
+                            "status": "Problem",
                             "startTime": "2026-02-17T00:00:00Z",
                             "percent": "23.0",
                             "estimatedRemaining": 111,
@@ -67,6 +74,7 @@ class WebRuntimeProcessDisplayTest(unittest.TestCase):
         self.assertEqual(0, rows[1]["estimatedRemaining"])
         self.assertEqual("35.2", rows[2]["percent"])
         self.assertEqual(44, rows[2]["estimatedRemaining"])
+        self.assertEqual("Problem", rows[1]["status"])
 
 
 if __name__ == "__main__":

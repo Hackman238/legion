@@ -316,9 +316,9 @@ input {
     color: var(--text-main);
 }
 
-#process-output-text,
-#script-output-text {
+.ansi-output-view {
     width: 100%;
+    display: block;
     border: 1px solid rgba(173, 181, 227, 0.25);
     border-radius: 8px;
     background: rgba(13, 16, 34, 0.66);
@@ -326,7 +326,12 @@ input {
     padding: 0.45rem 0.55rem;
     font-family: "Consolas", "Menlo", monospace;
     font-size: 0.8rem;
-    resize: vertical;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow: auto;
+    user-select: text;
+    tab-size: 4;
 }
 
 .process-command-block {
@@ -662,6 +667,23 @@ td button {
     gap: 0.38rem;
 }
 
+.process-status-running {
+    color: #86d993;
+}
+
+.process-status-running .process-spinner {
+    border-color: rgba(134, 217, 147, 0.28);
+    border-top-color: #86d993;
+}
+
+.process-status-crashed {
+    color: #ff8f8f;
+}
+
+.process-status-problem {
+    color: #f1cd6b;
+}
+
 .host-ip-with-icon {
     display: inline-flex;
     align-items: center;
@@ -828,17 +850,9 @@ td button {
 }
 
 #provider-logs-text {
-    width: 100%;
-    border: 1px solid rgba(173, 181, 227, 0.25);
-    border-radius: 8px;
-    background: rgba(13, 16, 34, 0.66);
-    color: var(--text-main);
-    padding: 0.5rem 0.6rem;
-    font-family: "Consolas", "Menlo", monospace;
     font-size: 0.78rem;
     min-height: 60vh;
     max-height: 72vh;
-    resize: vertical;
 }
 
 .modal-header {
@@ -887,6 +901,143 @@ td button {
 .legion-modal #script-output-text {
     min-height: 50vh;
     max-height: 68vh;
+}
+
+.ansi-segment {
+    color: inherit;
+    background: transparent;
+}
+
+.ansi-bold {
+    font-weight: 700;
+}
+
+.ansi-fg-black {
+    color: #1d2338;
+}
+
+.ansi-fg-red {
+    color: #ff6d7d;
+}
+
+.ansi-fg-green {
+    color: #7fe79b;
+}
+
+.ansi-fg-yellow {
+    color: #ffd166;
+}
+
+.ansi-fg-blue {
+    color: #74b9ff;
+}
+
+.ansi-fg-magenta {
+    color: #e39df6;
+}
+
+.ansi-fg-cyan {
+    color: #67e8f9;
+}
+
+.ansi-fg-white {
+    color: #e5ecff;
+}
+
+.ansi-fg-bright-black {
+    color: #8a93b6;
+}
+
+.ansi-fg-bright-red {
+    color: #ff8f9d;
+}
+
+.ansi-fg-bright-green {
+    color: #9effb7;
+}
+
+.ansi-fg-bright-yellow {
+    color: #ffe28a;
+}
+
+.ansi-fg-bright-blue {
+    color: #9fc7ff;
+}
+
+.ansi-fg-bright-magenta {
+    color: #f0b7ff;
+}
+
+.ansi-fg-bright-cyan {
+    color: #9af4ff;
+}
+
+.ansi-fg-bright-white {
+    color: #ffffff;
+}
+
+.ansi-bg-black {
+    background: #1d2338;
+}
+
+.ansi-bg-red {
+    background: rgba(255, 109, 125, 0.22);
+}
+
+.ansi-bg-green {
+    background: rgba(127, 231, 155, 0.22);
+}
+
+.ansi-bg-yellow {
+    background: rgba(255, 209, 102, 0.22);
+}
+
+.ansi-bg-blue {
+    background: rgba(116, 185, 255, 0.22);
+}
+
+.ansi-bg-magenta {
+    background: rgba(227, 157, 246, 0.22);
+}
+
+.ansi-bg-cyan {
+    background: rgba(103, 232, 249, 0.22);
+}
+
+.ansi-bg-white {
+    background: rgba(229, 236, 255, 0.22);
+}
+
+.ansi-bg-bright-black {
+    background: rgba(138, 147, 182, 0.22);
+}
+
+.ansi-bg-bright-red {
+    background: rgba(255, 143, 157, 0.22);
+}
+
+.ansi-bg-bright-green {
+    background: rgba(158, 255, 183, 0.22);
+}
+
+.ansi-bg-bright-yellow {
+    background: rgba(255, 226, 138, 0.22);
+}
+
+.ansi-bg-bright-blue {
+    background: rgba(159, 199, 255, 0.22);
+}
+
+.ansi-bg-bright-magenta {
+    background: rgba(240, 183, 255, 0.22);
+}
+
+.ansi-bg-bright-cyan {
+    background: rgba(154, 244, 255, 0.22);
+}
+
+.ansi-bg-bright-white {
+    background: rgba(255, 255, 255, 0.2);
 }
 
 .startup-wizard-overlay {
