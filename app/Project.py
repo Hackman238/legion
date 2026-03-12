@@ -17,7 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 from typing import NamedTuple
 
-from app.auxiliary import Wordlist
+from app.core.common import Wordlist
 from db.RepositoryContainer import RepositoryContainer
 from db.SqliteDbAdapter import Database
 

@@ -17,7 +17,52 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 import sys
 
-from PyQt6 import QtCore
+try:
+    from PyQt6 import QtCore
+except Exception:  # pragma: no cover - exercised only in non-Qt environments.
+    class _Signal:
+        def __init__(self):
+            self._callbacks = []
+
+        def connect(self, callback):
+            if callable(callback):
+                self._callbacks.append(callback)
+
+        def emit(self, *args, **kwargs):
+            for callback in list(self._callbacks):
+                try:
+                    callback(*args, **kwargs)
+                except Exception:
+                    pass
+
+    class _SignalDescriptor:
+        def __set_name__(self, owner, name):
+            self._name = f"__signal_{name}"
+
+        def __get__(self, instance, owner):
+            if instance is None:
+                return self
+            signal = instance.__dict__.get(self._name)
+            if signal is None:
+                signal = _Signal()
+                instance.__dict__[self._name] = signal
+            return signal
+
+    class _FallbackQThread:
+        def __init__(self, parent=None):
+            self._parent = parent
+
+        def start(self):
+            self.run()
+
+    class _FallbackQtCore:
+        QThread = _FallbackQThread
+
+        @staticmethod
+        def pyqtSignal(*_args, **_kwargs):
+            return _SignalDescriptor()
+
+    QtCore = _FallbackQtCore()
 from sqlalchemy import text
 
 from app.actions.updateProgress import AbstractUpdateProgressObservable
@@ -115,39 +160,38 @@ class NmapImporter(QtCore.QThread):
 
             import os
             nmap_xml_path = self.filename
-            try:
-                nmapReport = parseNmapReport(nmap_xml_path)
-            except (MalformedXmlDocumentException, FileNotFoundError) as e:
-                # If file not found, try searching in any subdirectory of the parent directory
-                if isinstance(e, FileNotFoundError):
-                    parent_dir = os.path.dirname(nmap_xml_path)
-                    base_name = os.path.basename(nmap_xml_path)
-                    found = False
+            if not os.path.isfile(nmap_xml_path):
+                parent_dir = os.path.dirname(nmap_xml_path)
+                base_name = os.path.basename(nmap_xml_path)
+                found_path = ""
+                if os.path.isdir(parent_dir):
                     for sub in os.listdir(parent_dir):
                         sub_path = os.path.join(parent_dir, sub, base_name)
                         if os.path.isfile(sub_path):
-                            self.tsLog(f"Found nmap xml in subdirectory: {sub_path}")
-                            try:
-                                nmapReport = parseNmapReport(sub_path)
-                                found = True
-                                break
-                            except Exception as e2:
-                                self.tsLog(f"Failed to parse nmap xml in subdirectory: {e2}")
-                    if not found:
-                        self.tsLog('Giving up on import due to previous errors.')
-                        appLog.error(f"NMAP xml report is likely malformed or missing: {e}")
-                        appLog.error(f"Nmap XML import failed: {e}")
-                        self.updateProgressObservable.finished()
-                        self.done.emit()
-                        return
+                            found_path = sub_path
+                            break
+                if found_path:
+                    self.tsLog(f"Found nmap xml in subdirectory: {found_path}")
+                    nmap_xml_path = found_path
                 else:
                     self.tsLog('Giving up on import due to previous errors.')
-                    appLog.error(f"NMAP xml report is likely malformed: {e}")
-                    appLog.error(f"Nmap XML import failed: {e}")
+                    appLog.error("NMAP xml report is likely malformed or missing: %s", nmap_xml_path)
+                    appLog.error("Nmap XML import failed: %s", nmap_xml_path)
                     if self.updateProgressObservable is not None:
                         self.updateProgressObservable.finished()
                     self.done.emit()
                     return
+
+            try:
+                nmapReport = parseNmapReport(nmap_xml_path)
+            except (MalformedXmlDocumentException, FileNotFoundError) as e:
+                self.tsLog('Giving up on import due to previous errors.')
+                appLog.error(f"NMAP xml report is likely malformed: {e}")
+                appLog.error(f"Nmap XML import failed: {e}")
+                if self.updateProgressObservable is not None:
+                    self.updateProgressObservable.finished()
+                self.done.emit()
+                return
 
             self.tsLog('nmap xml report read successfully!')
             self.db.dbsemaphore.acquire()  # ensure that while this thread is running, no one else can write to the DB

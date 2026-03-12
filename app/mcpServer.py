@@ -32,7 +32,7 @@ class MCPServer:
     async def list_projects(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         # List all .legion files in the Legion temp folder
         import os
-        from app.auxiliary import getTempFolder
+        from app.core.common import getTempFolder
 
         temp_folder = getTempFolder()
         projects = []
@@ -60,7 +60,7 @@ class MCPServer:
             from app.tools.ToolCoordinator import ToolCoordinator
             from app.logic import Logic
             from app.cli_utils import run_nmap_scan
-            from app.importers.NmapImporter import NmapImporter
+            from app.importers.nmap_runner import import_nmap_xml_into_project
 
             target = arguments.get("target", "localhost")
             # Setup Legion core components
@@ -97,12 +97,13 @@ class MCPServer:
 
             # Import nmap XML results into the project
             if nmap_xml and os.path.isfile(nmap_xml):
-                nmapImporter = NmapImporter(None, hostRepository)
-                nmapImporter.setDB(logic.activeProject.database)
-                nmapImporter.setHostRepository(hostRepository)
-                nmapImporter.setFilename(nmap_xml)
-                nmapImporter.setOutput("")
-                nmapImporter.run()
+                import_nmap_xml_into_project(
+                    project=logic.activeProject,
+                    xml_path=nmap_xml,
+                    output="",
+                    update_progress_observable=None,
+                    host_repository=hostRepository,
+                )
             else:
                 return {
                     "target": target,

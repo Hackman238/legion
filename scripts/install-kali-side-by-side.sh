@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Side-by-side installer for Kali (does not overwrite packaged `legion`).
-# Installs a separate clone + venv and creates launcher: ~/.local/bin/legion-web-dev
-
 REPO_URL="${LEGION_REPO_URL:-https://github.com/Hackman238/legion.git}"
 BRANCH="${LEGION_BRANCH:-main}"
 INSTALL_DIR="${LEGION_DEV_INSTALL_DIR:-$HOME/.local/opt/legion-web-dev}"

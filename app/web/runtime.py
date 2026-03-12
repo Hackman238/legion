@@ -21,7 +21,7 @@ from app.cli_utils import import_targets_from_textfile, is_wsl, to_windows_path
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.hostsfile import add_temporary_host_alias
 from app.httputil.isHttps import isHttps
-from app.importers.NmapImporter import NmapImporter
+from app.importers.nmap_runner import import_nmap_xml_into_project
 from app.nmap_enrichment import (
     infer_hostname_from_nmap_data,
     infer_os_from_service_inventory,
@@ -2311,13 +2311,12 @@ class WebRuntime:
     def _import_nmap_xml(self, xml_path: str, run_actions: bool = False) -> Dict[str, Any]:
         with self._lock:
             project = self._require_active_project()
-            host_repo = project.repositoryContainer.hostRepository
-            importer = NmapImporter(None, host_repo)
-            importer.setDB(project.database)
-            importer.setHostRepository(host_repo)
-            importer.setFilename(xml_path)
-            importer.setOutput("")
-            importer.run()
+            import_nmap_xml_into_project(
+                project=project,
+                xml_path=xml_path,
+                output="",
+                update_progress_observable=None,
+            )
 
             try:
                 self.logic.copyNmapXMLToOutputFolder(xml_path)

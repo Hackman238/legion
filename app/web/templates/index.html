@@ -100,10 +100,10 @@
                     <div id="ribbon-export-menu" class="ribbon-submenu" role="menu" aria-label="Export options">
                         <button id="ribbon-export-json-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as JSON">Export JSON</button>
                         <button id="ribbon-export-csv-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as CSV">Export CSV</button>
-                        <button id="ribbon-export-project-report-json-action-button" class="ribbon-submenu-item" type="button" title="Export full project AI report as JSON">Export Project AI Report JSON</button>
-                        <button id="ribbon-export-project-report-md-action-button" class="ribbon-submenu-item" type="button" title="Export full project AI report as Markdown">Export Project AI Report Markdown</button>
-                        <button id="ribbon-export-project-report-push-action-button" class="ribbon-submenu-item" type="button" title="Push full project AI report to configured delivery endpoint">Push Project AI Report</button>
-                        <button id="ribbon-export-ai-reports-action-button" class="ribbon-submenu-item" type="button" title="Download all host AI reports (JSON and Markdown) as a ZIP">Export Host AI Reports ZIP</button>
+                        <button id="ribbon-export-project-report-json-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as JSON">Export Project Report JSON</button>
+                        <button id="ribbon-export-project-report-md-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as Markdown">Export Project Report Markdown</button>
+                        <button id="ribbon-export-project-report-push-action-button" class="ribbon-submenu-item" type="button" title="Push full project report to configured delivery endpoint">Push Project Report</button>
+                        <button id="ribbon-export-ai-reports-action-button" class="ribbon-submenu-item" type="button" title="Download all host reports (JSON and Markdown) as a ZIP">Export Host Reports ZIP</button>
                     </div>
                 </div>
                 <div class="ribbon-menu" data-ribbon-menu="scans">
@@ -159,7 +159,7 @@
                         <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
                     </button>
                     <div id="ribbon-logging-menu" class="ribbon-submenu" role="menu" aria-label="Logging options">
-                        <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View AI provider request and response logs">AI Provider</button>
+                        <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View provider request and response logs">Provider Logs</button>
                     </div>
                 </div>
             </div>
@@ -340,7 +340,7 @@
             </table>
         </div>
         <div class="panel-header">
-            <h3>AI Technologies</h3>
+            <h3>Technologies</h3>
             <p id="host-ai-tech-count">0</p>
         </div>
         <div class="table-wrap">
@@ -357,7 +357,7 @@
             </table>
         </div>
         <div class="panel-header">
-            <h3>AI Findings</h3>
+            <h3>Findings</h3>
             <p id="host-ai-finding-count">0</p>
         </div>
         <div class="table-wrap">
@@ -375,7 +375,7 @@
             </table>
         </div>
         <div class="panel-header">
-            <h3>AI Manual Tests</h3>
+            <h3>Manual Tests</h3>
             <p id="host-ai-manual-count">0</p>
         </div>
         <div class="table-wrap">
@@ -391,12 +391,12 @@
             </table>
         </div>
         <div class="panel-header">
-            <h3>AI Analysis Status</h3>
+            <h3>Analysis Status</h3>
             <p id="host-ai-analysis-status"></p>
         </div>
         <div class="host-ai-report-actions">
-            <button id="host-ai-export-json-button" type="button">Export AI Report JSON</button>
-            <button id="host-ai-export-md-button" type="button">Export AI Report Markdown</button>
+            <button id="host-ai-export-json-button" type="button">Export Report JSON</button>
+            <button id="host-ai-export-md-button" type="button">Export Report Markdown</button>
         </div>
         <div class="panel-header">
             <h3>Screenshots</h3>
@@ -917,7 +917,7 @@
                 </select>
             </label>
             <label>
-                AI Provider
+                Provider
                 <select id="scheduler-provider-select" name="provider">
                     <option value="none">none</option>
                     <option value="lm_studio">lm_studio</option>
@@ -933,53 +933,41 @@
                 Max Jobs Retained
                 <input id="scheduler-max-jobs-input" type="number" min="20" max="2000" step="1" name="max_jobs">
             </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
                 LM Studio Base URL
                 <input id="provider-lmstudio-baseurl" type="text" name="lm_studio_base_url">
             </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
                 LM Studio Model
                 <input id="provider-lmstudio-model" type="text" name="lm_studio_model">
             </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
                 LM Studio API Key
                 <input id="provider-lmstudio-apikey" type="password" name="lm_studio_api_key">
             </label>
-            <label class="checkbox">
-                <input id="provider-lmstudio-enabled" type="checkbox" name="lm_studio_enabled">
-                LM Studio Enabled
-            </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="openai">
                 OpenAI Base URL
                 <input id="provider-openai-baseurl" type="text" name="openai_base_url">
             </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="openai">
                 OpenAI Model
                 <input id="provider-openai-model" type="text" name="openai_model">
             </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="openai">
                 OpenAI API Key
                 <input id="provider-openai-apikey" type="password" name="openai_api_key">
             </label>
-            <label class="checkbox">
-                <input id="provider-openai-enabled" type="checkbox" name="openai_enabled">
-                OpenAI Enabled
-            </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="claude">
                 Claude Base URL
                 <input id="provider-claude-baseurl" type="text" name="claude_base_url">
             </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="claude">
                 Claude Model
                 <input id="provider-claude-model" type="text" name="claude_model">
             </label>
-            <label>
+            <label class="scheduler-provider-field" data-scheduler-provider="claude">
                 Claude API Key
                 <input id="provider-claude-apikey" type="password" name="claude_api_key">
-            </label>
-            <label class="checkbox">
-                <input id="provider-claude-enabled" type="checkbox" name="claude_enabled">
-                Claude Enabled
             </label>
             <fieldset class="danger-group">
                 <legend>Dangerous Categories</legend>
@@ -1098,7 +1086,7 @@
 <div id="provider-logs-modal" class="legion-modal-overlay" aria-hidden="true">
     <div class="legion-modal provider-logs-modal" role="dialog" aria-modal="true" aria-labelledby="provider-logs-modal-title">
         <div class="panel-header modal-header">
-            <h2 id="provider-logs-modal-title">AI Provider Logs</h2>
+            <h2 id="provider-logs-modal-title">Provider Logs</h2>
             <p id="provider-logs-meta">No logs loaded</p>
             <button id="provider-logs-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
@@ -1203,7 +1191,7 @@
                 </select>
             </label>
             <label>
-                AI Provider
+                Provider
                 <select id="startup-scheduler-provider">
                     <option value="none">none</option>
                     <option value="lm_studio">lm_studio</option>

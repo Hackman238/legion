@@ -94,7 +94,7 @@ if __name__ == "__main__":
     if args.headless:
         # --- HEADLESS CLI MODE ---
         from app.cli_utils import import_targets_from_textfile, run_nmap_scan
-        from app.importers.NmapImporter import NmapImporter
+        from app.importers.nmap_runner import import_nmap_xml_into_project
         import time
 
         shell = DefaultShell()
@@ -135,12 +135,13 @@ if __name__ == "__main__":
                 staged=args.staged_scan
             )
             # Import nmap XML results into the project
-            nmapImporter = NmapImporter(None, hostRepository)
-            nmapImporter.setDB(logic.activeProject.database)
-            nmapImporter.setHostRepository(hostRepository)
-            nmapImporter.setFilename(nmap_xml)
-            nmapImporter.setOutput("")
-            nmapImporter.run()
+            import_nmap_xml_into_project(
+                project=logic.activeProject,
+                xml_path=nmap_xml,
+                output="",
+                update_progress_observable=None,
+                host_repository=hostRepository,
+            )
 
         # Run scripted actions/automated attacks if requested
         if args.run_actions:

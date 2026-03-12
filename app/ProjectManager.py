@@ -23,8 +23,8 @@ import sys
 from typing import Tuple
 
 from app.Project import Project, ProjectProperties
+from app.core.common import Wordlist, getTempFolder
 from app.tools.ToolCoordinator import fileExists
-from app.auxiliary import Wordlist, getTempFolder
 from app.shell.Shell import Shell
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
 from db.RepositoryFactory import RepositoryFactory

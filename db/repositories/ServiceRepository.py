@@ -15,7 +15,7 @@ Copyright (c) 2025 Shane William Scott
 
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
-from app.auxiliary import Filters
+from app.core.common import Filters
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from db.SqliteDbAdapter import Database

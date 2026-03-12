@@ -15,8 +15,8 @@ Copyright (c) 2025 Shane William Scott
 
 """
 
-from PyQt6.QtCore import QSemaphore
 import time
+import threading
 from random import randint
 
 from sqlalchemy import create_engine
@@ -49,7 +49,7 @@ class Database:
         self.host = host
         self.user = user
         self.passw = passw
-        self.dbsemaphore = QSemaphore(1)  # to control concurrent write access to db
+        self.dbsemaphore = threading.Semaphore(1)  # to control concurrent write access to db
         url = 'postgresql://{}:{}@{}:{}/{}'
         url = url.format(user, password, host, port, db)
         # The return value of create_engine() is our connection object

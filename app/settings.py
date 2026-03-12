@@ -21,7 +21,9 @@ import shutil
 import os
 import re
 
-from app.auxiliary import *  # for timestamp
+from app.core.config_store import IniSettingsStore
+from app.core.common import sortArrayWithArray
+from app.logging.legionLog import getAppLogger
 from app.paths import (
     ensure_legion_home,
     get_legion_backup_dir,
@@ -115,7 +117,7 @@ class AppSettings():
             else:
                 log.error(f"Default configuration file not found at {default_conf}.")
         log.info(f"Loading settings file: {config_path}")
-        self.actions = QtCore.QSettings(config_path, QtCore.QSettings.Format.NativeFormat)
+        self.actions = IniSettingsStore(config_path)
         self._apply_default_action_migrations()
 
     def _apply_default_action_migrations(self):
@@ -497,10 +499,7 @@ class AppSettings():
         else:
             log.info('Saving config...')
 
-        self.actions = QtCore.QSettings(
-            conf_path,
-            QtCore.QSettings.Format.NativeFormat
-        )
+        self.actions = IniSettingsStore(conf_path)
 
         self.actions.beginGroup('GeneralSettings')
         self.actions.setValue('default-terminal', newSettings.general_default_terminal)

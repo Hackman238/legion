@@ -1196,7 +1196,7 @@ function exportAllHostAiReportsZipAction() {
 function exportSelectedHostAiReportAction(format = "json") {
     const hostId = Number(workspaceState.selectedHostId || 0);
     if (!Number.isFinite(hostId) || hostId <= 0) {
-        setWorkspaceStatus("Select a host first to export AI report.", true);
+        setWorkspaceStatus("Select a host first to export report.", true);
         return;
     }
     const normalized = String(format || "json").toLowerCase() === "md" ? "md" : "json";
@@ -1219,7 +1219,7 @@ async function pushProjectAiReportAction(event) {
         return;
     }
 
-    setActionStatus("Pushing project AI report...");
+    setActionStatus("Pushing project report...");
     setText("report-provider-save-status", "Pushing project report...");
     try {
         const result = await postJson("/api/workspace/project-ai-report/push", {
@@ -1644,7 +1644,7 @@ async function loadProviderLogsAction() {
 
 async function copyProviderLogsAction() {
     const text = getValue("provider-logs-text");
-    await copyTextToClipboard(text, "AI provider logs copied to clipboard", "No provider logs to copy");
+    await copyTextToClipboard(text, "Provider logs copied to clipboard", "No provider logs to copy");
 }
 
 function downloadProviderLogsAction() {
@@ -1658,12 +1658,12 @@ function downloadProviderLogsAction() {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const a = document.createElement("a");
     a.href = url;
-    a.download = `ai-provider-logs-${stamp}.txt`;
+    a.download = `provider-logs-${stamp}.txt`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    setWorkspaceStatus("AI provider logs downloaded");
+    setWorkspaceStatus("Provider logs downloaded");
 }
 
 async function rescanHostAction(hostId) {
@@ -2148,17 +2148,14 @@ function applySchedulerPreferences(prefs) {
     const projectDelivery = prefs.project_report_delivery || {};
     const projectDeliveryMtls = projectDelivery.mtls || {};
 
-    setChecked("provider-lmstudio-enabled", lmStudio.enabled);
     setValue("provider-lmstudio-baseurl", lmStudio.base_url || "");
     setValue("provider-lmstudio-model", lmStudio.model || "");
     setValue("provider-lmstudio-apikey", "");
 
-    setChecked("provider-openai-enabled", openai.enabled);
     setValue("provider-openai-baseurl", openai.base_url || "");
     setValue("provider-openai-model", openai.model || "");
     setValue("provider-openai-apikey", "");
 
-    setChecked("provider-claude-enabled", claude.enabled);
     setValue("provider-claude-baseurl", claude.base_url || "");
     setValue("provider-claude-model", claude.model || "");
     setValue("provider-claude-apikey", "");
@@ -2186,6 +2183,17 @@ function applySchedulerPreferences(prefs) {
     ].forEach((category) => {
         setChecked(`danger-${category}`, activeDanger.has(category));
     });
+
+    setSchedulerProviderFieldVisibility(prefs.provider || "none");
+}
+
+function setSchedulerProviderFieldVisibility(providerName) {
+    const selectedProvider = String(providerName || "none").trim().toLowerCase();
+    const providerFields = document.querySelectorAll(".scheduler-provider-field[data-scheduler-provider]");
+    providerFields.forEach((fieldNode) => {
+        const fieldProvider = String(fieldNode.getAttribute("data-scheduler-provider") || "").trim().toLowerCase();
+        fieldNode.classList.toggle("is-active", fieldProvider === selectedProvider);
+    });
 }
 
 function collectSchedulerPreferencesFromForm() {
@@ -2208,34 +2216,28 @@ function collectSchedulerPreferencesFromForm() {
 
     const providers = {
         lm_studio: {
-            enabled: getChecked("provider-lmstudio-enabled"),
+            enabled: selectedProvider === "lm_studio",
             base_url: getValue("provider-lmstudio-baseurl"),
             model: getValue("provider-lmstudio-model"),
         },
         openai: {
-            enabled: getChecked("provider-openai-enabled"),
+            enabled: selectedProvider === "openai",
             base_url: getValue("provider-openai-baseurl"),
             model: getValue("provider-openai-model"),
         },
         claude: {
-            enabled: getChecked("provider-claude-enabled"),
+            enabled: selectedProvider === "claude",
             base_url: getValue("provider-claude-baseurl"),
             model: getValue("provider-claude-model"),
         },
     };
 
-    if (mode === "ai") {
-        if (selectedProvider === "lm_studio") {
-            providers.lm_studio.enabled = true;
-            providers.lm_studio.base_url = providers.lm_studio.base_url || "http://127.0.0.1:1234/v1";
-            providers.lm_studio.model = providers.lm_studio.model || "o3-7b";
-        } else if (selectedProvider === "openai") {
-            providers.openai.enabled = true;
-            providers.openai.base_url = providers.openai.base_url || "https://api.openai.com/v1";
-            providers.openai.model = providers.openai.model || "gpt-4.1-mini";
-        } else if (selectedProvider === "claude") {
-            providers.claude.enabled = true;
-        }
+    if (selectedProvider === "lm_studio") {
+        providers.lm_studio.base_url = providers.lm_studio.base_url || "http://127.0.0.1:1234/v1";
+        providers.lm_studio.model = providers.lm_studio.model || "o3-7b";
+    } else if (selectedProvider === "openai") {
+        providers.openai.base_url = providers.openai.base_url || "https://api.openai.com/v1";
+        providers.openai.model = providers.openai.model || "gpt-4.1-mini";
     }
 
     const lmApiKey = getValue("provider-lmstudio-apikey").trim();
@@ -3841,6 +3843,13 @@ window.addEventListener("DOMContentLoaded", () => {
     const schedulerForm = document.getElementById("scheduler-form");
     if (schedulerForm) {
         schedulerForm.addEventListener("submit", saveSchedulerPreferences);
+    }
+    const schedulerProviderSelect = document.getElementById("scheduler-provider-select");
+    if (schedulerProviderSelect) {
+        schedulerProviderSelect.addEventListener("change", () => {
+            setSchedulerProviderFieldVisibility(schedulerProviderSelect.value);
+        });
+        setSchedulerProviderFieldVisibility(schedulerProviderSelect.value);
     }
     const reportProviderForm = document.getElementById("report-provider-form");
     if (reportProviderForm) {

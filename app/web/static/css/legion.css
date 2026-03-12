@@ -289,6 +289,14 @@ body.modal-open {
     color: var(--text-muted);
 }
 
+.scheduler-form .scheduler-provider-field {
+    display: none;
+}
+
+.scheduler-form .scheduler-provider-field.is-active {
+    display: flex;
+}
+
 .scheduler-form input,
 .scheduler-form select,
 .scheduler-form textarea,

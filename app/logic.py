@@ -19,14 +19,18 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 import ntpath
+import os
+import re
 import shutil
+import subprocess
+import sys
 
 from app.Project import Project
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
+from app.logging.legionLog import getAppLogger
 from app.tools.ToolCoordinator import ToolCoordinator
 from app.shell.Shell import Shell
 from app.tools.nmap.NmapPaths import getNmapOutputFolder
-from ui.ancillaryDialog import *
 
 log = getAppLogger()
 
@@ -42,9 +46,6 @@ class Logic:
         Run scripted actions/automated attacks for all hosts/ports in the active project (headless/CLI mode).
         Screenshots are also taken using EyeWitness, just as in the GUI.
         """
-        import subprocess
-        import os
-        import shutil
         from app.settings import AppSettings, Settings
         from app.scheduler.audit import log_scheduler_decision
         from app.scheduler.config import SchedulerConfigManager
