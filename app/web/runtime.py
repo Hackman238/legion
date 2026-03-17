@@ -93,6 +93,12 @@ from app.scheduler.state import (
 from app.scheduler.config import SchedulerConfigManager
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
 from app.scheduler.providers import get_provider_logs, test_provider_connection
+from app.scheduler.reporting import (
+    build_host_report,
+    build_project_report,
+    render_host_report_markdown as render_scheduler_host_report_markdown,
+    render_project_report_markdown as render_scheduler_project_report_markdown,
+)
 from app.scheduler.risk import classify_command_danger
 from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
 from app.settings import AppSettings, Settings
@@ -2164,6 +2170,31 @@ class WebRuntime:
 
         return "\n".join(lines).strip() + "\n"
 
+    def get_host_report(self, host_id: int) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            host = self._resolve_host(int(host_id))
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+            engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
+            host_row = {
+                "id": int(getattr(host, "id", 0) or 0),
+                "ip": str(getattr(host, "ip", "") or ""),
+                "hostname": str(getattr(host, "hostname", "") or ""),
+                "status": str(getattr(host, "status", "") or ""),
+                "os": str(getattr(host, "osMatch", "") or ""),
+            }
+            project_meta = dict(self._project_metadata())
+        return build_host_report(
+            project.database,
+            host_row=host_row,
+            engagement_policy=engagement_policy,
+            project_metadata=project_meta,
+        )
+
+    def render_host_report_markdown(self, report: Dict[str, Any]) -> str:
+        return render_scheduler_host_report_markdown(report)
+
     def build_host_ai_reports_zip(self) -> Tuple[str, str]:
         with self._lock:
             project = self._require_active_project()
@@ -2346,7 +2377,32 @@ class WebRuntime:
 
         return "\n".join(lines).strip() + "\n"
 
-    def push_project_ai_report(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def get_project_report(self) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            project_meta = dict(self._project_metadata())
+            summary = dict(self._summary())
+            host_rows = list(self._hosts(limit=5000))
+            engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
+        return build_project_report(
+            project.database,
+            project_metadata=project_meta,
+            engagement_policy=engagement_policy,
+            summary=summary,
+            host_inventory=host_rows,
+        )
+
+    def render_project_report_markdown(self, report: Dict[str, Any]) -> str:
+        return render_scheduler_project_report_markdown(report)
+
+    def _push_project_report_common(
+            self,
+            *,
+            report: Dict[str, Any],
+            markdown_renderer,
+            overrides: Optional[Dict[str, Any]] = None,
+            report_label: str = "project report",
+    ) -> Dict[str, Any]:
         with self._lock:
             config = self.scheduler_config.load()
             base_delivery = self._project_report_delivery_config(config)
@@ -2374,10 +2430,9 @@ class WebRuntime:
         if not endpoint:
             raise ValueError("Project report delivery endpoint is required.")
 
-        report = self.get_project_ai_report()
         report_format = str(delivery.get("format", "json") or "json").strip().lower()
         if report_format == "md":
-            body = self.render_project_ai_report_markdown(report)
+            body = markdown_renderer(report)
             content_type = "text/markdown; charset=utf-8"
         else:
             report_format = "json"
@@ -2437,6 +2492,7 @@ class WebRuntime:
                 "endpoint": endpoint,
                 "method": method,
                 "format": report_format,
+                "report_label": str(report_label or "project report"),
                 "status_code": int(response.status_code),
                 "response_body_excerpt": excerpt,
             }
@@ -2447,8 +2503,27 @@ class WebRuntime:
                 "endpoint": endpoint,
                 "method": method,
                 "format": report_format,
+                "report_label": str(report_label or "project report"),
                 "error": str(exc),
             }
+
+    def push_project_ai_report(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        report = self.get_project_ai_report()
+        return self._push_project_report_common(
+            report=report,
+            markdown_renderer=self.render_project_ai_report_markdown,
+            overrides=overrides,
+            report_label="project ai report",
+        )
+
+    def push_project_report(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        report = self.get_project_report()
+        return self._push_project_report_common(
+            report=report,
+            markdown_renderer=self.render_project_report_markdown,
+            overrides=overrides,
+            report_label="project report",
+        )
 
     @staticmethod
     def _normalize_project_report_headers(headers: Any) -> Dict[str, str]:

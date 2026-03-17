@@ -701,6 +701,43 @@ def workspace_host_ai_report(host_id):
     return response
 
 
+@web_bp.get("/api/workspace/hosts/<int:host_id>/report")
+def workspace_host_report(host_id):
+    runtime = current_app.extensions["legion_runtime"]
+    report_format = str(request.args.get("format", "json") or "json").strip().lower()
+    if report_format in {"markdown"}:
+        report_format = "md"
+
+    try:
+        report = runtime.get_host_report(host_id)
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+    host = report.get("host", {}) if isinstance(report.get("host", {}), dict) else {}
+    host_token = _safe_filename_token(
+        str(host.get("hostname", "")).strip() or str(host.get("ip", "")).strip() or f"host-{host_id}",
+        fallback=f"host-{host_id}",
+    )
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+
+    if report_format == "md":
+        body = runtime.render_host_report_markdown(report)
+        response = current_app.response_class(body, mimetype="text/markdown; charset=utf-8")
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="legion-host-report-{host_token}-{timestamp}.md"'
+        )
+        return response
+
+    payload = json.dumps(report, indent=2, default=str)
+    response = current_app.response_class(payload, mimetype="application/json")
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="legion-host-report-{host_token}-{timestamp}.json"'
+    )
+    return response
+
+
 @web_bp.get("/api/workspace/ai-reports/download-zip")
 def workspace_ai_reports_download_zip():
     runtime = current_app.extensions["legion_runtime"]
@@ -764,6 +801,41 @@ def workspace_project_ai_report():
     return response
 
 
+@web_bp.get("/api/workspace/project-report")
+def workspace_project_report():
+    runtime = current_app.extensions["legion_runtime"]
+    report_format = str(request.args.get("format", "json") or "json").strip().lower()
+    if report_format in {"markdown"}:
+        report_format = "md"
+
+    try:
+        report = runtime.get_project_report()
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+    project = report.get("project", {}) if isinstance(report.get("project", {}), dict) else {}
+    project_token = _safe_filename_token(
+        str(project.get("name", "")).strip() or "project",
+        fallback="project",
+    )
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+
+    if report_format == "md":
+        body = runtime.render_project_report_markdown(report)
+        response = current_app.response_class(body, mimetype="text/markdown; charset=utf-8")
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="legion-project-report-{project_token}-{timestamp}.md"'
+        )
+        return response
+
+    payload = json.dumps(report, indent=2, default=str)
+    response = current_app.response_class(payload, mimetype="application/json")
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="legion-project-report-{project_token}-{timestamp}.json"'
+    )
+    return response
+
+
 @web_bp.post("/api/workspace/project-ai-report/push")
 def workspace_project_ai_report_push():
     runtime = current_app.extensions["legion_runtime"]
@@ -780,6 +852,31 @@ def workspace_project_ai_report_push():
 
     try:
         result = runtime.push_project_ai_report(overrides=overrides)
+        status_code = 200 if bool(result.get("ok", False)) else 400
+        status_value = "ok" if bool(result.get("ok", False)) else "error"
+        return jsonify({"status": status_value, **result}), status_code
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/workspace/project-report/push")
+def workspace_project_report_push():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    overrides = payload.get("project_report_delivery")
+    if overrides is None and isinstance(payload, dict):
+        overrides = {
+            key: value
+            for key, value in payload.items()
+            if key in {"provider_name", "endpoint", "method", "format", "headers", "timeout_seconds", "mtls"}
+        }
+    if not isinstance(overrides, dict):
+        overrides = {}
+
+    try:
+        result = runtime.push_project_report(overrides=overrides)
         status_code = 200 if bool(result.get("ok", False)) else 400
         status_value = "ok" if bool(result.get("ok", False)) else "error"
         return jsonify({"status": status_value, **result}), status_code

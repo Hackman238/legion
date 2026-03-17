@@ -68,16 +68,32 @@ class DummyMCPRuntime:
         self.last_calls.append(("get_project_ai_report",))
         return {"project": {"name": "demo.legion"}}
 
+    def get_project_report(self):
+        self.last_calls.append(("get_project_report",))
+        return {"project": {"name": "demo.legion"}, "summary_of_discovered_assets": {"host_count": 1}}
+
     def render_project_ai_report_markdown(self, report):
         self.last_calls.append(("render_project_ai_report_markdown", dict(report or {})))
+        return "# project report"
+
+    def render_project_report_markdown(self, report):
+        self.last_calls.append(("render_project_report_markdown", dict(report or {})))
         return "# project report"
 
     def get_host_ai_report(self, host_id):
         self.last_calls.append(("get_host_ai_report", int(host_id)))
         return {"host": {"id": int(host_id)}}
 
+    def get_host_report(self, host_id):
+        self.last_calls.append(("get_host_report", int(host_id)))
+        return {"host": {"id": int(host_id)}, "validated_findings": {"count": 1}}
+
     def render_host_ai_report_markdown(self, report):
         self.last_calls.append(("render_host_ai_report_markdown", dict(report or {})))
+        return "# host report"
+
+    def render_host_report_markdown(self, report):
+        self.last_calls.append(("render_host_report_markdown", dict(report or {})))
         return "# host report"
 
     def get_scheduler_execution_traces(self, *, limit=200, host_id=0, host_ip="", tool_id="", include_output=False):
@@ -191,9 +207,11 @@ class MCPServerTest(unittest.TestCase):
         project_report = self._call_tool("export_report", {"scope": "project", "format": "md"})
         self.assertEqual("md", project_report["format"])
         self.assertIn("# project report", project_report["body"])
+        self.assertIn(("get_project_report",), self.runtime.last_calls)
 
         host_report = self._call_tool("export_report", {"scope": "host", "host_id": 11, "format": "json"})
         self.assertEqual(11, host_report["report"]["host"]["id"])
+        self.assertIn(("get_host_report", 11), self.runtime.last_calls)
 
         traces = self._call_tool("list_execution_traces", {"host_id": 11, "include_output": True})
         self.assertEqual("exec-1", traces["executions"][0]["execution_id"])

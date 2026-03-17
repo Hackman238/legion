@@ -544,13 +544,17 @@ class MCPServer:
             host_id = _int_arg(arguments, "host_id", 0)
             if host_id <= 0:
                 raise ValueError("host_id is required when scope=host")
-            report = runtime.get_host_ai_report(host_id)
+            report = runtime.get_host_report(host_id) if hasattr(runtime, "get_host_report") else runtime.get_host_ai_report(host_id)
             if output_format == "md":
                 return {
                     "scope": "host",
                     "format": "md",
                     "host_id": host_id,
-                    "body": runtime.render_host_ai_report_markdown(report),
+                    "body": (
+                        runtime.render_host_report_markdown(report)
+                        if hasattr(runtime, "render_host_report_markdown")
+                        else runtime.render_host_ai_report_markdown(report)
+                    ),
                 }
             return {
                 "scope": "host",
@@ -559,12 +563,16 @@ class MCPServer:
                 "report": report,
             }
 
-        report = runtime.get_project_ai_report()
+        report = runtime.get_project_report() if hasattr(runtime, "get_project_report") else runtime.get_project_ai_report()
         if output_format == "md":
             return {
                 "scope": "project",
                 "format": "md",
-                "body": runtime.render_project_ai_report_markdown(report),
+                "body": (
+                    runtime.render_project_report_markdown(report)
+                    if hasattr(runtime, "render_project_report_markdown")
+                    else runtime.render_project_ai_report_markdown(report)
+                ),
             }
         return {
             "scope": "project",

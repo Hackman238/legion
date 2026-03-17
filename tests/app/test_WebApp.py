@@ -730,6 +730,62 @@ class DummyRuntime:
             f"- Host IP: {host.get('ip', '')}\n"
         )
 
+    def get_host_report(self, host_id):
+        if int(host_id) != 11:
+            raise KeyError(host_id)
+        return {
+            "generated_at": "2026-02-18T12:05:00+00:00",
+            "report_version": 2,
+            "report_kind": "host",
+            "project": dict(self.project),
+            "host": dict(self.workspace_host_detail["host"]),
+            "scope_and_policy": {"engagement_policy": dict(self.scheduler_config.state["engagement_policy"])},
+            "summary_of_discovered_assets": {
+                "service_count": 1,
+                "url_count": 0,
+                "technology_count": 1,
+                "finding_count": 1,
+                "credential_count": 0,
+                "identity_count": 0,
+                "session_count": 0,
+                "screenshot_count": 1,
+                "artifact_count": 1,
+            },
+            "validated_findings": {
+                "count": 1,
+                "items": [{"title": "SMB signing not required", "evidence": "smb-security-mode"}],
+            },
+            "attack_paths": [{"summary": "SMB signing not required --validated_by--> evidence"}],
+            "credentials_and_sessions": {"credentials": [], "identities": [], "sessions": []},
+            "evidence_references": [{"ref": "smb-security-mode", "kind": "graph_evidence"}],
+            "recommended_next_steps": {
+                "next_phase": "targeted_checks",
+                "manual_tests": [{"why": "validate relay path", "command": "ntlmrelayx.py -tf targets.txt"}],
+                "coverage_gaps": [{"gap_id": "missing_smb_signing_checks", "description": "missing signing validation"}],
+                "pending_approvals": [],
+            },
+            "skipped_or_blocked_actions": [{"label": "SMB Bruteforce", "policy_reason": "requires approval"}],
+            "methodology_coverage": {
+                "last_mode": "deterministic",
+                "next_phase": "targeted_checks",
+                "attempted_action_count": 1,
+                "strategy_packs_seen": ["internal_network"],
+                "runner_usage": {"local": 1},
+            },
+            "observed_facts": [{"label": "samba", "summary": "service banner"}],
+            "inferred_relationships": [],
+            "ai_suggestions": [{"label": "validate relay path", "summary": "ntlmrelayx.py -tf targets.txt"}],
+            "operator_conclusions": [{"label": "Note #1", "summary": "host note"}],
+        }
+
+    def render_host_report_markdown(self, report):
+        host = report.get("host", {}) if isinstance(report, dict) else {}
+        return (
+            "# Legion Host Report\n\n"
+            f"- Host ID: {host.get('id', '')}\n"
+            "## Scope and Policy\n"
+        )
+
     def build_host_ai_reports_zip(self):
         handle = tempfile.NamedTemporaryFile(prefix="test-host-ai-reports-", suffix=".zip", delete=False)
         path = handle.name
@@ -766,6 +822,66 @@ class DummyRuntime:
             f"- Host Count: {report.get('host_count', 0)}\n"
         )
 
+    def get_project_report(self):
+        return {
+            "generated_at": "2026-02-18T12:06:00+00:00",
+            "report_version": 2,
+            "report_kind": "project",
+            "project": dict(self.project),
+            "scope_and_policy": {"engagement_policy": dict(self.scheduler_config.state["engagement_policy"])},
+            "summary": {
+                "hosts": len(self.workspace_hosts),
+                "open_ports": 2,
+                "services": len(self.workspace_services),
+                "cves": 1,
+            },
+            "summary_of_discovered_assets": {
+                "host_count": 1,
+                "service_count": 1,
+                "url_count": 0,
+                "technology_count": 1,
+                "finding_count": 1,
+                "credential_count": 0,
+                "identity_count": 0,
+                "session_count": 0,
+                "screenshot_count": 1,
+                "artifact_count": 1,
+                "hosts": [{"host": dict(self.workspace_host_detail["host"]), "finding_count": 1}],
+            },
+            "validated_findings": {
+                "count": 1,
+                "items": [{"title": "SMB signing not required", "evidence": "smb-security-mode"}],
+            },
+            "attack_paths": [{"summary": "Host -> Finding -> Evidence"}],
+            "credentials_and_sessions": {"credentials": [], "identities": [], "sessions": []},
+            "evidence_references": [{"ref": "smb-security-mode", "kind": "graph_evidence"}],
+            "recommended_next_steps": {
+                "next_phases": ["targeted_checks"],
+                "manual_tests": [{"why": "validate relay path", "command": "ntlmrelayx.py -tf targets.txt"}],
+                "coverage_gaps": [{"gap_id": "missing_smb_signing_checks", "description": "missing signing validation"}],
+                "pending_approvals": [],
+            },
+            "skipped_or_blocked_actions": [{"label": "SMB Bruteforce", "policy_reason": "requires approval"}],
+            "methodology_coverage": {
+                "attempted_action_count": 1,
+                "strategy_packs_seen": ["internal_network"],
+                "runner_usage": {"local": 1},
+            },
+            "hosts": [{"host": dict(self.workspace_host_detail["host"]), "finding_count": 1}],
+            "observed_facts": [{"label": "samba", "summary": "service banner"}],
+            "inferred_relationships": [],
+            "ai_suggestions": [{"label": "validate relay path", "summary": "ntlmrelayx.py -tf targets.txt"}],
+            "operator_conclusions": [{"label": "Note #1", "summary": "host note"}],
+        }
+
+    def render_project_report_markdown(self, report):
+        project = report.get("project", {}) if isinstance(report, dict) else {}
+        return (
+            "# Legion Project Report\n\n"
+            f"- Project: {project.get('name', '')}\n"
+            "## Scope and Policy\n"
+        )
+
     def push_project_ai_report(self, overrides=None):
         delivery = dict(self.scheduler_config.state.get("project_report_delivery", {}))
         overrides = overrides or {}
@@ -783,6 +899,11 @@ class DummyRuntime:
             "status_code": 200,
             "response_body_excerpt": "{\"ok\":true}",
         }
+
+    def push_project_report(self, overrides=None):
+        result = self.push_project_ai_report(overrides=overrides)
+        result["report_label"] = "project report"
+        return result
 
     def update_host_note(self, host_id, text_value):
         if int(host_id) != 11:
@@ -1377,6 +1498,16 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("text/markdown", str(ai_report_md.content_type))
         self.assertIn("# Legion Host AI Report", ai_report_md.get_data(as_text=True))
 
+        host_report_json = self.client.get("/api/workspace/hosts/11/report?format=json")
+        self.assertEqual(200, host_report_json.status_code)
+        self.assertIn("application/json", str(host_report_json.content_type))
+        self.assertIn("validated_findings", host_report_json.get_data(as_text=True))
+
+        host_report_md = self.client.get("/api/workspace/hosts/11/report?format=md")
+        self.assertEqual(200, host_report_md.status_code)
+        self.assertIn("text/markdown", str(host_report_md.content_type))
+        self.assertIn("# Legion Host Report", host_report_md.get_data(as_text=True))
+
         project_ai_report_json = self.client.get("/api/workspace/project-ai-report?format=json")
         self.assertEqual(200, project_ai_report_json.status_code)
         self.assertIn("application/json", str(project_ai_report_json.content_type))
@@ -1386,6 +1517,16 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, project_ai_report_md.status_code)
         self.assertIn("text/markdown", str(project_ai_report_md.content_type))
         self.assertIn("# Legion Project AI Report", project_ai_report_md.get_data(as_text=True))
+
+        project_report_json = self.client.get("/api/workspace/project-report?format=json")
+        self.assertEqual(200, project_report_json.status_code)
+        self.assertIn("application/json", str(project_report_json.content_type))
+        self.assertIn("summary_of_discovered_assets", project_report_json.get_data(as_text=True))
+
+        project_report_md = self.client.get("/api/workspace/project-report?format=md")
+        self.assertEqual(200, project_report_md.status_code)
+        self.assertIn("text/markdown", str(project_report_md.content_type))
+        self.assertIn("# Legion Project Report", project_report_md.get_data(as_text=True))
 
         project_push_missing_endpoint = self.client.post("/api/workspace/project-ai-report/push", json={})
         self.assertEqual(400, project_push_missing_endpoint.status_code)
@@ -1403,6 +1544,20 @@ class WebAppTest(unittest.TestCase):
         )
         self.assertEqual(200, project_push_ok.status_code)
         self.assertEqual("ok", project_push_ok.json.get("status"))
+
+        project_report_push = self.client.post(
+            "/api/workspace/project-report/push",
+            json={
+                "project_report_delivery": {
+                    "provider_name": "siem",
+                    "endpoint": "https://example.local/report",
+                    "method": "POST",
+                    "format": "json",
+                }
+            },
+        )
+        self.assertEqual(200, project_report_push.status_code)
+        self.assertEqual("ok", project_report_push.json.get("status"))
 
         ai_report_zip = self.client.get("/api/workspace/ai-reports/download-zip")
         self.assertEqual(200, ai_report_zip.status_code)

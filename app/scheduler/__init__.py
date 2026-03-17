@@ -40,6 +40,12 @@ from app.scheduler.policy import (
     upsert_project_engagement_policy,
 )
 from app.scheduler.providers import ProviderError, rank_actions_with_provider, test_provider_connection
+from app.scheduler.reporting import (
+    build_host_report,
+    build_project_report,
+    render_host_report_markdown,
+    render_project_report_markdown,
+)
 from app.scheduler.registry import ActionRegistry
 from app.scheduler.runners import (
     BrowserRunner,
@@ -102,6 +108,8 @@ __all__ = [
     "export_evidence_graph_json",
     "build_artifact_entries",
     "build_attempted_action_entry",
+    "build_host_report",
+    "build_project_report",
     "build_target_urls",
     "delete_target_state",
     "get_project_engagement_policy",
@@ -123,6 +131,8 @@ __all__ = [
     "preset_from_legacy_goal_profile",
     "query_evidence_graph",
     "rank_actions_with_provider",
+    "render_host_report_markdown",
+    "render_project_report_markdown",
     "rebuild_evidence_graph",
     "BrowserRunner",
     "ContainerRunner",
