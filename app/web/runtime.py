@@ -47,6 +47,7 @@ from app.scheduler.execution import (
     store_execution_record,
 )
 from app.scheduler.models import ExecutionRecord
+from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
 from app.scheduler.policy import (
     ensure_scheduler_engagement_policy_table,
     get_project_engagement_policy,
@@ -209,6 +210,7 @@ class WebRuntime:
         self.logic = logic
         self.scheduler_config = SchedulerConfigManager()
         self.scheduler_planner = SchedulerPlanner(self.scheduler_config)
+        self.scheduler_orchestrator = SchedulerOrchestrator(self.scheduler_config, self.scheduler_planner)
         self.settings_file = AppSettings()
         self.settings = Settings(self.settings_file)
         scheduler_preferences = self.scheduler_config.load()
@@ -2721,20 +2723,7 @@ class WebRuntime:
             dig_deeper: bool = False,
             job_id: int = 0,
     ) -> Dict[str, Any]:
-        summary = {
-            "considered": 0,
-            "approval_queued": 0,
-            "executed": 0,
-            "skipped": 0,
-            "host_scope_count": 0,
-            "dig_deeper": bool(dig_deeper),
-        }
         resolved_job_id = int(job_id or 0)
-        started_at = time.monotonic()
-        max_runtime_seconds = _DIG_DEEPER_MAX_RUNTIME_SECONDS if bool(dig_deeper) else 0
-        max_total_actions = _DIG_DEEPER_MAX_TOTAL_ACTIONS if bool(dig_deeper) else 0
-        task_timeout_seconds = _DIG_DEEPER_TASK_TIMEOUT_SECONDS if bool(dig_deeper) else 300
-
         normalized_host_ids = {
             int(item) for item in list(host_ids or set())
             if str(item).strip()
@@ -2743,256 +2732,169 @@ class WebRuntime:
         with self._lock:
             project = self._require_active_project()
             settings = self._get_settings()
-            host_repo = project.repositoryContainer.hostRepository
-            port_repo = project.repositoryContainer.portRepository
-            service_repo = project.repositoryContainer.serviceRepository
             scheduler_prefs = self.scheduler_config.load()
             engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
-            scheduler_mode = str(scheduler_prefs.get("mode", "deterministic") or "deterministic").strip().lower()
+            options = self.scheduler_orchestrator.build_run_options(
+                scheduler_prefs,
+                dig_deeper=bool(dig_deeper),
+                job_id=resolved_job_id,
+            )
+            targets = self.scheduler_orchestrator.collect_project_targets(
+                project,
+                host_ids=normalized_host_ids,
+                allowed_states={"open", "open|filtered"},
+            )
             goal_profile = str(
                 engagement_policy.get("legacy_goal_profile", scheduler_prefs.get("goal_profile", "internal_asset_discovery"))
                 or "internal_asset_discovery"
             )
-            scheduler_concurrency = self._scheduler_max_concurrency(scheduler_prefs)
-            ai_feedback_cfg = self._scheduler_feedback_config(scheduler_prefs)
-            hosts = host_repo.getAllHostObjs()
-            if normalized_host_ids:
-                hosts = [
-                    host for host in hosts
-                    if int(getattr(host, "id", 0) or 0) in normalized_host_ids
-                ]
+        def _should_cancel(job_identifier: int) -> bool:
+            return int(job_identifier or 0) > 0 and self.jobs.is_cancel_requested(int(job_identifier or 0))
 
-        summary["host_scope_count"] = len(hosts)
+        def _existing_attempts(*, target, **_kwargs):
+            return self._existing_tool_attempts_for_target(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+            )
 
-        for host in hosts:
-            if resolved_job_id > 0 and self.jobs.is_cancel_requested(resolved_job_id):
-                summary["cancelled"] = True
-                summary["cancel_reason"] = "cancelled by user"
-                return summary
-            host_id = int(getattr(host, "id", 0) or 0)
-            host_ip = str(getattr(host, "ip", "") or "")
-            ports = port_repo.getPortsByHostId(host.id)
-            for port_obj in ports:
-                if resolved_job_id > 0 and self.jobs.is_cancel_requested(resolved_job_id):
-                    summary["cancelled"] = True
-                    summary["cancel_reason"] = "cancelled by user"
-                    return summary
-                state = str(getattr(port_obj, "state", "") or "")
-                if state not in {"open", "open|filtered"}:
-                    continue
-                port = str(getattr(port_obj, "portId", "") or "")
-                protocol = str(getattr(port_obj, "protocol", "tcp") or "tcp").lower()
-                service_name = ""
-                service_id = getattr(port_obj, "serviceId", None)
-                if service_id:
-                    service_obj = service_repo.getServiceById(service_id)
-                    if service_obj:
-                        service_name = str(getattr(service_obj, "name", "") or "")
-                service_name = service_name.rstrip("?")
+        def _build_context(*, target, attempted_tool_ids, recent_output_chars, analysis_mode):
+            return self._build_scheduler_target_context(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service_name=str(target.service_name or ""),
+                attempted_tool_ids=set(attempted_tool_ids or set()),
+                recent_output_chars=int(recent_output_chars or 900),
+                analysis_mode=str(analysis_mode or "standard"),
+            )
 
-                use_feedback_loop = scheduler_mode == "ai" and bool(ai_feedback_cfg.get("enabled", True))
-                max_rounds = int(ai_feedback_cfg.get("max_rounds_per_target", 4)) if use_feedback_loop else 1
-                max_rounds = max(1, min(max_rounds, 12))
-                max_actions_per_round = int(ai_feedback_cfg.get("max_actions_per_round", 2)) if use_feedback_loop else 4
-                max_actions_per_round = max(1, min(max_actions_per_round, 8))
-                recent_output_chars = int(ai_feedback_cfg.get("recent_output_chars", 900))
-                recent_output_chars = max(320, min(recent_output_chars, 4000))
+        def _on_ai_analysis(*, target, provider_payload):
+            self._persist_scheduler_ai_analysis(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service_name=str(target.service_name or ""),
+                goal_profile=goal_profile,
+                provider_payload=provider_payload,
+            )
 
-                # Honor configured scheduler concurrency as the effective round width.
-                # Without this, the hidden ai_feedback max_actions_per_round cap (default 2)
-                # can make max_concurrency appear ignored.
-                if use_feedback_loop:
-                    max_actions_per_round = max(
-                        max_actions_per_round,
-                        max(1, min(int(scheduler_concurrency), 8)),
-                    )
+        def _handle_blocked(*, target, decision, command_template):
+            _ = command_template
+            self._record_scheduler_decision(
+                decision,
+                str(target.host_ip or ""),
+                str(target.port or ""),
+                str(target.protocol or "tcp"),
+                str(target.service_name or ""),
+                approved=False,
+                executed=False,
+                reason=decision.policy_reason or "blocked by policy",
+            )
+            return SchedulerDecisionDisposition(
+                action="skipped",
+                reason=decision.policy_reason or "blocked by policy",
+            )
 
-                if use_feedback_loop and bool(dig_deeper):
-                    max_rounds = max(max_rounds, 4)
-                    max_actions_per_round = max(max_actions_per_round, 3)
-                    recent_output_chars = max(recent_output_chars, 1600)
+        def _handle_approval(*, target, decision, command_template):
+            approval_id = self._queue_scheduler_approval(
+                decision,
+                str(target.host_ip or ""),
+                str(target.port or ""),
+                str(target.protocol or "tcp"),
+                str(target.service_name or ""),
+                str(command_template or ""),
+            )
+            self._record_scheduler_decision(
+                decision,
+                str(target.host_ip or ""),
+                str(target.port or ""),
+                str(target.protocol or "tcp"),
+                str(target.service_name or ""),
+                approved=False,
+                executed=False,
+                reason=f"pending approval #{approval_id}",
+                approval_id=int(approval_id),
+            )
+            return SchedulerDecisionDisposition(
+                action="queued",
+                reason=f"pending approval #{approval_id}",
+                approval_id=int(approval_id),
+            )
 
-                attempted_tool_ids = set()
-                if use_feedback_loop:
-                    attempted_tool_ids = self._existing_tool_attempts_for_target(
-                        host_id=host_id,
-                        host_ip=host_ip,
-                        port=port,
-                        protocol=protocol,
-                    )
+        def _execute_batch(tasks, max_concurrency):
+            payload = []
+            for task in list(tasks or []):
+                payload.append({
+                    "decision": task.decision,
+                    "tool_id": str(task.tool_id or ""),
+                    "host_ip": str(task.host_ip or ""),
+                    "port": str(task.port or ""),
+                    "protocol": str(task.protocol or "tcp"),
+                    "service_name": str(task.service_name or ""),
+                    "command_template": str(task.command_template or ""),
+                    "timeout": int(task.timeout or 300),
+                    "job_id": int(task.job_id or 0),
+                    "approval_id": int(task.approval_id or 0),
+                })
+            return self._execute_scheduler_task_batch(payload, max_concurrency=max_concurrency)
 
-                for _round in range(max_rounds):
-                    if resolved_job_id > 0 and self.jobs.is_cancel_requested(resolved_job_id):
-                        summary["cancelled"] = True
-                        summary["cancel_reason"] = "cancelled by user"
-                        return summary
-                    if max_runtime_seconds > 0 and (time.monotonic() - started_at) >= int(max_runtime_seconds):
-                        summary["stopped_early"] = "dig_deeper_runtime_cap"
-                        return summary
-                    if max_total_actions > 0 and (summary["executed"] + summary["skipped"] + summary["approval_queued"]) >= int(max_total_actions):
-                        summary["stopped_early"] = "dig_deeper_action_cap"
-                        return summary
+        def _on_execution_result(*, target, decision, result):
+            executed = bool(result.get("executed", False))
+            reason = str(result.get("reason", "") or "")
+            process_id = int(result.get("process_id", 0) or 0)
+            execution_record = result.get("execution_record")
+            self._record_scheduler_decision(
+                decision,
+                str(target.host_ip or ""),
+                str(target.port or ""),
+                str(target.protocol or "tcp"),
+                str(target.service_name or ""),
+                approved=True,
+                executed=executed,
+                reason=reason,
+                approval_id=int(result.get("approval_id", 0) or 0),
+            )
+            self._persist_scheduler_execution_record(
+                decision,
+                execution_record,
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service_name=str(target.service_name or ""),
+            )
+            if process_id and executed:
+                self._save_script_result_if_missing(
+                    host_ip=str(target.host_ip or ""),
+                    port=str(target.port or ""),
+                    protocol=str(target.protocol or "tcp"),
+                    tool_id=decision.tool_id,
+                    process_id=process_id,
+                )
+            if executed:
+                self._enrich_host_from_observed_results(
+                    host_ip=str(target.host_ip or ""),
+                    port=str(target.port or ""),
+                    protocol=str(target.protocol or "tcp"),
+                )
 
-                    context = None
-                    if use_feedback_loop:
-                        context = self._build_scheduler_target_context(
-                            host_id=host_id,
-                            host_ip=host_ip,
-                            port=port,
-                            protocol=protocol,
-                            service_name=service_name,
-                            attempted_tool_ids=attempted_tool_ids,
-                            recent_output_chars=recent_output_chars,
-                            analysis_mode="dig_deeper" if bool(dig_deeper) else "standard",
-                        )
-
-                    decisions = self.scheduler_planner.plan_actions(
-                        service_name,
-                        protocol,
-                        settings,
-                        context=context,
-                        excluded_tool_ids=sorted(attempted_tool_ids),
-                        limit=max_actions_per_round,
-                        engagement_policy=engagement_policy,
-                    )
-
-                    if scheduler_mode == "ai":
-                        provider_payload = self.scheduler_planner.get_last_provider_payload(clear=True)
-                        self._persist_scheduler_ai_analysis(
-                            host_id=host_id,
-                            host_ip=host_ip,
-                            port=port,
-                            protocol=protocol,
-                            service_name=service_name,
-                            goal_profile=goal_profile,
-                            provider_payload=provider_payload,
-                        )
-
-                    if not decisions:
-                        break
-
-                    round_progress = False
-                    execution_tasks: List[Dict[str, Any]] = []
-                    round_scheduled_tool_ids: set[str] = set()
-                    for decision in decisions:
-                        normalized_tool_id = str(decision.tool_id or "").strip().lower()
-                        if (
-                                not normalized_tool_id
-                                or normalized_tool_id in attempted_tool_ids
-                                or normalized_tool_id in round_scheduled_tool_ids
-                        ):
-                            continue
-
-                        summary["considered"] += 1
-                        command_template = decision.command_template or self._find_command_template_for_tool(settings, decision.tool_id)
-
-                        if decision.is_blocked:
-                            self._record_scheduler_decision(
-                                decision,
-                                host_ip,
-                                port,
-                                protocol,
-                                service_name,
-                                approved=False,
-                                executed=False,
-                                reason=decision.policy_reason or "blocked by policy",
-                            )
-                            summary["skipped"] += 1
-                            attempted_tool_ids.add(normalized_tool_id)
-                            round_progress = True
-                            continue
-
-                        if decision.requires_approval:
-                            approval_id = self._queue_scheduler_approval(decision, host_ip, port, protocol, service_name, command_template)
-                            self._record_scheduler_decision(
-                                decision,
-                                host_ip,
-                                port,
-                                protocol,
-                                service_name,
-                                approved=False,
-                                executed=False,
-                                reason=f"pending approval #{approval_id}",
-                                approval_id=int(approval_id),
-                            )
-                            summary["approval_queued"] += 1
-                            attempted_tool_ids.add(normalized_tool_id)
-                            round_progress = True
-                            continue
-
-                        round_scheduled_tool_ids.add(normalized_tool_id)
-                        execution_tasks.append({
-                            "decision": decision,
-                            "tool_id": normalized_tool_id,
-                            "host_ip": host_ip,
-                            "port": port,
-                            "protocol": protocol,
-                            "service_name": service_name,
-                            "command_template": command_template,
-                            "timeout": int(task_timeout_seconds),
-                            "job_id": resolved_job_id,
-                        })
-
-                    execution_results = self._execute_scheduler_task_batch(
-                        execution_tasks,
-                        max_concurrency=scheduler_concurrency,
-                    )
-
-                    for result in execution_results:
-                        decision = result["decision"]
-                        normalized_tool_id = str(result.get("tool_id", "") or "").strip().lower()
-                        executed = bool(result.get("executed", False))
-                        reason = str(result.get("reason", "") or "")
-                        process_id = int(result.get("process_id", 0) or 0)
-                        execution_record = result.get("execution_record")
-
-                        self._record_scheduler_decision(
-                            decision,
-                            host_ip,
-                            port,
-                            protocol,
-                            service_name,
-                            approved=True,
-                            executed=executed,
-                            reason=reason,
-                        )
-                        self._persist_scheduler_execution_record(
-                            decision,
-                            execution_record,
-                            host_ip=host_ip,
-                            port=port,
-                            protocol=protocol,
-                            service_name=service_name,
-                        )
-                        if normalized_tool_id:
-                            attempted_tool_ids.add(normalized_tool_id)
-                        round_progress = True
-                        if executed:
-                            summary["executed"] += 1
-                        else:
-                            summary["skipped"] += 1
-
-                        if process_id and executed:
-                            self._save_script_result_if_missing(
-                                host_ip=host_ip,
-                                port=port,
-                                protocol=protocol,
-                                tool_id=decision.tool_id,
-                                process_id=process_id,
-                            )
-                        if executed:
-                            self._enrich_host_from_observed_results(
-                                host_ip=host_ip,
-                                port=port,
-                                protocol=protocol,
-                            )
-
-                    if not round_progress:
-                        break
-                    if not use_feedback_loop:
-                        break
-
-        return summary
+        return self.scheduler_orchestrator.run_targets(
+            settings=settings,
+            targets=targets,
+            engagement_policy=engagement_policy,
+            options=options,
+            should_cancel=_should_cancel,
+            existing_attempts=_existing_attempts,
+            build_context=_build_context,
+            on_ai_analysis=_on_ai_analysis,
+            handle_blocked=_handle_blocked,
+            handle_approval=_handle_approval,
+            execute_batch=_execute_batch,
+            on_execution_result=_on_execution_result,
+        )
 
     @staticmethod
     def _job_worker_count(preferences: Optional[Dict[str, Any]] = None) -> int:
@@ -3107,6 +3009,7 @@ class WebRuntime:
 
     def _execute_scheduler_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         decision = task["decision"]
+        approval_id = int(task.get("approval_id", 0) or 0)
         execution_result = self._execute_scheduler_decision(
             decision,
             host_ip=str(task.get("host_ip", "") or ""),
@@ -3117,6 +3020,7 @@ class WebRuntime:
             timeout=int(task.get("timeout", 300) or 300),
             job_id=int(task.get("job_id", 0) or 0),
             capture_metadata=True,
+            approval_id=approval_id,
         )
         return {
             "decision": decision,
@@ -3125,6 +3029,7 @@ class WebRuntime:
             "reason": str(execution_result.get("reason", "") or ""),
             "process_id": int(execution_result.get("process_id", 0) or 0),
             "execution_record": execution_result.get("execution_record"),
+            "approval_id": approval_id,
         }
 
     @staticmethod

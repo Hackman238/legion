@@ -35,8 +35,10 @@ from app.importers.PythonImporter import PythonImporter
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
 from app.auxiliary import unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl
 from app.timing import getTimestamp, timing
+from app.scheduler.approvals import ensure_scheduler_approval_table, queue_pending_approval, update_pending_approval
 from app.scheduler.audit import log_scheduler_decision
 from app.scheduler.config import SchedulerConfigManager
+from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
 from app.scheduler.planner import SchedulerPlanner
 from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
@@ -296,6 +298,7 @@ class Controller:
         self.loadSettings()  # creation of context menu actions from settings file and set up of various settings
         self.schedulerConfig = SchedulerConfigManager()
         self.schedulerPlanner = SchedulerPlanner(self.schedulerConfig)
+        self.schedulerOrchestrator = SchedulerOrchestrator(self.schedulerConfig, self.schedulerPlanner)
 
         self.view.startOnce()
         self.view.startConnections()
@@ -2391,19 +2394,197 @@ class Controller:
                 return
             if self.settings.general_enable_scheduler == 'True':
                 log.info('Scheduler started!')
+                engagement_policy = self.schedulerOrchestrator.load_project_engagement_policy(
+                    self.logic.activeProject.database,
+                    persist_if_missing=True,
+                    updated_at=getTimestamp(True),
+                )
+                targets = self.schedulerOrchestrator.collect_parser_targets(parser)
+                options = self.schedulerOrchestrator.build_run_options(
+                    self.schedulerConfig.load(),
+                    enable_feedback=False,
+                    max_actions_per_round=0,
+                )
+                repo_container = self.logic.activeProject.repositoryContainer
+                script_repo = getattr(repo_container, "scriptRepository", None)
+                port_repo = getattr(repo_container, "portRepository", None)
+                host_repo = getattr(repo_container, "hostRepository", None)
 
-                for h in parser.getAllHosts():
-                    try:
-                        for p in h.all_ports():
-                            try:
-                                if p.state == 'open':
-                                    s = p.getService()
-                                    if not (s is None):
-                                        self.runToolsFor(s.name, h.hostname, h.ip, p.portId, p.protocol)
-                            except Exception as port_exc:
-                                log.error(f"Scheduler error for port {getattr(p, 'portId', '?')}: {port_exc}")
-                    except Exception as host_exc:
-                        log.error(f"Scheduler error for host {getattr(h, 'ip', '?')}: {host_exc}")
+                def _handle_blocked(*, target, decision, command_template):
+                    _ = command_template
+                    self._recordScheduledDecision(
+                        decision,
+                        target.service_name,
+                        target.host_ip,
+                        target.port,
+                        target.protocol,
+                        approved=False,
+                        executed=False,
+                        reason=decision.policy_reason or "blocked by policy",
+                    )
+                    return SchedulerDecisionDisposition(
+                        action="skipped",
+                        reason=decision.policy_reason or "blocked by policy",
+                    )
+
+                def _handle_approval(*, target, decision, command_template):
+                    return self._promptDangerousActionApproval(
+                        decision,
+                        target.service_name,
+                        target.host_ip,
+                        target.port,
+                        target.protocol,
+                        command_template,
+                    )
+
+                def _execute_batch(tasks, _max_concurrency):
+                    results = []
+                    for task in list(tasks or []):
+                        decision = task.decision
+                        service = str(task.service_name or "")
+                        hostname = str(task.hostname or "")
+                        ip = str(task.host_ip or "")
+                        port = str(task.port or "")
+                        protocol = str(task.protocol or "tcp")
+                        executed = False
+                        reason = "skipped: no matching port action"
+
+                        if decision.tool_id == "screenshooter":
+                            display_host, resolved_ip = self._resolve_host_and_ip(hostname or ip)
+                            url = f"{self._host_for_url(display_host, resolved_ip)}:{port}"
+                            screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
+                            deterministic_screenshot = f"{resolved_ip}-{port}-screenshot.png"
+                            screenshot_exists = False
+                            if os.path.isdir(screenshots_dir):
+                                if deterministic_screenshot in os.listdir(screenshots_dir):
+                                    screenshot_exists = True
+                            if screenshot_exists:
+                                log.info(f"Skipping screenshot for {resolved_ip}:{port} (already exists)")
+                                reason = "skipped: screenshot already exists"
+                            else:
+                                log.info("Screenshooter of URL: %s" % str(url))
+                                self.screenshooter.addToQueue(resolved_ip, port, url)
+                                self.screenshooter.start()
+                                executed = True
+                                reason = "queued"
+                            results.append({
+                                "decision": decision,
+                                "tool_id": str(task.tool_id or ""),
+                                "executed": executed,
+                                "reason": reason,
+                                "process_id": 0,
+                                "execution_record": None,
+                                "approval_id": int(task.approval_id or 0),
+                            })
+                            continue
+
+                        skip_script = False
+                        if script_repo and port_repo and host_repo:
+                            db_host = host_repo.getHostByIP(ip)
+                            db_port = None
+                            if db_host:
+                                db_port = port_repo.getPortByHostIdAndPort(db_host.id, port, protocol)
+                            if db_host and db_port:
+                                existing_scripts = script_repo.getScriptsByPortId(db_port.id)
+                                for s in existing_scripts:
+                                    if hasattr(s, "scriptId") and s.scriptId == decision.tool_id:
+                                        skip_script = True
+                                        break
+                        if skip_script:
+                            log.info(f"Skipping script {decision.tool_id} for {ip}:{port}/{protocol} (already exists)")
+                            reason = "skipped: script already exists"
+                            results.append({
+                                "decision": decision,
+                                "tool_id": str(task.tool_id or ""),
+                                "executed": False,
+                                "reason": reason,
+                                "process_id": 0,
+                                "execution_record": None,
+                                "approval_id": int(task.approval_id or 0),
+                            })
+                            continue
+
+                        outputfile = os.path.join(
+                            self.logic.activeProject.properties.runningFolder,
+                            f"{getTimestamp()}-{decision.tool_id}-{ip}-{port}"
+                        )
+                        outputfile = os.path.normpath(outputfile).replace("\\", "/")
+                        command = self._apply_target_placeholders(
+                            str(task.command_template or ""),
+                            hostname or ip,
+                            port=port,
+                            output=outputfile,
+                        )
+                        log.debug(f"Running tool command: {str(command)}")
+                        tabTitle = f"{decision.tool_id} ({port}/{protocol})"
+                        if self.findDuplicateTab(self.view.ui.ServicesTabWidget, tabTitle):
+                            log.debug("Duplicate tab name. Tool might have already run.")
+                            reason = "skipped: duplicate tab"
+                            results.append({
+                                "decision": decision,
+                                "tool_id": str(task.tool_id or ""),
+                                "executed": False,
+                                "reason": reason,
+                                "process_id": 0,
+                                "execution_record": None,
+                                "approval_id": int(task.approval_id or 0),
+                            })
+                            continue
+
+                        tab = self.view.ui.HostsTabWidget.tabText(self.view.ui.HostsTabWidget.currentIndex())
+                        self.runCommand(
+                            decision.tool_id,
+                            tabTitle,
+                            ip,
+                            port,
+                            protocol,
+                            command,
+                            getTimestamp(True),
+                            outputfile,
+                            self.view.createNewTabForHost(ip, tabTitle, not (tab == 'Hosts'))
+                        )
+                        results.append({
+                            "decision": decision,
+                            "tool_id": str(task.tool_id or ""),
+                            "executed": True,
+                            "reason": "queued",
+                            "process_id": 0,
+                            "execution_record": None,
+                            "approval_id": int(task.approval_id or 0),
+                        })
+                    return results
+
+                def _on_execution_result(*, target, decision, result):
+                    approval_id = int(result.get("approval_id", 0) or 0)
+                    self._recordScheduledDecision(
+                        decision,
+                        target.service_name,
+                        target.host_ip,
+                        target.port,
+                        target.protocol,
+                        approved=True,
+                        executed=bool(result.get("executed", False)),
+                        reason=str(result.get("reason", "") or ""),
+                        approval_id=approval_id,
+                    )
+                    if approval_id > 0:
+                        update_pending_approval(
+                            self.logic.activeProject.database,
+                            approval_id,
+                            status="approved" if bool(result.get("executed", False)) else "failed",
+                            decision_reason=str(result.get("reason", "") or ""),
+                        )
+
+                self.schedulerOrchestrator.run_targets(
+                    settings=self.settings,
+                    targets=targets,
+                    engagement_policy=engagement_policy,
+                    options=options,
+                    handle_blocked=_handle_blocked,
+                    handle_approval=_handle_approval,
+                    execute_batch=_execute_batch,
+                    on_execution_result=_on_execution_result,
+                )
 
                 log.info('-----------------------------------------------')
             log.info('Scheduler ended!')
@@ -2427,7 +2608,7 @@ class Controller:
                 return True
         return False
 
-    def _recordScheduledDecision(self, decision, service, ip, port, protocol, approved, executed, reason):
+    def _recordScheduledDecision(self, decision, service, ip, port, protocol, approved, executed, reason, approval_id=""):
         try:
             record = {
                 "timestamp": getTimestamp(True),
@@ -2437,26 +2618,61 @@ class Controller:
                 "service": str(service),
                 "scheduler_mode": str(decision.mode),
                 "goal_profile": str(decision.goal_profile),
+                "engagement_preset": str(decision.engagement_preset),
                 "tool_id": str(decision.tool_id),
                 "label": str(decision.label),
                 "command_family_id": str(decision.family_id),
                 "danger_categories": ",".join(decision.danger_categories),
+                "risk_tags": ",".join(decision.risk_tags),
                 "requires_approval": "True" if decision.requires_approval else "False",
+                "policy_decision": str(decision.policy_decision),
+                "policy_reason": str(decision.policy_reason),
+                "risk_summary": str(decision.risk_summary),
+                "safer_alternative": str(decision.safer_alternative),
+                "family_policy_state": str(decision.family_policy_state),
                 "approved": "True" if approved else "False",
                 "executed": "True" if executed else "False",
                 "reason": str(reason or ""),
                 "rationale": str(decision.rationale),
+                "approval_id": str(approval_id or ""),
             }
             log_scheduler_decision(self.logic.activeProject.database, record)
         except Exception:
             log.exception("Failed to persist scheduler decision log entry")
 
-    def _promptDangerousActionApproval(self, decision, service, ip, port):
-        if not decision.requires_approval:
-            return True
-        if self.schedulerConfig.is_family_preapproved(decision.family_id):
-            return True
+    def _queueScheduledApproval(self, decision, service, ip, port, protocol, command_template):
+        ensure_scheduler_approval_table(self.logic.activeProject.database)
+        return int(queue_pending_approval(self.logic.activeProject.database, {
+            "status": "pending",
+            "host_ip": str(ip),
+            "port": str(port),
+            "protocol": str(protocol),
+            "service": str(service),
+            "tool_id": str(decision.tool_id),
+            "label": str(decision.label),
+            "command_template": str(command_template or ""),
+            "command_family_id": str(decision.family_id),
+            "danger_categories": ",".join(decision.danger_categories),
+            "risk_tags": ",".join(decision.risk_tags),
+            "scheduler_mode": str(decision.mode),
+            "goal_profile": str(decision.goal_profile),
+            "engagement_preset": str(decision.engagement_preset),
+            "rationale": str(decision.rationale),
+            "policy_decision": str(decision.policy_decision),
+            "policy_reason": str(decision.policy_reason),
+            "risk_summary": str(decision.risk_summary),
+            "safer_alternative": str(decision.safer_alternative),
+            "family_policy_state": str(decision.family_policy_state),
+            "evidence_refs": ",".join(str(item) for item in list(decision.linked_evidence_refs or []) if str(item).strip()),
+            "decision_reason": "pending approval",
+            "execution_job_id": "",
+        }) or 0)
 
+    def _promptDangerousActionApproval(self, decision, service, ip, port, protocol, command_template):
+        if not decision.requires_approval:
+            return SchedulerDecisionDisposition(action="execute")
+
+        approval_id = self._queueScheduledApproval(decision, service, ip, port, protocol, command_template)
         category_text = ", ".join(decision.danger_categories) if decision.danger_categories else "unknown"
         message = QMessageBox()
         message.setIcon(QMessageBox.Icon.Warning)
@@ -2464,8 +2680,11 @@ class Controller:
         message.setText(
             "Scheduler identified a potentially dangerous command.\n\n"
             f"Target: {ip}:{port} ({service})\n"
+            f"Action: {decision.label or decision.tool_id}\n"
             f"Tool: {decision.tool_id}\n"
-            f"Risk categories: {category_text}\n\n"
+            f"Risk categories: {category_text}\n"
+            f"Policy: {decision.policy_reason or 'approval required'}\n"
+            f"Safer alternative: {decision.safer_alternative or 'None provided'}\n\n"
             "Choose whether to run this command."
         )
         run_once_btn = message.addButton("Run Once", QMessageBox.ButtonRole.AcceptRole)
@@ -2480,11 +2699,32 @@ class Controller:
                 "tool_id": decision.tool_id,
                 "label": decision.label,
                 "danger_categories": decision.danger_categories,
+                "risk_tags": decision.risk_tags,
             })
-            return True
+            update_pending_approval(
+                self.logic.activeProject.database,
+                approval_id,
+                status="approved",
+                decision_reason="approved via qt",
+                family_policy_state="allowed",
+            )
+            return SchedulerDecisionDisposition(action="execute", approval_id=approval_id, reason="approved via qt")
         if clicked == run_once_btn:
-            return True
-        return False
+            update_pending_approval(
+                self.logic.activeProject.database,
+                approval_id,
+                status="approved",
+                decision_reason="approved via qt",
+            )
+            return SchedulerDecisionDisposition(action="execute", approval_id=approval_id, reason="approved via qt")
+
+        update_pending_approval(
+            self.logic.activeProject.database,
+            approval_id,
+            status="rejected",
+            decision_reason="rejected via qt",
+        )
+        return SchedulerDecisionDisposition(action="skipped", approval_id=approval_id, reason="blocked: approval denied")
 
     def runToolsFor(self, service, hostname, ip, port, protocol='tcp'):
         log.info('Running tools for: ' + service + ' on ' + ip + ':' + port)

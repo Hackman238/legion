@@ -6,6 +6,13 @@ from app.scheduler.execution import (
     store_execution_record,
 )
 from app.scheduler.models import ActionSpec, ExecutionRecord, PlanStep
+from app.scheduler.orchestrator import (
+    SchedulerDecisionDisposition,
+    SchedulerExecutionTask,
+    SchedulerOrchestrator,
+    SchedulerRunOptions,
+    SchedulerTarget,
+)
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
 from app.scheduler.policy_engine import PolicyDecision, evaluate_policy_for_risk_tags
 from app.scheduler.policy import (
@@ -28,9 +35,14 @@ __all__ = [
     "ExecutionRecord",
     "PlanStep",
     "PolicyDecision",
+    "SchedulerDecisionDisposition",
     "SchedulerConfigManager",
+    "SchedulerExecutionTask",
+    "SchedulerOrchestrator",
     "ScheduledAction",
     "SchedulerPlanner",
+    "SchedulerRunOptions",
+    "SchedulerTarget",
     "ensure_scheduler_engagement_policy_table",
     "ensure_scheduler_execution_table",
     "get_project_engagement_policy",

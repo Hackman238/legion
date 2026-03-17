@@ -49,15 +49,15 @@ class Logic:
         Screenshots are also taken using EyeWitness, just as in the GUI.
         """
         from app.settings import AppSettings, Settings
+        from app.scheduler.approvals import ensure_scheduler_approval_table, queue_pending_approval
         from app.scheduler.audit import log_scheduler_decision
         from app.scheduler.config import SchedulerConfigManager
         from app.scheduler.execution import ensure_scheduler_execution_table, store_execution_record
         from app.scheduler.models import ExecutionRecord
+        from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
         from app.scheduler.policy import (
             ensure_scheduler_engagement_policy_table,
-            get_project_engagement_policy,
         )
-        from app.scheduler.planner import SchedulerPlanner
         from app.timing import getTimestamp
         from app.httputil.isHttps import isHttps
 
@@ -65,19 +65,21 @@ class Logic:
         settingsFile = AppSettings()
         settings = Settings(settingsFile)
         repo_container = self.activeProject.repositoryContainer
-        service_repo = getattr(repo_container, "serviceRepository", None)
         scheduler_config = SchedulerConfigManager()
-        scheduler_planner = SchedulerPlanner(scheduler_config)
+        scheduler_orchestrator = SchedulerOrchestrator(scheduler_config)
         engagement_policy = None
         database = getattr(self.activeProject, "database", None)
         if database is not None:
             try:
-                ensure_scheduler_engagement_policy_table(database)
-                engagement_policy = get_project_engagement_policy(database)
+                engagement_policy = scheduler_orchestrator.load_project_engagement_policy(
+                    database,
+                    persist_if_missing=True,
+                    updated_at=getTimestamp(True),
+                )
             except Exception:
                 engagement_policy = None
 
-        def record(decision, host_ip, host_port, host_protocol, host_service, approved, executed, reason):
+        def record(decision, host_ip, host_port, host_protocol, host_service, approved, executed, reason, approval_id=""):
             database = getattr(self.activeProject, "database", None)
             if database is None:
                 return
@@ -105,6 +107,7 @@ class Logic:
                 "executed": "True" if executed else "False",
                 "reason": str(reason),
                 "rationale": str(decision.rationale),
+                "approval_id": str(approval_id or ""),
             })
 
         def record_execution(
@@ -149,269 +152,333 @@ class Logic:
             except Exception:
                 return
 
-        # For each host
-        hosts = repo_container.hostRepository.getAllHostObjs()
-        for host in hosts:
-            ip = getattr(host, "ip", None)
-            hostname = getattr(host, "hostname", None)
-            if not ip:
-                continue
-            # For each port
-            try:
-                ports = repo_container.portRepository.getPortsByHostId(host.id)
-            except Exception:
-                ports = []
-            for port in ports:
-                port_num = str(getattr(port, "portId", "") or "")
-                if not port_num:
-                    continue
-                protocol = str(getattr(port, "protocol", "tcp") or "tcp").lower()
-                state = getattr(port, "state", "")
-                if state != "open":
-                    continue
-                service_name = ""
-                service_id = getattr(port, "serviceId", None)
-                if service_repo and service_id:
-                    try:
-                        service_obj = service_repo.getServiceById(service_id)
-                        service_name = getattr(service_obj, "name", "") if service_obj else ""
-                    except Exception:
-                        service_name = ""
-                if service_name.endswith("?"):
-                    service_name = service_name[:-1]
-                decisions = scheduler_planner.plan_actions(
-                    service_name,
-                    protocol,
-                    settings,
-                    engagement_policy=engagement_policy,
-                )
-                for decision in decisions:
-                    if decision.is_blocked:
-                        print(
-                            f"[!] Skipping {decision.tool_id} for {ip}:{port_num}/{protocol} "
-                            f"because policy blocked it: {decision.policy_reason or 'blocked by policy'}."
-                        )
-                        record(
-                            decision,
-                            ip,
-                            port_num,
-                            protocol,
-                            service_name,
-                            approved=False,
-                            executed=False,
-                            reason=decision.policy_reason or "blocked by policy",
-                        )
-                        continue
-                    if decision.requires_approval:
-                        print(
-                            f"[!] Skipping {decision.tool_id} for {ip}:{port_num}/{protocol} "
-                            f"because approval is required for family {decision.family_id}."
-                        )
-                        record(decision, ip, port_num, protocol, service_name, approved=False, executed=False,
-                               reason=decision.policy_reason or "blocked: approval required in headless mode")
-                        continue
+        def queue_approval(decision, host_ip, host_port, host_protocol, host_service, command_template):
+            database = getattr(self.activeProject, "database", None)
+            if database is None:
+                return 0
+            ensure_scheduler_approval_table(database)
+            return int(queue_pending_approval(database, {
+                "status": "pending",
+                "host_ip": str(host_ip),
+                "port": str(host_port),
+                "protocol": str(host_protocol),
+                "service": str(host_service),
+                "tool_id": str(decision.tool_id),
+                "label": str(decision.label),
+                "command_template": str(command_template or ""),
+                "command_family_id": str(decision.family_id),
+                "danger_categories": ",".join(decision.danger_categories),
+                "risk_tags": ",".join(decision.risk_tags),
+                "scheduler_mode": str(decision.mode),
+                "goal_profile": str(decision.goal_profile),
+                "engagement_preset": str(decision.engagement_preset),
+                "rationale": str(decision.rationale),
+                "policy_decision": str(decision.policy_decision),
+                "policy_reason": str(decision.policy_reason),
+                "risk_summary": str(decision.risk_summary),
+                "safer_alternative": str(decision.safer_alternative),
+                "family_policy_state": str(decision.family_policy_state),
+                "evidence_refs": ",".join(str(item) for item in list(decision.linked_evidence_refs or []) if str(item).strip()),
+                "decision_reason": "pending approval",
+                "execution_job_id": "",
+            }) or 0)
 
-                    if decision.tool_id == "screenshooter":
-                        started_at = getTimestamp(True)
-                        try:
-                            target_host = choose_preferred_host(hostname, ip)
-                            url = f"{target_host}:{port_num}"
-                            if isHttps(target_host, port_num):
-                                url = f"https://{url}"
+        def execute_batch(tasks, _max_concurrency):
+            results = []
+            for task in list(tasks or []):
+                decision = task.decision
+                ip = str(task.host_ip or "")
+                hostname = str(task.hostname or "")
+                port_num = str(task.port or "")
+                protocol = str(task.protocol or "tcp")
+                service_name = str(task.service_name or "")
+
+                if decision.tool_id == "screenshooter":
+                    started_at = getTimestamp(True)
+                    try:
+                        target_host = choose_preferred_host(hostname, ip)
+                        url = f"{target_host}:{port_num}"
+                        if isHttps(target_host, port_num):
+                            url = f"https://{url}"
+                        else:
+                            url = f"http://{url}"
+                        print(f"[+] Taking screenshot of {url} using EyeWitness...")
+                        screenshots_dir = os.path.join(self.activeProject.properties.outputFolder, "screenshots")
+                        os.makedirs(screenshots_dir, exist_ok=True)
+                        capture = run_eyewitness_capture(
+                            url=url,
+                            output_parent_dir=screenshots_dir,
+                            delay=5,
+                            use_xvfb=True,
+                            timeout=180,
+                        )
+                        if not capture.get("ok"):
+                            reason = str(capture.get("reason", "") or "")
+                            if reason == "eyewitness missing":
+                                print("[!] EyeWitness executable was not found on this system.")
+                                exit_status = "skipped: eyewitness missing"
                             else:
-                                url = f"http://{url}"
-                            print(f"[+] Taking screenshot of {url} using EyeWitness...")
-                            screenshots_dir = os.path.join(self.activeProject.properties.outputFolder, "screenshots")
-                            os.makedirs(screenshots_dir, exist_ok=True)
-                            capture = run_eyewitness_capture(
-                                url=url,
-                                output_parent_dir=screenshots_dir,
-                                delay=5,
-                                use_xvfb=True,
-                                timeout=180,
-                            )
-                            if not capture.get("ok"):
-                                reason = str(capture.get("reason", "") or "")
-                                if reason == "eyewitness missing":
-                                    print("[!] EyeWitness executable was not found on this system.")
-                                    record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
-                                           reason="skipped: eyewitness missing")
-                                    record_execution(
-                                        decision,
-                                        ip,
-                                        port_num,
-                                        protocol,
-                                        service_name,
-                                        started_at=started_at,
-                                        finished_at=getTimestamp(True),
-                                        exit_status="skipped: eyewitness missing",
-                                    )
-                                    continue
                                 detail = summarize_eyewitness_failure(capture.get("attempts", []))
                                 if detail:
                                     print(f"[!] EyeWitness did not produce a screenshot: {detail}")
                                 else:
                                     print("[!] EyeWitness did not produce a screenshot PNG.")
-                                record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
-                                       reason="skipped: screenshot png missing")
-                                record_execution(
-                                    decision,
-                                    ip,
-                                    port_num,
-                                    protocol,
-                                    service_name,
-                                    started_at=started_at,
-                                    finished_at=getTimestamp(True),
-                                    exit_status="skipped: screenshot png missing",
-                                )
-                                continue
-
-                            command = capture.get("command", [])
-                            resolved_eyewitness = str(capture.get("executable", "") or "")
-                            if command:
-                                print(f"[screenshooter CMD] {' '.join(command)}")
-                            stdout = str(capture.get("stdout", "") or "")
-                            stderr = str(capture.get("stderr", "") or "")
-                            if stdout:
-                                print(f"[screenshooter STDOUT]\n{stdout}")
-                            if stderr:
-                                print(f"[screenshooter STDERR]\n{stderr}")
-
-                            src_path = str(capture.get("screenshot_path", "") or "")
-                            if not src_path or not os.path.isfile(src_path):
-                                print("[!] EyeWitness reported success but screenshot file is missing.")
-                                record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
-                                       reason="skipped: screenshot output missing")
-                                record_execution(
-                                    decision,
-                                    ip,
-                                    port_num,
-                                    protocol,
-                                    service_name,
-                                    started_at=started_at,
-                                    finished_at=getTimestamp(True),
-                                    exit_status="skipped: screenshot output missing",
-                                )
-                                continue
-
-                            deterministic_name = f"{ip}-{port_num}-screenshot.png"
-                            deterministic_path = os.path.join(screenshots_dir, deterministic_name)
-                            shutil.copy2(src_path, deterministic_path)
-                            print(f"[screenshooter] Copied screenshot to {deterministic_path}")
-                            if int(capture.get("returncode", 0) or 0) != 0:
-                                print(
-                                    f"[!] EyeWitness command exited non-zero ({capture.get('returncode')}) "
-                                    f"from {resolved_eyewitness}"
-                                )
-                            record(decision, ip, port_num, protocol, service_name, approved=True, executed=True,
-                                   reason="completed")
-                            record_execution(
+                                exit_status = "skipped: screenshot png missing"
+                            execution_record = ExecutionRecord.from_plan_step(
                                 decision,
-                                ip,
-                                port_num,
-                                protocol,
-                                service_name,
                                 started_at=started_at,
                                 finished_at=getTimestamp(True),
-                                exit_status=(
-                                    f"completed (eyewitness exited {capture.get('returncode')})"
-                                    if int(capture.get("returncode", 0) or 0) != 0 else
-                                    "completed"
-                                ),
-                                artifact_refs=[deterministic_path],
+                                exit_status=exit_status,
+                                approval_id=str(task.approval_id or ""),
                             )
-                        except Exception as e:
-                            print(f"[!] Error taking screenshot for {ip}:{port_num}: {e}")
-                            record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
-                                   reason=f"error: {e}")
-                            record_execution(
+                            results.append({
+                                "decision": decision,
+                                "tool_id": str(task.tool_id or ""),
+                                "executed": False,
+                                "reason": exit_status,
+                                "process_id": 0,
+                                "execution_record": execution_record,
+                                "approval_id": int(task.approval_id or 0),
+                            })
+                            continue
+
+                        src_path = str(capture.get("screenshot_path", "") or "")
+                        if not src_path or not os.path.isfile(src_path):
+                            print("[!] EyeWitness reported success but screenshot file is missing.")
+                            exit_status = "skipped: screenshot output missing"
+                            execution_record = ExecutionRecord.from_plan_step(
                                 decision,
-                                ip,
-                                port_num,
-                                protocol,
-                                service_name,
                                 started_at=started_at,
                                 finished_at=getTimestamp(True),
-                                exit_status=f"error: {e}",
+                                exit_status=exit_status,
+                                approval_id=str(task.approval_id or ""),
                             )
-                        continue
+                            results.append({
+                                "decision": decision,
+                                "tool_id": str(task.tool_id or ""),
+                                "executed": False,
+                                "reason": exit_status,
+                                "process_id": 0,
+                                "execution_record": execution_record,
+                                "approval_id": int(task.approval_id or 0),
+                            })
+                            continue
 
-                    matched_action = None
-                    for action in settings.portActions:
-                        if decision.tool_id == action[1]:
-                            matched_action = action
-                            break
-                    if not matched_action:
-                        record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
-                               reason="skipped: no matching action")
-                        continue
+                        deterministic_name = f"{ip}-{port_num}-screenshot.png"
+                        deterministic_path = os.path.join(screenshots_dir, deterministic_name)
+                        shutil.copy2(src_path, deterministic_path)
+                        print(f"[screenshooter] Copied screenshot to {deterministic_path}")
+                        exit_status = (
+                            f"completed (eyewitness exited {capture.get('returncode')})"
+                            if int(capture.get("returncode", 0) or 0) != 0 else
+                            "completed"
+                        )
+                        execution_record = ExecutionRecord.from_plan_step(
+                            decision,
+                            started_at=started_at,
+                            finished_at=getTimestamp(True),
+                            exit_status=exit_status,
+                            artifact_refs=[deterministic_path],
+                            approval_id=str(task.approval_id or ""),
+                        )
+                        results.append({
+                            "decision": decision,
+                            "tool_id": str(task.tool_id or ""),
+                            "executed": True,
+                            "reason": "completed",
+                            "process_id": 0,
+                            "execution_record": execution_record,
+                            "approval_id": int(task.approval_id or 0),
+                        })
+                    except Exception as exc:
+                        print(f"[!] Error taking screenshot for {ip}:{port_num}: {exc}")
+                        execution_record = ExecutionRecord.from_plan_step(
+                            decision,
+                            started_at=started_at,
+                            finished_at=getTimestamp(True),
+                            exit_status=f"error: {exc}",
+                            approval_id=str(task.approval_id or ""),
+                        )
+                        results.append({
+                            "decision": decision,
+                            "tool_id": str(task.tool_id or ""),
+                            "executed": False,
+                            "reason": f"error: {exc}",
+                            "process_id": 0,
+                            "execution_record": execution_record,
+                            "approval_id": int(task.approval_id or 0),
+                        })
+                    continue
 
-                    command_template = decision.command_template or str(matched_action[2])
-                    if str(decision.tool_id).strip().lower() == "nuclei-web":
-                        command_template = AppSettings._ensure_nuclei_auto_scan(command_template)
-                    if str(decision.tool_id).strip().lower() == "web-content-discovery":
-                        command_template = AppSettings._ensure_web_content_discovery_command(command_template)
-                    runningFolder = self.activeProject.properties.runningFolder
-                    outputfile = os.path.join(runningFolder, f"{getTimestamp()}-{decision.tool_id}-{ip}-{port_num}")
-                    outputfile = os.path.normpath(outputfile).replace("\\", "/")
-                    command, _target_host = apply_preferred_target_placeholders(
-                        command_template,
-                        hostname=str(hostname or ""),
-                        ip=str(ip),
-                        port=port_num,
-                        output=outputfile,
+                command_template = str(task.command_template or "")
+                if str(decision.tool_id).strip().lower() == "nuclei-web":
+                    command_template = AppSettings._ensure_nuclei_auto_scan(command_template)
+                if str(decision.tool_id).strip().lower() == "web-content-discovery":
+                    command_template = AppSettings._ensure_web_content_discovery_command(command_template)
+                runningFolder = self.activeProject.properties.runningFolder
+                outputfile = os.path.join(runningFolder, f"{getTimestamp()}-{decision.tool_id}-{ip}-{port_num}")
+                outputfile = os.path.normpath(outputfile).replace("\\", "/")
+                command, _target_host = apply_preferred_target_placeholders(
+                    command_template,
+                    hostname=str(hostname or ""),
+                    ip=str(ip),
+                    port=port_num,
+                    output=outputfile,
+                )
+                print(f"[+] Running tool '{decision.tool_id}' for {ip}:{port_num}/{protocol}: {command}")
+                started_at = getTimestamp(True)
+                try:
+                    result = subprocess.run(
+                        command,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=int(task.timeout or 300),
                     )
-                    print(f"[+] Running tool '{decision.tool_id}' for {ip}:{port_num}/{protocol}: {command}")
-                    started_at = getTimestamp(True)
-                    try:
-                        result = subprocess.run(
-                            command,
-                            shell=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=300,
-                        )
-                        print(f"[{decision.tool_id} STDOUT]\n{result.stdout}")
-                        if result.stderr:
-                            print(f"[{decision.tool_id} STDERR]\n{result.stderr}")
-                        record(decision, ip, port_num, protocol, service_name, approved=True, executed=True,
-                               reason="completed")
-                        record_execution(
-                            decision,
-                            ip,
-                            port_num,
-                            protocol,
-                            service_name,
-                            started_at=started_at,
-                            finished_at=getTimestamp(True),
-                            exit_status=(
-                                "completed"
-                                if int(getattr(result, "returncode", 0) or 0) == 0 else
-                                f"completed (exit {int(getattr(result, 'returncode', 0) or 0)})"
-                            ),
-                            artifact_refs=[
-                                path for path in sorted(set(glob.glob(f"{outputfile}*")))
-                                if os.path.exists(path)
-                            ],
-                        )
-                    except Exception as e:
-                        print(f"[!] Error running tool '{decision.tool_id}' for {ip}:{port_num}: {e}")
-                        record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
-                               reason=f"error: {e}")
-                        record_execution(
-                            decision,
-                            ip,
-                            port_num,
-                            protocol,
-                            service_name,
-                            started_at=started_at,
-                            finished_at=getTimestamp(True),
-                            exit_status=f"error: {e}",
-                            artifact_refs=[
-                                path for path in sorted(set(glob.glob(f"{outputfile}*")))
-                                if os.path.exists(path)
-                            ],
-                        )
+                    print(f"[{decision.tool_id} STDOUT]\n{result.stdout}")
+                    if result.stderr:
+                        print(f"[{decision.tool_id} STDERR]\n{result.stderr}")
+                    artifact_refs = [
+                        path for path in sorted(set(glob.glob(f"{outputfile}*")))
+                        if os.path.exists(path)
+                    ]
+                    execution_record = ExecutionRecord.from_plan_step(
+                        decision,
+                        started_at=started_at,
+                        finished_at=getTimestamp(True),
+                        exit_status=(
+                            "completed"
+                            if int(getattr(result, "returncode", 0) or 0) == 0 else
+                            f"completed (exit {int(getattr(result, 'returncode', 0) or 0)})"
+                        ),
+                        artifact_refs=artifact_refs,
+                        approval_id=str(task.approval_id or ""),
+                    )
+                    results.append({
+                        "decision": decision,
+                        "tool_id": str(task.tool_id or ""),
+                        "executed": True,
+                        "reason": "completed",
+                        "process_id": 0,
+                        "execution_record": execution_record,
+                        "approval_id": int(task.approval_id or 0),
+                    })
+                except Exception as exc:
+                    print(f"[!] Error running tool '{decision.tool_id}' for {ip}:{port_num}: {exc}")
+                    artifact_refs = [
+                        path for path in sorted(set(glob.glob(f"{outputfile}*")))
+                        if os.path.exists(path)
+                    ]
+                    execution_record = ExecutionRecord.from_plan_step(
+                        decision,
+                        started_at=started_at,
+                        finished_at=getTimestamp(True),
+                        exit_status=f"error: {exc}",
+                        artifact_refs=artifact_refs,
+                        approval_id=str(task.approval_id or ""),
+                    )
+                    results.append({
+                        "decision": decision,
+                        "tool_id": str(task.tool_id or ""),
+                        "executed": False,
+                        "reason": f"error: {exc}",
+                        "process_id": 0,
+                        "execution_record": execution_record,
+                        "approval_id": int(task.approval_id or 0),
+                    })
+            return results
+
+        targets = scheduler_orchestrator.collect_project_targets(
+            self.activeProject,
+            allowed_states={"open"},
+        )
+        options = scheduler_orchestrator.build_run_options(
+            scheduler_config.load(),
+            enable_feedback=False,
+            max_actions_per_round=0,
+        )
+
+        scheduler_orchestrator.run_targets(
+            settings=settings,
+            targets=targets,
+            engagement_policy=engagement_policy,
+            options=options,
+            handle_blocked=lambda *, target, decision, command_template: (
+                print(
+                    f"[!] Skipping {decision.tool_id} for {target.host_ip}:{target.port}/{target.protocol} "
+                    f"because policy blocked it: {decision.policy_reason or 'blocked by policy'}."
+                ) or record(
+                    decision,
+                    target.host_ip,
+                    target.port,
+                    target.protocol,
+                    target.service_name,
+                    approved=False,
+                    executed=False,
+                    reason=decision.policy_reason or "blocked by policy",
+                ) or SchedulerDecisionDisposition(
+                    action="skipped",
+                    reason=decision.policy_reason or "blocked by policy",
+                )
+            ),
+            handle_approval=lambda *, target, decision, command_template: (
+                (lambda approval_id: (
+                    print(
+                        f"[!] Queued approval #{approval_id} for {decision.tool_id} on "
+                        f"{target.host_ip}:{target.port}/{target.protocol}."
+                    ),
+                    record(
+                        decision,
+                        target.host_ip,
+                        target.port,
+                        target.protocol,
+                        target.service_name,
+                        approved=False,
+                        executed=False,
+                        reason=f"pending approval #{approval_id}",
+                        approval_id=approval_id,
+                    ),
+                    SchedulerDecisionDisposition(
+                        action="queued",
+                        reason=f"pending approval #{approval_id}",
+                        approval_id=approval_id,
+                    ),
+                )[-1])(queue_approval(
+                    decision,
+                    target.host_ip,
+                    target.port,
+                    target.protocol,
+                    target.service_name,
+                    command_template,
+                ))
+            ),
+            execute_batch=execute_batch,
+            on_execution_result=lambda *, target, decision, result: (
+                record(
+                    decision,
+                    target.host_ip,
+                    target.port,
+                    target.protocol,
+                    target.service_name,
+                    approved=True,
+                    executed=bool(result.get("executed", False)),
+                    reason=str(result.get("reason", "") or ""),
+                    approval_id=str(result.get("approval_id", "") or ""),
+                ),
+                record_execution(
+                    decision,
+                    target.host_ip,
+                    target.port,
+                    target.protocol,
+                    target.service_name,
+                    started_at=str(getattr(result.get("execution_record"), "started_at", "") or ""),
+                    finished_at=str(getattr(result.get("execution_record"), "finished_at", "") or ""),
+                    exit_status=str(getattr(result.get("execution_record"), "exit_status", "") or result.get("reason", "")),
+                    artifact_refs=list(getattr(result.get("execution_record"), "artifact_refs", []) or []),
+                    approval_id=str(result.get("approval_id", "") or ""),
+                ),
+            ),
+        )
 
     def createFolderForTool(self, tool):
         if 'nmap' in tool:

@@ -20,7 +20,8 @@ class MCPServer:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "target": {"type": "string", "description": "Target host or IP (default: localhost)"}
+                        "target": {"type": "string", "description": "Target host or IP (default: localhost)"},
+                        "run_actions": {"type": "boolean", "description": "Run the shared scheduler/orchestrator after import"},
                     },
                     "required": []
                 },
@@ -90,6 +91,7 @@ class MCPServer:
             from app.importers.nmap_runner import import_nmap_xml_into_project
 
             target = arguments.get("target", "localhost")
+            run_actions = bool(arguments.get("run_actions", False))
             # Setup Legion core components
             shell = DefaultShell()
             dbLog = getDbLogger()
@@ -131,6 +133,8 @@ class MCPServer:
                     update_progress_observable=None,
                     host_repository=hostRepository,
                 )
+                if run_actions:
+                    logic.run_scripted_actions()
             else:
                 return {
                     "target": target,
@@ -172,6 +176,7 @@ class MCPServer:
 
             return {
                 "target": target,
+                "run_actions": run_actions,
                 "results": results,
                 "debug_info": debug_info
             }
