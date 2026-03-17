@@ -35,10 +35,13 @@ class SchedulerRegistryTest(unittest.TestCase):
         self.assertFalse(nuclei.supports_deterministic)
         self.assertIn("web", nuclei.methodology_tags)
         self.assertIn("external_surface", nuclei.pack_tags)
+        self.assertIn("vuln_validation", nuclei.pack_tags)
 
         self.assertTrue(smb_enum.supports_deterministic)
         self.assertTrue(smb_enum.supports_ai_selection)
         self.assertEqual(["tcp"], smb_enum.protocol_scope)
+        self.assertIn("internal_network", smb_enum.pack_tags)
+        self.assertIn("credentials_and_relay", smb_enum.pack_tags)
 
 
 if __name__ == "__main__":

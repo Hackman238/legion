@@ -118,17 +118,56 @@ def _infer_methodology_tags(tool_id: str, service_scope: List[str], risk_tags: L
     return tags
 
 
-def _infer_pack_tags(service_scope: List[str]) -> List[str]:
+def _infer_pack_tags(
+        tool_id: str,
+        service_scope: List[str],
+        risk_tags: List[str],
+        methodology_tags: List[str],
+) -> List[str]:
     service_set = {str(item or "").strip().lower() for item in list(service_scope or [])}
+    tool_text = str(tool_id or "").strip().lower()
+    risk_set = {str(item or "").strip().lower() for item in list(risk_tags or [])}
+    methodology_set = {str(item or "").strip().lower() for item in list(methodology_tags or [])}
     tags = []
     if service_set & WEB_SERVICE_IDS:
         tags.append("web_app_api")
         tags.append("external_surface")
+    if service_set & {"http", "https", "ssl", "http-alt", "https-alt"} or any(
+            token in tool_text for token in ("ssl", "tls", "waf", "certificate", "cert")
+    ):
+        tags.append("tls_and_exposure")
     if service_set & {"smb", "ldap", "kerberos", "msrpc", "rdp", "ms-wbt-server"}:
         tags.append("internal_network")
-    if service_set & {"ssl", "https", "https-alt"}:
-        tags.append("tls_and_exposure")
-    return tags
+    if (
+            service_set & {"smb", "ldap", "kerberos", "msrpc", "winrm", "microsoft-ds", "netbios-ssn"}
+            or {"credential_access"} & methodology_set
+            or {
+                "credential_bruteforce",
+                "password_spray",
+                "account_lockout_risk",
+                "credential_capture_side_effect",
+            } & risk_set
+            or any(token in tool_text for token in ("relay", "responder", "ntlm", "kerberos", "ldap", "smb"))
+    ):
+        tags.append("credentials_and_relay")
+    if (
+            {"validation", "exploitation"} & methodology_set
+            or {
+                "exploit_execution",
+                "service_instability",
+                "high_detection_likelihood",
+            } & risk_set
+            or any(token in tool_text for token in ("vuln", "cve", "exploit", "nikto", "nuclei"))
+    ):
+        tags.append("vuln_validation")
+    deduped = []
+    seen = set()
+    for item in tags:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 class ActionRegistry:
@@ -180,6 +219,7 @@ class ActionRegistry:
                 service_scope=service_scope,
                 runner_type=_infer_runner_type(tool_id, service_scope, command_template),
             )
+            methodology_tags = _infer_methodology_tags(tool_id, service_scope, risk_tags)
             requires_web_context = bool({str(item).lower() for item in service_scope} & WEB_SERVICE_IDS)
             runner_type = _infer_runner_type(tool_id, service_scope, command_template)
             action = ActionSpec(
@@ -204,8 +244,8 @@ class ActionRegistry:
                 requires_web_context=requires_web_context,
                 supports_deterministic=tool_id in scheduler_actions,
                 supports_ai_selection=tool_id in port_actions or tool_id in scheduler_actions,
-                methodology_tags=_infer_methodology_tags(tool_id, service_scope, risk_tags),
-                pack_tags=_infer_pack_tags(service_scope),
+                methodology_tags=methodology_tags,
+                pack_tags=_infer_pack_tags(tool_id, service_scope, risk_tags, methodology_tags),
             )
             specs.append(action)
         return cls(specs)

@@ -27,6 +27,14 @@ from app.scheduler.policy import (
 )
 from app.scheduler.providers import ProviderError, rank_actions_with_provider, test_provider_connection
 from app.scheduler.registry import ActionRegistry
+from app.scheduler.strategy_packs import (
+    StrategyActionGuidance,
+    StrategyPack,
+    StrategyPackSelection,
+    evaluate_action_strategy,
+    get_default_strategy_packs,
+    select_strategy_packs,
+)
 
 __all__ = [
     "ActionRegistry",
@@ -41,11 +49,16 @@ __all__ = [
     "SchedulerOrchestrator",
     "ScheduledAction",
     "SchedulerPlanner",
+    "StrategyActionGuidance",
+    "StrategyPack",
+    "StrategyPackSelection",
     "SchedulerRunOptions",
     "SchedulerTarget",
     "ensure_scheduler_engagement_policy_table",
     "ensure_scheduler_execution_table",
+    "evaluate_action_strategy",
     "get_project_engagement_policy",
+    "get_default_strategy_packs",
     "get_execution_record",
     "legacy_goal_profile_from_policy",
     "list_engagement_presets",
@@ -55,6 +68,7 @@ __all__ = [
     "ProviderError",
     "preset_from_legacy_goal_profile",
     "rank_actions_with_provider",
+    "select_strategy_packs",
     "store_execution_record",
     "test_provider_connection",
     "upsert_project_engagement_policy",

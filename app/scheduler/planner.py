@@ -10,6 +10,7 @@ from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
 from app.scheduler.policy import EngagementPolicy, normalize_engagement_policy
 from app.scheduler.providers import ProviderError, get_last_provider_payload, rank_actions_with_provider
 from app.scheduler.registry import ActionRegistry
+from app.scheduler.strategy_packs import evaluate_action_strategy, select_strategy_packs
 
 logger = logging.getLogger(__name__)
 
@@ -170,12 +171,25 @@ class SchedulerPlanner:
         excluded = set(excluded_tool_ids or set())
         policy_snapshot_hash = self._policy_snapshot_hash(policy, dangerous_categories)
         target_ref = self._build_target_ref(service_name, protocol_name, policy=policy, context=context)
+        selected_packs = self._select_strategy_packs(
+            service_name,
+            protocol_name,
+            policy,
+            context=context,
+        )
+        ranked_steps = []
 
-        for action in registry.for_deterministic(service_name, protocol_name):
+        for index, action in enumerate(registry.for_deterministic(service_name, protocol_name)):
             tool_id = str(action.tool_id)
             if self._normalized_tool_id(tool_id) in excluded:
                 continue
             family_id = build_command_family_id(tool_id, protocol_name, action.command_template or tool_id)
+            strategy_guidance = evaluate_action_strategy(
+                action,
+                selected_packs,
+                policy,
+                context=context,
+            )
             step = PlanStep.from_action_spec(
                 action,
                 origin_mode=mode,
@@ -184,14 +198,25 @@ class SchedulerPlanner:
                 policy_snapshot_hash=policy_snapshot_hash,
                 target_ref=target_ref,
                 parameters={"protocol": protocol_name},
-                rationale="Selected by deterministic scheduler mapping.",
+                rationale=self._build_deterministic_rationale(
+                    action,
+                    selected_packs,
+                    strategy_guidance,
+                ),
                 success_criteria=["Action completed without execution errors."],
-                selection_score=1.0,
+                selection_score=1.0 + float(strategy_guidance.bonus or 0.0),
                 family_id=family_id,
                 risk_tags=list(action.risk_tags),
+                pack_ids=list(strategy_guidance.pack_ids),
+                coverage_gap=str(strategy_guidance.coverage_gap or ""),
+                coverage_notes=str(strategy_guidance.coverage_notes or ""),
+                evidence_expectations=list(strategy_guidance.evidence_expectations),
             )
             self._apply_policy_decision(step, policy)
-            decisions.append(step)
+            ranked_steps.append((index, step))
+        if self._context_has_strategy_signals(context):
+            ranked_steps.sort(key=lambda item: (-float(item[1].score), int(item[0])))
+        decisions = [item[1] for item in ranked_steps]
         if limit is not None:
             try:
                 max_items = int(limit)
@@ -212,6 +237,12 @@ class SchedulerPlanner:
         excluded = set(excluded_tool_ids or set())
         policy_snapshot_hash = self._policy_snapshot_hash(policy, dangerous_categories)
         target_ref = self._build_target_ref(service_name, protocol_name, policy=policy, context=context)
+        selected_packs = self._select_strategy_packs(
+            service_name,
+            protocol_name,
+            policy,
+            context=context,
+        )
 
         for action in registry.for_ai_selection(service_name, protocol_name):
             label = str(action.label)
@@ -282,6 +313,7 @@ class SchedulerPlanner:
             family_id = build_command_family_id(tool_id, protocol_name, command_template)
 
             score = scores_by_tool.get(tool_id)
+            provider_supplied_score = score is not None
             if score is None:
                 score = self._score_candidate(tool_id, label, command_template, policy)
             score = self._score_with_context(
@@ -291,6 +323,14 @@ class SchedulerPlanner:
                 command_template=command_template,
                 context=context,
             )
+            strategy_guidance = evaluate_action_strategy(
+                action,
+                selected_packs,
+                policy,
+                context=context,
+            )
+            if not provider_supplied_score:
+                score = float(score) + float(strategy_guidance.bonus or 0.0)
             if self._is_web_service(service_name):
                 if tool_id == "nuclei-web":
                     score = max(score, 96.0)
@@ -307,6 +347,7 @@ class SchedulerPlanner:
                 provider_returned_rankings=bool(provider_ranked),
                 context_signals=self._active_context_signals(context),
             )
+            rationale = self._append_strategy_context(rationale, strategy_guidance)
 
             step = PlanStep.from_action_spec(
                 action,
@@ -321,6 +362,10 @@ class SchedulerPlanner:
                 selection_score=score,
                 family_id=family_id,
                 risk_tags=list(action.risk_tags),
+                pack_ids=list(strategy_guidance.pack_ids),
+                coverage_gap=str(strategy_guidance.coverage_gap or ""),
+                coverage_notes=str(strategy_guidance.coverage_notes or ""),
+                evidence_expectations=list(strategy_guidance.evidence_expectations),
             )
             self._apply_policy_decision(step, policy)
             decisions.append(step)
@@ -556,6 +601,7 @@ class SchedulerPlanner:
             ]).lower()
 
             blocked = False
+            specialized_rule_matched = False
             if baseline_missing:
                 if cls._matches_any_token(tool_text, ("coldfusion", "vmware", "webdav", "huawei", "drupal", "wordpress", "qnap", "domino")):
                     if cls._normalized_tool_id(tool_id) not in {
@@ -578,11 +624,13 @@ class SchedulerPlanner:
                 if not cls._has_any_signal(signals, rule.get("required_signals", ())):
                     blocked = True
                     break
+                specialized_rule_matched = True
 
             if (
                     not blocked
                     and web_service
                     and observed_tokens
+                    and not specialized_rule_matched
             ):
                 specific_tokens = cls._candidate_specific_tokens(
                     tool_id=tool_id,
@@ -969,6 +1017,70 @@ class SchedulerPlanner:
                 + provider_hint
             )
         return f"AI profile {profile_hint}; selected {tool_id} for highest expected signal.{context_hint}{provider_hint}"
+
+    @staticmethod
+    def _append_strategy_context(rationale: str, strategy_guidance) -> str:
+        base = str(rationale or "").strip()
+        fragments = []
+        if getattr(strategy_guidance, "pack_ids", []):
+            fragments.append("strategy packs " + ", ".join(list(strategy_guidance.pack_ids or [])[:3]))
+        if str(getattr(strategy_guidance, "coverage_notes", "") or "").strip():
+            fragments.append(str(strategy_guidance.coverage_notes).strip().rstrip("."))
+        evidence_expectations = list(getattr(strategy_guidance, "evidence_expectations", []) or [])
+        if evidence_expectations:
+            fragments.append("expects " + ", ".join(str(item) for item in evidence_expectations[:2]))
+        if not fragments:
+            return base
+        strategy_text = " ".join(fragment + "." for fragment in fragments if fragment)
+        if not base:
+            return strategy_text.strip()
+        return f"{base} {strategy_text}".strip()
+
+    @classmethod
+    def _build_deterministic_rationale(
+            cls,
+            action,
+            selected_packs,
+            strategy_guidance,
+    ) -> str:
+        rationale = "Selected by deterministic scheduler mapping."
+        if selected_packs:
+            rationale += " Active packs: " + ", ".join(
+                str(item.pack.pack_id) for item in list(selected_packs or [])[:3]
+            ) + "."
+        rationale = cls._append_strategy_context(rationale, strategy_guidance)
+        if not str(getattr(strategy_guidance, "coverage_gap", "") or "").strip():
+            action_tags = list(getattr(action, "methodology_tags", []) or [])
+            if action_tags:
+                rationale += " Methodology tags: " + ", ".join(str(item) for item in action_tags[:3]) + "."
+        return rationale.strip()
+
+    @staticmethod
+    def _context_has_strategy_signals(context: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(context, dict):
+            return False
+        for key in ("signals", "coverage", "host_cves", "host_ai_state", "inferred_technologies"):
+            value = context.get(key)
+            if isinstance(value, dict) and value:
+                return True
+            if isinstance(value, list) and value:
+                return True
+        return False
+
+    @staticmethod
+    def _select_strategy_packs(
+            service_name: str,
+            protocol_name: str,
+            policy: EngagementPolicy,
+            *,
+            context: Optional[Dict[str, Any]] = None,
+    ):
+        return select_strategy_packs(
+            service_name,
+            protocol_name,
+            policy,
+            context=context,
+        )
 
     @staticmethod
     def _normalized_tool_id(tool_id: str) -> str:

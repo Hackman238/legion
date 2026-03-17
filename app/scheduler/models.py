@@ -103,6 +103,10 @@ class PlanStep:
     selection_score: float = 0.0
     family_id: str = ""
     risk_tags: List[str] = field(default_factory=list)
+    pack_ids: List[str] = field(default_factory=list)
+    coverage_gap: str = ""
+    coverage_notes: str = ""
+    evidence_expectations: List[str] = field(default_factory=list)
     policy_reason: str = ""
     risk_summary: str = ""
     safer_alternative: str = ""
@@ -127,6 +131,10 @@ class PlanStep:
             selection_score: float = 0.0,
             family_id: str = "",
             risk_tags: Optional[List[str]] = None,
+            pack_ids: Optional[List[str]] = None,
+            coverage_gap: str = "",
+            coverage_notes: str = "",
+            evidence_expectations: Optional[List[str]] = None,
             linked_evidence_refs: Optional[List[str]] = None,
             linked_graph_nodes: Optional[List[str]] = None,
             linked_graph_edges: Optional[List[str]] = None,
@@ -172,6 +180,10 @@ class PlanStep:
             selection_score=float(selection_score or 0.0),
             family_id=resolved_family_id,
             risk_tags=resolved_risk_tags,
+            pack_ids=list(pack_ids or []),
+            coverage_gap=str(coverage_gap or ""),
+            coverage_notes=str(coverage_notes or ""),
+            evidence_expectations=list(evidence_expectations or []),
             policy_reason=str(policy_reason or ""),
             risk_summary=str(risk_summary or ""),
             safer_alternative=str(safer_alternative or ""),
@@ -195,6 +207,10 @@ class PlanStep:
             requires_approval: bool = False,
             target_ref: Optional[Dict[str, Any]] = None,
             parameters: Optional[Dict[str, Any]] = None,
+            pack_ids: Optional[List[str]] = None,
+            coverage_gap: str = "",
+            coverage_notes: str = "",
+            evidence_expectations: Optional[List[str]] = None,
             approval_state: Optional[str] = None,
             policy_reason: str = "",
             risk_summary: str = "",
@@ -236,6 +252,10 @@ class PlanStep:
             selection_score=float(score or 0.0),
             family_id=str(family_id or ""),
             risk_tags=list(danger_categories or []),
+            pack_ids=list(pack_ids or []),
+            coverage_gap=str(coverage_gap or ""),
+            coverage_notes=str(coverage_notes or ""),
+            evidence_expectations=list(evidence_expectations or []),
             policy_reason=str(policy_reason or ""),
             risk_summary=str(risk_summary or ""),
             safer_alternative=str(safer_alternative or ""),
@@ -285,6 +305,14 @@ class PlanStep:
     @property
     def danger_categories(self) -> List[str]:
         return risk_tags_to_legacy_categories(self.risk_tags)
+
+    @property
+    def methodology_tags(self) -> List[str]:
+        return list(self.action.methodology_tags or [])
+
+    @property
+    def pack_tags(self) -> List[str]:
+        return list(self.action.pack_tags or [])
 
     @property
     def requires_approval(self) -> bool:

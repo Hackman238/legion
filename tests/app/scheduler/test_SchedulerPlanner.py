@@ -541,6 +541,124 @@ class SchedulerPlannerTest(unittest.TestCase):
             self.assertIn("nmap-vuln.nse", tool_ids)
             self.assertIn("nuclei-web", tool_ids)
 
+    def test_deterministic_mode_uses_strategy_packs_to_close_explicit_gap_when_context_exists(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-det-gap.json"))
+            manager.update_preferences({
+                "mode": "deterministic",
+                "engagement_policy": {"preset": "external_pentest"},
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[
+                    ["nikto", "http", "tcp"],
+                    ["whatweb", "http", "tcp"],
+                ],
+                portActions=[
+                    ["Nikto", "nikto", "nikto -h [IP] -p [PORT]", "http"],
+                    ["WhatWeb", "whatweb", "whatweb http://[IP]:[PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True, "tls_detected": False},
+                    "coverage": {"missing": ["missing_whatweb"]},
+                },
+            )
+
+            self.assertEqual("whatweb", actions[0].tool_id)
+            self.assertIn("web_app_api", actions[0].pack_ids)
+            self.assertEqual("missing_whatweb", actions[0].coverage_gap)
+            self.assertIn("web_app_api", actions[0].rationale)
+
+    def test_ai_mode_wordpress_signal_prefers_wordpress_follow_up_and_carries_pack_metadata(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-wordpress.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "engagement_policy": {"preset": "external_pentest"},
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["WhatWeb", "whatweb", "whatweb http://[IP]:[PORT]", "http"],
+                    ["WPScan", "wpscan", "wpscan --url http://[IP]:[PORT] --no-update", "http"],
+                    ["Banner", "banner", "echo | nc -v [IP] [PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {
+                        "web_service": True,
+                        "wordpress_detected": True,
+                        "observed_technologies": ["wordpress"],
+                    },
+                },
+                limit=3,
+            )
+
+            self.assertEqual("wpscan", actions[0].tool_id)
+            self.assertIn("web_app_api", actions[0].pack_ids)
+            self.assertIn("strategy packs web_app_api", actions[0].rationale)
+
+    @patch("app.scheduler.planner.rank_actions_with_provider")
+    def test_ai_mode_appends_strategy_pack_and_gap_context_to_provider_rationale(self, mock_rank_actions):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        mock_rank_actions.return_value = [
+            {"tool_id": "sslscan", "score": 91, "rationale": "Provider selected TLS posture validation."},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-tls-pack.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "engagement_policy": {"preset": "external_pentest"},
+                "provider": "openai",
+                "providers": {
+                    "openai": {"enabled": True, "model": "gpt-5-mini", "api_key": "x"}
+                },
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["SSLScan", "sslscan", "sslscan [IP]:[PORT]", "https"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "https",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True, "tls_detected": True},
+                    "coverage": {"missing": ["missing_deep_tls_waf_checks"]},
+                },
+            )
+
+            self.assertEqual("sslscan", actions[0].tool_id)
+            self.assertIn("Provider selected TLS posture validation.", actions[0].rationale)
+            self.assertIn("tls_and_exposure", actions[0].rationale)
+            self.assertEqual("missing_deep_tls_waf_checks", actions[0].coverage_gap)
+
 
 if __name__ == "__main__":
     unittest.main()
