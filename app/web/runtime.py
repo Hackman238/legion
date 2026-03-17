@@ -4859,7 +4859,7 @@ class WebRuntime:
                 reason="approved & running",
             )
 
-        decision = ScheduledAction(
+        decision = ScheduledAction.from_legacy_fields(
             tool_id=str(item.get("tool_id", "")),
             label=str(item.get("label", "")),
             command_template=str(item.get("command_template", "")),
@@ -4871,6 +4871,12 @@ class WebRuntime:
             family_id=str(item.get("command_family_id", "")),
             danger_categories=self._split_csv(str(item.get("danger_categories", ""))),
             requires_approval=False,
+            target_ref={
+                "host_ip": str(item.get("host_ip", "")),
+                "port": str(item.get("port", "")),
+                "service": str(item.get("service", "")),
+                "protocol": str(item.get("protocol", "tcp") or "tcp"),
+            },
         )
 
         executed, reason, process_id = self._execute_scheduler_decision(

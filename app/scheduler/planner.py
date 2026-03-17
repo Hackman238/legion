@@ -1,29 +1,18 @@
 import logging
+import json
 import re
 import threading
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from app.scheduler.family import build_command_family_id
+from app.scheduler.models import PlanStep
 from app.scheduler.providers import ProviderError, get_last_provider_payload, rank_actions_with_provider
+from app.scheduler.registry import ActionRegistry
 from app.scheduler.risk import classify_command_danger
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class ScheduledAction:
-    tool_id: str
-    label: str
-    command_template: str
-    protocol: str
-    score: float
-    rationale: str
-    mode: str
-    goal_profile: str
-    family_id: str
-    danger_categories: List[str] = field(default_factory=list)
-    requires_approval: bool = False
+ScheduledAction = PlanStep
 
 
 class SchedulerPlanner:
@@ -103,19 +92,39 @@ class SchedulerPlanner:
             context: Optional[Dict[str, Any]] = None,
             excluded_tool_ids: Optional[List[str]] = None,
             limit: Optional[int] = None,
-    ) -> List[ScheduledAction]:
+    ) -> List[PlanStep]:
+        return self.plan_steps(
+            service,
+            protocol,
+            settings,
+            context=context,
+            excluded_tool_ids=excluded_tool_ids,
+            limit=limit,
+        )
+
+    def plan_steps(
+            self,
+            service: str,
+            protocol: str,
+            settings,
+            *,
+            context: Optional[Dict[str, Any]] = None,
+            excluded_tool_ids: Optional[List[str]] = None,
+            limit: Optional[int] = None,
+    ) -> List[PlanStep]:
         self._set_last_provider_payload({})
         prefs = self.config_manager.load()
         mode = prefs.get("mode", "deterministic")
         goal_profile = prefs.get("goal_profile", "internal_asset_discovery")
         dangerous_categories = self.config_manager.get_dangerous_categories()
         excluded = self._normalize_tool_id_set(excluded_tool_ids)
+        registry = self.build_action_registry(settings, dangerous_categories)
 
         if mode == "ai":
             actions = self._plan_ai(
                 service,
                 protocol,
-                settings,
+                registry,
                 goal_profile,
                 dangerous_categories,
                 context=context,
@@ -130,53 +139,51 @@ class SchedulerPlanner:
         return self._plan_deterministic(
             service,
             protocol,
-            settings,
+            registry,
             goal_profile,
             dangerous_categories,
             mode=mode,
+            context=context,
             excluded_tool_ids=excluded,
             limit=limit,
         )
 
-    def _plan_deterministic(self, service: str, protocol: str, settings, goal_profile: str,
+    @staticmethod
+    def build_action_registry(settings, dangerous_categories: Optional[List[str]] = None) -> ActionRegistry:
+        return ActionRegistry.from_settings(settings, dangerous_categories=dangerous_categories)
+
+    def _plan_deterministic(self, service: str, protocol: str, registry: ActionRegistry, goal_profile: str,
                             dangerous_categories: List[str], mode: str = "deterministic",
+                            context: Optional[Dict[str, Any]] = None,
                             excluded_tool_ids: Optional[Set[str]] = None,
-                            limit: Optional[int] = None) -> List[ScheduledAction]:
+                            limit: Optional[int] = None) -> List[PlanStep]:
         service_name = str(service or "").strip().rstrip("?")
         protocol_name = str(protocol or "tcp").strip().lower()
-        port_actions = self._port_actions_by_id(settings.portActions)
         decisions = []
         excluded = set(excluded_tool_ids or set())
+        policy_snapshot_hash = self._policy_snapshot_hash(goal_profile, dangerous_categories)
+        target_ref = self._build_target_ref(service_name, protocol_name, context=context)
 
-        for tool in settings.automatedAttacks:
-            tool_id = str(tool[0])
+        for action in registry.for_deterministic(service_name, protocol_name):
+            tool_id = str(action.tool_id)
             if self._normalized_tool_id(tool_id) in excluded:
                 continue
-            service_list = [item.strip() for item in str(tool[1]).split(",") if item.strip()]
-            tool_protocol = str(tool[2] if len(tool) > 2 else "tcp").strip().lower()
-            if tool_protocol != protocol_name:
-                continue
-            if service_name not in service_list and "*" not in service_list:
-                continue
-
-            action_data = port_actions.get(tool_id, {})
-            label = action_data.get("label", tool_id)
-            command_template = action_data.get("command", "")
-            danger = classify_command_danger(command_template, dangerous_categories)
-            family_id = build_command_family_id(tool_id, protocol_name, command_template or tool_id)
-
-            decisions.append(ScheduledAction(
-                tool_id=tool_id,
-                label=label,
-                command_template=command_template,
-                protocol=tool_protocol,
-                score=1.0,
+            family_id = build_command_family_id(tool_id, protocol_name, action.command_template or tool_id)
+            danger = classify_command_danger(action.command_template, dangerous_categories)
+            decisions.append(PlanStep.from_action_spec(
+                action,
+                origin_mode=mode,
+                origin_planner="scheduler_deterministic",
+                engagement_preset=goal_profile,
+                policy_snapshot_hash=policy_snapshot_hash,
+                target_ref=target_ref,
+                parameters={"protocol": protocol_name},
                 rationale="Selected by deterministic scheduler mapping.",
-                mode=mode,
-                goal_profile=goal_profile,
+                success_criteria=["Action completed without execution errors."],
+                approval_required=bool(danger) and not self.config_manager.is_family_preapproved(family_id),
+                selection_score=1.0,
                 family_id=family_id,
-                danger_categories=danger,
-                requires_approval=bool(danger) and not self.config_manager.is_family_preapproved(family_id),
+                risk_tags=danger,
             ))
         if limit is not None:
             try:
@@ -187,54 +194,30 @@ class SchedulerPlanner:
                 return decisions[:max_items]
         return decisions
 
-    def _plan_ai(self, service: str, protocol: str, settings, goal_profile: str,
+    def _plan_ai(self, service: str, protocol: str, registry: ActionRegistry, goal_profile: str,
                  dangerous_categories: List[str],
                  context: Optional[Dict[str, Any]] = None,
                  excluded_tool_ids: Optional[Set[str]] = None,
-                 limit: Optional[int] = None) -> List[ScheduledAction]:
+                 limit: Optional[int] = None) -> List[PlanStep]:
         service_name = str(service or "").strip().rstrip("?")
         protocol_name = str(protocol or "tcp").strip().lower()
-        port_actions = self._port_actions_by_id(settings.portActions)
         candidates_by_tool = {}
         excluded = set(excluded_tool_ids or set())
+        policy_snapshot_hash = self._policy_snapshot_hash(goal_profile, dangerous_categories)
+        target_ref = self._build_target_ref(service_name, protocol_name, context=context)
 
-        for action in settings.portActions:
-            label = str(action[0])
-            tool_id = str(action[1])
+        for action in registry.for_ai_selection(service_name, protocol_name):
+            label = str(action.label)
+            tool_id = str(action.tool_id)
             if self._normalized_tool_id(tool_id) in excluded:
-                continue
-            command_template = str(action[2])
-            action_services = self._parse_services(str(action[3] if len(action) > 3 else ""))
-            if action_services and service_name not in action_services and "*" not in action_services:
                 continue
 
             candidates_by_tool[tool_id] = {
+                "action": action,
                 "tool_id": tool_id,
                 "label": label,
-                "command_template": command_template,
-                "service_scope": ",".join(action_services),
-            }
-
-        # Include scheduler-only mappings (like screenshooter) even if they do not have a PortActions command.
-        for tool in settings.automatedAttacks:
-            tool_id = str(tool[0])
-            if self._normalized_tool_id(tool_id) in excluded:
-                continue
-            service_list = [item.strip() for item in str(tool[1]).split(",") if item.strip()]
-            tool_protocol = str(tool[2] if len(tool) > 2 else "tcp").strip().lower()
-            if tool_protocol != protocol_name:
-                continue
-            if service_name not in service_list and "*" not in service_list:
-                continue
-            if tool_id in candidates_by_tool:
-                continue
-
-            action_data = port_actions.get(tool_id, {})
-            candidates_by_tool[tool_id] = {
-                "tool_id": tool_id,
-                "label": action_data.get("label", tool_id),
-                "command_template": action_data.get("command", ""),
-                "service_scope": ",".join(service_list),
+                "command_template": str(action.command_template),
+                "service_scope": ",".join(action.service_scope),
             }
 
         candidates = list(candidates_by_tool.values())
@@ -285,6 +268,7 @@ class SchedulerPlanner:
 
         decisions = []
         for candidate in candidates:
+            action = candidate["action"]
             tool_id = candidate["tool_id"]
             label = candidate["label"]
             command_template = candidate["command_template"]
@@ -318,18 +302,20 @@ class SchedulerPlanner:
                 context_signals=self._active_context_signals(context),
             )
 
-            decisions.append(ScheduledAction(
-                tool_id=tool_id,
-                label=label,
-                command_template=command_template,
-                protocol=protocol_name,
-                score=score,
+            decisions.append(PlanStep.from_action_spec(
+                action,
+                origin_mode="ai",
+                origin_planner="scheduler_ai",
+                engagement_preset=goal_profile,
+                policy_snapshot_hash=policy_snapshot_hash,
+                target_ref=target_ref,
+                parameters={"protocol": protocol_name},
                 rationale=rationale,
-                mode="ai",
-                goal_profile=goal_profile,
+                success_criteria=["Action completed without execution errors."],
+                approval_required=bool(danger) and not self.config_manager.is_family_preapproved(family_id),
+                selection_score=score,
                 family_id=family_id,
-                danger_categories=danger,
-                requires_approval=bool(danger) and not self.config_manager.is_family_preapproved(family_id),
+                risk_tags=danger,
             ))
 
         decisions.sort(key=lambda item: item.score, reverse=True)
@@ -839,9 +825,9 @@ class SchedulerPlanner:
     def _apply_web_ai_baseline(
             cls,
             service_name: str,
-            decisions: List[ScheduledAction],
+            decisions: List[PlanStep],
             limit: int = 4,
-    ) -> List[ScheduledAction]:
+    ) -> List[PlanStep]:
         if not cls._is_web_service(service_name):
             return decisions[:limit]
 
@@ -865,6 +851,50 @@ class SchedulerPlanner:
 
         selected.sort(key=lambda item: item.score, reverse=True)
         return selected[:limit]
+
+    @staticmethod
+    def _policy_snapshot_hash(goal_profile: str, dangerous_categories: List[str]) -> str:
+        payload = {
+            "goal_profile": str(goal_profile or ""),
+            "dangerous_categories": sorted(str(item or "") for item in list(dangerous_categories or []) if str(item or "").strip()),
+        }
+        rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return build_command_family_id("scheduler-policy", "policy", rendered)
+
+    @classmethod
+    def _build_target_ref(
+            cls,
+            service_name: str,
+            protocol_name: str,
+            *,
+            context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        target_ref = {
+            "service": str(service_name or ""),
+            "protocol": str(protocol_name or "tcp"),
+        }
+        if not isinstance(context, dict):
+            return target_ref
+        target = context.get("target", {})
+        if isinstance(target, dict):
+            for key in (
+                    "host_id",
+                    "host_ip",
+                    "hostname",
+                    "port",
+                    "service",
+                    "protocol",
+                    "service_product",
+                    "service_version",
+                    "service_extrainfo",
+            ):
+                value = target.get(key)
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    target_ref[key] = text
+        return target_ref
 
     @staticmethod
     def _build_rationale(

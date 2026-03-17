@@ -8,6 +8,7 @@ from unittest.mock import patch
 class SchedulerPlannerTest(unittest.TestCase):
     def test_deterministic_mode_follows_scheduler_mapping(self):
         from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.models import ActionSpec, PlanStep
         from app.scheduler.planner import SchedulerPlanner
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -22,8 +23,68 @@ class SchedulerPlannerTest(unittest.TestCase):
 
             actions = planner.plan_actions("smb", "tcp", settings)
             self.assertEqual(1, len(actions))
+            self.assertIsInstance(actions[0], PlanStep)
+            self.assertIsInstance(actions[0].action, ActionSpec)
             self.assertEqual("smb-enum-users.nse", actions[0].tool_id)
             self.assertFalse(actions[0].requires_approval)
+            self.assertEqual("smb-enum-users.nse", actions[0].action.action_id)
+            self.assertTrue(actions[0].action.supports_deterministic)
+
+    def test_plan_actions_returns_shared_plan_step_shape_for_both_modes(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.models import PlanStep
+        from app.scheduler.planner import SchedulerPlanner
+
+        settings = SimpleNamespace(
+            automatedAttacks=[["nuclei-web", "http", "tcp"]],
+            portActions=[
+                ["Run nuclei web scan", "nuclei-web", "nuclei -u http://[IP]:[PORT] -silent", "http"],
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "scheduler-ai.json")
+            manager = SchedulerConfigManager(config_path=path)
+            planner = SchedulerPlanner(manager)
+
+            manager.update_preferences({"mode": "deterministic", "goal_profile": "internal_asset_discovery"})
+            det_actions = planner.plan_actions("http", "tcp", settings)
+
+            manager.update_preferences({"mode": "ai", "goal_profile": "external_pentest", "provider": "none"})
+            ai_actions = planner.plan_actions("http", "tcp", settings)
+
+            self.assertTrue(det_actions)
+            self.assertTrue(ai_actions)
+            self.assertIsInstance(det_actions[0], PlanStep)
+            self.assertIsInstance(ai_actions[0], PlanStep)
+            self.assertEqual("nuclei-web", det_actions[0].action_id)
+            self.assertEqual("nuclei-web", ai_actions[0].action_id)
+            self.assertEqual("scheduler_deterministic", det_actions[0].origin_planner)
+            self.assertEqual("scheduler_ai", ai_actions[0].origin_planner)
+
+    @patch.object(__import__("app.scheduler.planner", fromlist=["SchedulerPlanner"]).SchedulerPlanner, "_plan_ai")
+    def test_ai_empty_result_falls_back_to_deterministic_plan_step(self, mock_plan_ai):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.models import PlanStep
+        from app.scheduler.planner import SchedulerPlanner
+
+        mock_plan_ai.return_value = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({"mode": "ai"})
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[["smb-enum-users.nse", "smb", "tcp"]],
+                portActions=[["SMB Users", "smb-enum-users.nse", "nmap --script=smb-enum-users [IP]", "smb"]],
+            )
+
+            actions = planner.plan_actions("smb", "tcp", settings)
+
+            self.assertEqual(1, len(actions))
+            self.assertIsInstance(actions[0], PlanStep)
+            self.assertEqual("deterministic", actions[0].origin_mode)
+            self.assertEqual("scheduler_deterministic", actions[0].origin_planner)
 
     def test_ai_mode_marks_dangerous_actions_for_approval(self):
         from app.scheduler.config import SchedulerConfigManager
