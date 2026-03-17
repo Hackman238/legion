@@ -113,6 +113,7 @@ class SchedulerCompatibilityBaselineTest(unittest.TestCase):
                     "protocol": action.protocol,
                     "goal_profile": action.goal_profile,
                     "danger_categories": list(action.danger_categories),
+                    "approval_state": str(action.approval_state),
                     "requires_approval": bool(action.requires_approval),
                 }
                 for action in smb_actions + http_actions
@@ -125,6 +126,7 @@ class SchedulerCompatibilityBaselineTest(unittest.TestCase):
                     "protocol": "tcp",
                     "goal_profile": "internal_asset_discovery",
                     "danger_categories": [],
+                    "approval_state": "not_required",
                     "requires_approval": False,
                 },
                 {
@@ -133,7 +135,8 @@ class SchedulerCompatibilityBaselineTest(unittest.TestCase):
                     "protocol": "tcp",
                     "goal_profile": "internal_asset_discovery",
                     "danger_categories": ["credential_bruteforce"],
-                    "requires_approval": True,
+                    "approval_state": "blocked",
+                    "requires_approval": False,
                 },
                 {
                     "tool_id": "nuclei-web",
@@ -141,6 +144,7 @@ class SchedulerCompatibilityBaselineTest(unittest.TestCase):
                     "protocol": "tcp",
                     "goal_profile": "internal_asset_discovery",
                     "danger_categories": [],
+                    "approval_state": "not_required",
                     "requires_approval": False,
                 },
             ], golden)

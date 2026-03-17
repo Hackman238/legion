@@ -389,8 +389,9 @@ class WebRuntime:
             try:
                 result = session.execute(text(
                     "SELECT id, timestamp, host_ip, port, protocol, service, scheduler_mode, goal_profile, "
-                    "tool_id, label, command_family_id, danger_categories, requires_approval, approved, "
-                    "executed, reason, rationale, approval_id "
+                    "engagement_preset, tool_id, label, command_family_id, danger_categories, risk_tags, "
+                    "requires_approval, policy_decision, policy_reason, risk_summary, safer_alternative, "
+                    "family_policy_state, approved, executed, reason, rationale, approval_id "
                     "FROM scheduler_decision_log ORDER BY id DESC LIMIT :limit"
                 ), {"limit": int(limit)})
                 rows = result.fetchall()
@@ -406,6 +407,46 @@ class WebRuntime:
             project = self._require_active_project()
             ensure_scheduler_approval_table(project.database)
             return list_pending_approvals(project.database, limit=limit, status=status)
+
+    def _scheduler_family_policy_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "tool_id": str(item.get("tool_id", "")),
+            "label": str(item.get("label", "")),
+            "danger_categories": self._split_csv(str(item.get("danger_categories", ""))),
+            "risk_tags": self._split_csv(str(item.get("risk_tags", ""))),
+            "approval_scope": "family",
+        }
+
+    def _apply_family_policy_action(self, item: Dict[str, Any], family_action: str, *, reason: str = "") -> str:
+        action = str(family_action or "").strip().lower()
+        if action == "allowed":
+            self.scheduler_config.approve_family(
+                str(item.get("command_family_id", "")),
+                self._scheduler_family_policy_metadata(item),
+            )
+            return "allowed"
+        if action == "approval_required":
+            self.scheduler_config.require_family_approval(
+                str(item.get("command_family_id", "")),
+                self._scheduler_family_policy_metadata(item),
+                reason=reason,
+            )
+            return "approval_required"
+        if action == "suppressed":
+            self.scheduler_config.suppress_family(
+                str(item.get("command_family_id", "")),
+                self._scheduler_family_policy_metadata(item),
+                reason=reason,
+            )
+            return "suppressed"
+        if action == "blocked":
+            self.scheduler_config.block_family(
+                str(item.get("command_family_id", "")),
+                self._scheduler_family_policy_metadata(item),
+                reason=reason,
+            )
+            return "blocked"
+        return ""
 
     def get_scheduler_execution_records(self, limit: int = 200) -> List[Dict[str, Any]]:
         with self._lock:
@@ -455,7 +496,13 @@ class WebRuntime:
             except Exception:
                 return None
 
-    def approve_scheduler_approval(self, approval_id: int, approve_family: bool = False, run_now: bool = True):
+    def approve_scheduler_approval(
+            self,
+            approval_id: int,
+            approve_family: bool = False,
+            run_now: bool = True,
+            family_action: str = "",
+    ):
         with self._lock:
             project = self._require_active_project()
             ensure_scheduler_approval_table(project.database)
@@ -465,21 +512,21 @@ class WebRuntime:
             if str(item.get("status", "")).strip().lower() not in {"pending", "approved"}:
                 return {"approval": item, "job": None}
 
-            if approve_family:
-                self.scheduler_config.approve_family(
-                    str(item.get("command_family_id", "")),
-                    {
-                        "tool_id": str(item.get("tool_id", "")),
-                        "label": str(item.get("label", "")),
-                        "danger_categories": self._split_csv(str(item.get("danger_categories", ""))),
-                    }
-                )
+            resolved_family_action = "allowed" if approve_family and not family_action else str(family_action or "")
+            if resolved_family_action not in {"", "allowed", "approval_required"}:
+                resolved_family_action = ""
+            applied_family_state = self._apply_family_policy_action(
+                item,
+                resolved_family_action,
+                reason="approved via web",
+            )
 
             updated = update_pending_approval(
                 project.database,
                 int(approval_id),
                 status="approved",
                 decision_reason="approved via web",
+                family_policy_state=applied_family_state or item.get("family_policy_state", ""),
             )
             update_scheduler_decision_for_approval(
                 project.database,
@@ -495,7 +542,11 @@ class WebRuntime:
         job = self._start_job(
             "scheduler-approval-execute",
             lambda job_id: self._execute_approved_scheduler_item(int(approval_id), job_id=job_id),
-            payload={"approval_id": int(approval_id), "approve_family": bool(approve_family)},
+            payload={
+                "approval_id": int(approval_id),
+                "approve_family": bool(approve_family),
+                "family_action": str(resolved_family_action or ""),
+            },
         )
         with self._lock:
             project = self._require_active_project()
@@ -505,6 +556,7 @@ class WebRuntime:
                 status="approved",
                 decision_reason="approved & queued",
                 execution_job_id=str(job.get("id", "")),
+                family_policy_state=applied_family_state or item.get("family_policy_state", ""),
             )
             update_scheduler_decision_for_approval(
                 project.database,
@@ -515,18 +567,30 @@ class WebRuntime:
             )
         return {"approval": final_state, "job": job}
 
-    def reject_scheduler_approval(self, approval_id: int, reason: str = "rejected via web"):
+    def reject_scheduler_approval(self, approval_id: int, reason: str = "rejected via web", family_action: str = ""):
         with self._lock:
             project = self._require_active_project()
             ensure_scheduler_approval_table(project.database)
             item = get_pending_approval(project.database, int(approval_id))
             if item is None:
                 raise KeyError(f"Unknown approval id: {approval_id}")
+            resolved_family_action = str(family_action or "").strip().lower()
+            if resolved_family_action not in {"", "approval_required", "suppressed", "blocked"}:
+                resolved_family_action = ""
+            applied_family_state = self._apply_family_policy_action(item, resolved_family_action, reason=reason)
             updated = update_pending_approval(
                 project.database,
                 int(approval_id),
                 status="rejected",
                 decision_reason=str(reason or "rejected via web"),
+                family_policy_state=applied_family_state or item.get("family_policy_state", ""),
+            )
+            update_scheduler_decision_for_approval(
+                project.database,
+                int(approval_id),
+                approved=False,
+                executed=False,
+                reason=str(reason or "rejected via web"),
             )
             return updated
 
@@ -2822,7 +2886,23 @@ class WebRuntime:
                         summary["considered"] += 1
                         command_template = decision.command_template or self._find_command_template_for_tool(settings, decision.tool_id)
 
-                        if decision.requires_approval and not self.scheduler_config.is_family_preapproved(decision.family_id):
+                        if decision.is_blocked:
+                            self._record_scheduler_decision(
+                                decision,
+                                host_ip,
+                                port,
+                                protocol,
+                                service_name,
+                                approved=False,
+                                executed=False,
+                                reason=decision.policy_reason or "blocked by policy",
+                            )
+                            summary["skipped"] += 1
+                            attempted_tool_ids.add(normalized_tool_id)
+                            round_progress = True
+                            continue
+
+                        if decision.requires_approval:
                             approval_id = self._queue_scheduler_approval(decision, host_ip, port, protocol, service_name, command_template)
                             self._record_scheduler_decision(
                                 decision,
@@ -5043,7 +5123,9 @@ class WebRuntime:
             mode=str(item.get("scheduler_mode", "ai") or "ai"),
             goal_profile=str(item.get("goal_profile", "") or ""),
             family_id=str(item.get("command_family_id", "")),
-            danger_categories=self._split_csv(str(item.get("danger_categories", ""))),
+            danger_categories=self._split_csv(
+                str(item.get("risk_tags", "") or item.get("danger_categories", ""))
+            ),
             requires_approval=False,
             target_ref={
                 "host_ip": str(item.get("host_ip", "")),
@@ -5051,7 +5133,13 @@ class WebRuntime:
                 "service": str(item.get("service", "")),
                 "protocol": str(item.get("protocol", "tcp") or "tcp"),
             },
+            approval_state="not_required",
+            policy_reason=str(item.get("policy_reason", "")),
+            risk_summary=str(item.get("risk_summary", "")),
+            safer_alternative=str(item.get("safer_alternative", "")),
+            family_policy_state=str(item.get("family_policy_state", "")),
         )
+        decision.linked_evidence_refs = self._split_csv(str(item.get("evidence_refs", "")))
 
         execution_result = self._execute_scheduler_decision(
             decision,
@@ -5758,9 +5846,17 @@ class WebRuntime:
                 "command_template": str(command_template or ""),
                 "command_family_id": str(decision.family_id),
                 "danger_categories": ",".join(decision.danger_categories),
+                "risk_tags": ",".join(decision.risk_tags),
                 "scheduler_mode": str(decision.mode),
                 "goal_profile": str(decision.goal_profile),
+                "engagement_preset": str(decision.engagement_preset),
                 "rationale": str(decision.rationale),
+                "policy_decision": str(decision.policy_decision),
+                "policy_reason": str(decision.policy_reason),
+                "risk_summary": str(decision.risk_summary),
+                "safer_alternative": str(decision.safer_alternative),
+                "family_policy_state": str(decision.family_policy_state),
+                "evidence_refs": ",".join(str(item) for item in list(decision.linked_evidence_refs or []) if str(item).strip()),
                 "decision_reason": "pending approval",
                 "execution_job_id": "",
             })
@@ -5790,11 +5886,18 @@ class WebRuntime:
                 "service": str(service_name),
                 "scheduler_mode": str(decision.mode),
                 "goal_profile": str(decision.goal_profile),
+                "engagement_preset": str(decision.engagement_preset),
                 "tool_id": str(decision.tool_id),
                 "label": str(decision.label),
                 "command_family_id": str(decision.family_id),
                 "danger_categories": ",".join(decision.danger_categories),
+                "risk_tags": ",".join(decision.risk_tags),
                 "requires_approval": "True" if decision.requires_approval else "False",
+                "policy_decision": str(decision.policy_decision),
+                "policy_reason": str(decision.policy_reason),
+                "risk_summary": str(decision.risk_summary),
+                "safer_alternative": str(decision.safer_alternative),
+                "family_policy_state": str(decision.family_policy_state),
                 "approved": "True" if approved else "False",
                 "executed": "True" if executed else "False",
                 "reason": str(reason),

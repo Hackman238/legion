@@ -6,10 +6,10 @@ from typing import Any, Dict, List, Optional, Set
 
 from app.scheduler.family import build_command_family_id
 from app.scheduler.models import PlanStep
+from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
 from app.scheduler.policy import EngagementPolicy, normalize_engagement_policy
 from app.scheduler.providers import ProviderError, get_last_provider_payload, rank_actions_with_provider
 from app.scheduler.registry import ActionRegistry
-from app.scheduler.risk import classify_command_danger
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +176,7 @@ class SchedulerPlanner:
             if self._normalized_tool_id(tool_id) in excluded:
                 continue
             family_id = build_command_family_id(tool_id, protocol_name, action.command_template or tool_id)
-            danger = classify_command_danger(action.command_template, dangerous_categories)
-            decisions.append(PlanStep.from_action_spec(
+            step = PlanStep.from_action_spec(
                 action,
                 origin_mode=mode,
                 origin_planner="scheduler_deterministic",
@@ -187,11 +186,12 @@ class SchedulerPlanner:
                 parameters={"protocol": protocol_name},
                 rationale="Selected by deterministic scheduler mapping.",
                 success_criteria=["Action completed without execution errors."],
-                approval_required=bool(danger) and not self.config_manager.is_family_preapproved(family_id),
                 selection_score=1.0,
                 family_id=family_id,
-                risk_tags=danger,
-            ))
+                risk_tags=list(action.risk_tags),
+            )
+            self._apply_policy_decision(step, policy)
+            decisions.append(step)
         if limit is not None:
             try:
                 max_items = int(limit)
@@ -279,7 +279,6 @@ class SchedulerPlanner:
             tool_id = candidate["tool_id"]
             label = candidate["label"]
             command_template = candidate["command_template"]
-            danger = classify_command_danger(command_template, dangerous_categories)
             family_id = build_command_family_id(tool_id, protocol_name, command_template)
 
             score = scores_by_tool.get(tool_id)
@@ -302,14 +301,14 @@ class SchedulerPlanner:
             rationale = rationales_by_tool.get(tool_id) or self._build_rationale(
                 tool_id,
                 policy,
-                danger,
+                list(action.risk_tags),
                 provider_name=provider_name if provider_enabled else "",
                 provider_error=provider_error,
                 provider_returned_rankings=bool(provider_ranked),
                 context_signals=self._active_context_signals(context),
             )
 
-            decisions.append(PlanStep.from_action_spec(
+            step = PlanStep.from_action_spec(
                 action,
                 origin_mode="ai",
                 origin_planner="scheduler_ai",
@@ -319,11 +318,12 @@ class SchedulerPlanner:
                 parameters={"protocol": protocol_name},
                 rationale=rationale,
                 success_criteria=["Action completed without execution errors."],
-                approval_required=bool(danger) and not self.config_manager.is_family_preapproved(family_id),
                 selection_score=score,
                 family_id=family_id,
-                risk_tags=danger,
-            ))
+                risk_tags=list(action.risk_tags),
+            )
+            self._apply_policy_decision(step, policy)
+            decisions.append(step)
 
         decisions.sort(key=lambda item: item.score, reverse=True)
         resolved_limit = 4
@@ -877,6 +877,25 @@ class SchedulerPlanner:
         }
         rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return build_command_family_id("scheduler-policy", "policy", rendered)
+
+    def _apply_policy_decision(self, step: PlanStep, policy: EngagementPolicy) -> PlanStep:
+        family_policy_state = self.config_manager.get_family_policy_state(step.family_id)
+        decision = evaluate_policy_for_risk_tags(
+            step.risk_tags,
+            policy,
+            family_policy_state=family_policy_state,
+        )
+        step.approval_state = (
+            "blocked"
+            if decision.is_blocked
+            else ("approval_required" if decision.requires_approval else "not_required")
+        )
+        step.risk_tags = list(decision.risk_tags)
+        step.policy_reason = str(decision.reason or "")
+        step.risk_summary = str(decision.risk_summary or "")
+        step.safer_alternative = str(decision.safer_alternative or "")
+        step.family_policy_state = str(decision.family_policy_state or "")
+        return step
 
     @classmethod
     def _build_target_ref(

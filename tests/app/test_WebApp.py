@@ -146,8 +146,15 @@ class DummyRuntime:
                 "host_ip": "10.0.0.5",
                 "port": "445",
                 "protocol": "tcp",
+                "label": "SMB Bruteforce",
                 "tool_id": "smb-default",
                 "danger_categories": "credential_bruteforce",
+                "risk_tags": "credential_bruteforce,account_lockout_risk",
+                "policy_decision": "approval_required",
+                "policy_reason": "requires approval under internal pentest",
+                "risk_summary": "Could lock or throttle real user accounts.",
+                "safer_alternative": "Prefer credential validation against known accounts or low-impact enumeration first.",
+                "rationale": "validate weak SMB authentication controls",
                 "status": "pending",
             }
         ]
@@ -614,15 +621,17 @@ class DummyRuntime:
         _ = status
         return self.scheduler_approvals[:limit]
 
-    def approve_scheduler_approval(self, approval_id, approve_family=False, run_now=True):
+    def approve_scheduler_approval(self, approval_id, approve_family=False, run_now=True, family_action=""):
         _ = approve_family
         _ = run_now
+        _ = family_action
         if int(approval_id) != 77:
             raise KeyError(approval_id)
         return {"approval": {"id": 77, "status": "approved"}, "job": {"id": 99}}
 
-    def reject_scheduler_approval(self, approval_id, reason=""):
+    def reject_scheduler_approval(self, approval_id, reason="", family_action=""):
         _ = reason
+        _ = family_action
         if int(approval_id) != 77:
             raise KeyError(approval_id)
         return {"id": 77, "status": "rejected"}
@@ -1000,11 +1009,11 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, listing.status_code)
         self.assertEqual(1, len(listing.json["approvals"]))
 
-        approve = self.client.post("/api/scheduler/approvals/77/approve", json={"approve_family": True})
+        approve = self.client.post("/api/scheduler/approvals/77/approve", json={"approve_family": True, "family_action": "allowed"})
         self.assertIn(approve.status_code, {200, 202})
         self.assertEqual("ok", approve.json["status"])
 
-        reject = self.client.post("/api/scheduler/approvals/77/reject", json={"reason": "no"})
+        reject = self.client.post("/api/scheduler/approvals/77/reject", json={"reason": "no", "family_action": "suppressed"})
         self.assertEqual(200, reject.status_code)
         self.assertEqual("ok", reject.json["status"])
 

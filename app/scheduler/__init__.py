@@ -7,6 +7,7 @@ from app.scheduler.execution import (
 )
 from app.scheduler.models import ActionSpec, ExecutionRecord, PlanStep
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
+from app.scheduler.policy_engine import PolicyDecision, evaluate_policy_for_risk_tags
 from app.scheduler.policy import (
     EngagementPolicy,
     ensure_scheduler_engagement_policy_table,
@@ -26,6 +27,7 @@ __all__ = [
     "EngagementPolicy",
     "ExecutionRecord",
     "PlanStep",
+    "PolicyDecision",
     "SchedulerConfigManager",
     "ScheduledAction",
     "SchedulerPlanner",
@@ -37,6 +39,7 @@ __all__ = [
     "list_engagement_presets",
     "list_execution_records",
     "normalize_engagement_policy",
+    "evaluate_policy_for_risk_tags",
     "ProviderError",
     "preset_from_legacy_goal_profile",
     "rank_actions_with_provider",

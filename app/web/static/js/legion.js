@@ -2144,6 +2144,34 @@ function renderApprovals(approvals) {
         const tr = document.createElement("tr");
         tr.dataset.approvalId = String(item.id || "");
 
+        const addDetailLine = (container, label, value) => {
+            const text = String(value || "").trim();
+            if (!text) {
+                return;
+            }
+            const line = document.createElement("div");
+            line.textContent = `${label}: ${text}`;
+            container.appendChild(line);
+        };
+
+        const actionCell = document.createElement("td");
+        addDetailLine(actionCell, "tool", item.label || item.tool_id || "");
+        addDetailLine(actionCell, "id", item.tool_id || "");
+        addDetailLine(actionCell, "command", item.command_template || "");
+        addDetailLine(actionCell, "status", item.status || "");
+
+        const riskCell = document.createElement("td");
+        addDetailLine(riskCell, "risk tags", item.risk_tags || item.danger_categories || "");
+        addDetailLine(riskCell, "decision", item.policy_decision || "");
+        addDetailLine(riskCell, "why risky", item.risk_summary || "");
+        addDetailLine(riskCell, "policy", item.policy_reason || "");
+        addDetailLine(riskCell, "safer alternative", item.safer_alternative || "");
+        addDetailLine(riskCell, "family policy", item.family_policy_state || "");
+
+        const rationaleCell = document.createElement("td");
+        addDetailLine(rationaleCell, "planner rationale", item.rationale || "");
+        addDetailLine(rationaleCell, "evidence", item.evidence_refs || "");
+
         const actionsCell = document.createElement("td");
         const approveBtn = document.createElement("button");
         approveBtn.type = "button";
@@ -2158,12 +2186,22 @@ function renderApprovals(approvals) {
         rejectBtn.dataset.approvalId = String(item.id || "");
 
         const familyLabel = document.createElement("label");
-        familyLabel.className = "checkbox";
-        const familyCheckbox = document.createElement("input");
-        familyCheckbox.type = "checkbox";
-        familyCheckbox.dataset.approvalFamily = String(item.id || "");
-        familyLabel.appendChild(familyCheckbox);
-        familyLabel.appendChild(document.createTextNode("Always allow family"));
+        familyLabel.textContent = "Family action";
+        const familySelect = document.createElement("select");
+        familySelect.dataset.approvalFamilyAction = String(item.id || "");
+        [
+            ["", "none"],
+            ["allowed", "allow family"],
+            ["approval_required", "always require approval"],
+            ["suppressed", "suppress family"],
+            ["blocked", "block family"],
+        ].forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            familySelect.appendChild(option);
+        });
+        familyLabel.appendChild(familySelect);
 
         actionsCell.appendChild(approveBtn);
         actionsCell.appendChild(rejectBtn);
@@ -2172,9 +2210,9 @@ function renderApprovals(approvals) {
         const target = formatTargetLabel(item.host_ip, item.port, item.protocol);
         tr.appendChild(makeCell(item.id || ""));
         tr.appendChild(makeCell(target));
-        tr.appendChild(makeCell(item.tool_id || item.label || ""));
-        tr.appendChild(makeCell(item.danger_categories || ""));
-        tr.appendChild(makeCell(item.status || ""));
+        tr.appendChild(actionCell);
+        tr.appendChild(riskCell);
+        tr.appendChild(rationaleCell);
         tr.appendChild(actionsCell);
         body.appendChild(tr);
     });
@@ -2996,12 +3034,14 @@ async function loadApprovals() {
 }
 
 async function approveApproval(approvalId) {
-    const familyCheckbox = document.querySelector(`input[data-approval-family='${approvalId}']`);
-    const approveFamily = Boolean(familyCheckbox?.checked);
+    const familySelect = document.querySelector(`select[data-approval-family-action='${approvalId}']`);
+    const familyAction = String(familySelect?.value || "");
+    const approveFamily = familyAction === "allowed";
     try {
         await postJson(`/api/scheduler/approvals/${approvalId}/approve`, {
             approve_family: approveFamily,
             run_now: true,
+            family_action: familyAction,
         });
         setWorkspaceStatus(`Approval ${approvalId} accepted`);
         await Promise.all([loadApprovals(), pollSnapshot()]);
@@ -3011,9 +3051,12 @@ async function approveApproval(approvalId) {
 }
 
 async function rejectApproval(approvalId) {
+    const familySelect = document.querySelector(`select[data-approval-family-action='${approvalId}']`);
+    const familyAction = String(familySelect?.value || "");
     try {
         await postJson(`/api/scheduler/approvals/${approvalId}/reject`, {
             reason: "rejected in web workspace",
+            family_action: familyAction,
         });
         setWorkspaceStatus(`Approval ${approvalId} rejected`);
         await Promise.all([loadApprovals(), pollSnapshot()]);

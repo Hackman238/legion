@@ -89,11 +89,18 @@ class Logic:
                 "service": str(host_service),
                 "scheduler_mode": str(decision.mode),
                 "goal_profile": str(decision.goal_profile),
+                "engagement_preset": str(decision.engagement_preset),
                 "tool_id": str(decision.tool_id),
                 "label": str(decision.label),
                 "command_family_id": str(decision.family_id),
                 "danger_categories": ",".join(decision.danger_categories),
+                "risk_tags": ",".join(decision.risk_tags),
                 "requires_approval": "True" if decision.requires_approval else "False",
+                "policy_decision": str(decision.policy_decision),
+                "policy_reason": str(decision.policy_reason),
+                "risk_summary": str(decision.risk_summary),
+                "safer_alternative": str(decision.safer_alternative),
+                "family_policy_state": str(decision.family_policy_state),
                 "approved": "True" if approved else "False",
                 "executed": "True" if executed else "False",
                 "reason": str(reason),
@@ -179,13 +186,29 @@ class Logic:
                     engagement_policy=engagement_policy,
                 )
                 for decision in decisions:
+                    if decision.is_blocked:
+                        print(
+                            f"[!] Skipping {decision.tool_id} for {ip}:{port_num}/{protocol} "
+                            f"because policy blocked it: {decision.policy_reason or 'blocked by policy'}."
+                        )
+                        record(
+                            decision,
+                            ip,
+                            port_num,
+                            protocol,
+                            service_name,
+                            approved=False,
+                            executed=False,
+                            reason=decision.policy_reason or "blocked by policy",
+                        )
+                        continue
                     if decision.requires_approval:
                         print(
                             f"[!] Skipping {decision.tool_id} for {ip}:{port_num}/{protocol} "
                             f"because approval is required for family {decision.family_id}."
                         )
                         record(decision, ip, port_num, protocol, service_name, approved=False, executed=False,
-                               reason="blocked: approval required in headless mode")
+                               reason=decision.policy_reason or "blocked: approval required in headless mode")
                         continue
 
                     if decision.tool_id == "screenshooter":

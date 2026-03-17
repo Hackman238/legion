@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from app.scheduler.policy import legacy_goal_profile_from_policy
+from app.scheduler.risk import risk_tags_to_legacy_categories
 
 
 WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
@@ -102,6 +103,10 @@ class PlanStep:
     selection_score: float = 0.0
     family_id: str = ""
     risk_tags: List[str] = field(default_factory=list)
+    policy_reason: str = ""
+    risk_summary: str = ""
+    safer_alternative: str = ""
+    family_policy_state: str = ""
 
     @classmethod
     def from_action_spec(
@@ -125,6 +130,11 @@ class PlanStep:
             linked_evidence_refs: Optional[List[str]] = None,
             linked_graph_nodes: Optional[List[str]] = None,
             linked_graph_edges: Optional[List[str]] = None,
+            approval_state: Optional[str] = None,
+            policy_reason: str = "",
+            risk_summary: str = "",
+            safer_alternative: str = "",
+            family_policy_state: str = "",
     ) -> "PlanStep":
         resolved_target = dict(target_ref or {})
         resolved_parameters = dict(parameters or {})
@@ -151,7 +161,10 @@ class PlanStep:
             rationale=str(rationale or ""),
             preconditions=list(preconditions or []),
             success_criteria=list(success_criteria or []),
-            approval_state="approval_required" if bool(approval_required) else "not_required",
+            approval_state=(
+                str(approval_state or "").strip().lower()
+                or ("approval_required" if bool(approval_required) else "not_required")
+            ),
             status=str(status or "planned"),
             linked_evidence_refs=list(linked_evidence_refs or []),
             linked_graph_nodes=list(linked_graph_nodes or []),
@@ -159,6 +172,10 @@ class PlanStep:
             selection_score=float(selection_score or 0.0),
             family_id=resolved_family_id,
             risk_tags=resolved_risk_tags,
+            policy_reason=str(policy_reason or ""),
+            risk_summary=str(risk_summary or ""),
+            safer_alternative=str(safer_alternative or ""),
+            family_policy_state=str(family_policy_state or ""),
         )
 
     @classmethod
@@ -178,6 +195,11 @@ class PlanStep:
             requires_approval: bool = False,
             target_ref: Optional[Dict[str, Any]] = None,
             parameters: Optional[Dict[str, Any]] = None,
+            approval_state: Optional[str] = None,
+            policy_reason: str = "",
+            risk_summary: str = "",
+            safer_alternative: str = "",
+            family_policy_state: str = "",
     ) -> "PlanStep":
         protocol_name = _normalize_protocol(protocol)
         service_scope = _normalize_text_list((target_ref or {}).get("service"))
@@ -210,9 +232,14 @@ class PlanStep:
             parameters=merged_parameters,
             rationale=str(rationale or ""),
             approval_required=bool(requires_approval),
+            approval_state=approval_state,
             selection_score=float(score or 0.0),
             family_id=str(family_id or ""),
             risk_tags=list(danger_categories or []),
+            policy_reason=str(policy_reason or ""),
+            risk_summary=str(risk_summary or ""),
+            safer_alternative=str(safer_alternative or ""),
+            family_policy_state=str(family_policy_state or ""),
         )
 
     @property
@@ -257,11 +284,23 @@ class PlanStep:
 
     @property
     def danger_categories(self) -> List[str]:
-        return list(self.risk_tags or [])
+        return risk_tags_to_legacy_categories(self.risk_tags)
 
     @property
     def requires_approval(self) -> bool:
         return str(self.approval_state or "").strip().lower() in {"approval_required", "required", "pending"}
+
+    @property
+    def is_blocked(self) -> bool:
+        return str(self.approval_state or "").strip().lower() in {"blocked", "suppressed"}
+
+    @property
+    def policy_decision(self) -> str:
+        if self.is_blocked:
+            return "blocked"
+        if self.requires_approval:
+            return "approval_required"
+        return "allowed"
 
 
 @dataclass

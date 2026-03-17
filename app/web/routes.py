@@ -1148,11 +1148,13 @@ def scheduler_approval_approve(approval_id):
     payload = request.get_json(silent=True) or {}
     approve_family = _as_bool(payload.get("approve_family", False), default=False)
     run_now = _as_bool(payload.get("run_now", True), default=True)
+    family_action = str(payload.get("family_action", "") or "").strip().lower()
     try:
         result = runtime.approve_scheduler_approval(
             approval_id=approval_id,
             approve_family=approve_family,
             run_now=run_now,
+            family_action=family_action,
         )
         status_code = 202 if result.get("job") else 200
         return jsonify({"status": "ok", **result}), status_code
@@ -1167,8 +1169,13 @@ def scheduler_approval_reject(approval_id):
     runtime = current_app.extensions["legion_runtime"]
     payload = request.get_json(silent=True) or {}
     reason = str(payload.get("reason", "rejected via web"))
+    family_action = str(payload.get("family_action", "") or "").strip().lower()
     try:
-        result = runtime.reject_scheduler_approval(approval_id=approval_id, reason=reason)
+        result = runtime.reject_scheduler_approval(
+            approval_id=approval_id,
+            reason=reason,
+            family_action=family_action,
+        )
         return jsonify({"status": "ok", "approval": result})
     except KeyError as exc:
         return _json_error(str(exc), 404)

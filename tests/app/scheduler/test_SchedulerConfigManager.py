@@ -128,6 +128,17 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertFalse(manager.is_family_preapproved("abc123"))
             manager.approve_family("abc123", {"tool_id": "hydra", "label": "Hydra", "danger_categories": []})
             self.assertTrue(manager.is_family_preapproved("abc123"))
+            self.assertEqual("allowed", manager.get_family_policy_state("abc123"))
+
+            manager.require_family_approval("abc123", {"tool_id": "hydra", "label": "Hydra"}, reason="manual review")
+            self.assertEqual("approval_required", manager.get_family_policy_state("abc123"))
+            self.assertFalse(manager.is_family_preapproved("abc123"))
+
+            manager.suppress_family("abc123", {"tool_id": "hydra", "label": "Hydra"}, reason="too noisy")
+            self.assertEqual("suppressed", manager.get_family_policy_state("abc123"))
+
+            manager.block_family("abc123", {"tool_id": "hydra", "label": "Hydra"}, reason="out of scope")
+            self.assertEqual("blocked", manager.get_family_policy_state("abc123"))
 
 
 if __name__ == "__main__":

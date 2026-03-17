@@ -34,11 +34,18 @@ class SchedulerAuditStoreTest(unittest.TestCase):
                 "service": "smb",
                 "scheduler_mode": "ai",
                 "goal_profile": "internal_asset_discovery",
+                "engagement_preset": "internal_pentest",
                 "tool_id": "smb-default",
                 "label": "SMB Bruteforce",
                 "command_family_id": "fam1",
                 "danger_categories": "credential_bruteforce",
+                "risk_tags": "credential_bruteforce,account_lockout_risk",
                 "requires_approval": "True",
+                "policy_decision": "approval_required",
+                "policy_reason": "requires approval under internal pentest",
+                "risk_summary": "Could lock or throttle real user accounts.",
+                "safer_alternative": "Prefer credential validation against known accounts or low-impact enumeration first.",
+                "family_policy_state": "",
                 "approved": "False",
                 "executed": "False",
                 "reason": "pending approval #77",
@@ -57,6 +64,8 @@ class SchedulerAuditStoreTest(unittest.TestCase):
             self.assertEqual("True", queued["approved"])
             self.assertEqual("False", queued["executed"])
             self.assertEqual("approved & queued", queued["reason"])
+            self.assertEqual("approval_required", queued["policy_decision"])
+            self.assertEqual("internal_pentest", queued["engagement_preset"])
 
             running = update_scheduler_decision_for_approval(
                 project.database,
@@ -101,11 +110,18 @@ class SchedulerAuditStoreTest(unittest.TestCase):
                 "service": "ssh",
                 "scheduler_mode": "ai",
                 "goal_profile": "internal_asset_discovery",
+                "engagement_preset": "internal_recon",
                 "tool_id": "ssh-default-router",
                 "label": "SSH default router",
                 "command_family_id": "fam2",
                 "danger_categories": "credential_bruteforce",
+                "risk_tags": "credential_bruteforce,account_lockout_risk",
                 "requires_approval": "True",
+                "policy_decision": "blocked",
+                "policy_reason": "blocked under internal recon",
+                "risk_summary": "Could lock or throttle real user accounts.",
+                "safer_alternative": "Prefer credential validation against known accounts or low-impact enumeration first.",
+                "family_policy_state": "",
                 "approved": "False",
                 "executed": "False",
                 "reason": "pending approval #12",

@@ -126,6 +126,12 @@ class SchedulerPlannerTest(unittest.TestCase):
                 "mode": "ai",
                 "goal_profile": "internal_asset_discovery",
                 "dangerous_categories": ["credential_bruteforce"],
+                "engagement_policy": {
+                    "preset": "internal_pentest",
+                    "intent": "pentest",
+                    "credential_attack_mode": "approval",
+                    "lockout_risk_mode": "approval",
+                },
             })
             planner = SchedulerPlanner(manager)
 
@@ -149,6 +155,32 @@ class SchedulerPlannerTest(unittest.TestCase):
             actions_after_approval = planner.plan_actions("smb", "tcp", settings)
             hydra_after = [item for item in actions_after_approval if item.tool_id == "smb-default"][0]
             self.assertFalse(hydra_after.requires_approval)
+
+    def test_internal_recon_blocks_credential_attack_actions(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "deterministic",
+                "engagement_policy": {"preset": "internal_recon"},
+            })
+            planner = SchedulerPlanner(manager)
+
+            settings = SimpleNamespace(
+                automatedAttacks=[["smb-default", "smb", "tcp"]],
+                portActions=[
+                    ["SMB Default", "smb-default", "hydra -s [PORT] -u root -P pass.txt [IP] smb", "smb"],
+                ],
+            )
+
+            actions = planner.plan_actions("smb", "tcp", settings)
+
+            self.assertEqual(1, len(actions))
+            self.assertTrue(actions[0].is_blocked)
+            self.assertEqual("blocked", actions[0].policy_decision)
+            self.assertIn("credential_bruteforce", actions[0].danger_categories)
 
     @patch("app.scheduler.planner.rank_actions_with_provider")
     def test_ai_mode_uses_provider_scores_when_available(self, mock_rank_actions):

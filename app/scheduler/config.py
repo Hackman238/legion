@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from app.paths import ensure_legion_home, get_scheduler_config_path
+from app.scheduler.policy_engine import VALID_FAMILY_POLICY_STATES
 from app.scheduler.policy import (
     legacy_goal_profile_from_policy,
     normalize_engagement_policy,
@@ -175,39 +176,89 @@ class SchedulerConfigManager:
         return [str(item) for item in values if item]
 
     def list_preapproved_families(self) -> List[Dict[str, Any]]:
+        return [
+            dict(item)
+            for item in self.list_family_policies()
+            if str(item.get("policy_state", "allowed")).strip().lower() == "allowed"
+        ]
+
+    def list_family_policies(self) -> List[Dict[str, Any]]:
         families = self.load().get("preapproved_command_families", [])
         return [dict(item) for item in families if isinstance(item, dict)]
 
     def is_family_preapproved(self, family_id: str) -> bool:
-        if not family_id:
-            return False
-        for item in self.list_preapproved_families():
-            if item.get("family_id") == family_id:
-                return True
-        return False
+        return self.get_family_policy_state(family_id) == "allowed"
 
-    def approve_family(self, family_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        if not family_id:
+    def get_family_policy(self, family_id: str) -> Dict[str, Any]:
+        family_key = str(family_id or "").strip()
+        if not family_key:
+            return {}
+        for item in self.list_family_policies():
+            if item.get("family_id") == family_key:
+                return dict(item)
+        return {}
+
+    def get_family_policy_state(self, family_id: str) -> str:
+        policy = self.get_family_policy(family_id)
+        state = str(policy.get("policy_state", "") or "").strip().lower()
+        if state not in VALID_FAMILY_POLICY_STATES:
+            return ""
+        return state
+
+    def set_family_policy(
+            self,
+            family_id: str,
+            metadata: Dict[str, Any],
+            policy_state: str,
+            *,
+            reason: str = "",
+    ) -> Dict[str, Any]:
+        family_key = str(family_id or "").strip()
+        normalized_state = str(policy_state or "").strip().lower()
+        if not family_key or normalized_state not in VALID_FAMILY_POLICY_STATES:
             return self.load()
 
         config = self.load()
-        families = self.list_preapproved_families()
-        for item in families:
-            if item.get("family_id") == family_id:
-                return config
-
+        families = self.list_family_policies()
         entry = {
-            "family_id": family_id,
+            "family_id": family_key,
             "approved_at": datetime.now(timezone.utc).isoformat(),
-            "tool_id": metadata.get("tool_id", ""),
-            "label": metadata.get("label", ""),
+            "tool_id": str(metadata.get("tool_id", "")),
+            "label": str(metadata.get("label", "")),
             "danger_categories": metadata.get("danger_categories", []),
-            "approval_scope": "family",
+            "approval_scope": str(metadata.get("approval_scope", "family")),
+            "policy_state": normalized_state,
+            "risk_tags": metadata.get("risk_tags", []),
+            "reason": str(reason or metadata.get("reason", "")),
         }
-        families.append(entry)
+
+        replaced = False
+        for index, item in enumerate(families):
+            if item.get("family_id") != family_key:
+                continue
+            merged = dict(item)
+            merged.update(entry)
+            families[index] = merged
+            replaced = True
+            break
+        if not replaced:
+            families.append(entry)
+
         config["preapproved_command_families"] = families
         self.save(config)
         return self.load()
+
+    def approve_family(self, family_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        return self.set_family_policy(family_id, metadata, "allowed")
+
+    def require_family_approval(self, family_id: str, metadata: Dict[str, Any], *, reason: str = "") -> Dict[str, Any]:
+        return self.set_family_policy(family_id, metadata, "approval_required", reason=reason)
+
+    def suppress_family(self, family_id: str, metadata: Dict[str, Any], *, reason: str = "") -> Dict[str, Any]:
+        return self.set_family_policy(family_id, metadata, "suppressed", reason=reason)
+
+    def block_family(self, family_id: str, metadata: Dict[str, Any], *, reason: str = "") -> Dict[str, Any]:
+        return self.set_family_policy(family_id, metadata, "blocked", reason=reason)
 
     @staticmethod
     def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -289,6 +340,13 @@ class SchedulerConfigManager:
                 "label": str(item.get("label", "")),
                 "danger_categories": item.get("danger_categories", []),
                 "approval_scope": str(item.get("approval_scope", "family")),
+                "policy_state": (
+                    str(item.get("policy_state", "allowed")).strip().lower()
+                    if str(item.get("policy_state", "allowed")).strip().lower() in VALID_FAMILY_POLICY_STATES
+                    else "allowed"
+                ),
+                "risk_tags": item.get("risk_tags", []),
+                "reason": str(item.get("reason", "")),
             })
         config["preapproved_command_families"] = normalized_families
 

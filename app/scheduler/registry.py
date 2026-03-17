@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from app.scheduler.family import build_command_family_id
 from app.scheduler.models import ActionSpec, WEB_SERVICE_IDS
-from app.scheduler.risk import classify_command_danger
+from app.scheduler.risk import classify_risk_tags
 
 
 def _normalize_list(values: Any) -> List[str]:
@@ -67,9 +67,14 @@ def _infer_artifact_types(tool_id: str, command_template: str) -> List[str]:
 
 def _infer_impact_level(risk_tags: List[str]) -> str:
     tag_set = {str(item or "").strip().lower() for item in list(risk_tags or [])}
-    if {"exploit_execution", "destructive_write_actions"} & tag_set:
+    if {"exploit_execution", "destructive_write", "persistence_action", "lateral_movement"} & tag_set:
         return "high"
-    if {"credential_bruteforce", "network_flooding"} & tag_set:
+    if {
+        "credential_bruteforce",
+        "password_spray",
+        "network_flooding",
+        "data_exfiltration_risk",
+    } & tag_set:
         return "medium"
     return "low"
 
@@ -79,7 +84,7 @@ def _infer_noise_level(tool_id: str, command_template: str, risk_tags: List[str]
     tool_text = " ".join([str(tool_id or ""), str(command_template or "")]).lower()
     if "network_flooding" in tag_set:
         return "high"
-    if "credential_bruteforce" in tag_set:
+    if {"credential_bruteforce", "password_spray", "high_detection_likelihood"} & tag_set:
         return "medium"
     if any(token in tool_text for token in ["gobuster", "feroxbuster", "nikto", "nuclei", "whatweb", "sslscan", "sslyze"]):
         return "medium"
@@ -105,8 +110,11 @@ def _infer_methodology_tags(tool_id: str, service_scope: List[str], risk_tags: L
         tags.append("enumeration")
     if any(token in tool_text for token in ["vuln", "cve", "nuclei", "nikto"]):
         tags.append("validation")
-    if "credential_bruteforce" in {str(item).lower() for item in list(risk_tags or [])}:
+    normalized_risks = {str(item).lower() for item in list(risk_tags or [])}
+    if {"credential_bruteforce", "password_spray"} & normalized_risks:
         tags.append("credential_access")
+    if {"exploit_execution", "lateral_movement"} & normalized_risks:
+        tags.append("exploitation")
     return tags
 
 
@@ -164,8 +172,16 @@ class ActionRegistry:
                 scheduler_row.get("service_scope", []),
             )
             protocol_scope = _merge_lists(scheduler_row.get("protocol_scope", [])) or ["tcp"]
-            risk_tags = classify_command_danger(command_template, dangerous)
+            _ = dangerous
+            risk_tags = classify_risk_tags(
+                command_template,
+                tool_id=tool_id,
+                label=str(port_row.get("label", "") or tool_id),
+                service_scope=service_scope,
+                runner_type=_infer_runner_type(tool_id, service_scope, command_template),
+            )
             requires_web_context = bool({str(item).lower() for item in service_scope} & WEB_SERVICE_IDS)
+            runner_type = _infer_runner_type(tool_id, service_scope, command_template)
             action = ActionSpec(
                 action_id=str(tool_id),
                 tool_id=str(tool_id),
@@ -175,14 +191,16 @@ class ActionRegistry:
                 parameter_schema=_extract_parameter_schema(command_template),
                 service_scope=service_scope,
                 protocol_scope=protocol_scope,
-                runner_type=_infer_runner_type(tool_id, service_scope, command_template),
+                runner_type=runner_type,
                 artifact_types=_infer_artifact_types(tool_id, command_template),
                 risk_tags=risk_tags,
                 impact_level=_infer_impact_level(risk_tags),
                 noise_level=_infer_noise_level(tool_id, command_template, risk_tags),
                 default_timeout=_infer_default_timeout(tool_id, command_template),
                 family_id=build_command_family_id(tool_id, ",".join(protocol_scope), command_template or tool_id),
-                requires_credentials=bool("credential_bruteforce" in {str(item).lower() for item in risk_tags}),
+                requires_credentials=bool(
+                    {"credential_bruteforce", "password_spray"} & {str(item).lower() for item in risk_tags}
+                ),
                 requires_web_context=requires_web_context,
                 supports_deterministic=tool_id in scheduler_actions,
                 supports_ai_selection=tool_id in port_actions or tool_id in scheduler_actions,
