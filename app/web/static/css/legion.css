@@ -609,6 +609,300 @@ button:hover {
     margin: 0.45rem 0 0.75rem;
 }
 
+.graph-panel {
+    overflow: hidden;
+}
+
+.graph-toolbar {
+    margin-top: 0.8rem;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(150px, 1fr));
+    gap: 0.65rem;
+}
+
+.graph-toolbar label,
+.graph-action-group label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.graph-confidence-label span {
+    color: var(--text-main);
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+
+.graph-checkbox {
+    align-self: end;
+}
+
+.graph-action-bar {
+    margin-top: 0.8rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.graph-action-group {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+}
+
+.graph-action-group label {
+    min-width: 150px;
+}
+
+.graph-legend {
+    margin-top: 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: center;
+}
+
+.graph-legend-chip {
+    border: 1px solid rgba(173, 181, 227, 0.22);
+    border-radius: 999px;
+    padding: 0.22rem 0.65rem;
+    font-size: 0.72rem;
+    color: var(--text-main);
+}
+
+.graph-legend-observed {
+    border-color: rgba(126, 227, 203, 0.35);
+    background: rgba(126, 227, 203, 0.14);
+}
+
+.graph-legend-inferred {
+    border-color: rgba(241, 205, 107, 0.35);
+    background: rgba(241, 205, 107, 0.14);
+}
+
+.graph-legend-ai {
+    border-color: rgba(163, 141, 255, 0.35);
+    background: rgba(163, 141, 255, 0.14);
+}
+
+.graph-legend-user {
+    border-color: rgba(154, 210, 255, 0.35);
+    background: rgba(154, 210, 255, 0.14);
+}
+
+.graph-legend-note {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
+.graph-workspace {
+    margin-top: 0.8rem;
+    display: grid;
+    grid-template-columns: minmax(0, 2.3fr) minmax(320px, 1fr);
+    gap: 0.85rem;
+    align-items: start;
+}
+
+.graph-canvas-panel,
+.graph-sidebar {
+    border: 1px solid rgba(173, 181, 227, 0.18);
+    border-radius: 14px;
+    background: rgba(15, 18, 39, 0.58);
+    padding: 0.75rem;
+}
+
+.graph-canvas-panel {
+    min-height: 640px;
+}
+
+.graph-canvas-scroll {
+    border: 1px solid rgba(173, 181, 227, 0.16);
+    border-radius: 12px;
+    background:
+        radial-gradient(circle at top left, rgba(123, 131, 255, 0.14), transparent 38%),
+        radial-gradient(circle at bottom right, rgba(108, 224, 199, 0.1), transparent 42%),
+        rgba(11, 14, 28, 0.88);
+    overflow: auto;
+    min-height: 580px;
+    max-height: 820px;
+}
+
+.graph-canvas {
+    width: 100%;
+    min-width: 1180px;
+    min-height: 620px;
+    display: block;
+    touch-action: none;
+}
+
+.graph-empty-state {
+    margin-bottom: 0.65rem;
+    border: 1px dashed rgba(173, 181, 227, 0.28);
+    border-radius: 10px;
+    padding: 0.55rem 0.7rem;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+}
+
+.graph-group-label {
+    fill: rgba(180, 187, 221, 0.84);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.graph-node {
+    cursor: grab;
+}
+
+.graph-node:active {
+    cursor: grabbing;
+}
+
+.graph-node-type {
+    fill: rgba(180, 187, 221, 0.92);
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.graph-node-label {
+    fill: var(--text-main);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.graph-edge-hitbox {
+    cursor: pointer;
+}
+
+.graph-edge.is-selected,
+.graph-node.is-selected rect {
+    filter: drop-shadow(0 0 12px rgba(238, 241, 255, 0.18));
+}
+
+.graph-sidebar {
+    position: sticky;
+    top: 1rem;
+    max-height: 820px;
+    overflow: auto;
+}
+
+.graph-selection-badges {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    margin: 0.15rem 0 0.75rem;
+}
+
+.graph-badge {
+    border: 1px solid rgba(123, 131, 255, 0.26);
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    background: rgba(123, 131, 255, 0.18);
+    font-size: 0.72rem;
+    color: var(--text-main);
+}
+
+.graph-badge-pinned {
+    border-color: rgba(108, 224, 199, 0.26);
+    background: rgba(108, 224, 199, 0.16);
+}
+
+.graph-detail-list {
+    margin: 0;
+    display: grid;
+    grid-template-columns: minmax(110px, auto) 1fr;
+    gap: 0.35rem 0.65rem;
+}
+
+.graph-detail-list dt {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.graph-detail-list dd {
+    margin: 0;
+    word-break: break-word;
+    font-size: 0.84rem;
+}
+
+.graph-detail-block {
+    margin-top: 0.85rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid rgba(173, 181, 227, 0.14);
+}
+
+.graph-detail-block h4 {
+    margin: 0 0 0.45rem;
+    font-size: 0.86rem;
+}
+
+.graph-detail-evidence {
+    margin: 0;
+    padding-left: 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.32rem;
+    font-size: 0.84rem;
+}
+
+.graph-detail-properties {
+    margin: 0;
+    min-height: 110px;
+    max-height: 220px;
+    overflow: auto;
+    border: 1px solid rgba(173, 181, 227, 0.18);
+    border-radius: 10px;
+    background: rgba(10, 13, 27, 0.72);
+    color: var(--text-main);
+    padding: 0.55rem;
+    font-family: "Consolas", "Menlo", monospace;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.graph-annotations-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    margin-bottom: 0.55rem;
+}
+
+.graph-annotation-card {
+    border: 1px solid rgba(173, 181, 227, 0.14);
+    border-radius: 10px;
+    background: rgba(22, 26, 55, 0.52);
+    padding: 0.5rem 0.6rem;
+}
+
+.graph-annotation-meta {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    margin-bottom: 0.28rem;
+}
+
+.graph-annotation-body {
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.graph-detail-actions {
+    margin-top: 0.6rem;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+
 .stat-card {
     grid-column: span 2;
 }
@@ -1127,6 +1421,19 @@ td button {
         grid-template-columns: 1fr;
     }
 
+    .graph-toolbar {
+        grid-template-columns: repeat(3, minmax(150px, 1fr));
+    }
+
+    .graph-workspace {
+        grid-template-columns: 1fr;
+    }
+
+    .graph-sidebar {
+        position: static;
+        max-height: none;
+    }
+
     .mode-grid {
         grid-template-columns: 1fr;
     }
@@ -1157,6 +1464,28 @@ td button {
     .scheduler-actions,
     .project-report-headers-label {
         grid-column: span 1;
+    }
+
+    .graph-toolbar {
+        grid-template-columns: 1fr;
+    }
+
+    .graph-action-bar {
+        flex-direction: column;
+    }
+
+    .graph-action-group {
+        width: 100%;
+    }
+
+    .graph-action-group label {
+        min-width: 0;
+        width: 100%;
+    }
+
+    .graph-canvas {
+        min-width: 860px;
+        min-height: 520px;
     }
 
     .wizard-steps {

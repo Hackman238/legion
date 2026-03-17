@@ -242,6 +242,51 @@ def _dedupe_tokens(values: Iterable[Any], *, limit: int = 64, token_limit: int =
     return rows
 
 
+def _normalize_filter_list(values: Any, *, limit: int = 32, lower: bool = True) -> List[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [item.strip() for item in values.split(",")]
+    rows: List[str] = []
+    seen = set()
+    for value in list(values or []):
+        token = _clean_text(value, limit=96, lower=lower, allow_unknown=True)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        rows.append(token)
+        if len(rows) >= int(limit):
+            break
+    return rows
+
+
+def _node_matches_search(node: Dict[str, Any], search_token: str) -> bool:
+    token = str(search_token or "").strip().lower()
+    if not token:
+        return True
+    props = node.get("properties", {}) if isinstance(node.get("properties", {}), dict) else {}
+    haystack = " ".join([
+        str(node.get("type", "") or ""),
+        str(node.get("label", "") or ""),
+        str(node.get("source_ref", "") or ""),
+        json.dumps(props, sort_keys=True, default=str),
+    ]).lower()
+    return token in haystack
+
+
+def _edge_matches_search(edge: Dict[str, Any], search_token: str) -> bool:
+    token = str(search_token or "").strip().lower()
+    if not token:
+        return True
+    props = edge.get("properties", {}) if isinstance(edge.get("properties", {}), dict) else {}
+    haystack = " ".join([
+        str(edge.get("type", "") or ""),
+        str(edge.get("source_ref", "") or ""),
+        json.dumps(props, sort_keys=True, default=str),
+    ]).lower()
+    return token in haystack
+
+
 def _remember_mutation(mutations: List[str], kind: str, ref: str):
     token = f"{str(kind or '').strip().lower()}:{str(ref or '').strip()}"
     if token and token not in mutations:
@@ -1887,6 +1932,115 @@ def rebuild_evidence_graph(database, *, host_id: Optional[int] = None) -> List[s
         ):
             _remember_mutation(mutations, token.split(":", 1)[0], token.split(":", 1)[1] if ":" in token else token)
     return mutations
+
+
+def query_evidence_graph(
+        database,
+        *,
+        node_types: Any = None,
+        edge_types: Any = None,
+        source_kinds: Any = None,
+        min_confidence: float = 0.0,
+        search: str = "",
+        include_ai_suggested: bool = True,
+        host_id: Optional[int] = None,
+        limit_nodes: int = 600,
+        limit_edges: int = 1200,
+) -> Dict[str, Any]:
+    snapshot = get_evidence_graph_snapshot(database)
+    requested_node_types = set(_normalize_filter_list(node_types, limit=24, lower=True))
+    requested_edge_types = set(_normalize_filter_list(edge_types, limit=24, lower=True))
+    requested_source_kinds = set(_normalize_filter_list(source_kinds, limit=12, lower=True))
+    resolved_host_id = int(host_id or 0)
+    resolved_search = str(search or "").strip().lower()
+    min_conf = _safe_float(min_confidence, default=0.0, minimum=0.0, maximum=100.0)
+    max_nodes = max(1, min(int(limit_nodes or 600), 5000))
+    max_edges = max(1, min(int(limit_edges or 1200), 10000))
+
+    nodes = []
+    for item in list(snapshot.get("nodes", []) or []):
+        if not isinstance(item, dict):
+            continue
+        source_kind = _normalize_source_kind(item.get("source_kind", "observed"), "observed")
+        if not include_ai_suggested and source_kind == "ai_suggested":
+            continue
+        if requested_node_types and str(item.get("type", "") or "").strip().lower() not in requested_node_types:
+            continue
+        if requested_source_kinds and source_kind not in requested_source_kinds:
+            continue
+        if float(item.get("confidence", 0.0) or 0.0) < min_conf:
+            continue
+        if not _node_matches_search(item, resolved_search):
+            continue
+        nodes.append(dict(item))
+
+    if resolved_host_id > 0:
+        base_node_ids = {
+            str(item.get("node_id", "") or "")
+            for item in nodes
+            if isinstance(item.get("properties", {}), dict)
+            and int(item.get("properties", {}).get("host_id", 0) or 0) == resolved_host_id
+        }
+        expanded_ids = set(base_node_ids)
+        for edge in list(snapshot.get("edges", []) or []):
+            if not isinstance(edge, dict):
+                continue
+            from_node_id = str(edge.get("from_node_id", "") or "")
+            to_node_id = str(edge.get("to_node_id", "") or "")
+            if from_node_id in base_node_ids or to_node_id in base_node_ids:
+                expanded_ids.add(from_node_id)
+                expanded_ids.add(to_node_id)
+        if expanded_ids:
+            nodes = [item for item in nodes if str(item.get("node_id", "") or "") in expanded_ids]
+
+    node_ids = {str(item.get("node_id", "") or "") for item in nodes}
+    edges = []
+    for item in list(snapshot.get("edges", []) or []):
+        if not isinstance(item, dict):
+            continue
+        source_kind = _normalize_source_kind(item.get("source_kind", "observed"), "observed")
+        if not include_ai_suggested and source_kind == "ai_suggested":
+            continue
+        if requested_edge_types and str(item.get("type", "") or "").strip().lower() not in requested_edge_types:
+            continue
+        if requested_source_kinds and source_kind not in requested_source_kinds:
+            continue
+        if float(item.get("confidence", 0.0) or 0.0) < min_conf:
+            continue
+        if not _edge_matches_search(item, resolved_search):
+            continue
+        if str(item.get("from_node_id", "") or "") not in node_ids or str(item.get("to_node_id", "") or "") not in node_ids:
+            continue
+        edges.append(dict(item))
+
+    nodes = nodes[:max_nodes]
+    node_ids = {str(item.get("node_id", "") or "") for item in nodes}
+    edges = [
+        item for item in edges
+        if str(item.get("from_node_id", "") or "") in node_ids and str(item.get("to_node_id", "") or "") in node_ids
+    ][:max_edges]
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "meta": {
+            "total_nodes": len(snapshot.get("nodes", []) or []),
+            "total_edges": len(snapshot.get("edges", []) or []),
+            "returned_nodes": len(nodes),
+            "returned_edges": len(edges),
+            "filters": {
+                "node_types": sorted(requested_node_types),
+                "edge_types": sorted(requested_edge_types),
+                "source_kinds": sorted(requested_source_kinds),
+                "min_confidence": min_conf,
+                "search": resolved_search,
+                "include_ai_suggested": bool(include_ai_suggested),
+                "host_id": int(resolved_host_id or 0) or None,
+                "limit_nodes": max_nodes,
+                "limit_edges": max_edges,
+            },
+        },
+    }
 
 
 def _list_evidence_refs(session) -> Dict[str, List[str]]:

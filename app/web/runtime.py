@@ -46,6 +46,17 @@ from app.scheduler.execution import (
     list_execution_records,
     store_execution_record,
 )
+from app.scheduler.graph import (
+    ensure_scheduler_graph_tables,
+    export_evidence_graph_graphml,
+    export_evidence_graph_json,
+    list_graph_annotations,
+    list_graph_layout_states,
+    query_evidence_graph,
+    rebuild_evidence_graph,
+    upsert_graph_annotation,
+    upsert_graph_layout_state,
+)
 from app.scheduler.models import ExecutionRecord
 from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
 from app.scheduler.policy import (
@@ -464,6 +475,108 @@ class WebRuntime:
             project = self._require_active_project()
             ensure_scheduler_execution_table(project.database)
             return list_execution_records(project.database, limit=limit)
+
+    def get_evidence_graph(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_graph_tables(project.database)
+            resolved = dict(filters or {})
+            return query_evidence_graph(
+                project.database,
+                node_types=resolved.get("node_types"),
+                edge_types=resolved.get("edge_types"),
+                source_kinds=resolved.get("source_kinds"),
+                min_confidence=float(resolved.get("min_confidence", 0.0) or 0.0),
+                search=str(resolved.get("search", "") or ""),
+                include_ai_suggested=bool(resolved.get("include_ai_suggested", True)),
+                host_id=int(resolved.get("host_id", 0) or 0) or None,
+                limit_nodes=int(resolved.get("limit_nodes", 600) or 600),
+                limit_edges=int(resolved.get("limit_edges", 1200) or 1200),
+            )
+
+    def rebuild_evidence_graph(self, host_id: Optional[int] = None) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_graph_tables(project.database)
+            mutations = rebuild_evidence_graph(project.database, host_id=int(host_id or 0) or None)
+            snapshot = query_evidence_graph(project.database, limit_nodes=25, limit_edges=50)
+            return {
+                "mutations": list(mutations or []),
+                "mutation_count": len(list(mutations or [])),
+                "nodes": int(snapshot.get("meta", {}).get("total_nodes", 0) or 0),
+                "edges": int(snapshot.get("meta", {}).get("total_edges", 0) or 0),
+                "host_id": int(host_id or 0) or None,
+            }
+
+    def export_evidence_graph_json(self, *, rebuild: bool = False) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_graph_tables(project.database)
+            return export_evidence_graph_json(project.database, rebuild=bool(rebuild))
+
+    def export_evidence_graph_graphml(self, *, rebuild: bool = False) -> str:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_graph_tables(project.database)
+            return export_evidence_graph_graphml(project.database, rebuild=bool(rebuild))
+
+    def get_evidence_graph_layouts(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_graph_tables(project.database)
+            return list_graph_layout_states(project.database)
+
+    def save_evidence_graph_layout(
+            self,
+            *,
+            view_id: str,
+            name: str,
+            layout_state: Dict[str, Any],
+            layout_id: str = "",
+    ) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_graph_tables(project.database)
+            return upsert_graph_layout_state(
+                project.database,
+                view_id=str(view_id or ""),
+                name=str(name or ""),
+                layout_state=layout_state if isinstance(layout_state, dict) else {},
+                layout_id=str(layout_id or ""),
+            )
+
+    def get_evidence_graph_annotations(self, *, target_ref: str = "", target_kind: str = "") -> List[Dict[str, Any]]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_graph_tables(project.database)
+            return list_graph_annotations(
+                project.database,
+                target_ref=str(target_ref or ""),
+                target_kind=str(target_kind or ""),
+            )
+
+    def save_evidence_graph_annotation(
+            self,
+            *,
+            target_kind: str,
+            target_ref: str,
+            body: str,
+            created_by: str = "operator",
+            source_ref: str = "",
+            annotation_id: str = "",
+    ) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_graph_tables(project.database)
+            return upsert_graph_annotation(
+                project.database,
+                target_kind=str(target_kind or ""),
+                target_ref=str(target_ref or ""),
+                body=str(body or ""),
+                created_by=str(created_by or "operator"),
+                source_ref=str(source_ref or ""),
+                annotation_id=str(annotation_id or ""),
+            )
 
     @staticmethod
     def _collect_command_artifacts(outputfile: str) -> List[str]:

@@ -41,6 +41,10 @@ def _json_error(message: str, status_code: int = 400):
     return jsonify({"status": "error", "error": str(message)}), int(status_code)
 
 
+def _split_query_tokens(value):
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
 def _get_sanitized_console_logo() -> str:
     try:
         raw = str(getConsoleLogo() or "")
@@ -1189,5 +1193,159 @@ def scheduler_approval_reject(approval_id):
         return jsonify({"status": "ok", "approval": result})
     except KeyError as exc:
         return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/graph")
+def evidence_graph():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        min_confidence = float(request.args.get("min_confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        min_confidence = 0.0
+    try:
+        host_id = int(request.args.get("host_id", 0) or 0)
+    except (TypeError, ValueError):
+        host_id = 0
+    try:
+        limit_nodes = int(request.args.get("limit_nodes", 600) or 600)
+    except (TypeError, ValueError):
+        limit_nodes = 600
+    try:
+        limit_edges = int(request.args.get("limit_edges", 1200) or 1200)
+    except (TypeError, ValueError):
+        limit_edges = 1200
+    include_ai_suggested = not _as_bool(request.args.get("hide_ai_suggested", False), default=False)
+    if request.args.get("include_ai_suggested") is not None:
+        include_ai_suggested = _as_bool(request.args.get("include_ai_suggested"), default=True)
+    try:
+        payload = runtime.get_evidence_graph(filters={
+            "node_types": _split_query_tokens(request.args.get("node_types", request.args.get("node_type", ""))),
+            "edge_types": _split_query_tokens(request.args.get("edge_types", request.args.get("edge_type", ""))),
+            "source_kinds": _split_query_tokens(request.args.get("source_kinds", request.args.get("source_kind", ""))),
+            "min_confidence": min_confidence,
+            "search": str(request.args.get("q", "") or ""),
+            "include_ai_suggested": include_ai_suggested,
+            "host_id": host_id or None,
+            "limit_nodes": max(1, min(limit_nodes, 5000)),
+            "limit_edges": max(1, min(limit_edges, 10000)),
+        })
+        return jsonify(payload)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/graph/rebuild")
+def evidence_graph_rebuild():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    try:
+        host_id = int(payload.get("host_id", 0) or 0)
+    except (TypeError, ValueError):
+        host_id = 0
+    try:
+        result = runtime.rebuild_evidence_graph(host_id=host_id or None)
+        return jsonify({"status": "ok", **result})
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/graph/export/json")
+def evidence_graph_export_json():
+    runtime = current_app.extensions["legion_runtime"]
+    rebuild = _as_bool(request.args.get("rebuild", False), default=False)
+    try:
+        payload = json.dumps(runtime.export_evidence_graph_json(rebuild=rebuild), indent=2, default=str)
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+        response = current_app.response_class(payload, mimetype="application/json")
+        response.headers["Content-Disposition"] = f'attachment; filename="legion-evidence-graph-{timestamp}.json"'
+        return response
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/graph/export/graphml")
+def evidence_graph_export_graphml():
+    runtime = current_app.extensions["legion_runtime"]
+    rebuild = _as_bool(request.args.get("rebuild", False), default=False)
+    try:
+        payload = runtime.export_evidence_graph_graphml(rebuild=rebuild)
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+        response = current_app.response_class(payload, mimetype="application/graphml+xml")
+        response.headers["Content-Disposition"] = f'attachment; filename="legion-evidence-graph-{timestamp}.graphml"'
+        return response
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/graph/layouts")
+def evidence_graph_layouts():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        return jsonify({"layouts": runtime.get_evidence_graph_layouts()})
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/graph/layouts")
+def evidence_graph_save_layout():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    view_id = str(payload.get("view_id", "") or "").strip()
+    name = str(payload.get("name", "") or "").strip()
+    layout_state = payload.get("layout", {})
+    if not view_id:
+        return _json_error("view_id is required", 400)
+    if not isinstance(layout_state, dict):
+        return _json_error("layout must be an object", 400)
+    try:
+        layout = runtime.save_evidence_graph_layout(
+            view_id=view_id,
+            name=name or "default",
+            layout_state=layout_state,
+            layout_id=str(payload.get("layout_id", "") or ""),
+        )
+        return jsonify({"status": "ok", "layout": layout})
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/graph/annotations")
+def evidence_graph_annotations():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        annotations = runtime.get_evidence_graph_annotations(
+            target_ref=str(request.args.get("target_ref", "") or ""),
+            target_kind=str(request.args.get("target_kind", "") or ""),
+        )
+        return jsonify({"annotations": annotations})
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/graph/annotations")
+def evidence_graph_save_annotation():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    target_kind = str(payload.get("target_kind", "") or "").strip()
+    target_ref = str(payload.get("target_ref", "") or "").strip()
+    body = str(payload.get("body", "") or "").strip()
+    if not target_kind:
+        return _json_error("target_kind is required", 400)
+    if not target_ref:
+        return _json_error("target_ref is required", 400)
+    if not body:
+        return _json_error("body is required", 400)
+    try:
+        annotation = runtime.save_evidence_graph_annotation(
+            target_kind=target_kind,
+            target_ref=target_ref,
+            body=body,
+            created_by=str(payload.get("created_by", "") or "operator"),
+            source_ref=str(payload.get("source_ref", "") or ""),
+            annotation_id=str(payload.get("annotation_id", "") or ""),
+        )
+        return jsonify({"status": "ok", "annotation": annotation})
     except Exception as exc:
         return _json_error(str(exc), 500)

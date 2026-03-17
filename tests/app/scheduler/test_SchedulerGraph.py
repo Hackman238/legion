@@ -10,6 +10,7 @@ from app.scheduler.graph import (
     get_evidence_graph_snapshot,
     list_graph_annotations,
     list_graph_layout_states,
+    query_evidence_graph,
     upsert_graph_annotation,
     upsert_graph_layout_state,
 )
@@ -169,6 +170,51 @@ class SchedulerEvidenceGraphTest(unittest.TestCase):
             self.assertTrue(any(item["type"] == "artifact" and item["properties"].get("ref") == "/tmp/smb-enum-users.txt" for item in snapshot["nodes"]))
             self.assertTrue(any(item["type"] == "evidence_record" and item["properties"].get("ref") == "process_output:42" for item in snapshot["nodes"]))
             self.assertTrue(any(item["type"] == "produced" for item in snapshot["edges"]))
+        finally:
+            project_manager.closeProject(project)
+
+    def test_query_evidence_graph_filters_nodes_and_hides_ai_suggestions(self):
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="dc01.local", osMatch="Windows")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+            session.add(serviceObj(name="smb", host=host_id, product="samba", version="4.x"))
+            session.commit()
+            session.close()
+
+            upsert_target_state(project.database, host_id, {
+                "host_ip": "10.0.0.5",
+                "last_mode": "ai",
+                "provider": "openai",
+                "technologies": [
+                    {"name": "samba", "version": "4.x", "cpe": "cpe:/a:samba:samba:4", "evidence": "service banner", "source_kind": "observed"},
+                ],
+                "findings": [
+                    {"title": "SMB signing not required", "severity": "high", "cvss": 7.5, "evidence": "smb-security-mode", "source_kind": "ai_suggested"},
+                ],
+                "service_inventory": [{"port": "445", "protocol": "tcp", "state": "open", "service": "smb", "service_product": "samba", "service_version": "4.x"}],
+            })
+
+            filtered = query_evidence_graph(
+                project.database,
+                node_types=["technology"],
+                source_kinds=["observed"],
+                include_ai_suggested=False,
+                host_id=host_id,
+                search="samba",
+                limit_nodes=50,
+                limit_edges=50,
+            )
+
+            self.assertEqual(1, len(filtered["nodes"]))
+            self.assertEqual("technology", filtered["nodes"][0]["type"])
+            self.assertEqual("observed", filtered["nodes"][0]["source_kind"])
+            self.assertEqual(0, len([item for item in filtered["nodes"] if item["source_kind"] == "ai_suggested"]))
+            self.assertEqual(host_id, filtered["meta"]["filters"]["host_id"])
         finally:
             project_manager.closeProject(project)
 

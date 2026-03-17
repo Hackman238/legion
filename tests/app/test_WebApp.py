@@ -167,6 +167,92 @@ class DummyRuntime:
                 "status": "pending",
             }
         ]
+        self.graph_snapshot = {
+            "nodes": [
+                {
+                    "node_id": "graph-node-host",
+                    "type": "host",
+                    "label": "10.0.0.5",
+                    "confidence": 98.0,
+                    "source_kind": "observed",
+                    "source_ref": "host:10.0.0.5",
+                    "properties": {"host_id": 11, "ip": "10.0.0.5"},
+                    "evidence_refs": ["host:10.0.0.5"],
+                },
+                {
+                    "node_id": "graph-node-tech",
+                    "type": "technology",
+                    "label": "samba 4.x",
+                    "confidence": 88.0,
+                    "source_kind": "observed",
+                    "source_ref": "host:11:technology:samba",
+                    "properties": {"host_id": 11, "name": "samba", "version": "4.x"},
+                    "evidence_refs": ["service banner"],
+                },
+                {
+                    "node_id": "graph-node-finding",
+                    "type": "finding",
+                    "label": "SMB signing not required",
+                    "confidence": 84.0,
+                    "source_kind": "ai_suggested",
+                    "source_ref": "host:11:finding:smb-signing",
+                    "properties": {"host_id": 11, "severity": "high"},
+                    "evidence_refs": ["smb-security-mode"],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "graph-edge-host-tech",
+                    "type": "fingerprinted_as",
+                    "from_node_id": "graph-node-host",
+                    "to_node_id": "graph-node-tech",
+                    "confidence": 88.0,
+                    "source_kind": "observed",
+                    "source_ref": "host:11:technology:samba",
+                    "properties": {},
+                    "evidence_refs": ["service banner"],
+                },
+                {
+                    "edge_id": "graph-edge-host-finding",
+                    "type": "contains",
+                    "from_node_id": "graph-node-host",
+                    "to_node_id": "graph-node-finding",
+                    "confidence": 84.0,
+                    "source_kind": "ai_suggested",
+                    "source_ref": "host:11:finding:smb-signing",
+                    "properties": {},
+                    "evidence_refs": ["smb-security-mode"],
+                },
+            ],
+            "meta": {
+                "total_nodes": 3,
+                "total_edges": 2,
+                "returned_nodes": 3,
+                "returned_edges": 2,
+                "filters": {},
+            },
+        }
+        self.graph_layouts = [
+            {
+                "layout_id": "layout-1",
+                "view_id": "attack_surface",
+                "name": "default",
+                "layout": {"positions": {"graph-node-host": {"x": 10, "y": 20}}},
+                "updated_at": "2026-02-18T12:30:00Z",
+            }
+        ]
+        self.graph_annotations = [
+            {
+                "annotation_id": "annotation-1",
+                "target_kind": "node",
+                "target_ref": "graph-node-host",
+                "body": "Prioritize this host",
+                "created_by": "tester",
+                "created_at": "2026-02-18T12:31:00Z",
+                "updated_at": "2026-02-18T12:31:00Z",
+                "source_ref": "unit:test",
+            }
+        ]
 
     def get_snapshot(self):
         return {
@@ -690,6 +776,124 @@ class DummyRuntime:
             }
         ][:max(1, int(limit or 1))]
 
+    def get_evidence_graph(self, filters=None):
+        filters = dict(filters or {})
+        nodes = list(self.graph_snapshot.get("nodes", []))
+        edges = list(self.graph_snapshot.get("edges", []))
+
+        node_types = {str(item).strip().lower() for item in list(filters.get("node_types", []) or []) if str(item).strip()}
+        edge_types = {str(item).strip().lower() for item in list(filters.get("edge_types", []) or []) if str(item).strip()}
+        source_kinds = {str(item).strip().lower() for item in list(filters.get("source_kinds", []) or []) if str(item).strip()}
+        min_confidence = float(filters.get("min_confidence", 0.0) or 0.0)
+        search = str(filters.get("search", "") or "").strip().lower()
+        include_ai = bool(filters.get("include_ai_suggested", True))
+        host_id = int(filters.get("host_id", 0) or 0)
+
+        if not include_ai:
+            nodes = [item for item in nodes if str(item.get("source_kind", "")).strip().lower() != "ai_suggested"]
+            edges = [item for item in edges if str(item.get("source_kind", "")).strip().lower() != "ai_suggested"]
+        if node_types:
+            nodes = [item for item in nodes if str(item.get("type", "")).strip().lower() in node_types]
+        if source_kinds:
+            nodes = [item for item in nodes if str(item.get("source_kind", "")).strip().lower() in source_kinds]
+        if min_confidence > 0.0:
+            nodes = [item for item in nodes if float(item.get("confidence", 0.0) or 0.0) >= min_confidence]
+        if search:
+            nodes = [
+                item for item in nodes
+                if search in str(item.get("label", "")).lower() or search in json.dumps(item.get("properties", {}), sort_keys=True).lower()
+            ]
+        if host_id > 0:
+            nodes = [
+                item for item in nodes
+                if int(item.get("properties", {}).get("host_id", 0) or 0) == host_id
+            ]
+        node_ids = {item.get("node_id") for item in nodes}
+        filtered_edges = []
+        for item in edges:
+            if edge_types and str(item.get("type", "")).strip().lower() not in edge_types:
+                continue
+            if source_kinds and str(item.get("source_kind", "")).strip().lower() not in source_kinds:
+                continue
+            if min_confidence > 0.0 and float(item.get("confidence", 0.0) or 0.0) < min_confidence:
+                continue
+            if str(item.get("from_node_id")) not in node_ids or str(item.get("to_node_id")) not in node_ids:
+                continue
+            filtered_edges.append(item)
+        return {
+            "nodes": nodes,
+            "edges": filtered_edges,
+            "meta": {
+                "total_nodes": len(self.graph_snapshot.get("nodes", [])),
+                "total_edges": len(self.graph_snapshot.get("edges", [])),
+                "returned_nodes": len(nodes),
+                "returned_edges": len(filtered_edges),
+                "filters": filters,
+            },
+        }
+
+    def rebuild_evidence_graph(self, host_id=None):
+        return {
+            "mutations": ["node:graph-node-host", "edge:graph-edge-host-tech"],
+            "mutation_count": 2,
+            "nodes": len(self.graph_snapshot.get("nodes", [])),
+            "edges": len(self.graph_snapshot.get("edges", [])),
+            "host_id": host_id,
+        }
+
+    def export_evidence_graph_json(self, rebuild=False):
+        _ = rebuild
+        return dict(self.graph_snapshot)
+
+    def export_evidence_graph_graphml(self, rebuild=False):
+        _ = rebuild
+        return "<graphml><graph id='demo-graph'></graph></graphml>"
+
+    def get_evidence_graph_layouts(self):
+        return list(self.graph_layouts)
+
+    def save_evidence_graph_layout(self, *, view_id, name, layout_state, layout_id=""):
+        item = {
+            "layout_id": layout_id or "layout-2",
+            "view_id": str(view_id),
+            "name": str(name),
+            "layout": dict(layout_state or {}),
+            "updated_at": "2026-02-18T12:32:00Z",
+        }
+        self.graph_layouts.append(item)
+        return item
+
+    def get_evidence_graph_annotations(self, *, target_ref="", target_kind=""):
+        rows = list(self.graph_annotations)
+        if target_ref:
+            rows = [item for item in rows if str(item.get("target_ref", "")) == str(target_ref)]
+        if target_kind:
+            rows = [item for item in rows if str(item.get("target_kind", "")) == str(target_kind)]
+        return rows
+
+    def save_evidence_graph_annotation(
+            self,
+            *,
+            target_kind,
+            target_ref,
+            body,
+            created_by="operator",
+            source_ref="",
+            annotation_id="",
+    ):
+        item = {
+            "annotation_id": annotation_id or "annotation-2",
+            "target_kind": str(target_kind),
+            "target_ref": str(target_ref),
+            "body": str(body),
+            "created_by": str(created_by),
+            "created_at": "2026-02-18T12:33:00Z",
+            "updated_at": "2026-02-18T12:33:00Z",
+            "source_ref": str(source_ref),
+        }
+        self.graph_annotations.append(item)
+        return item
+
 
 class WebAppTest(unittest.TestCase):
     def setUp(self):
@@ -707,7 +911,12 @@ class WebAppTest(unittest.TestCase):
     def test_index_renders(self):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
-        self.assertIn("Web Console", response.get_data(as_text=True))
+        body = response.get_data(as_text=True)
+        self.assertIn("Web Console", body)
+        self.assertIn("Graph Workspace", body)
+        self.assertIn("graph-workspace-canvas", body)
+        self.assertIn("graph-layout-save-button", body)
+        self.assertIn("graph-annotation-save-button", body)
 
     def test_snapshot_endpoint(self):
         response = self.client.get("/api/snapshot")
@@ -833,6 +1042,60 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(1, len(response.json["decisions"]))
         self.assertEqual("10.0.0.5", response.json["decisions"][0]["host_ip"])
+
+    def test_graph_api_endpoints(self):
+        graph = self.client.get("/api/graph?node_type=technology&hide_ai_suggested=true&host_id=11")
+        self.assertEqual(200, graph.status_code)
+        self.assertEqual(1, len(graph.json["nodes"]))
+        self.assertEqual("technology", graph.json["nodes"][0]["type"])
+        self.assertEqual(0, len(graph.json["edges"]))
+        self.assertFalse(graph.json["meta"]["filters"]["include_ai_suggested"])
+
+        rebuild = self.client.post("/api/graph/rebuild", json={"host_id": 11})
+        self.assertEqual(200, rebuild.status_code)
+        self.assertEqual("ok", rebuild.json["status"])
+        self.assertEqual(2, rebuild.json["mutation_count"])
+
+        export_json = self.client.get("/api/graph/export/json?rebuild=true")
+        self.assertEqual(200, export_json.status_code)
+        self.assertIn("attachment; filename=", export_json.headers.get("Content-Disposition", ""))
+        self.assertIn("graph-node-host", export_json.get_data(as_text=True))
+
+        export_graphml = self.client.get("/api/graph/export/graphml")
+        self.assertEqual(200, export_graphml.status_code)
+        self.assertIn(".graphml", export_graphml.headers.get("Content-Disposition", ""))
+        self.assertIn("<graphml>", export_graphml.get_data(as_text=True))
+
+        layouts = self.client.get("/api/graph/layouts")
+        self.assertEqual(200, layouts.status_code)
+        self.assertEqual("attack_surface", layouts.json["layouts"][0]["view_id"])
+
+        save_layout = self.client.post(
+            "/api/graph/layouts",
+            json={"view_id": "attack_surface", "name": "focused", "layout": {"positions": {"graph-node-host": {"x": 20, "y": 40}}}},
+        )
+        self.assertEqual(200, save_layout.status_code)
+        self.assertEqual("ok", save_layout.json["status"])
+        self.assertEqual("focused", save_layout.json["layout"]["name"])
+
+        annotations = self.client.get("/api/graph/annotations?target_ref=graph-node-host&target_kind=node")
+        self.assertEqual(200, annotations.status_code)
+        self.assertEqual(1, len(annotations.json["annotations"]))
+
+        save_annotation = self.client.post(
+            "/api/graph/annotations",
+            json={"target_kind": "node", "target_ref": "graph-node-tech", "body": "Track this tech", "created_by": "tester"},
+        )
+        self.assertEqual(200, save_annotation.status_code)
+        self.assertEqual("ok", save_annotation.json["status"])
+        self.assertEqual("Track this tech", save_annotation.json["annotation"]["body"])
+
+    def test_graph_api_validation(self):
+        missing_layout = self.client.post("/api/graph/layouts", json={"layout": {}})
+        self.assertEqual(400, missing_layout.status_code)
+
+        missing_annotation = self.client.post("/api/graph/annotations", json={"target_kind": "node", "target_ref": ""})
+        self.assertEqual(400, missing_annotation.status_code)
 
     def test_scan_and_import_endpoints(self):
         target_import = self.client.post("/api/targets/import-file", json={"path": "/tmp/targets.txt"})

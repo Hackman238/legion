@@ -290,6 +290,166 @@
         </div>
     </section>
 
+    <section class="panel panel-full graph-panel">
+        <div class="panel-header">
+            <h2>Graph Workspace</h2>
+            <p id="graph-workspace-summary">0 nodes shown | 0 edges shown</p>
+        </div>
+        <div class="graph-toolbar">
+            <label>
+                View
+                <select id="graph-view-select">
+                    <option value="attack_surface">attack surface</option>
+                    <option value="host_service_topology">host/service topology</option>
+                    <option value="web_application_map">web application map</option>
+                    <option value="credential_identity_session">credential / identity / session</option>
+                    <option value="exploitation_chain">exploitation chain</option>
+                </select>
+            </label>
+            <label>
+                Group By
+                <select id="graph-group-select">
+                    <option value="subnet">subnet</option>
+                    <option value="host">host</option>
+                    <option value="domain">domain</option>
+                    <option value="service">service</option>
+                    <option value="finding">finding</option>
+                </select>
+            </label>
+            <label>
+                Host Focus
+                <select id="graph-host-filter">
+                    <option value="">all hosts</option>
+                </select>
+            </label>
+            <label>
+                Node Type
+                <select id="graph-node-type-filter">
+                    <option value="">all node types</option>
+                </select>
+            </label>
+            <label>
+                Edge Type
+                <select id="graph-edge-type-filter">
+                    <option value="">all edge types</option>
+                </select>
+            </label>
+            <label>
+                Provenance
+                <select id="graph-source-kind-filter">
+                    <option value="">all provenance</option>
+                </select>
+            </label>
+            <label>
+                Severity
+                <select id="graph-severity-filter">
+                    <option value="">all severities</option>
+                </select>
+            </label>
+            <label>
+                Pack
+                <select id="graph-pack-filter">
+                    <option value="">all packs</option>
+                </select>
+            </label>
+            <label>
+                Time Window
+                <select id="graph-time-window-filter">
+                    <option value="all">all time</option>
+                    <option value="24h">last 24h</option>
+                    <option value="7d">last 7d</option>
+                    <option value="30d">last 30d</option>
+                    <option value="90d">last 90d</option>
+                </select>
+            </label>
+            <label>
+                Search
+                <input id="graph-search-input" type="search" placeholder="node, edge, evidence, host">
+            </label>
+            <label class="graph-confidence-label">
+                Min Confidence
+                <input id="graph-min-confidence" type="range" min="0" max="100" step="5" value="0">
+                <span id="graph-min-confidence-value">0</span>
+            </label>
+            <label class="checkbox graph-checkbox">
+                <input id="graph-hide-ai-suggested" type="checkbox">
+                Hide AI-suggested
+            </label>
+        </div>
+        <div class="graph-action-bar">
+            <div class="graph-action-group">
+                <button id="graph-refresh-button" type="button">Refresh Graph</button>
+                <button id="graph-rebuild-button" type="button">Rebuild Graph</button>
+                <button id="graph-export-json-button" type="button">Export JSON</button>
+                <button id="graph-export-graphml-button" type="button">Export GraphML</button>
+            </div>
+            <div class="graph-action-group">
+                <label>
+                    Saved Layout
+                    <select id="graph-layout-select">
+                        <option value="">auto layout</option>
+                    </select>
+                </label>
+                <label>
+                    Layout Name
+                    <input id="graph-layout-name" type="text" value="default" placeholder="default">
+                </label>
+                <button id="graph-layout-save-button" type="button">Save Layout</button>
+                <button id="graph-layout-reset-button" type="button">Reset Layout</button>
+            </div>
+        </div>
+        <div class="graph-legend">
+            <span class="graph-legend-chip graph-legend-observed">observed</span>
+            <span class="graph-legend-chip graph-legend-inferred">inferred</span>
+            <span class="graph-legend-chip graph-legend-ai">ai suggested</span>
+            <span class="graph-legend-chip graph-legend-user">user entered</span>
+            <span class="graph-legend-note">drag nodes to pin them, click nodes or edges for provenance and evidence</span>
+        </div>
+        <div class="graph-workspace">
+            <div class="graph-canvas-panel">
+                <div id="graph-workspace-empty" class="graph-empty-state" hidden>No graph data matches the current filters.</div>
+                <div class="graph-canvas-scroll">
+                    <svg
+                        id="graph-workspace-canvas"
+                        class="graph-canvas"
+                        viewBox="0 0 1600 900"
+                        role="img"
+                        aria-label="Evidence graph workspace"
+                    ></svg>
+                </div>
+            </div>
+            <aside class="graph-sidebar">
+                <div class="panel-header">
+                    <h3>Graph Detail</h3>
+                    <p id="graph-detail-caption">Select a node or edge</p>
+                </div>
+                <div id="graph-selection-badges" class="graph-selection-badges"></div>
+                <dl id="graph-detail-fields" class="graph-detail-list"></dl>
+                <div class="graph-detail-block">
+                    <h4>Evidence</h4>
+                    <ul id="graph-detail-evidence" class="graph-detail-evidence"></ul>
+                </div>
+                <div class="graph-detail-block">
+                    <h4>Properties</h4>
+                    <pre id="graph-detail-properties" class="graph-detail-properties">No graph selection</pre>
+                </div>
+                <div class="graph-detail-block">
+                    <h4>Annotations</h4>
+                    <div id="graph-annotations-list" class="graph-annotations-list"></div>
+                    <label>
+                        Add Annotation
+                        <textarea id="graph-annotation-input" rows="4" placeholder="Operator note, validation status, next step..."></textarea>
+                    </label>
+                    <div class="scheduler-actions graph-detail-actions">
+                        <button id="graph-annotation-save-button" type="button">Save Annotation</button>
+                        <button id="graph-pin-toggle-button" type="button">Pin Node</button>
+                    </div>
+                </div>
+            </aside>
+        </div>
+        <p class="meta-note">Graph status: <span id="graph-workspace-status">Idle</span></p>
+    </section>
+
     <section class="panel panel-full">
         <div class="panel-header">
             <h2>Host Detail</h2>

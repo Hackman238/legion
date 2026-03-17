@@ -8,6 +8,146 @@ const workspaceState = {
     hostDetail: null,
 };
 
+const graphWorkspaceState = {
+    viewId: "attack_surface",
+    groupBy: "subnet",
+    data: {
+        nodes: [],
+        edges: [],
+        meta: {},
+    },
+    filtered: {
+        nodes: [],
+        edges: [],
+        groups: [],
+        positions: {},
+        width: 1600,
+        height: 900,
+    },
+    loading: false,
+    needsRefresh: false,
+    refreshTimer: null,
+    metadataLoaded: false,
+    layouts: [],
+    activeLayoutId: "",
+    positions: {},
+    pinnedNodeIds: {},
+    selectedKind: "",
+    selectedRef: "",
+    selectedPayload: null,
+    annotations: [],
+    drag: null,
+};
+
+const GRAPH_VIEW_PRESETS = {
+    attack_surface: {
+        label: "attack surface",
+        defaultGroup: "subnet",
+        nodeTypes: ["scope", "subnet", "host", "fqdn", "port", "service", "url", "technology", "finding", "cpe", "cve"],
+    },
+    host_service_topology: {
+        label: "host/service topology",
+        defaultGroup: "host",
+        nodeTypes: ["host", "fqdn", "port", "service", "technology", "url", "action", "evidence_record", "artifact", "screenshot"],
+    },
+    web_application_map: {
+        label: "web application map",
+        defaultGroup: "service",
+        nodeTypes: ["host", "fqdn", "service", "url", "technology", "finding", "cpe", "cve", "screenshot", "artifact", "action"],
+    },
+    credential_identity_session: {
+        label: "credential / identity / session",
+        defaultGroup: "host",
+        nodeTypes: ["host", "credential", "identity", "session", "action", "artifact", "evidence_record"],
+        edgeTypes: ["contains", "authenticated_as", "captured", "produced", "pivoted_to", "validated_by"],
+    },
+    exploitation_chain: {
+        label: "exploitation chain",
+        defaultGroup: "finding",
+        nodeTypes: ["host", "finding", "cve", "exploit_reference", "credential", "identity", "session", "action", "artifact", "screenshot", "evidence_record"],
+        edgeTypes: ["contains", "affected_by", "supports_exploit", "validated_by", "authenticated_as", "pivoted_to", "produced", "derived_from"],
+    },
+};
+
+const GRAPH_SOURCE_KIND_LABELS = {
+    observed: "observed",
+    inferred: "inferred",
+    ai_suggested: "ai suggested",
+    user_entered: "user entered",
+};
+
+const GRAPH_SOURCE_KIND_STYLES = {
+    observed: {
+        stroke: "#7ee3cb",
+        fill: "rgba(126, 227, 203, 0.16)",
+        dash: "",
+    },
+    inferred: {
+        stroke: "#f1cd6b",
+        fill: "rgba(241, 205, 107, 0.16)",
+        dash: "7 5",
+    },
+    ai_suggested: {
+        stroke: "#a38dff",
+        fill: "rgba(163, 141, 255, 0.16)",
+        dash: "2 5",
+    },
+    user_entered: {
+        stroke: "#9ad2ff",
+        fill: "rgba(154, 210, 255, 0.16)",
+        dash: "",
+    },
+};
+
+const GRAPH_NODE_COLORS = {
+    scope: "#9ad2ff",
+    subnet: "#7b83ff",
+    host: "#86d993",
+    fqdn: "#98d6ff",
+    port: "#f0c96f",
+    service: "#ff9c6f",
+    url: "#6ce0c7",
+    technology: "#8ac7ff",
+    cpe: "#b4bbdd",
+    cve: "#ff7c99",
+    finding: "#ff6f91",
+    credential: "#ffd37b",
+    identity: "#ffe7a8",
+    session: "#69d4ff",
+    exploit_reference: "#ffb16f",
+    screenshot: "#8fd0ff",
+    artifact: "#9bc9b7",
+    action: "#d1a8ff",
+    evidence_record: "#b7bdd8",
+};
+
+const GRAPH_NODE_SIZE = {
+    width: 148,
+    height: 58,
+};
+
+const GRAPH_TYPE_ORDER = [
+    "scope",
+    "subnet",
+    "host",
+    "fqdn",
+    "port",
+    "service",
+    "url",
+    "technology",
+    "cpe",
+    "finding",
+    "cve",
+    "exploit_reference",
+    "credential",
+    "identity",
+    "session",
+    "action",
+    "artifact",
+    "screenshot",
+    "evidence_record",
+];
+
 const processOutputState = {
     processId: null,
     offset: 0,
@@ -475,6 +615,17 @@ function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {})
     workspaceState.toolsLoading = false;
     workspaceState.selectedHostId = null;
     workspaceState.hostDetail = null;
+    graphWorkspaceState.data = {nodes: [], edges: [], meta: {}};
+    graphWorkspaceState.filtered = {nodes: [], edges: [], groups: [], positions: {}, width: 1600, height: 900};
+    graphWorkspaceState.activeLayoutId = "";
+    graphWorkspaceState.positions = {};
+    graphWorkspaceState.pinnedNodeIds = {};
+    graphWorkspaceState.selectedKind = "";
+    graphWorkspaceState.selectedRef = "";
+    graphWorkspaceState.selectedPayload = null;
+    graphWorkspaceState.metadataLoaded = false;
+    graphWorkspaceState.layouts = [];
+    graphWorkspaceState.annotations = [];
 
     renderSummary({
         hosts: 0,
@@ -496,6 +647,9 @@ function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {})
     closeScriptOutputModal(true);
     closeScreenshotModal(true);
     closeHostRemoveModalAction(true);
+    graphUpdateHostFilterOptions();
+    graphRenderLayoutOptions();
+    graphRenderWorkspace();
 
     if (clearProjectPaths) {
         setValue("project-open-path", "");
@@ -593,6 +747,7 @@ function renderHosts(hosts) {
     });
     setText("host-count", workspaceState.hosts.length);
     renderHostSelector(workspaceState.hosts);
+    graphUpdateHostFilterOptions();
 }
 
 function renderServices(services) {
@@ -2817,6 +2972,1259 @@ async function fetchJson(url) {
     return response.json();
 }
 
+function graphWorkspaceEnabled() {
+    return Boolean(document.getElementById("graph-workspace-canvas"));
+}
+
+function setGraphStatus(text, isError = false) {
+    const node = document.getElementById("graph-workspace-status");
+    if (!node) {
+        return;
+    }
+    node.textContent = text || "";
+    node.style.color = isError ? "#ff9b9b" : "";
+}
+
+function graphFriendlyLabel(value) {
+    return String(value || "")
+        .replace(/_/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function graphSubnetForIp(ip) {
+    const token = String(ip || "").trim();
+    const match = token.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+    if (!match) {
+        return token || "other";
+    }
+    return `${match[1]}.${match[2]}.${match[3]}.0/24`;
+}
+
+function graphPropertyValue(entity, key) {
+    if (!entity || typeof entity !== "object") {
+        return "";
+    }
+    const props = entity.properties && typeof entity.properties === "object" ? entity.properties : {};
+    return props[key];
+}
+
+function graphPackValues(entity) {
+    const props = entity?.properties && typeof entity.properties === "object" ? entity.properties : {};
+    const packs = [];
+    ["pack_id", "pack", "strategy_pack"].forEach((key) => {
+        const token = String(props[key] || "").trim();
+        if (token) {
+            packs.push(token);
+        }
+    });
+    const tagValues = Array.isArray(props.pack_tags) ? props.pack_tags : [];
+    tagValues.forEach((tag) => {
+        const token = String(tag || "").trim();
+        if (token) {
+            packs.push(token);
+        }
+    });
+    return Array.from(new Set(packs));
+}
+
+function graphTimestampValue(entity) {
+    const lastSeen = String(entity?.last_seen || "").trim();
+    const firstSeen = String(entity?.first_seen || "").trim();
+    return lastSeen || firstSeen || "";
+}
+
+function graphTimeWindowCutoff(windowId) {
+    const normalized = String(windowId || "all").trim().toLowerCase();
+    const hoursByWindow = {
+        "24h": 24,
+        "7d": 24 * 7,
+        "30d": 24 * 30,
+        "90d": 24 * 90,
+    };
+    const hours = hoursByWindow[normalized];
+    if (!hours) {
+        return 0;
+    }
+    return Date.now() - (hours * 60 * 60 * 1000);
+}
+
+function graphEntityMatchesTimeWindow(entity, cutoffMs) {
+    if (!cutoffMs) {
+        return true;
+    }
+    const timestamp = Date.parse(graphTimestampValue(entity));
+    if (!Number.isFinite(timestamp)) {
+        return true;
+    }
+    return timestamp >= cutoffMs;
+}
+
+function graphEntityMatchesSeverity(entity, severity) {
+    const normalized = String(severity || "").trim().toLowerCase();
+    if (!normalized) {
+        return true;
+    }
+    return String(graphPropertyValue(entity, "severity") || "").trim().toLowerCase() === normalized;
+}
+
+function graphEntityMatchesPack(entity, pack) {
+    const normalized = String(pack || "").trim().toLowerCase();
+    if (!normalized) {
+        return true;
+    }
+    return graphPackValues(entity).some((value) => String(value || "").trim().toLowerCase() === normalized);
+}
+
+function graphUpdateConfidenceLabel() {
+    const value = getValue("graph-min-confidence") || "0";
+    setText("graph-min-confidence-value", value);
+}
+
+function graphCurrentViewConfig() {
+    const viewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim();
+    return GRAPH_VIEW_PRESETS[viewId] || GRAPH_VIEW_PRESETS.attack_surface;
+}
+
+function graphUpdateSelectOptions(selectOrId, values, defaultLabel) {
+    const node = typeof selectOrId === "string" ? document.getElementById(selectOrId) : selectOrId;
+    if (!node) {
+        return;
+    }
+    const previous = String(node.value || "");
+    const optionValues = Array.from(new Set((values || []).map((value) => String(value || "").trim()).filter(Boolean))).sort();
+    node.innerHTML = "";
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = defaultLabel;
+    node.appendChild(defaultOption);
+    optionValues.forEach((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = graphFriendlyLabel(value);
+        node.appendChild(option);
+    });
+    if (optionValues.includes(previous)) {
+        node.value = previous;
+    }
+}
+
+function graphRenderLayoutOptions() {
+    const select = document.getElementById("graph-layout-select");
+    if (!select) {
+        return;
+    }
+    const currentViewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim();
+    const currentValue = String(graphWorkspaceState.activeLayoutId || select.value || "");
+    const layouts = (graphWorkspaceState.layouts || []).filter((item) => String(item?.view_id || "").trim() === currentViewId);
+    select.innerHTML = "";
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "auto layout";
+    select.appendChild(defaultOption);
+    layouts.forEach((layout) => {
+        const option = document.createElement("option");
+        option.value = String(layout.layout_id || "");
+        option.textContent = `${layout.name || "layout"}${layout.updated_at ? ` (${layout.updated_at})` : ""}`;
+        select.appendChild(option);
+    });
+    if (layouts.some((layout) => String(layout.layout_id || "") === currentValue)) {
+        select.value = currentValue;
+    } else {
+        select.value = "";
+    }
+}
+
+function graphUpdateHostFilterOptions() {
+    const select = document.getElementById("graph-host-filter");
+    if (!select) {
+        return;
+    }
+    const previous = String(select.value || "");
+    select.innerHTML = "";
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "all hosts";
+    select.appendChild(defaultOption);
+    (workspaceState.hosts || []).forEach((host) => {
+        const option = document.createElement("option");
+        option.value = String(host.id || "");
+        option.textContent = `${host.ip || ""}${host.hostname ? ` (${host.hostname})` : ""}`;
+        select.appendChild(option);
+    });
+    if ((workspaceState.hosts || []).some((host) => String(host.id || "") === previous)) {
+        select.value = previous;
+    }
+}
+
+function graphPopulateDynamicFilters() {
+    const snapshot = graphWorkspaceState.data || {};
+    const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
+    const edges = Array.isArray(snapshot.edges) ? snapshot.edges : [];
+    graphUpdateSelectOptions(
+        "graph-node-type-filter",
+        nodes.map((item) => String(item?.type || "").trim().toLowerCase()),
+        "all node types",
+    );
+    graphUpdateSelectOptions(
+        "graph-edge-type-filter",
+        edges.map((item) => String(item?.type || "").trim().toLowerCase()),
+        "all edge types",
+    );
+    graphUpdateSelectOptions(
+        "graph-source-kind-filter",
+        nodes.concat(edges).map((item) => String(item?.source_kind || "").trim().toLowerCase()),
+        "all provenance",
+    );
+    graphUpdateSelectOptions(
+        "graph-severity-filter",
+        nodes.concat(edges).map((item) => String(graphPropertyValue(item, "severity") || "").trim().toLowerCase()),
+        "all severities",
+    );
+    graphUpdateSelectOptions(
+        "graph-pack-filter",
+        nodes.concat(edges).flatMap((item) => graphPackValues(item).map((value) => String(value || "").trim().toLowerCase())),
+        "all packs",
+    );
+}
+
+function graphCollectServerQuery() {
+    graphWorkspaceState.viewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim();
+    graphWorkspaceState.groupBy = String(getValue("graph-group-select") || graphWorkspaceState.groupBy || graphCurrentViewConfig().defaultGroup || "subnet").trim();
+    const hostId = parseInt(getValue("graph-host-filter"), 10);
+    const minConfidence = Math.max(0, Math.min(100, parseInt(getValue("graph-min-confidence"), 10) || 0));
+    return {
+        viewId: graphWorkspaceState.viewId,
+        groupBy: graphWorkspaceState.groupBy,
+        hostId: Number.isFinite(hostId) && hostId > 0 ? hostId : 0,
+        nodeType: String(getValue("graph-node-type-filter") || "").trim().toLowerCase(),
+        edgeType: String(getValue("graph-edge-type-filter") || "").trim().toLowerCase(),
+        sourceKind: String(getValue("graph-source-kind-filter") || "").trim().toLowerCase(),
+        severity: String(getValue("graph-severity-filter") || "").trim().toLowerCase(),
+        pack: String(getValue("graph-pack-filter") || "").trim().toLowerCase(),
+        timeWindow: String(getValue("graph-time-window-filter") || "all").trim().toLowerCase(),
+        search: String(getValue("graph-search-input") || "").trim(),
+        minConfidence,
+        hideAiSuggested: getChecked("graph-hide-ai-suggested"),
+    };
+}
+
+function graphBuildHostMaps(nodes) {
+    const hostById = new Map();
+    const hostLabelById = new Map();
+    const subnetByHostId = new Map();
+    const domainByHostId = new Map();
+    (nodes || []).forEach((node) => {
+        const hostId = parseInt(graphPropertyValue(node, "host_id"), 10);
+        if (!Number.isFinite(hostId) || hostId <= 0) {
+            return;
+        }
+        if (String(node.type || "") === "host") {
+            hostById.set(hostId, node);
+            hostLabelById.set(hostId, String(node.label || graphPropertyValue(node, "ip") || `host-${hostId}`));
+            const hostname = String(graphPropertyValue(node, "hostname") || "").trim();
+            if (hostname) {
+                domainByHostId.set(hostId, hostname);
+            }
+            const ip = String(graphPropertyValue(node, "ip") || "").trim();
+            if (ip) {
+                subnetByHostId.set(hostId, graphSubnetForIp(ip));
+            }
+        }
+    });
+    return {
+        hostById,
+        hostLabelById,
+        subnetByHostId,
+        domainByHostId,
+    };
+}
+
+function graphGroupKeyForNode(node, groupBy, hostMaps) {
+    const type = String(node?.type || "").trim().toLowerCase();
+    const hostId = parseInt(graphPropertyValue(node, "host_id"), 10);
+    const hostname = String(graphPropertyValue(node, "hostname") || "").trim();
+    const serviceName = String(
+        graphPropertyValue(node, "service")
+        || graphPropertyValue(node, "name")
+        || graphPropertyValue(node, "product")
+        || ""
+    ).trim();
+    if (groupBy === "host") {
+        if (type === "host") {
+            return String(node.label || "host");
+        }
+        return hostMaps.hostLabelById.get(hostId) || "unassigned host";
+    }
+    if (groupBy === "domain") {
+        if (type === "fqdn") {
+            return String(node.label || "domain");
+        }
+        return hostname || hostMaps.domainByHostId.get(hostId) || "undisclosed domain";
+    }
+    if (groupBy === "service") {
+        if (type === "service") {
+            return serviceName || String(node.label || "service");
+        }
+        if (type === "port") {
+            return `${graphPropertyValue(node, "port") || ""}/${graphPropertyValue(node, "protocol") || ""}`.replace(/\/$/, "") || "port";
+        }
+        return serviceName || graphFriendlyLabel(type) || "other service";
+    }
+    if (groupBy === "finding") {
+        if (type === "finding") {
+            return String(graphPropertyValue(node, "title") || node.label || "finding");
+        }
+        return String(graphPropertyValue(node, "cve") || graphPropertyValue(node, "title") || graphPropertyValue(node, "severity") || graphFriendlyLabel(type) || "other");
+    }
+    if (type === "subnet") {
+        return String(node.label || "subnet");
+    }
+    const ip = String(graphPropertyValue(node, "ip") || "").trim();
+    if (ip) {
+        return graphSubnetForIp(ip);
+    }
+    return hostMaps.subnetByHostId.get(hostId) || "other subnet";
+}
+
+function graphSortNodes(left, right) {
+    const leftType = String(left?.type || "").trim().toLowerCase();
+    const rightType = String(right?.type || "").trim().toLowerCase();
+    const leftIndex = GRAPH_TYPE_ORDER.indexOf(leftType);
+    const rightIndex = GRAPH_TYPE_ORDER.indexOf(rightType);
+    if (leftIndex !== rightIndex) {
+        return (leftIndex === -1 ? GRAPH_TYPE_ORDER.length : leftIndex) - (rightIndex === -1 ? GRAPH_TYPE_ORDER.length : rightIndex);
+    }
+    return String(left?.label || "").localeCompare(String(right?.label || ""));
+}
+
+function graphApplyLocalFilters(snapshot) {
+    const viewConfig = graphCurrentViewConfig();
+    const filters = graphCollectServerQuery();
+    const sourceKind = filters.sourceKind;
+    const nodeType = filters.nodeType;
+    const edgeType = filters.edgeType;
+    const severity = filters.severity;
+    const pack = filters.pack;
+    const cutoff = graphTimeWindowCutoff(filters.timeWindow);
+
+    let nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes.slice() : [];
+    let edges = Array.isArray(snapshot?.edges) ? snapshot.edges.slice() : [];
+
+    if (Array.isArray(viewConfig.nodeTypes) && viewConfig.nodeTypes.length > 0) {
+        const allowedNodeTypes = new Set(viewConfig.nodeTypes);
+        nodes = nodes.filter((item) => allowedNodeTypes.has(String(item?.type || "").trim().toLowerCase()));
+    }
+    let nodeIds = new Set(nodes.map((item) => String(item?.node_id || "")));
+    if (Array.isArray(viewConfig.edgeTypes) && viewConfig.edgeTypes.length > 0) {
+        const allowedEdgeTypes = new Set(viewConfig.edgeTypes);
+        edges = edges.filter((item) => allowedEdgeTypes.has(String(item?.type || "").trim().toLowerCase()));
+    }
+    edges = edges.filter((item) => nodeIds.has(String(item?.from_node_id || "")) && nodeIds.has(String(item?.to_node_id || "")));
+
+    const nodeFocusActive = Boolean(sourceKind || nodeType || severity || pack || cutoff);
+    const edgeFocusActive = Boolean(sourceKind || edgeType || severity || pack || cutoff);
+    const nodePredicate = (item) => {
+        const matchesSource = !sourceKind || String(item?.source_kind || "").trim().toLowerCase() === sourceKind;
+        const matchesType = !nodeType || String(item?.type || "").trim().toLowerCase() === nodeType;
+        return matchesSource
+            && matchesType
+            && graphEntityMatchesSeverity(item, severity)
+            && graphEntityMatchesPack(item, pack)
+            && graphEntityMatchesTimeWindow(item, cutoff);
+    };
+    const edgePredicate = (item) => {
+        const matchesSource = !sourceKind || String(item?.source_kind || "").trim().toLowerCase() === sourceKind;
+        const matchesType = !edgeType || String(item?.type || "").trim().toLowerCase() === edgeType;
+        return matchesSource
+            && matchesType
+            && graphEntityMatchesSeverity(item, severity)
+            && graphEntityMatchesPack(item, pack)
+            && graphEntityMatchesTimeWindow(item, cutoff);
+    };
+
+    const keptNodeIds = new Set(
+        nodeFocusActive
+            ? nodes.filter(nodePredicate).map((item) => String(item?.node_id || ""))
+            : nodes.map((item) => String(item?.node_id || ""))
+    );
+    const keptEdges = edgeFocusActive ? edges.filter(edgePredicate) : edges.slice();
+    if (edgeFocusActive) {
+        keptEdges.forEach((item) => {
+            keptNodeIds.add(String(item?.from_node_id || ""));
+            keptNodeIds.add(String(item?.to_node_id || ""));
+        });
+    }
+
+    nodes = nodes.filter((item) => keptNodeIds.has(String(item?.node_id || "")));
+    nodeIds = new Set(nodes.map((item) => String(item?.node_id || "")));
+    edges = keptEdges.filter((item) => nodeIds.has(String(item?.from_node_id || "")) && nodeIds.has(String(item?.to_node_id || "")));
+
+    const hostMaps = graphBuildHostMaps(nodes);
+    const groupsMap = new Map();
+    nodes.sort(graphSortNodes).forEach((item) => {
+        const key = graphGroupKeyForNode(item, filters.groupBy || viewConfig.defaultGroup || "subnet", hostMaps) || "other";
+        if (!groupsMap.has(key)) {
+            groupsMap.set(key, []);
+        }
+        groupsMap.get(key).push(item);
+    });
+
+    const positions = {};
+    const groups = [];
+    const groupWidth = 240;
+    const groupGap = 32;
+    const leftPad = 36;
+    const topPad = 72;
+    let maxRows = 0;
+    Array.from(groupsMap.keys()).sort().forEach((groupKey, index) => {
+        const groupNodes = groupsMap.get(groupKey) || [];
+        maxRows = Math.max(maxRows, groupNodes.length);
+        const groupX = leftPad + (index * (groupWidth + groupGap));
+        const groupHeight = Math.max(150, 94 + (groupNodes.length * 84));
+        groups.push({
+            key: groupKey,
+            label: groupKey,
+            x: groupX,
+            y: 20,
+            width: groupWidth,
+            height: groupHeight,
+        });
+        groupNodes.forEach((item, rowIndex) => {
+            const nodeId = String(item?.node_id || "");
+            if (graphWorkspaceState.pinnedNodeIds[nodeId] && graphWorkspaceState.positions[nodeId]) {
+                positions[nodeId] = {
+                    x: Number(graphWorkspaceState.positions[nodeId].x) || (groupX + 24),
+                    y: Number(graphWorkspaceState.positions[nodeId].y) || (topPad + (rowIndex * 84)),
+                };
+                return;
+            }
+            positions[nodeId] = {
+                x: groupX + 24,
+                y: topPad + (rowIndex * 84),
+            };
+        });
+    });
+
+    const savedLayout = (graphWorkspaceState.layouts || []).find((item) => String(item?.layout_id || "") === String(graphWorkspaceState.activeLayoutId || ""));
+    if (savedLayout && savedLayout.layout && typeof savedLayout.layout === "object") {
+        const savedPositions = savedLayout.layout.positions && typeof savedLayout.layout.positions === "object"
+            ? savedLayout.layout.positions
+            : {};
+        Object.keys(savedPositions).forEach((nodeId) => {
+            if (!keptNodeIds.has(String(nodeId || ""))) {
+                return;
+            }
+            positions[nodeId] = {
+                x: Number(savedPositions[nodeId]?.x) || positions[nodeId]?.x || 40,
+                y: Number(savedPositions[nodeId]?.y) || positions[nodeId]?.y || 80,
+            };
+        });
+    }
+
+    let width = Math.max(1200, leftPad + (Math.max(groups.length, 1) * (groupWidth + groupGap)) + 48);
+    let height = Math.max(760, topPad + (maxRows * 84) + 140);
+    Object.values(positions).forEach((point) => {
+        width = Math.max(width, (Number(point?.x) || 0) + GRAPH_NODE_SIZE.width + 80);
+        height = Math.max(height, (Number(point?.y) || 0) + GRAPH_NODE_SIZE.height + 120);
+    });
+
+    return {
+        nodes,
+        edges,
+        groups,
+        positions,
+        width,
+        height,
+    };
+}
+
+function graphNodeColor(node) {
+    const token = String(node?.type || "").trim().toLowerCase();
+    return GRAPH_NODE_COLORS[token] || "#b4bbdd";
+}
+
+function graphSourceStyle(entity) {
+    const key = String(entity?.source_kind || "observed").trim().toLowerCase();
+    return GRAPH_SOURCE_KIND_STYLES[key] || GRAPH_SOURCE_KIND_STYLES.observed;
+}
+
+function graphSplitLabel(label) {
+    const words = String(label || "").trim().split(/\s+/).filter(Boolean);
+    if (!words.length) {
+        return ["unknown"];
+    }
+    const lines = [];
+    let current = "";
+    words.forEach((word) => {
+        const next = current ? `${current} ${word}` : word;
+        if (next.length <= 18 || !current) {
+            current = next;
+            return;
+        }
+        lines.push(current);
+        current = word;
+    });
+    if (current) {
+        lines.push(current);
+    }
+    return lines.slice(0, 2);
+}
+
+function graphCreateSvgNode(tagName, attributes = {}, text = "") {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+    Object.entries(attributes).forEach(([key, value]) => {
+        if (value === undefined || value === null || value === "") {
+            return;
+        }
+        node.setAttribute(key, String(value));
+    });
+    if (text) {
+        node.textContent = text;
+    }
+    return node;
+}
+
+function graphSvgPoint(svg, event) {
+    const rect = svg.getBoundingClientRect();
+    const viewBox = svg.viewBox.baseVal;
+    const scaleX = rect.width > 0 ? viewBox.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? viewBox.height / rect.height : 1;
+    return {
+        x: viewBox.x + ((event.clientX - rect.left) * scaleX),
+        y: viewBox.y + ((event.clientY - rect.top) * scaleY),
+    };
+}
+
+function graphFindEntity(kind, ref) {
+    if (kind === "edge") {
+        return (graphWorkspaceState.filtered.edges || []).find((item) => String(item?.edge_id || "") === String(ref || "")) || null;
+    }
+    return (graphWorkspaceState.filtered.nodes || []).find((item) => String(item?.node_id || "") === String(ref || "")) || null;
+}
+
+function graphRenderSelectionDetail() {
+    const detailCaption = document.getElementById("graph-detail-caption");
+    const badgesNode = document.getElementById("graph-selection-badges");
+    const fieldsNode = document.getElementById("graph-detail-fields");
+    const evidenceNode = document.getElementById("graph-detail-evidence");
+    const propertiesNode = document.getElementById("graph-detail-properties");
+    const annotationsNode = document.getElementById("graph-annotations-list");
+    const pinButton = document.getElementById("graph-pin-toggle-button");
+    if (!detailCaption || !badgesNode || !fieldsNode || !evidenceNode || !propertiesNode || !annotationsNode || !pinButton) {
+        return;
+    }
+
+    const kind = String(graphWorkspaceState.selectedKind || "");
+    const ref = String(graphWorkspaceState.selectedRef || "");
+    const entity = graphFindEntity(kind, ref);
+    graphWorkspaceState.selectedPayload = entity;
+
+    badgesNode.innerHTML = "";
+    fieldsNode.innerHTML = "";
+    evidenceNode.innerHTML = "";
+    annotationsNode.innerHTML = "";
+
+    if (!entity) {
+        detailCaption.textContent = "Select a node or edge";
+        propertiesNode.textContent = "No graph selection";
+        pinButton.disabled = true;
+        pinButton.textContent = "Pin Node";
+        return;
+    }
+
+    const fields = [];
+    if (kind === "node") {
+        detailCaption.textContent = `${graphFriendlyLabel(entity.type)}: ${entity.label || entity.node_id || ""}`;
+        fields.push(["Node ID", entity.node_id || ""]);
+        fields.push(["Type", graphFriendlyLabel(entity.type || "")]);
+    } else {
+        const fromNode = graphFindEntity("node", entity.from_node_id);
+        const toNode = graphFindEntity("node", entity.to_node_id);
+        detailCaption.textContent = `${graphFriendlyLabel(entity.type)}: ${(fromNode?.label || entity.from_node_id || "")} -> ${(toNode?.label || entity.to_node_id || "")}`;
+        fields.push(["Edge ID", entity.edge_id || ""]);
+        fields.push(["Type", graphFriendlyLabel(entity.type || "")]);
+        fields.push(["From", fromNode?.label || entity.from_node_id || ""]);
+        fields.push(["To", toNode?.label || entity.to_node_id || ""]);
+    }
+    fields.push(["Confidence", entity.confidence ?? ""]);
+    fields.push(["Provenance", GRAPH_SOURCE_KIND_LABELS[String(entity.source_kind || "").trim().toLowerCase()] || graphFriendlyLabel(entity.source_kind || "")]);
+    fields.push(["First Seen", entity.first_seen || ""]);
+    fields.push(["Last Seen", entity.last_seen || ""]);
+    fields.push(["Source Ref", entity.source_ref || ""]);
+
+    fields.forEach(([label, value]) => {
+        if (value === undefined || value === null || value === "") {
+            return;
+        }
+        const dt = document.createElement("dt");
+        dt.textContent = label;
+        const dd = document.createElement("dd");
+        dd.textContent = String(value);
+        fieldsNode.appendChild(dt);
+        fieldsNode.appendChild(dd);
+    });
+
+    [
+        kind === "node" ? graphFriendlyLabel(entity.type || "") : graphFriendlyLabel(entity.type || ""),
+        GRAPH_SOURCE_KIND_LABELS[String(entity.source_kind || "").trim().toLowerCase()] || graphFriendlyLabel(entity.source_kind || ""),
+        `${Math.round(Number(entity.confidence || 0))}% confidence`,
+    ].forEach((text) => {
+        const badge = document.createElement("span");
+        badge.className = "graph-badge";
+        badge.textContent = text;
+        badgesNode.appendChild(badge);
+    });
+    if (kind === "node" && graphWorkspaceState.pinnedNodeIds[String(entity.node_id || "")]) {
+        const badge = document.createElement("span");
+        badge.className = "graph-badge graph-badge-pinned";
+        badge.textContent = "pinned";
+        badgesNode.appendChild(badge);
+    }
+
+    const evidence = Array.isArray(entity.evidence_refs) ? entity.evidence_refs : [];
+    if (!evidence.length) {
+        const li = document.createElement("li");
+        li.textContent = "No explicit evidence refs";
+        evidenceNode.appendChild(li);
+    } else {
+        evidence.forEach((value) => {
+            const li = document.createElement("li");
+            li.textContent = String(value || "");
+            evidenceNode.appendChild(li);
+        });
+    }
+
+    propertiesNode.textContent = JSON.stringify(entity.properties || {}, null, 2);
+
+    const annotations = (graphWorkspaceState.annotations || []).filter((item) => {
+        return String(item?.target_kind || "") === kind && String(item?.target_ref || "") === ref;
+    });
+    if (!annotations.length) {
+        const empty = document.createElement("p");
+        empty.className = "text-muted";
+        empty.textContent = "No annotations yet.";
+        annotationsNode.appendChild(empty);
+    } else {
+        annotations.forEach((item) => {
+            const card = document.createElement("article");
+            card.className = "graph-annotation-card";
+            const heading = document.createElement("div");
+            heading.className = "graph-annotation-meta";
+            heading.textContent = `${item.created_by || "operator"} | ${item.updated_at || item.created_at || ""}`;
+            const body = document.createElement("div");
+            body.className = "graph-annotation-body";
+            body.textContent = item.body || "";
+            card.appendChild(heading);
+            card.appendChild(body);
+            annotationsNode.appendChild(card);
+        });
+    }
+
+    pinButton.disabled = kind !== "node";
+    pinButton.textContent = kind === "node" && graphWorkspaceState.pinnedNodeIds[String(entity.node_id || "")] ? "Unpin Node" : "Pin Node";
+}
+
+function graphRenderWorkspace() {
+    const svg = document.getElementById("graph-workspace-canvas");
+    const emptyNode = document.getElementById("graph-workspace-empty");
+    if (!svg || !emptyNode) {
+        return;
+    }
+    const filtered = graphApplyLocalFilters(graphWorkspaceState.data);
+    graphWorkspaceState.filtered = filtered;
+    const nodes = filtered.nodes || [];
+    const edges = filtered.edges || [];
+    const positions = filtered.positions || {};
+
+    if (graphWorkspaceState.selectedKind && !graphFindEntity(graphWorkspaceState.selectedKind, graphWorkspaceState.selectedRef)) {
+        graphWorkspaceState.selectedKind = "";
+        graphWorkspaceState.selectedRef = "";
+        graphWorkspaceState.selectedPayload = null;
+    }
+
+    setText(
+        "graph-workspace-summary",
+        `${nodes.length} nodes shown | ${edges.length} edges shown | ${Number(graphWorkspaceState.data?.meta?.total_nodes || nodes.length)} total nodes`,
+    );
+
+    if (!nodes.length) {
+        svg.innerHTML = "";
+        svg.setAttribute("viewBox", "0 0 1600 900");
+        emptyNode.hidden = false;
+        graphRenderSelectionDetail();
+        return;
+    }
+
+    emptyNode.hidden = true;
+    svg.innerHTML = "";
+    svg.setAttribute("viewBox", `0 0 ${filtered.width} ${filtered.height}`);
+
+    const defs = graphCreateSvgNode("defs");
+    defs.appendChild(graphCreateSvgNode("marker", {
+        id: "graph-arrow",
+        markerWidth: 8,
+        markerHeight: 8,
+        refX: 7,
+        refY: 4,
+        orient: "auto",
+        markerUnits: "strokeWidth",
+    }));
+    const arrow = graphCreateSvgNode("path", {
+        d: "M0,0 L8,4 L0,8 z",
+        fill: "rgba(180, 187, 221, 0.7)",
+    });
+    defs.firstChild.appendChild(arrow);
+    svg.appendChild(defs);
+
+    (filtered.groups || []).forEach((group) => {
+        const groupNode = graphCreateSvgNode("g", {"class": "graph-group"});
+        groupNode.appendChild(graphCreateSvgNode("rect", {
+            x: group.x,
+            y: group.y,
+            width: group.width,
+            height: group.height,
+            rx: 18,
+            fill: "rgba(14, 18, 38, 0.55)",
+            stroke: "rgba(147, 159, 229, 0.16)",
+        }));
+        groupNode.appendChild(graphCreateSvgNode("text", {
+            x: group.x + 16,
+            y: group.y + 28,
+            "class": "graph-group-label",
+        }, group.label));
+        svg.appendChild(groupNode);
+    });
+
+    edges.forEach((edge) => {
+        const sourcePosition = positions[String(edge?.from_node_id || "")];
+        const targetPosition = positions[String(edge?.to_node_id || "")];
+        if (!sourcePosition || !targetPosition) {
+            return;
+        }
+        const startX = sourcePosition.x + GRAPH_NODE_SIZE.width;
+        const startY = sourcePosition.y + (GRAPH_NODE_SIZE.height / 2);
+        const endX = targetPosition.x;
+        const endY = targetPosition.y + (GRAPH_NODE_SIZE.height / 2);
+        const controlOffset = Math.max(36, Math.min(140, Math.abs(endX - startX) / 2));
+        const curveDirection = endX >= startX ? 1 : -1;
+        const pathData = [
+            `M ${startX} ${startY}`,
+            `C ${startX + (controlOffset * curveDirection)} ${startY}`,
+            `${endX - (controlOffset * curveDirection)} ${endY}`,
+            `${endX} ${endY}`,
+        ].join(" ");
+        const isSelected = graphWorkspaceState.selectedKind === "edge" && String(graphWorkspaceState.selectedRef || "") === String(edge?.edge_id || "");
+        const style = graphSourceStyle(edge);
+        svg.appendChild(graphCreateSvgNode("path", {
+            d: pathData,
+            stroke: "transparent",
+            fill: "none",
+            "stroke-width": 12,
+            "data-graph-edge-id": edge.edge_id || "",
+            "class": "graph-edge-hitbox",
+        }));
+        svg.appendChild(graphCreateSvgNode("path", {
+            d: pathData,
+            stroke: style.stroke,
+            fill: "none",
+            "stroke-width": isSelected ? 3.4 : 2.1,
+            "stroke-dasharray": style.dash,
+            "marker-end": "url(#graph-arrow)",
+            opacity: isSelected ? 1 : 0.86,
+            "data-graph-edge-id": edge.edge_id || "",
+            "class": `graph-edge${isSelected ? " is-selected" : ""}`,
+        }));
+    });
+
+    nodes.forEach((node) => {
+        const nodeId = String(node?.node_id || "");
+        const point = positions[nodeId];
+        if (!point) {
+            return;
+        }
+        const style = graphSourceStyle(node);
+        const color = graphNodeColor(node);
+        const isSelected = graphWorkspaceState.selectedKind === "node" && String(graphWorkspaceState.selectedRef || "") === nodeId;
+        const groupNode = graphCreateSvgNode("g", {
+            transform: `translate(${point.x}, ${point.y})`,
+            "data-graph-node-id": nodeId,
+            "class": `graph-node${isSelected ? " is-selected" : ""}`,
+        });
+        groupNode.appendChild(graphCreateSvgNode("rect", {
+            width: GRAPH_NODE_SIZE.width,
+            height: GRAPH_NODE_SIZE.height,
+            rx: 14,
+            fill: style.fill,
+            stroke: isSelected ? "#eef1ff" : color,
+            "stroke-width": isSelected ? 2.8 : 1.8,
+            "data-graph-node-id": nodeId,
+        }));
+        groupNode.appendChild(graphCreateSvgNode("rect", {
+            x: 10,
+            y: 9,
+            width: 8,
+            height: GRAPH_NODE_SIZE.height - 18,
+            rx: 4,
+            fill: color,
+            opacity: 0.9,
+            "data-graph-node-id": nodeId,
+        }));
+        groupNode.appendChild(graphCreateSvgNode("text", {
+            x: 28,
+            y: 18,
+            "class": "graph-node-type",
+            "data-graph-node-id": nodeId,
+        }, graphFriendlyLabel(node.type || "")));
+        const labelNode = graphCreateSvgNode("text", {
+            x: 28,
+            y: 34,
+            "class": "graph-node-label",
+            "data-graph-node-id": nodeId,
+        });
+        graphSplitLabel(node.label || nodeId).forEach((line, index) => {
+            const tspan = graphCreateSvgNode("tspan", {
+                x: 28,
+                dy: index === 0 ? 0 : 14,
+                "data-graph-node-id": nodeId,
+            }, line);
+            labelNode.appendChild(tspan);
+        });
+        groupNode.appendChild(labelNode);
+        if (graphWorkspaceState.pinnedNodeIds[nodeId]) {
+            groupNode.appendChild(graphCreateSvgNode("circle", {
+                cx: GRAPH_NODE_SIZE.width - 16,
+                cy: 14,
+                r: 5,
+                fill: "#eef1ff",
+                opacity: 0.9,
+                "data-graph-node-id": nodeId,
+            }));
+        }
+        svg.appendChild(groupNode);
+    });
+
+    graphRenderSelectionDetail();
+}
+
+function graphSelectEntity(kind, ref) {
+    graphWorkspaceState.selectedKind = String(kind || "");
+    graphWorkspaceState.selectedRef = String(ref || "");
+    graphRenderWorkspace();
+}
+
+async function graphLoadMetadata({force = false} = {}) {
+    if (!graphWorkspaceEnabled()) {
+        return;
+    }
+    if (graphWorkspaceState.metadataLoaded && !force) {
+        graphRenderLayoutOptions();
+        return;
+    }
+    const [layoutsBody, annotationsBody] = await Promise.all([
+        fetchJson("/api/graph/layouts"),
+        fetchJson("/api/graph/annotations"),
+    ]);
+    graphWorkspaceState.layouts = Array.isArray(layoutsBody?.layouts) ? layoutsBody.layouts : [];
+    graphWorkspaceState.annotations = Array.isArray(annotationsBody?.annotations) ? annotationsBody.annotations : [];
+    graphWorkspaceState.metadataLoaded = true;
+    const currentViewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim();
+    if (!graphWorkspaceState.activeLayoutId) {
+        const defaultLayout = graphWorkspaceState.layouts.find((item) => {
+            return String(item?.view_id || "") === currentViewId && String(item?.name || "").trim().toLowerCase() === "default";
+        }) || graphWorkspaceState.layouts.find((item) => String(item?.view_id || "") === currentViewId);
+        graphWorkspaceState.activeLayoutId = String(defaultLayout?.layout_id || "");
+        if (defaultLayout?.layout?.positions && typeof defaultLayout.layout.positions === "object") {
+            graphWorkspaceState.positions = {...defaultLayout.layout.positions};
+        }
+        if (defaultLayout?.layout?.pinned_node_ids && typeof defaultLayout.layout.pinned_node_ids === "object") {
+            graphWorkspaceState.pinnedNodeIds = {...defaultLayout.layout.pinned_node_ids};
+        }
+    }
+    graphRenderLayoutOptions();
+}
+
+async function graphLoadSnapshot({background = false, forceMetadata = false} = {}) {
+    if (!graphWorkspaceEnabled()) {
+        return;
+    }
+    if (graphWorkspaceState.loading) {
+        graphWorkspaceState.needsRefresh = true;
+        return;
+    }
+    graphWorkspaceState.loading = true;
+    if (!background) {
+        setGraphStatus("Loading graph...");
+    }
+    try {
+        if (!graphWorkspaceState.metadataLoaded || forceMetadata) {
+            await graphLoadMetadata({force: forceMetadata});
+        }
+        const filters = graphCollectServerQuery();
+        const params = new URLSearchParams();
+        if (filters.hostId > 0) {
+            params.set("host_id", String(filters.hostId));
+        }
+        if (filters.nodeType) {
+            params.set("node_type", filters.nodeType);
+        }
+        if (filters.edgeType) {
+            params.set("edge_type", filters.edgeType);
+        }
+        if (filters.sourceKind) {
+            params.set("source_kind", filters.sourceKind);
+        }
+        if (filters.search) {
+            params.set("q", filters.search);
+        }
+        if (filters.minConfidence > 0) {
+            params.set("min_confidence", String(filters.minConfidence));
+        }
+        if (filters.hideAiSuggested) {
+            params.set("hide_ai_suggested", "true");
+        }
+        params.set("limit_nodes", "2000");
+        params.set("limit_edges", "4000");
+        const body = await fetchJson(`/api/graph?${params.toString()}`);
+        graphWorkspaceState.data = {
+            nodes: Array.isArray(body?.nodes) ? body.nodes : [],
+            edges: Array.isArray(body?.edges) ? body.edges : [],
+            meta: body?.meta || {},
+        };
+        graphPopulateDynamicFilters();
+        graphRenderLayoutOptions();
+        graphRenderWorkspace();
+        if (!background) {
+            setGraphStatus(`Graph loaded: ${graphWorkspaceState.filtered.nodes.length} nodes, ${graphWorkspaceState.filtered.edges.length} edges`);
+        }
+    } catch (err) {
+        setGraphStatus(`Graph load failed: ${err.message}`, true);
+    } finally {
+        graphWorkspaceState.loading = false;
+        if (graphWorkspaceState.needsRefresh) {
+            graphWorkspaceState.needsRefresh = false;
+            graphLoadSnapshot({background: true}).catch(() => {});
+        }
+    }
+}
+
+function graphScheduleRefresh(delayMs = 900) {
+    if (!graphWorkspaceEnabled()) {
+        return;
+    }
+    if (graphWorkspaceState.refreshTimer) {
+        window.clearTimeout(graphWorkspaceState.refreshTimer);
+    }
+    graphWorkspaceState.refreshTimer = window.setTimeout(() => {
+        graphWorkspaceState.refreshTimer = null;
+        graphLoadSnapshot({background: true}).catch(() => {});
+    }, Math.max(100, Number(delayMs) || 900));
+}
+
+async function graphRefreshAction() {
+    await graphLoadSnapshot({background: false});
+}
+
+async function graphRebuildAction() {
+    const hostId = parseInt(getValue("graph-host-filter"), 10);
+    setGraphStatus("Rebuilding graph...");
+    try {
+        const body = await postJson("/api/graph/rebuild", {
+            host_id: Number.isFinite(hostId) && hostId > 0 ? hostId : 0,
+        });
+        setGraphStatus(`Graph rebuilt: ${Number(body?.mutation_count || 0)} mutations`);
+        await graphLoadSnapshot({background: false, forceMetadata: true});
+    } catch (err) {
+        setGraphStatus(`Graph rebuild failed: ${err.message}`, true);
+    }
+}
+
+function graphExportAction(format) {
+    const normalized = String(format || "json").trim().toLowerCase();
+    if (normalized === "graphml") {
+        window.location.assign(`/api/graph/export/graphml?t=${Date.now()}`);
+        return;
+    }
+    window.location.assign(`/api/graph/export/json?t=${Date.now()}`);
+}
+
+function graphApplyLayoutById(layoutId) {
+    const selected = (graphWorkspaceState.layouts || []).find((item) => String(item?.layout_id || "") === String(layoutId || ""));
+    graphWorkspaceState.activeLayoutId = String(selected?.layout_id || "");
+    graphWorkspaceState.positions = selected?.layout?.positions && typeof selected.layout.positions === "object"
+        ? {...selected.layout.positions}
+        : {};
+    graphWorkspaceState.pinnedNodeIds = selected?.layout?.pinned_node_ids && typeof selected.layout.pinned_node_ids === "object"
+        ? {...selected.layout.pinned_node_ids}
+        : {};
+    if (selected?.layout?.group_by) {
+        setValue("graph-group-select", selected.layout.group_by);
+    }
+    if (selected?.name) {
+        setValue("graph-layout-name", selected.name);
+    }
+    graphRenderLayoutOptions();
+    graphRenderWorkspace();
+}
+
+async function graphSaveLayoutAction() {
+    const viewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim();
+    const name = String(getValue("graph-layout-name") || "default").trim() || "default";
+    const layoutId = String(graphWorkspaceState.activeLayoutId || "");
+    const layout = {
+        positions: graphWorkspaceState.positions,
+        pinned_node_ids: graphWorkspaceState.pinnedNodeIds,
+        group_by: String(getValue("graph-group-select") || graphWorkspaceState.groupBy || graphCurrentViewConfig().defaultGroup || "subnet").trim(),
+        filters: {
+            view_id: viewId,
+            host_id: getValue("graph-host-filter"),
+            node_type: getValue("graph-node-type-filter"),
+            edge_type: getValue("graph-edge-type-filter"),
+            source_kind: getValue("graph-source-kind-filter"),
+            severity: getValue("graph-severity-filter"),
+            pack: getValue("graph-pack-filter"),
+            time_window: getValue("graph-time-window-filter"),
+            hide_ai_suggested: getChecked("graph-hide-ai-suggested"),
+            min_confidence: getValue("graph-min-confidence"),
+        },
+    };
+    try {
+        const body = await postJson("/api/graph/layouts", {
+            layout_id: layoutId,
+            view_id: viewId,
+            name,
+            layout,
+        });
+        const returned = body?.layout || {};
+        graphWorkspaceState.layouts = (graphWorkspaceState.layouts || []).filter((item) => {
+            return String(item?.layout_id || "") !== String(returned.layout_id || "");
+        });
+        graphWorkspaceState.layouts.push(returned);
+        graphWorkspaceState.activeLayoutId = String(returned.layout_id || "");
+        graphRenderLayoutOptions();
+        setValue("graph-layout-select", graphWorkspaceState.activeLayoutId);
+        setGraphStatus(`Layout saved: ${returned.name || name}`);
+    } catch (err) {
+        setGraphStatus(`Layout save failed: ${err.message}`, true);
+    }
+}
+
+function graphResetLayoutAction() {
+    graphWorkspaceState.activeLayoutId = "";
+    graphWorkspaceState.positions = {};
+    graphWorkspaceState.pinnedNodeIds = {};
+    setValue("graph-layout-select", "");
+    graphRenderWorkspace();
+    setGraphStatus("Layout reset");
+}
+
+async function graphSaveAnnotationAction() {
+    const kind = String(graphWorkspaceState.selectedKind || "");
+    const ref = String(graphWorkspaceState.selectedRef || "");
+    const body = String(getValue("graph-annotation-input") || "").trim();
+    if (!kind || !ref) {
+        setGraphStatus("Select a node or edge before saving an annotation.", true);
+        return;
+    }
+    if (!body) {
+        setGraphStatus("Annotation text is required.", true);
+        return;
+    }
+    try {
+        const response = await postJson("/api/graph/annotations", {
+            target_kind: kind,
+            target_ref: ref,
+            body,
+            created_by: "web-operator",
+            source_ref: `graph-workspace:${graphWorkspaceState.viewId}`,
+        });
+        const annotation = response?.annotation || {};
+        graphWorkspaceState.annotations = (graphWorkspaceState.annotations || []).filter((item) => {
+            return String(item?.annotation_id || "") !== String(annotation.annotation_id || "");
+        });
+        graphWorkspaceState.annotations.push(annotation);
+        setValue("graph-annotation-input", "");
+        graphRenderSelectionDetail();
+        setGraphStatus("Annotation saved");
+    } catch (err) {
+        setGraphStatus(`Annotation save failed: ${err.message}`, true);
+    }
+}
+
+function graphTogglePinAction() {
+    const entity = graphWorkspaceState.selectedKind === "node"
+        ? graphFindEntity("node", graphWorkspaceState.selectedRef)
+        : null;
+    if (!entity) {
+        setGraphStatus("Select a node to pin or unpin.", true);
+        return;
+    }
+    const nodeId = String(entity.node_id || "");
+    if (graphWorkspaceState.pinnedNodeIds[nodeId]) {
+        delete graphWorkspaceState.pinnedNodeIds[nodeId];
+        setGraphStatus(`Node unpinned: ${entity.label || nodeId}`);
+    } else {
+        const current = graphWorkspaceState.filtered.positions?.[nodeId] || graphWorkspaceState.positions?.[nodeId];
+        if (current) {
+            graphWorkspaceState.positions[nodeId] = {x: current.x, y: current.y};
+        }
+        graphWorkspaceState.pinnedNodeIds[nodeId] = true;
+        setGraphStatus(`Node pinned: ${entity.label || nodeId}`);
+    }
+    graphRenderWorkspace();
+}
+
+function graphHandlePointerMove(event) {
+    if (!graphWorkspaceState.drag) {
+        return;
+    }
+    const svg = document.getElementById("graph-workspace-canvas");
+    if (!svg) {
+        return;
+    }
+    event.preventDefault();
+    const point = graphSvgPoint(svg, event);
+    const nodeId = String(graphWorkspaceState.drag.nodeId || "");
+    graphWorkspaceState.positions[nodeId] = {
+        x: Math.max(20, Math.round(point.x - graphWorkspaceState.drag.offsetX)),
+        y: Math.max(28, Math.round(point.y - graphWorkspaceState.drag.offsetY)),
+    };
+    graphWorkspaceState.pinnedNodeIds[nodeId] = true;
+    graphRenderWorkspace();
+}
+
+function graphHandlePointerUp() {
+    if (!graphWorkspaceState.drag) {
+        return;
+    }
+    window.removeEventListener("pointermove", graphHandlePointerMove);
+    window.removeEventListener("pointerup", graphHandlePointerUp);
+    graphWorkspaceState.drag = null;
+}
+
+function bindGraphWorkspaceEvents() {
+    if (!graphWorkspaceEnabled()) {
+        return;
+    }
+    const refreshIds = [
+        "graph-view-select",
+        "graph-group-select",
+        "graph-host-filter",
+        "graph-node-type-filter",
+        "graph-edge-type-filter",
+        "graph-source-kind-filter",
+        "graph-severity-filter",
+        "graph-pack-filter",
+        "graph-time-window-filter",
+    ];
+    refreshIds.forEach((id) => {
+        const node = document.getElementById(id);
+        if (!node) {
+            return;
+        }
+        node.addEventListener("change", async (event) => {
+            if (id === "graph-view-select") {
+                const viewId = String(event.target.value || "attack_surface").trim();
+                const viewConfig = GRAPH_VIEW_PRESETS[viewId] || GRAPH_VIEW_PRESETS.attack_surface;
+                setValue("graph-group-select", viewConfig.defaultGroup || "subnet");
+                graphWorkspaceState.activeLayoutId = "";
+                graphWorkspaceState.positions = {};
+                graphWorkspaceState.pinnedNodeIds = {};
+                graphRenderLayoutOptions();
+            }
+            if (["graph-group-select", "graph-severity-filter", "graph-pack-filter", "graph-time-window-filter"].includes(id)) {
+                graphRenderWorkspace();
+                return;
+            }
+            await graphLoadSnapshot({background: false});
+        });
+    });
+
+    const searchNode = document.getElementById("graph-search-input");
+    if (searchNode) {
+        let searchTimer = null;
+        searchNode.addEventListener("input", () => {
+            if (searchTimer) {
+                window.clearTimeout(searchTimer);
+            }
+            searchTimer = window.setTimeout(() => {
+                graphLoadSnapshot({background: false}).catch(() => {});
+            }, 350);
+        });
+    }
+
+    const confidenceNode = document.getElementById("graph-min-confidence");
+    if (confidenceNode) {
+        confidenceNode.addEventListener("input", () => {
+            graphUpdateConfidenceLabel();
+            graphLoadSnapshot({background: false}).catch(() => {});
+        });
+    }
+
+    const hideAiNode = document.getElementById("graph-hide-ai-suggested");
+    if (hideAiNode) {
+        hideAiNode.addEventListener("change", () => {
+            graphLoadSnapshot({background: false}).catch(() => {});
+        });
+    }
+
+    const layoutSelect = document.getElementById("graph-layout-select");
+    if (layoutSelect) {
+        layoutSelect.addEventListener("change", () => {
+            const layoutId = String(layoutSelect.value || "");
+            if (!layoutId) {
+                graphResetLayoutAction();
+                return;
+            }
+            graphApplyLayoutById(layoutId);
+            setGraphStatus("Layout loaded");
+        });
+    }
+
+    const svg = document.getElementById("graph-workspace-canvas");
+    if (svg) {
+        svg.addEventListener("click", (event) => {
+            const nodeTarget = event.target.closest("[data-graph-node-id]");
+            if (nodeTarget) {
+                graphSelectEntity("node", nodeTarget.getAttribute("data-graph-node-id"));
+                return;
+            }
+            const edgeTarget = event.target.closest("[data-graph-edge-id]");
+            if (edgeTarget) {
+                graphSelectEntity("edge", edgeTarget.getAttribute("data-graph-edge-id"));
+                return;
+            }
+            graphWorkspaceState.selectedKind = "";
+            graphWorkspaceState.selectedRef = "";
+            graphRenderWorkspace();
+        });
+        svg.addEventListener("pointerdown", (event) => {
+            const nodeTarget = event.target.closest("[data-graph-node-id]");
+            if (!nodeTarget) {
+                return;
+            }
+            const nodeId = String(nodeTarget.getAttribute("data-graph-node-id") || "");
+            const point = graphSvgPoint(svg, event);
+            const current = graphWorkspaceState.filtered.positions?.[nodeId] || graphWorkspaceState.positions?.[nodeId];
+            if (!current) {
+                return;
+            }
+            graphWorkspaceState.drag = {
+                nodeId,
+                offsetX: point.x - current.x,
+                offsetY: point.y - current.y,
+            };
+            window.addEventListener("pointermove", graphHandlePointerMove);
+            window.addEventListener("pointerup", graphHandlePointerUp);
+            event.preventDefault();
+        });
+    }
+
+    graphUpdateConfidenceLabel();
+    graphUpdateHostFilterOptions();
+    graphRenderLayoutOptions();
+}
+
 function sleepMs(ms) {
     return new Promise((resolve) => {
         window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
@@ -2915,6 +4323,10 @@ async function refreshWorkspace() {
         ]);
         if (workspaceState.selectedHostId) {
             await loadHostDetail(workspaceState.selectedHostId);
+        }
+        try {
+            await graphLoadSnapshot({background: true});
+        } catch (_err) {
         }
         setWorkspaceStatus("Workspace refreshed");
     } catch (err) {
@@ -3135,6 +4547,7 @@ function renderSnapshot(snapshot) {
     if (workspaceState.selectedHostId && !workspaceState.hostDetail) {
         loadHostDetail(workspaceState.selectedHostId).catch(() => {});
     }
+    graphScheduleRefresh();
 }
 
 function wsUrl(path) {
@@ -3867,6 +5280,14 @@ function bindActionButtons() {
     bind("workspace-add-cve-button", addCveEntry);
     bind("process-clear-finished-button", () => clearProcessesAction(false));
     bind("process-clear-all-button", () => clearProcessesAction(true));
+    bind("graph-refresh-button", graphRefreshAction);
+    bind("graph-rebuild-button", graphRebuildAction);
+    bind("graph-export-json-button", () => graphExportAction("json"));
+    bind("graph-export-graphml-button", () => graphExportAction("graphml"));
+    bind("graph-layout-save-button", graphSaveLayoutAction);
+    bind("graph-layout-reset-button", graphResetLayoutAction);
+    bind("graph-annotation-save-button", graphSaveAnnotationAction);
+    bind("graph-pin-toggle-button", graphTogglePinAction);
 
     const hostSelect = document.getElementById("workspace-host-select");
     if (hostSelect) {
@@ -4349,6 +5770,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
 
     bindActionButtons();
+    bindGraphWorkspaceEvents();
     initializeStartupWizard();
     refreshWorkspace();
 });
