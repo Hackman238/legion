@@ -7,8 +7,6 @@ from copy import deepcopy
 from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
-import requests
-
 MAX_PROVIDER_PROMPT_CHARS = 3200
 MAX_PROVIDER_CANDIDATES = 18
 MAX_CANDIDATE_TEMPLATE_CHARS = 180
@@ -45,6 +43,14 @@ class ProviderError(RuntimeError):
 _provider_log_lock = threading.Lock()
 _provider_logs = deque(maxlen=MAX_PROVIDER_LOG_ENTRIES)
 _provider_thread_state = threading.local()
+
+
+def _get_requests_module():
+    try:
+        import requests as requests_module
+    except Exception as exc:  # pragma: no cover - depends on local environment packaging
+        raise ProviderError(f"requests dependency unavailable: {exc}") from exc
+    return requests_module
 
 
 def _set_last_provider_payload(payload: Optional[Dict[str, Any]] = None):
@@ -590,12 +596,13 @@ def _resolve_openai_compatible_model(
 
 
 def _fetch_lmstudio_models(base_url: str, headers: Dict[str, str]) -> List[str]:
+    requests_module = _get_requests_module()
     auth_state = _auth_state_text(headers)
     errors = []
     for endpoint in _lmstudio_models_endpoints(base_url):
         request_headers = dict(headers or {})
         try:
-            response = requests.get(endpoint, headers=headers, timeout=15)
+            response = requests_module.get(endpoint, headers=headers, timeout=15)
         except Exception as exc:
             _record_provider_log(
                 provider="lm_studio",
@@ -712,11 +719,12 @@ def _post_openai_compatible_chat_detailed(
         headers: Dict[str, str],
         payload: Dict[str, Any],
 ) -> Dict[str, Any]:
+    requests_module = _get_requests_module()
     auth_state = _auth_state_text(headers)
     request_headers = dict(headers or {})
     request_payload = dict(payload or {})
     try:
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=25)
+        response = requests_module.post(endpoint, headers=headers, json=payload, timeout=25)
     except Exception as exc:
         _record_provider_log(
             provider=provider_name,
@@ -887,11 +895,12 @@ def _post_lmstudio_chat_with_fallback(
 
 
 def _post_lmstudio_native_chat(endpoint: str, headers: Dict[str, str], payload: Dict[str, Any]) -> str:
+    requests_module = _get_requests_module()
     auth_state = _auth_state_text(headers)
     request_headers = dict(headers or {})
     request_payload = dict(payload or {})
     try:
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=25)
+        response = requests_module.post(endpoint, headers=headers, json=payload, timeout=25)
     except Exception as exc:
         _record_provider_log(
             provider="lm_studio",
@@ -949,6 +958,7 @@ def _post_lmstudio_native_chat(endpoint: str, headers: Dict[str, str], payload: 
 
 
 def _call_claude(provider_cfg: Dict[str, Any], prompt: str) -> Dict[str, Any]:
+    requests_module = _get_requests_module()
     model = str(provider_cfg.get("model", "")).strip()
     if not model:
         raise ProviderError("Model is required for provider claude.")
@@ -977,7 +987,7 @@ def _call_claude(provider_cfg: Dict[str, Any], prompt: str) -> Dict[str, Any]:
     }
 
     try:
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=25)
+        response = requests_module.post(endpoint, headers=headers, json=payload, timeout=25)
     except Exception as exc:
         _record_provider_log(
             provider="claude",

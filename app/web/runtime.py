@@ -13,8 +13,6 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
-
-import requests
 from sqlalchemy import text
 
 from app.cli_utils import import_targets_from_textfile, is_wsl, to_windows_path
@@ -181,6 +179,14 @@ _DIG_DEEPER_TASK_TIMEOUT_SECONDS = 180
 _PROCESS_READER_EXIT_GRACE_SECONDS = 2.0
 _PROCESS_CRASH_MIN_RUNTIME_SECONDS = 5.0
 _AI_HOST_UPDATE_MIN_CONFIDENCE = 70.0
+
+
+def _get_requests_module():
+    try:
+        import requests as requests_module
+    except Exception as exc:  # pragma: no cover - depends on local environment packaging
+        raise RuntimeError(f"requests dependency unavailable: {exc}") from exc
+    return requests_module
 
 
 class WebRuntime:
@@ -1638,7 +1644,8 @@ class WebRuntime:
             method = "POST"
 
         try:
-            response = requests.request(
+            requests_module = _get_requests_module()
+            response = requests_module.request(
                 method=method,
                 url=endpoint,
                 headers=headers,

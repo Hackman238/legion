@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from flask import Flask
 
 try:
@@ -6,11 +8,13 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency path
     Sock = None
 
 from app.web.routes import web_bp
-from app.web.runtime import WebRuntime
 from app.web.ws import register_websocket_routes
 
+if TYPE_CHECKING:  # pragma: no cover - type checking only
+    from app.web.runtime import WebRuntime
 
-def create_app(runtime: WebRuntime) -> Flask:
+
+def create_app(runtime: "WebRuntime") -> Flask:
     app = Flask(
         __name__,
         template_folder="templates",

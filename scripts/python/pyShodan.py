@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from pyShodan import PyShodan
 import sys
 
 class PyShodanScript():
@@ -22,6 +21,8 @@ class PyShodanScript():
 
     def lookup(self, ip):
         try:
+            from pyShodan import PyShodan
+
             pyShodanObj = PyShodan()
             pyShodanObj.apiKey = "REMOVED-SHODAN-KEY"
             pyShodanObj.createSession()

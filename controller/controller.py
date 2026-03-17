@@ -34,7 +34,7 @@ from app.importers.NmapImporter import NmapImporter
 from app.importers.PythonImporter import PythonImporter
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
 from app.auxiliary import unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl
-from app.timing import getTimestamp
+from app.timing import getTimestamp, timing
 from app.scheduler.audit import log_scheduler_decision
 from app.scheduler.config import SchedulerConfigManager
 from app.scheduler.planner import SchedulerPlanner

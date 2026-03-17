@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import requests
 import sys
 
 class macvendorsScript():
@@ -23,6 +22,8 @@ class macvendorsScript():
     def lookup(self, mac):
         url = "https://api.macvendors.com/" + mac
         try:
+            import requests
+
             r = requests.get(url, timeout=10)
             result = str(r.text)
             if not result or "error" in result.lower():
