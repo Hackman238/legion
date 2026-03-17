@@ -95,6 +95,7 @@ class SchedulerPlanner:
             excluded_tool_ids: Optional[List[str]] = None,
             limit: Optional[int] = None,
             engagement_policy: Optional[Dict[str, Any]] = None,
+            mode_override: Optional[str] = None,
     ) -> List[PlanStep]:
         return self.plan_steps(
             service,
@@ -104,6 +105,7 @@ class SchedulerPlanner:
             excluded_tool_ids=excluded_tool_ids,
             limit=limit,
             engagement_policy=engagement_policy,
+            mode_override=mode_override,
         )
 
     def plan_steps(
@@ -116,10 +118,13 @@ class SchedulerPlanner:
             excluded_tool_ids: Optional[List[str]] = None,
             limit: Optional[int] = None,
             engagement_policy: Optional[Dict[str, Any]] = None,
+            mode_override: Optional[str] = None,
     ) -> List[PlanStep]:
         self._set_last_provider_payload({})
         prefs = self.config_manager.load()
-        mode = prefs.get("mode", "deterministic")
+        mode = str(mode_override or prefs.get("mode", "deterministic") or "deterministic").strip().lower()
+        if mode not in {"deterministic", "ai"}:
+            mode = "deterministic"
         policy = normalize_engagement_policy(
             engagement_policy or prefs.get("engagement_policy", {}),
             fallback_goal_profile=str(prefs.get("goal_profile", "internal_asset_discovery") or "internal_asset_discovery"),

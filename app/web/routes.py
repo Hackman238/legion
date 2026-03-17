@@ -318,6 +318,20 @@ def project_details():
     return jsonify(runtime.get_project_details())
 
 
+@web_bp.get("/api/projects")
+def project_list():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        limit = int(request.args.get("limit", 500) or 500)
+    except (TypeError, ValueError):
+        limit = 500
+    limit = max(1, min(limit, 5000))
+    try:
+        return jsonify({"projects": runtime.list_projects(limit=limit)})
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
 @web_bp.post("/api/project/new-temp")
 def project_new_temp():
     runtime = current_app.extensions["legion_runtime"]
@@ -614,6 +628,36 @@ def workspace_host_detail(host_id):
     runtime = current_app.extensions["legion_runtime"]
     try:
         return jsonify(runtime.get_host_workspace(host_id))
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/workspace/hosts/<int:host_id>/target-state")
+def workspace_host_target_state(host_id):
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        return jsonify(runtime.get_target_state_view(host_id=host_id))
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/workspace/findings")
+def workspace_findings():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        host_id = int(request.args.get("host_id", 0) or 0)
+    except (TypeError, ValueError):
+        host_id = 0
+    try:
+        limit = int(request.args.get("limit", 1000) or 1000)
+    except (TypeError, ValueError):
+        limit = 1000
+    try:
+        return jsonify(runtime.get_findings(host_id=host_id, limit_findings=limit))
     except KeyError as exc:
         return _json_error(str(exc), 404)
     except Exception as exc:
@@ -1140,6 +1184,39 @@ def scheduler_decisions():
     return jsonify({"decisions": runtime.get_scheduler_decisions(limit=limit)})
 
 
+@web_bp.get("/api/scheduler/plan-preview")
+def scheduler_plan_preview():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        host_id = int(request.args.get("host_id", 0) or 0)
+    except (TypeError, ValueError):
+        host_id = 0
+    try:
+        limit_targets = int(request.args.get("limit_targets", 20) or 20)
+    except (TypeError, ValueError):
+        limit_targets = 20
+    try:
+        limit_actions = int(request.args.get("limit_actions", 6) or 6)
+    except (TypeError, ValueError):
+        limit_actions = 6
+    try:
+        payload = runtime.get_scheduler_plan_preview(
+            host_id=host_id,
+            host_ip=str(request.args.get("host_ip", "") or ""),
+            service=str(request.args.get("service", "") or ""),
+            port=str(request.args.get("port", "") or ""),
+            protocol=str(request.args.get("protocol", "tcp") or "tcp"),
+            mode=str(request.args.get("mode", "compare") or "compare"),
+            limit_targets=limit_targets,
+            limit_actions=limit_actions,
+        )
+        return jsonify(payload)
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
 @web_bp.get("/api/scheduler/approvals")
 def scheduler_approvals():
     runtime = current_app.extensions["legion_runtime"]
@@ -1191,6 +1268,49 @@ def scheduler_approval_reject(approval_id):
             family_action=family_action,
         )
         return jsonify({"status": "ok", "approval": result})
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/scheduler/executions")
+def scheduler_execution_traces():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        limit = int(request.args.get("limit", 200) or 200)
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        host_id = int(request.args.get("host_id", 0) or 0)
+    except (TypeError, ValueError):
+        host_id = 0
+    include_output = _as_bool(request.args.get("include_output", False), default=False)
+    try:
+        traces = runtime.get_scheduler_execution_traces(
+            limit=limit,
+            host_id=host_id,
+            host_ip=str(request.args.get("host_ip", "") or ""),
+            tool_id=str(request.args.get("tool_id", "") or ""),
+            include_output=include_output,
+        )
+        return jsonify({"executions": traces})
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/scheduler/executions/<string:execution_id>")
+def scheduler_execution_trace(execution_id):
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        max_chars = int(request.args.get("max_chars", 4000) or 4000)
+    except (TypeError, ValueError):
+        max_chars = 4000
+    try:
+        trace = runtime.get_scheduler_execution_trace(execution_id, output_max_chars=max_chars)
+        return jsonify(trace)
     except KeyError as exc:
         return _json_error(str(exc), 404)
     except Exception as exc:

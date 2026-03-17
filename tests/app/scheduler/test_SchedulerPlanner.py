@@ -92,6 +92,28 @@ class SchedulerPlannerTest(unittest.TestCase):
             self.assertEqual("external_recon", actions[0].engagement_preset)
             self.assertEqual("external_pentest", actions[0].goal_profile)
 
+    def test_plan_actions_mode_override_does_not_mutate_saved_preferences(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        settings = SimpleNamespace(
+            automatedAttacks=[["nuclei-web", "http", "tcp"]],
+            portActions=[
+                ["Run nuclei web scan", "nuclei-web", "nuclei -u http://[IP]:[PORT] -silent", "http"],
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({"mode": "deterministic", "provider": "none"})
+            planner = SchedulerPlanner(manager)
+
+            actions = planner.plan_actions("http", "tcp", settings, mode_override="ai")
+
+            self.assertEqual(1, len(actions))
+            self.assertEqual("deterministic", manager.load()["mode"])
+            self.assertIn(actions[0].origin_mode, {"ai", "deterministic"})
+
     @patch.object(__import__("app.scheduler.planner", fromlist=["SchedulerPlanner"]).SchedulerPlanner, "_plan_ai")
     def test_ai_empty_result_falls_back_to_deterministic_plan_step(self, mock_plan_ai):
         from app.scheduler.config import SchedulerConfigManager

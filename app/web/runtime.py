@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 
 from app.cli_utils import import_targets_from_textfile, is_wsl, to_windows_path
+from app.core.common import getTempFolder
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.hostsfile import add_temporary_host_alias
 from app.httputil.isHttps import isHttps
@@ -43,6 +44,7 @@ from app.scheduler.audit import (
 )
 from app.scheduler.execution import (
     ensure_scheduler_execution_table,
+    get_execution_record,
     list_execution_records,
     store_execution_record,
 )
@@ -481,6 +483,395 @@ class WebRuntime:
             project = self._require_active_project()
             ensure_scheduler_execution_table(project.database)
             return list_execution_records(project.database, limit=limit)
+
+    @staticmethod
+    def _project_listing_row(path: str, *, source: str, current_path: str = "") -> Dict[str, Any]:
+        normalized_path = os.path.abspath(os.path.expanduser(str(path or "").strip()))
+        modified_at = ""
+        modified_at_epoch = 0.0
+        try:
+            modified_at_epoch = float(os.path.getmtime(normalized_path))
+            modified_at = datetime.datetime.fromtimestamp(
+                modified_at_epoch,
+                tz=datetime.timezone.utc,
+            ).isoformat()
+        except Exception:
+            modified_at = ""
+            modified_at_epoch = 0.0
+        return {
+            "name": os.path.basename(normalized_path),
+            "path": normalized_path,
+            "source": str(source or "filesystem"),
+            "is_current": bool(current_path and normalized_path == current_path),
+            "exists": os.path.isfile(normalized_path),
+            "modified_at": modified_at,
+            "modified_at_epoch": modified_at_epoch,
+        }
+
+    def list_projects(self, limit: int = 500) -> List[Dict[str, Any]]:
+        with self._lock:
+            current_name = str(self._project_metadata().get("name", "") or "").strip()
+            current_path = (
+                os.path.abspath(os.path.expanduser(current_name))
+                if current_name else ""
+            )
+        max_items = max(1, min(int(limit or 500), 5000))
+        roots = (
+            ("temp", getTempFolder()),
+            ("autosave", get_legion_autosave_dir()),
+        )
+        rows: List[Dict[str, Any]] = []
+        seen = set()
+        for source_name, root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for dirpath, _dirnames, filenames in os.walk(root):
+                for filename in list(filenames or []):
+                    if not str(filename or "").strip().lower().endswith(".legion"):
+                        continue
+                    path = os.path.abspath(os.path.join(dirpath, filename))
+                    if path in seen:
+                        continue
+                    seen.add(path)
+                    rows.append(self._project_listing_row(path, source=source_name, current_path=current_path))
+        if current_path and os.path.isfile(current_path) and current_path not in seen:
+            rows.append(self._project_listing_row(current_path, source="active", current_path=current_path))
+        rows.sort(
+            key=lambda item: (
+                not bool(item.get("is_current", False)),
+                -float(item.get("modified_at_epoch", 0.0) or 0.0),
+                str(item.get("path", "") or "").lower(),
+            )
+        )
+        return rows[:max_items]
+
+    def _serialize_plan_step_preview(self, step: ScheduledAction) -> Dict[str, Any]:
+        return {
+            "step_id": str(step.step_id or ""),
+            "action_id": str(step.action_id or ""),
+            "tool_id": str(step.tool_id or ""),
+            "label": str(step.label or ""),
+            "description": str(step.description or ""),
+            "command_template": str(step.command_template or ""),
+            "origin_mode": str(step.origin_mode or ""),
+            "origin_planner": str(step.origin_planner or ""),
+            "engagement_preset": str(step.engagement_preset or ""),
+            "target_ref": dict(step.target_ref or {}),
+            "parameters": dict(step.parameters or {}),
+            "rationale": str(step.rationale or ""),
+            "preconditions": list(step.preconditions or []),
+            "success_criteria": list(step.success_criteria or []),
+            "approval_state": str(step.approval_state or ""),
+            "policy_decision": str(step.policy_decision or ""),
+            "policy_reason": str(step.policy_reason or ""),
+            "risk_tags": list(step.risk_tags or []),
+            "risk_summary": str(step.risk_summary or ""),
+            "safer_alternative": str(step.safer_alternative or ""),
+            "family_id": str(step.family_id or ""),
+            "family_policy_state": str(step.family_policy_state or ""),
+            "score": float(step.score or 0.0),
+            "pack_ids": list(step.pack_ids or []),
+            "methodology_tags": list(step.methodology_tags or []),
+            "pack_tags": list(step.pack_tags or []),
+            "coverage_gap": str(step.coverage_gap or ""),
+            "coverage_notes": str(step.coverage_notes or ""),
+            "evidence_expectations": list(step.evidence_expectations or []),
+            "runner_type": str(getattr(step.action, "runner_type", "") or ""),
+            "service_scope": list(getattr(step.action, "service_scope", []) or []),
+            "protocol_scope": list(getattr(step.action, "protocol_scope", []) or []),
+        }
+
+    def get_scheduler_plan_preview(
+            self,
+            *,
+            host_id: int = 0,
+            host_ip: str = "",
+            service: str = "",
+            port: str = "",
+            protocol: str = "tcp",
+            mode: str = "compare",
+            limit_targets: int = 20,
+            limit_actions: int = 6,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            scheduler_prefs = self.scheduler_config.load()
+            engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
+            settings = self._get_settings()
+            targets = self.scheduler_orchestrator.collect_project_targets(
+                project,
+                host_ids={int(host_id)} if int(host_id or 0) > 0 else None,
+                allowed_states={"open", "open|filtered"},
+            )
+
+        requested_mode = str(mode or "compare").strip().lower() or "compare"
+        if requested_mode not in {"current", "deterministic", "ai", "compare"}:
+            requested_mode = "compare"
+        resolved_host_ip = str(host_ip or "").strip()
+        resolved_service = str(service or "").strip().lower()
+        resolved_port = str(port or "").strip()
+        resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+        max_targets = max(1, min(int(limit_targets or 20), 200))
+        max_actions = max(1, min(int(limit_actions or 6), 32))
+        current_mode = str(scheduler_prefs.get("mode", "deterministic") or "deterministic").strip().lower()
+        recent_output_chars = int(
+            self.scheduler_orchestrator._scheduler_feedback_config(scheduler_prefs).get("recent_output_chars", 900) or 900
+        )
+
+        filtered_targets: List[Any] = []
+        for target in list(targets or []):
+            if resolved_host_ip and str(target.host_ip or "").strip() != resolved_host_ip:
+                continue
+            if resolved_service and str(target.service_name or "").strip().lower() != resolved_service:
+                continue
+            if resolved_port and str(target.port or "").strip() != resolved_port:
+                continue
+            if resolved_protocol and str(target.protocol or "tcp").strip().lower() != resolved_protocol:
+                continue
+            filtered_targets.append(target)
+            if len(filtered_targets) >= max_targets:
+                break
+
+        previews = []
+        for target in filtered_targets:
+            attempted_tool_ids = sorted(self._existing_tool_attempts_for_target(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+            ))
+            context = self._build_scheduler_target_context(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service_name=str(target.service_name or ""),
+                attempted_tool_ids=set(attempted_tool_ids),
+                recent_output_chars=recent_output_chars,
+                analysis_mode="standard",
+            )
+
+            def _preview_for_mode(selected_mode: str) -> Dict[str, Any]:
+                steps = self.scheduler_planner.plan_steps(
+                    str(target.service_name or ""),
+                    str(target.protocol or "tcp"),
+                    settings,
+                    context=context,
+                    excluded_tool_ids=list(attempted_tool_ids),
+                    limit=max_actions,
+                    engagement_policy=engagement_policy,
+                    mode_override=selected_mode,
+                )
+                serialized = [self._serialize_plan_step_preview(step) for step in list(steps or [])]
+                fallback_used = bool(
+                    selected_mode == "ai"
+                    and serialized
+                    and not any(str(item.get("origin_mode", "") or "").strip().lower() == "ai" for item in serialized)
+                )
+                return {
+                    "requested_mode": str(selected_mode or ""),
+                    "fallback_used": fallback_used,
+                    "steps": serialized,
+                }
+
+            preview = {
+                "target": {
+                    "host_id": int(target.host_id or 0),
+                    "host_ip": str(target.host_ip or ""),
+                    "hostname": str(target.hostname or ""),
+                    "port": str(target.port or ""),
+                    "protocol": str(target.protocol or "tcp"),
+                    "service_name": str(target.service_name or ""),
+                },
+                "attempted_tool_ids": list(attempted_tool_ids),
+            }
+            if requested_mode == "compare":
+                deterministic_preview = _preview_for_mode("deterministic")
+                ai_preview = _preview_for_mode("ai")
+                deterministic_tool_ids = {
+                    str(item.get("tool_id", "") or "").strip().lower()
+                    for item in list(deterministic_preview.get("steps", []) or [])
+                    if str(item.get("tool_id", "") or "").strip()
+                }
+                ai_tool_ids = {
+                    str(item.get("tool_id", "") or "").strip().lower()
+                    for item in list(ai_preview.get("steps", []) or [])
+                    if str(item.get("tool_id", "") or "").strip()
+                }
+                preview.update({
+                    "mode": "compare",
+                    "deterministic": deterministic_preview,
+                    "ai": ai_preview,
+                    "agreement": sorted(deterministic_tool_ids & ai_tool_ids),
+                    "deterministic_only": sorted(deterministic_tool_ids - ai_tool_ids),
+                    "ai_only": sorted(ai_tool_ids - deterministic_tool_ids),
+                })
+            else:
+                selected_mode = current_mode if requested_mode == "current" else requested_mode
+                preview.update({
+                    "mode": requested_mode,
+                    "selected_mode": selected_mode,
+                    "plan": _preview_for_mode(selected_mode),
+                })
+            previews.append(preview)
+
+        return {
+            "requested_mode": requested_mode,
+            "current_mode": current_mode,
+            "engagement_policy": dict(engagement_policy or {}),
+            "target_count": len(previews),
+            "targets": previews,
+        }
+
+    def get_target_state_view(self, host_id: int = 0, limit: int = 500) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            max_hosts = max(1, min(int(limit or 500), 5000))
+            if int(host_id or 0) > 0:
+                host = self._resolve_host(int(host_id))
+                if host is None:
+                    raise KeyError(f"Unknown host id: {host_id}")
+                host_row = {
+                    "id": int(getattr(host, "id", 0) or 0),
+                    "ip": str(getattr(host, "ip", "") or ""),
+                    "hostname": str(getattr(host, "hostname", "") or ""),
+                    "status": str(getattr(host, "status", "") or ""),
+                    "os": str(getattr(host, "osMatch", "") or ""),
+                }
+                return {
+                    "host": host_row,
+                    "target_state": get_target_state(project.database, int(host_id)) or {},
+                }
+
+            states = []
+            for row in list(self._hosts(limit=max_hosts) or []):
+                states.append({
+                    "host": dict(row),
+                    "target_state": get_target_state(project.database, int(row.get("id", 0) or 0)) or {},
+                })
+            return {
+                "count": len(states),
+                "states": states,
+            }
+
+    def get_findings(self, host_id: int = 0, limit_hosts: int = 500, limit_findings: int = 1000) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            if int(host_id or 0) > 0:
+                host = self._resolve_host(int(host_id))
+                if host is None:
+                    raise KeyError(f"Unknown host id: {host_id}")
+                host_rows = [{
+                    "id": int(getattr(host, "id", 0) or 0),
+                    "ip": str(getattr(host, "ip", "") or ""),
+                    "hostname": str(getattr(host, "hostname", "") or ""),
+                    "status": str(getattr(host, "status", "") or ""),
+                    "os": str(getattr(host, "osMatch", "") or ""),
+                }]
+            else:
+                host_rows = list(self._hosts(limit=max(1, min(int(limit_hosts or 500), 5000))) or [])
+
+            findings = []
+            max_items = max(1, min(int(limit_findings or 1000), 5000))
+            for row in host_rows:
+                state = get_target_state(project.database, int(row.get("id", 0) or 0)) or {}
+                for item in list(state.get("findings", []) or []):
+                    if not isinstance(item, dict):
+                        continue
+                    findings.append({
+                        "host": dict(row),
+                        "title": str(item.get("title", "") or ""),
+                        "severity": str(item.get("severity", "") or ""),
+                        "confidence": item.get("confidence", 0.0),
+                        "source_kind": str(item.get("source_kind", "") or "observed"),
+                        "finding": dict(item),
+                    })
+                    if len(findings) >= max_items:
+                        break
+                if len(findings) >= max_items:
+                    break
+            return {
+                "count": len(findings),
+                "host_scope_count": len(host_rows),
+                "findings": findings,
+            }
+
+    @staticmethod
+    def _read_text_excerpt(path: str, max_chars: int = 4000) -> str:
+        normalized_path = str(path or "").strip()
+        if not normalized_path or not os.path.isfile(normalized_path):
+            return ""
+        safe_max_chars = max(0, min(int(max_chars or 4000), 200000))
+        if safe_max_chars <= 0:
+            return ""
+        try:
+            size = os.path.getsize(normalized_path)
+            read_bytes = max(4096, min(safe_max_chars * 4, 2_000_000))
+            with open(normalized_path, "rb") as handle:
+                if size > read_bytes:
+                    handle.seek(size - read_bytes)
+                data = handle.read(read_bytes)
+            return data.decode("utf-8", errors="replace")[-safe_max_chars:]
+        except Exception:
+            return ""
+
+    def get_scheduler_execution_traces(
+            self,
+            *,
+            limit: int = 200,
+            host_id: int = 0,
+            host_ip: str = "",
+            tool_id: str = "",
+            include_output: bool = False,
+            output_max_chars: int = 4000,
+    ) -> List[Dict[str, Any]]:
+        resolved_host_ip = str(host_ip or "").strip()
+        if int(host_id or 0) > 0 and not resolved_host_ip:
+            with self._lock:
+                host = self._resolve_host(int(host_id))
+                if host is None:
+                    raise KeyError(f"Unknown host id: {host_id}")
+                resolved_host_ip = str(getattr(host, "ip", "") or "")
+        rows = self.get_scheduler_execution_records(limit=max(1, min(max(int(limit or 200), 50), 1000)))
+        filtered = []
+        normalized_tool_id = str(tool_id or "").strip().lower()
+        for item in list(rows or []):
+            if resolved_host_ip and str(item.get("host_ip", "") or "").strip() != resolved_host_ip:
+                continue
+            if normalized_tool_id and str(item.get("tool_id", "") or "").strip().lower() != normalized_tool_id:
+                continue
+            record = dict(item)
+            if include_output:
+                record["stdout_excerpt"] = self._read_text_excerpt(
+                    str(record.get("stdout_ref", "") or ""),
+                    max_chars=output_max_chars,
+                )
+                record["stderr_excerpt"] = self._read_text_excerpt(
+                    str(record.get("stderr_ref", "") or ""),
+                    max_chars=output_max_chars,
+                )
+            filtered.append(record)
+            if len(filtered) >= max(1, min(int(limit or 200), 1000)):
+                break
+        return filtered
+
+    def get_scheduler_execution_trace(self, execution_id: str, output_max_chars: int = 4000) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_execution_table(project.database)
+            trace = get_execution_record(project.database, str(execution_id or ""))
+        if trace is None:
+            raise KeyError(f"Unknown execution id: {execution_id}")
+        payload = dict(trace)
+        payload["stdout_excerpt"] = self._read_text_excerpt(
+            str(payload.get("stdout_ref", "") or ""),
+            max_chars=output_max_chars,
+        )
+        payload["stderr_excerpt"] = self._read_text_excerpt(
+            str(payload.get("stderr_ref", "") or ""),
+            max_chars=output_max_chars,
+        )
+        return payload
 
     def get_evidence_graph(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self._lock:

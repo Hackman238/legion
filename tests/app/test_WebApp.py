@@ -253,6 +253,34 @@ class DummyRuntime:
                 "source_ref": "unit:test",
             }
         ]
+        self.execution_traces = [
+            {
+                "execution_id": "exec-1",
+                "step_id": "step-1",
+                "action_id": "action-1",
+                "tool_id": "smb-enum-users.nse",
+                "label": "SMB Enum Users",
+                "scheduler_mode": "deterministic",
+                "goal_profile": "internal_asset_discovery",
+                "host_ip": "10.0.0.5",
+                "port": "445",
+                "protocol": "tcp",
+                "service": "smb",
+                "started_at": "2026-02-18T12:00:00Z",
+                "finished_at": "2026-02-18T12:00:10Z",
+                "runner_type": "local",
+                "exit_status": "0",
+                "stdout_ref": "/tmp/stdout.log",
+                "stderr_ref": "",
+                "artifact_refs": ["/tmp/evidence.txt"],
+                "approval_id": "",
+                "observations_created": ["script:smb-enum-users"],
+                "graph_mutations": ["node:graph-node-host"],
+                "operator_notes": "",
+                "stdout_excerpt": "sample trace",
+                "stderr_excerpt": "",
+            }
+        ]
 
     def get_snapshot(self):
         return {
@@ -277,6 +305,29 @@ class DummyRuntime:
 
     def get_project_details(self):
         return dict(self.project)
+
+    def list_projects(self, limit=500):
+        rows = [
+            {
+                "name": "demo.legion",
+                "path": "/tmp/demo.legion",
+                "source": "temp",
+                "is_current": True,
+                "exists": True,
+                "modified_at": "2026-02-18T12:00:00Z",
+                "modified_at_epoch": 1739880000.0,
+            },
+            {
+                "name": "saved.legion",
+                "path": "/tmp/saved.legion",
+                "source": "autosave",
+                "is_current": False,
+                "exists": True,
+                "modified_at": "2026-02-18T11:00:00Z",
+                "modified_at_epoch": 1739876400.0,
+            },
+        ]
+        return rows[:limit]
 
     def create_new_temporary_project(self):
         self.project["name"] = "temp-project"
@@ -549,6 +600,101 @@ class DummyRuntime:
             raise KeyError(host_id)
         return dict(self.workspace_host_detail)
 
+    def get_target_state_view(self, host_id=0, limit=500):
+        _ = limit
+        if int(host_id or 0) == 11:
+            return {
+                "host": dict(self.workspace_host_detail["host"]),
+                "target_state": dict(self.workspace_host_detail.get("target_state", {})),
+            }
+        return {
+            "count": 1,
+            "states": [
+                {
+                    "host": dict(self.workspace_host_detail["host"]),
+                    "target_state": dict(self.workspace_host_detail.get("target_state", {})),
+                }
+            ],
+        }
+
+    def get_findings(self, host_id=0, limit_findings=1000):
+        if int(host_id or 0) not in {0, 11}:
+            raise KeyError(host_id)
+        findings = [
+            {
+                "host": dict(self.workspace_host_detail["host"]),
+                "title": "SMB signing not required",
+                "severity": "high",
+                "confidence": 84.0,
+                "source_kind": "ai_suggested",
+                "finding": {"title": "SMB signing not required", "severity": "high"},
+            }
+        ]
+        return {
+            "count": min(len(findings), int(limit_findings or 1000)),
+            "host_scope_count": 1,
+            "findings": findings[:limit_findings],
+        }
+
+    def get_scheduler_plan_preview(
+            self,
+            *,
+            host_id=0,
+            host_ip="",
+            service="",
+            port="",
+            protocol="tcp",
+            mode="compare",
+            limit_targets=20,
+            limit_actions=6,
+    ):
+        _ = host_id, host_ip, service, port, protocol, limit_targets, limit_actions
+        return {
+            "requested_mode": mode,
+            "current_mode": "deterministic",
+            "engagement_policy": dict(self.scheduler_config.state["engagement_policy"]),
+            "target_count": 1,
+            "targets": [
+                {
+                    "target": {
+                        "host_id": 11,
+                        "host_ip": "10.0.0.5",
+                        "hostname": "dc01.local",
+                        "port": "445",
+                        "protocol": "tcp",
+                        "service_name": "smb",
+                    },
+                    "attempted_tool_ids": ["smb-enum-users.nse"],
+                    "mode": "compare",
+                    "deterministic": {
+                        "requested_mode": "deterministic",
+                        "fallback_used": False,
+                        "steps": [
+                            {
+                                "tool_id": "smb-security-mode",
+                                "label": "SMB Security Mode",
+                                "policy_decision": "allowed",
+                            }
+                        ],
+                    },
+                    "ai": {
+                        "requested_mode": "ai",
+                        "fallback_used": False,
+                        "steps": [
+                            {
+                                "tool_id": "smb-security-mode",
+                                "label": "SMB Security Mode",
+                                "policy_decision": "allowed",
+                            }
+                        ],
+                    },
+                    "agreement": ["smb-security-mode"],
+                    "deterministic_only": [],
+                    "ai_only": [],
+                }
+            ],
+        }
+
     def get_host_ai_report(self, host_id):
         if int(host_id) != 11:
             raise KeyError(host_id)
@@ -716,6 +862,29 @@ class DummyRuntime:
     def get_scheduler_approvals(self, limit=200, status=None):
         _ = status
         return self.scheduler_approvals[:limit]
+
+    def get_scheduler_execution_traces(self, *, limit=200, host_id=0, host_ip="", tool_id="", include_output=False):
+        _ = host_id, host_ip
+        rows = list(self.execution_traces)
+        if tool_id:
+            rows = [item for item in rows if str(item.get("tool_id", "")) == str(tool_id)]
+        if not include_output:
+            rows = [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"stdout_excerpt", "stderr_excerpt"}
+                }
+                for item in rows
+            ]
+        return rows[:limit]
+
+    def get_scheduler_execution_trace(self, execution_id, output_max_chars=4000):
+        _ = output_max_chars
+        for item in self.execution_traces:
+            if str(item.get("execution_id", "")) == str(execution_id):
+                return dict(item)
+        raise KeyError(execution_id)
 
     def approve_scheduler_approval(self, approval_id, approve_family=False, run_now=True, family_action=""):
         _ = approve_family
@@ -928,6 +1097,11 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, details.status_code)
         self.assertEqual("demo", details.json["name"])
 
+        listing = self.client.get("/api/projects?limit=10")
+        self.assertEqual(200, listing.status_code)
+        self.assertEqual(2, len(listing.json["projects"]))
+        self.assertTrue(listing.json["projects"][0]["is_current"])
+
         new_temp = self.client.post("/api/project/new-temp", json={})
         self.assertEqual(200, new_temp.status_code)
         self.assertTrue(new_temp.json["project"]["is_temporary"])
@@ -1042,6 +1216,25 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(1, len(response.json["decisions"]))
         self.assertEqual("10.0.0.5", response.json["decisions"][0]["host_ip"])
+
+    def test_scheduler_plan_preview_endpoint(self):
+        response = self.client.get("/api/scheduler/plan-preview?host_id=11&mode=compare")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("compare", response.json["requested_mode"])
+        self.assertEqual(1, response.json["target_count"])
+        self.assertEqual(["smb-security-mode"], response.json["targets"][0]["agreement"])
+
+    def test_scheduler_execution_trace_endpoints(self):
+        listing = self.client.get("/api/scheduler/executions?include_output=true")
+        self.assertEqual(200, listing.status_code)
+        self.assertEqual(1, len(listing.json["executions"]))
+        self.assertEqual("exec-1", listing.json["executions"][0]["execution_id"])
+        self.assertEqual("sample trace", listing.json["executions"][0]["stdout_excerpt"])
+
+        detail = self.client.get("/api/scheduler/executions/exec-1")
+        self.assertEqual(200, detail.status_code)
+        self.assertEqual("smb-enum-users.nse", detail.json["tool_id"])
+        self.assertEqual("sample trace", detail.json["stdout_excerpt"])
 
     def test_graph_api_endpoints(self):
         graph = self.client.get("/api/graph?node_type=technology&hide_ai_suggested=true&host_id=11")
@@ -1162,6 +1355,15 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("10.0.0.5", detail.json["host"]["ip"])
         self.assertEqual("openai", detail.json["ai_analysis"]["provider"])
         self.assertEqual("missing_smb_signing_checks", detail.json["target_state"]["coverage_gaps"][0]["gap_id"])
+
+        target_state = self.client.get("/api/workspace/hosts/11/target-state")
+        self.assertEqual(200, target_state.status_code)
+        self.assertEqual("internal_recon", target_state.json["target_state"]["engagement_preset"])
+
+        findings = self.client.get("/api/workspace/findings?host_id=11&limit=10")
+        self.assertEqual(200, findings.status_code)
+        self.assertEqual(1, findings.json["count"])
+        self.assertEqual("SMB signing not required", findings.json["findings"][0]["title"])
 
         ai_report_json = self.client.get("/api/workspace/hosts/11/ai-report?format=json")
         self.assertEqual(200, ai_report_json.status_code)
