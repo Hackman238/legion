@@ -40,6 +40,7 @@ class LogicHeadlessActionsTest(unittest.TestCase):
                 "smb"
             ]]
         )
+        _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
         mock_settings_cls.return_value = settings
         mock_subprocess_run.return_value = SimpleNamespace(stdout="", stderr="")
 
@@ -104,6 +105,7 @@ class LogicHeadlessActionsTest(unittest.TestCase):
                     "smb",
                 ]],
             )
+            _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
             mock_settings_cls.return_value = settings
             mock_subprocess_run.return_value = SimpleNamespace(stdout="ok", stderr="", returncode=0)
 
@@ -197,6 +199,7 @@ class LogicHeadlessActionsTest(unittest.TestCase):
                     "smb",
                 ]],
             )
+            _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
             mock_settings_cls.return_value = settings
             mock_subprocess_run.return_value = SimpleNamespace(stdout="ok", stderr="", returncode=0)
 

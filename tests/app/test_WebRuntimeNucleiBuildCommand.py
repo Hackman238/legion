@@ -27,14 +27,36 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
         command, outputfile = runtime._build_command(template, "192.168.3.1", "80", "tcp", "nuclei-web")
 
         self.assertIn("command -v nuclei >/dev/null 2>&1", command)
-        self.assertIn("nuclei -as -u https://192.168.3.1:80", command)
-        self.assertIn("nuclei -as -u http://192.168.3.1:80", command)
+        self.assertIn("nuclei -as -stats -si 15 -u https://192.168.3.1:80", command)
+        self.assertIn("nuclei -as -stats -si 15 -u http://192.168.3.1:80", command)
         self.assertIn(f"{outputfile}.txt", command)
         self.assertIn("-nuclei-web-192.168.3.1-80", outputfile)
         self.assertNotIn("nuclei -as >/dev/null", command)
         self.assertNotIn("nuclei -as-web", command)
         self.assertNotIn("-silent", command)
         self.assertNotIn("-no-color", command)
+
+    def test_build_command_normalizes_targeted_nuclei_follow_up_without_forcing_as(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._require_active_project = lambda: SimpleNamespace(
+            properties=SimpleNamespace(runningFolder="/tmp/legion-test-running")
+        )
+
+        template = (
+            "(command -v nuclei >/dev/null 2>&1 && "
+            "(nuclei -tags cve -u https://[IP]:[PORT] -ni -silent -o [OUTPUT].txt || "
+            "nuclei -tags cve -u http://[IP]:[PORT] -ni -silent -o [OUTPUT].txt)) || echo nuclei not found"
+        )
+
+        command, outputfile = runtime._build_command(template, "192.168.3.1", "443", "tcp", "nuclei-cves")
+
+        self.assertIn("nuclei -stats -si 15 -tags cve -u https://192.168.3.1:443", command)
+        self.assertIn("nuclei -stats -si 15 -tags cve -u http://192.168.3.1:443", command)
+        self.assertNotIn("nuclei -as -tags cve", command)
+        self.assertIn(f"{outputfile}.txt", command)
+        self.assertNotIn("-silent", command)
 
     def test_build_command_normalizes_legacy_gobuster_dir_template(self):
         from app.web.runtime import WebRuntime
@@ -107,6 +129,31 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
         self.assertIn("https://bing.com:443", command)
         self.assertNotIn("https://150.171.27.10:443", command)
 
+    def test_build_command_keeps_hostname_target_for_nmap_and_removes_skip_dns(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._require_active_project = lambda: SimpleNamespace(
+            properties=SimpleNamespace(runningFolder="/tmp/legion-test-running"),
+            repositoryContainer=SimpleNamespace(
+                hostRepository=SimpleNamespace(
+                    getHostByIP=lambda _ip: SimpleNamespace(hostname="portal.example")
+                )
+            ),
+        )
+
+        command, _outputfile = runtime._build_command(
+            "nmap -Pn -n -sV [IP] -p [PORT]",
+            "203.0.113.55",
+            "443",
+            "tcp",
+            "nmap-fast-tcp",
+        )
+
+        self.assertIn("nmap -Pn -sV portal.example -p 443", command)
+        self.assertNotIn("nmap -Pn -sV 203.0.113.55 -p 443", command)
+        self.assertNotIn(" -n ", command)
+
     def test_build_command_inserts_nmap_output_inside_fallback_group(self):
         from app.settings import AppSettings
         from app.web.runtime import WebRuntime
@@ -132,6 +179,43 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
                 outputfile,
             ),
         )
+
+    def test_build_command_adds_stats_every_to_generic_nmap_actions(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._require_active_project = lambda: SimpleNamespace(
+            properties=SimpleNamespace(runningFolder="/tmp/legion-test-running")
+        )
+
+        command, _outputfile = runtime._build_command(
+            "nmap -Pn -sV [IP] -p [PORT]",
+            "192.168.3.1",
+            "22",
+            "tcp",
+            "nmap-fast-tcp",
+        )
+
+        self.assertIn("--stats-every 15s", command)
+        self.assertEqual(1, command.count("--stats-every"))
+
+    def test_build_command_normalizes_banner_template(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._require_active_project = lambda: SimpleNamespace(
+            properties=SimpleNamespace(runningFolder="/tmp/legion-test-running")
+        )
+
+        command, _outputfile = runtime._build_command(
+            'bash -c \\"echo \\"\\" | nc -v -n -w1 [IP] [PORT]\\"',
+            "192.168.3.1",
+            "21",
+            "tcp",
+            "banner",
+        )
+
+        self.assertEqual("printf '\\n' | nc -n -v -w1 192.168.3.1 21", command)
 
 
 if __name__ == "__main__":

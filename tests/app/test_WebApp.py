@@ -127,7 +127,12 @@ class DummyRuntime:
                     "protocol": "tcp",
                     "state": "open",
                     "service": {"id": 1, "name": "smb", "product": "samba", "version": "4.x", "extrainfo": ""},
-                    "scripts": [{"id": 100, "script_id": "smb-enum-users.nse", "output": "sample"}],
+                    "scripts": [{
+                        "id": 100,
+                        "script_id": "nmap",
+                        "output": "Starting Nmap 7.80\nNmap scan report for dc01.local\nHost is up.\n| smb-security-mode:\n|   message_signing: disabled\n|_  challenge_response: supported\nNmap done: 1 IP address",
+                        "display_output": "| smb-security-mode: |   message_signing: disabled |_  challenge_response: supported",
+                    }],
                 }
             ],
             "cves": [{"id": 50, "name": "CVE-2025-0001", "severity": "high", "product": "samba", "url": ""}],
@@ -207,6 +212,26 @@ class DummyRuntime:
                     "properties": {"host_id": 11, "severity": "high"},
                     "evidence_refs": ["smb-security-mode"],
                 },
+                {
+                    "node_id": "graph-node-artifact-xml",
+                    "type": "artifact",
+                    "label": "web-nmap-11.xml",
+                    "confidence": 90.0,
+                    "source_kind": "observed",
+                    "source_ref": "artifact:/tmp/web-nmap-11.xml",
+                    "properties": {"host_id": 11, "ref": "/tmp/web-nmap-11.xml", "tool_id": "nmap"},
+                    "evidence_refs": ["/tmp/web-nmap-11.xml"],
+                },
+                {
+                    "node_id": "graph-node-artifact-gnmap",
+                    "type": "artifact",
+                    "label": "web-nmap-11.gnmap",
+                    "confidence": 90.0,
+                    "source_kind": "observed",
+                    "source_ref": "artifact:/tmp/web-nmap-11.gnmap",
+                    "properties": {"host_id": 11, "ref": "/tmp/web-nmap-11.gnmap", "tool_id": "nmap"},
+                    "evidence_refs": ["/tmp/web-nmap-11.gnmap"],
+                },
             ],
             "edges": [
                 {
@@ -231,12 +256,34 @@ class DummyRuntime:
                     "properties": {},
                     "evidence_refs": ["smb-security-mode"],
                 },
+                {
+                    "edge_id": "graph-edge-host-xml",
+                    "type": "contains",
+                    "from_node_id": "graph-node-host",
+                    "to_node_id": "graph-node-artifact-xml",
+                    "confidence": 90.0,
+                    "source_kind": "observed",
+                    "source_ref": "artifact:/tmp/web-nmap-11.xml",
+                    "properties": {},
+                    "evidence_refs": ["/tmp/web-nmap-11.xml"],
+                },
+                {
+                    "edge_id": "graph-edge-host-gnmap",
+                    "type": "contains",
+                    "from_node_id": "graph-node-host",
+                    "to_node_id": "graph-node-artifact-gnmap",
+                    "confidence": 90.0,
+                    "source_kind": "observed",
+                    "source_ref": "artifact:/tmp/web-nmap-11.gnmap",
+                    "properties": {},
+                    "evidence_refs": ["/tmp/web-nmap-11.gnmap"],
+                },
             ],
             "meta": {
-                "total_nodes": 3,
-                "total_edges": 2,
-                "returned_nodes": 3,
-                "returned_edges": 2,
+                "total_nodes": 5,
+                "total_edges": 4,
+                "returned_nodes": 5,
+                "returned_edges": 4,
                 "filters": {},
             },
         }
@@ -261,6 +308,17 @@ class DummyRuntime:
                 "source_ref": "unit:test",
             }
         ]
+        self.graph_text_path = tempfile.NamedTemporaryFile(prefix="legion-graph-artifact-", suffix=".txt", delete=False).name
+        with open(self.graph_text_path, "w", encoding="utf-8") as handle:
+            handle.write("Artifact preview line 1\nArtifact preview line 2\n")
+        self.graph_image_path = tempfile.NamedTemporaryFile(prefix="legion-graph-shot-", suffix=".png", delete=False).name
+        with open(self.graph_image_path, "wb") as handle:
+            handle.write(
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+                b"\x00\x00\x00\rIDATx\x9cc```\xf8\x0f\x00\x01\x05\x01\x02\xa7m\xa4\x91"
+                b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
         self.execution_traces = [
             {
                 "execution_id": "exec-1",
@@ -1086,7 +1144,18 @@ class DummyRuntime:
         min_confidence = float(filters.get("min_confidence", 0.0) or 0.0)
         search = str(filters.get("search", "") or "").strip().lower()
         include_ai = bool(filters.get("include_ai_suggested", True))
+        hide_nmap_xml_artifacts = bool(filters.get("hide_nmap_xml_artifacts", False))
         host_id = int(filters.get("host_id", 0) or 0)
+
+        def _artifact_hidden(item):
+            if str(item.get("type", "")).strip().lower() != "artifact":
+                return False
+            filename = str(item.get("label", "") or item.get("properties", {}).get("ref", "")).strip().lower()
+            if filename.endswith(".gnmap") or filename.endswith(".nmap"):
+                return True
+            return hide_nmap_xml_artifacts and filename.endswith(".xml") and "nmap" in filename
+
+        nodes = [item for item in nodes if not _artifact_hidden(item)]
 
         if not include_ai:
             nodes = [item for item in nodes if str(item.get("source_kind", "")).strip().lower() != "ai_suggested"]
@@ -1193,6 +1262,63 @@ class DummyRuntime:
         self.graph_annotations.append(item)
         return item
 
+    def get_graph_related_content(self, node_id, max_chars=12000):
+        _ = max_chars
+        if str(node_id) == "graph-node-host":
+            return {
+                "node_id": "graph-node-host",
+                "entry_count": 2,
+                "entries": [
+                    {
+                        "node_id": "graph-node-artifact",
+                        "node_type": "artifact",
+                        "label": "evidence.txt",
+                        "filename": "evidence.txt",
+                        "ref": self.graph_text_path,
+                        "kind": "text",
+                        "available": True,
+                        "preview_text": "Artifact preview line 1\nArtifact preview line 2\n",
+                        "preview_url": "",
+                        "download_url": "/api/graph/content/graph-node-artifact?download=1",
+                        "message": "",
+                    },
+                    {
+                        "node_id": "graph-node-shot",
+                        "node_type": "screenshot",
+                        "label": "portal.png",
+                        "filename": "portal.png",
+                        "ref": self.graph_image_path,
+                        "kind": "image",
+                        "available": True,
+                        "preview_text": "",
+                        "preview_url": "/api/graph/content/graph-node-shot",
+                        "download_url": "/api/graph/content/graph-node-shot?download=1",
+                        "message": "",
+                    },
+                ],
+            }
+        raise KeyError(node_id)
+
+    def get_graph_content(self, node_id, download=False, max_chars=12000):
+        _ = max_chars
+        if str(node_id) == "graph-node-artifact":
+            return {
+                "kind": "text",
+                "text": "Artifact preview line 1\nArtifact preview line 2\n",
+                "filename": "evidence.txt",
+                "mimetype": "text/plain; charset=utf-8",
+                "download": bool(download),
+            }
+        if str(node_id) == "graph-node-shot":
+            return {
+                "kind": "image",
+                "path": self.graph_image_path,
+                "filename": "portal.png",
+                "mimetype": "image/png",
+                "download": bool(download),
+            }
+        raise KeyError(node_id)
+
 
 class WebAppTest(unittest.TestCase):
     def setUp(self):
@@ -1211,11 +1337,18 @@ class WebAppTest(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
-        self.assertIn("Web Console", body)
+        self.assertIn("<h1>LEGION</h1>", body)
+        self.assertNotIn("Web Console", body)
         self.assertIn("Graph Workspace", body)
         self.assertIn("graph-workspace-canvas", body)
+        self.assertIn("graph-zoom-slider", body)
+        self.assertIn("graph-hide-nmap-xml-artifacts", body)
+        self.assertIn("graph-detail-content-list", body)
         self.assertIn("graph-layout-save-button", body)
         self.assertIn("graph-annotation-save-button", body)
+        self.assertNotIn("<h2>Tools</h2>", body)
+        self.assertLess(body.index("<h2>Project</h2>"), body.index("<h2>Graph Workspace</h2>"))
+        self.assertLess(body.index("<h2>Graph Workspace</h2>"), body.index("<h3>Hosts</h3>"))
 
     def test_index_hides_graph_workspace_when_rollout_flag_is_disabled(self):
         self.runtime.scheduler_config.update_preferences({
@@ -1441,6 +1574,32 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("ok", save_annotation.json["status"])
         self.assertEqual("Track this tech", save_annotation.json["annotation"]["body"])
 
+        content = self.client.get("/api/graph/nodes/graph-node-host/content")
+        self.assertEqual(200, content.status_code)
+        self.assertEqual(2, content.json["entry_count"])
+        self.assertEqual("text", content.json["entries"][0]["kind"])
+
+        text_download = self.client.get("/api/graph/content/graph-node-artifact")
+        self.assertEqual(200, text_download.status_code)
+        self.assertIn("Artifact preview line 1", text_download.get_data(as_text=True))
+
+        image_download = self.client.get("/api/graph/content/graph-node-shot?download=1")
+        self.assertEqual(200, image_download.status_code)
+        self.assertIn("attachment;", image_download.headers.get("Content-Disposition", ""))
+
+    def test_graph_api_hides_nmap_text_artifacts_and_optionally_hides_xml(self):
+        default_graph = self.client.get("/api/graph")
+        self.assertEqual(200, default_graph.status_code)
+        default_ids = {item["node_id"] for item in default_graph.json["nodes"]}
+        self.assertIn("graph-node-artifact-xml", default_ids)
+        self.assertNotIn("graph-node-artifact-gnmap", default_ids)
+
+        hide_xml = self.client.get("/api/graph?hide_nmap_xml_artifacts=true")
+        self.assertEqual(200, hide_xml.status_code)
+        hidden_ids = {item["node_id"] for item in hide_xml.json["nodes"]}
+        self.assertNotIn("graph-node-artifact-xml", hidden_ids)
+        self.assertTrue(hide_xml.json["meta"]["filters"]["hide_nmap_xml_artifacts"])
+
     def test_graph_api_validation(self):
         missing_layout = self.client.post("/api/graph/layouts", json={"layout": {}})
         self.assertEqual(400, missing_layout.status_code)
@@ -1513,6 +1672,8 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("10.0.0.5", detail.json["host"]["ip"])
         self.assertEqual("openai", detail.json["ai_analysis"]["provider"])
         self.assertEqual("missing_smb_signing_checks", detail.json["target_state"]["coverage_gaps"][0]["gap_id"])
+        self.assertNotIn("Starting Nmap", detail.json["ports"][0]["scripts"][0]["display_output"])
+        self.assertIn("message_signing: disabled", detail.json["ports"][0]["scripts"][0]["display_output"])
 
         target_state = self.client.get("/api/workspace/hosts/11/target-state")
         self.assertEqual(200, target_state.status_code)

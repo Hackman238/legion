@@ -10,7 +10,7 @@ default-terminal=xterm
 [PortActions]
 dirbuster=Launch dirbuster, java -Xmx256M -jar /usr/share/dirbuster/DirBuster.jar -u http://[IP]:[PORT], "http,https"
 nuclei-web=Run nuclei web scan, "nuclei -u http://[IP]:[PORT] -silent -o [OUTPUT].txt", "http,https"
-banner=Grab banner, echo hi, http
+banner=Grab banner, bash -c \"echo \"\" | nc -v -n -w1 [IP] [PORT]\", http
 
 [SchedulerSettings]
 whatweb-http="http,soap,http-proxy,http-alt", tcp
@@ -41,6 +41,18 @@ nmap-vuln.nse=nmap-vuln.nse, "nmap -Pn -n -sV -p [PORT] --script=vuln --stats-ev
 screenshooter="http,https,ssl,http-proxy,http-alt,https-alt", tcp
 """
 
+LEGACY_DISABLED_ACTIONS_CONFIG = """[GeneralSettings]
+default-terminal=xterm
+
+[PortActions]
+http-drupal-modules.nse=http-drupal-modules.nse, "nmap -Pn [IP] -p [PORT] --script=http-drupal-modules.nse --script-args=unsafe=1", "http,https"
+http-vuln-zimbra-lfi.nse=http-vuln-zimbra-lfi.nse, "nmap -Pn [IP] -p [PORT] --script=http-vuln-zimbra-lfi.nse --script-args=unsafe=1", "http,https"
+
+[SchedulerSettings]
+http-drupal-modules.nse="http,https", tcp
+http-vuln-zimbra-lfi.nse="http,https", tcp
+"""
+
 
 class SettingsMigrationTest(unittest.TestCase):
     def test_legacy_dirbuster_is_replaced_with_headless_tools(self):
@@ -61,6 +73,11 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("web-content-discovery", port_action_ids)
                 self.assertIn("nmap-vuln.nse", port_action_ids)
                 self.assertIn("nuclei-web", port_action_ids)
+                self.assertIn("nuclei-cves", port_action_ids)
+                self.assertIn("nuclei-exposures", port_action_ids)
+                self.assertIn("curl-headers", port_action_ids)
+                self.assertIn("curl-options", port_action_ids)
+                self.assertIn("curl-robots", port_action_ids)
                 self.assertIn("nikto", port_action_ids)
                 self.assertIn("wafw00f", port_action_ids)
                 self.assertIn("sslscan", port_action_ids)
@@ -70,8 +87,10 @@ class SettingsMigrationTest(unittest.TestCase):
                 port_actions = {row[1]: row for row in app_settings.getPortActions()}
                 nuclei_cmd = str(port_actions["nuclei-web"][2])
                 self.assertIn("nuclei -as", nuclei_cmd)
+                self.assertIn("-stats -si 15", nuclei_cmd)
                 self.assertNotIn("-silent", nuclei_cmd)
                 self.assertNotIn("-no-color", nuclei_cmd)
+                self.assertEqual("printf '\\n' | nc -n -v -w1 [IP] [PORT]", str(port_actions["banner"][2]))
 
                 scheduler_ids = {row[0] for row in app_settings.getSchedulerSettings()}
                 self.assertIn("web-content-discovery", scheduler_ids)
@@ -89,12 +108,45 @@ class SettingsMigrationTest(unittest.TestCase):
         normalized = AppSettings._ensure_nuclei_auto_scan(command)
 
         self.assertIn("command -v nuclei >/dev/null 2>&1", normalized)
-        self.assertIn("nuclei -as -u https://1.2.3.4:443", normalized)
+        self.assertIn("nuclei -as -stats -si 15 -u https://1.2.3.4:443", normalized)
         self.assertIn("/tmp/scan-nuclei-web-1.2.3.4.txt", normalized)
         self.assertNotIn("nuclei -as >/dev/null", normalized)
         self.assertNotIn("nuclei -as-web", normalized)
         self.assertNotIn("-silent", normalized)
         self.assertNotIn("-no-color", normalized)
+
+    def test_nuclei_normalization_rewrites_existing_stats_interval_to_15_seconds(self):
+        from app.settings import AppSettings
+
+        normalized = AppSettings._ensure_nuclei_auto_scan(
+            "nuclei -as -stats -si 30 -u https://portal.example:443 -o /tmp/out.txt"
+        )
+
+        self.assertIn("-si 15", normalized)
+        self.assertNotIn("-si 30", normalized)
+
+    def test_targeted_nuclei_normalization_adds_stats_without_forcing_automatic_scan(self):
+        from app.settings import AppSettings
+
+        normalized = AppSettings._ensure_nuclei_command(
+            "nuclei -tags cve -u https://portal.example:443 -silent -o /tmp/out.txt",
+            automatic_scan=False,
+        )
+
+        self.assertIn("nuclei -stats -si 15 -tags cve -u https://portal.example:443", normalized)
+        self.assertNotIn("nuclei -as -tags cve", normalized)
+        self.assertNotIn("-silent", normalized)
+
+    def test_nmap_hostname_target_support_removes_skip_dns_for_hostnames(self):
+        from app.settings import AppSettings
+
+        normalized = AppSettings._ensure_nmap_hostname_target_support(
+            "nmap -Pn -n -sV portal.example -p 443 --stats-every 15s",
+            "portal.example",
+        )
+
+        self.assertIn("portal.example", normalized)
+        self.assertNotIn(" -n ", normalized)
 
     def test_wapiti_normalization_fixes_missing_url_argument_and_inserts_port(self):
         from app.settings import AppSettings
@@ -214,6 +266,41 @@ class SettingsMigrationTest(unittest.TestCase):
         self.assertIn("command -v nmap >/dev/null 2>&1", wrapped_normalized)
         self.assertIn("&& nmap -Pn [IP] -oA [OUTPUT])", wrapped_normalized)
         self.assertNotIn("command -v nmap >/dev/null 2>&1 -oA [OUTPUT]", wrapped_normalized)
+
+    def test_nmap_stats_normalization_adds_stats_every_once(self):
+        from app.settings import AppSettings
+
+        command = "nmap -Pn -sV [IP] -p [PORT]"
+        normalized = AppSettings._ensure_nmap_stats_every(command)
+        self.assertIn("--stats-every 15s", normalized)
+        self.assertEqual(1, normalized.count("--stats-every"))
+
+    def test_banner_normalization_replaces_broken_bash_wrapper(self):
+        from app.settings import AppSettings
+
+        command = 'bash -c \\"echo \\"\\" | nc -v -n -w1 [IP] [PORT]\\"'
+        normalized = AppSettings._ensure_banner_command(command)
+        self.assertEqual("printf '\\n' | nc -n -v -w1 [IP] [PORT]", normalized)
+
+    def test_disabled_broken_nse_actions_are_pruned_from_settings(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, ".local", "share", "legion")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "legion.conf")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write(LEGACY_DISABLED_ACTIONS_CONFIG)
+
+            with patch.dict(os.environ, {"HOME": tmpdir}, clear=False):
+                from app.settings import AppSettings
+
+                app_settings = AppSettings()
+                port_action_ids = {row[1] for row in app_settings.getPortActions()}
+                scheduler_ids = {row[0] for row in app_settings.getSchedulerSettings()}
+
+                self.assertNotIn("http-drupal-modules.nse", port_action_ids)
+                self.assertNotIn("http-vuln-zimbra-lfi.nse", port_action_ids)
+                self.assertNotIn("http-drupal-modules.nse", scheduler_ids)
+                self.assertNotIn("http-vuln-zimbra-lfi.nse", scheduler_ids)
 
 
 if __name__ == "__main__":

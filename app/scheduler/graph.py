@@ -22,6 +22,44 @@ def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+def _graph_artifact_filename(item: Dict[str, Any]) -> str:
+    if not isinstance(item, dict):
+        return ""
+    props = item.get("properties", {}) if isinstance(item.get("properties", {}), dict) else {}
+    tokens = [
+        props.get("filename", ""),
+        props.get("ref", ""),
+        props.get("artifact_ref", ""),
+        item.get("label", ""),
+    ]
+    for token in tokens:
+        text = str(token or "").strip().replace("\\", "/")
+        if not text:
+            continue
+        return text.rsplit("/", 1)[-1]
+    return ""
+
+
+def _graph_should_hide_artifact_node(item: Dict[str, Any], *, hide_nmap_xml_artifacts: bool = False) -> bool:
+    if str(item.get("type", "") or "").strip().lower() != "artifact":
+        return False
+    props = item.get("properties", {}) if isinstance(item.get("properties", {}), dict) else {}
+    filename = _graph_artifact_filename(item).lower()
+    ref = str(props.get("ref", "") or props.get("artifact_ref", "") or "").strip().lower()
+    label = str(item.get("label", "") or "").strip().lower()
+    tool_id = str(props.get("tool_id", "") or "").strip().lower()
+    source_ref = str(item.get("source_ref", "") or "").strip().lower()
+
+    if filename.endswith(".gnmap") or filename.endswith(".nmap"):
+        return True
+
+    if not hide_nmap_xml_artifacts or not filename.endswith(".xml"):
+        return False
+
+    signals = [filename, ref, label, tool_id, source_ref]
+    return any("nmap" in token for token in signals if token)
+
+
 def _ensure_column(session, table_name: str, column_name: str, column_type: str):
     rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
     existing = {str(row[1]) for row in rows if len(row) > 1}
@@ -1943,6 +1981,7 @@ def query_evidence_graph(
         min_confidence: float = 0.0,
         search: str = "",
         include_ai_suggested: bool = True,
+        hide_nmap_xml_artifacts: bool = False,
         host_id: Optional[int] = None,
         limit_nodes: int = 600,
         limit_edges: int = 1200,
@@ -1969,6 +2008,8 @@ def query_evidence_graph(
         if requested_source_kinds and source_kind not in requested_source_kinds:
             continue
         if float(item.get("confidence", 0.0) or 0.0) < min_conf:
+            continue
+        if _graph_should_hide_artifact_node(item, hide_nmap_xml_artifacts=bool(hide_nmap_xml_artifacts)):
             continue
         if not _node_matches_search(item, resolved_search):
             continue
@@ -2035,6 +2076,7 @@ def query_evidence_graph(
                 "min_confidence": min_conf,
                 "search": resolved_search,
                 "include_ai_suggested": bool(include_ai_suggested),
+                "hide_nmap_xml_artifacts": bool(hide_nmap_xml_artifacts),
                 "host_id": int(resolved_host_id or 0) or None,
                 "limit_nodes": max_nodes,
                 "limit_edges": max_edges,

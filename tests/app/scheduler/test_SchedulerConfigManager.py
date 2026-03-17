@@ -31,11 +31,16 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual(200, int(defaults["max_jobs"]))
             self.assertIn("ai_feedback", defaults)
             self.assertTrue(defaults["ai_feedback"]["enabled"])
-            self.assertEqual(4, int(defaults["ai_feedback"]["max_actions_per_round"]))
+            self.assertEqual(5, int(defaults["ai_feedback"]["max_rounds_per_target"]))
+            self.assertEqual(6, int(defaults["ai_feedback"]["max_actions_per_round"]))
             self.assertEqual("gpt-4.1-mini", defaults["providers"]["openai"]["model"])
             self.assertIn("feature_flags", defaults)
             self.assertTrue(defaults["feature_flags"]["graph_workspace"])
             self.assertTrue(defaults["feature_flags"]["optional_runners"])
+            self.assertIn("disabled_tool_ids", defaults)
+            self.assertIn("http-drupal-modules.nse", defaults["disabled_tool_ids"])
+            self.assertIn("http-vuln-zimbra-lfi.nse", defaults["disabled_tool_ids"])
+            self.assertIn("http-drupal-modules.nse", manager.get_disabled_tool_ids())
             self.assertIn("runners", defaults)
             self.assertFalse(defaults["runners"]["container"]["enabled"])
             self.assertTrue(defaults["runners"]["browser"]["enabled"])
@@ -61,7 +66,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual("openai", updated["provider"])
             self.assertEqual(1, int(updated["max_concurrency"]))
             self.assertEqual("gpt-5-mini", updated["providers"]["openai"]["model"])
-            self.assertEqual(4, int(updated["ai_feedback"]["max_rounds_per_target"]))
+            self.assertEqual(5, int(updated["ai_feedback"]["max_rounds_per_target"]))
 
             normalized_openai_model = manager.update_preferences({
                 "providers": {

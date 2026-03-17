@@ -28,6 +28,16 @@ class ScreenshotTargetSelectionTest(unittest.TestCase):
 
         self.assertEqual("203.0.113.11", actual)
 
+    @patch("app.screenshot_targets.socket.getaddrinfo", side_effect=socket.gaierror("nope"))
+    def test_choose_preferred_screenshot_host_prefers_fqdn_even_when_resolution_is_unavailable(self, _mock_getaddrinfo):
+        from app.screenshot_targets import choose_preferred_screenshot_host, resolve_hostname_addresses
+
+        resolve_hostname_addresses.cache_clear()
+
+        actual = choose_preferred_screenshot_host("portal.example", "203.0.113.11")
+
+        self.assertEqual("portal.example", actual)
+
     def test_choose_preferred_host_falls_back_to_ip_for_unknown_hostname(self):
         from app.screenshot_targets import choose_preferred_host
 
@@ -74,6 +84,43 @@ class ScreenshotTargetSelectionTest(unittest.TestCase):
 
         self.assertEqual("203.0.113.45", target_host)
         self.assertIn("203.0.113.45 445", command)
+
+    @patch("app.screenshot_targets.socket.getaddrinfo")
+    def test_apply_preferred_target_placeholders_keeps_ip_for_nc_combined_short_flags(self, mock_getaddrinfo):
+        from app.screenshot_targets import apply_preferred_target_placeholders, resolve_hostname_addresses
+
+        resolve_hostname_addresses.cache_clear()
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.46", 0)),
+        ]
+
+        command, target_host = apply_preferred_target_placeholders(
+            "printf '\\n' | nc -nv -w1 [IP] [PORT]",
+            hostname="portal.example",
+            ip="203.0.113.46",
+            port="443",
+        )
+
+        self.assertEqual("203.0.113.46", target_host)
+        self.assertIn("203.0.113.46 443", command)
+        self.assertNotIn("portal.example 443", command)
+
+    @patch("app.screenshot_targets.socket.getaddrinfo", side_effect=socket.gaierror("nope"))
+    def test_apply_preferred_target_placeholders_prefers_hostname_for_scanners_even_when_unresolved(self, _mock_getaddrinfo):
+        from app.screenshot_targets import apply_preferred_target_placeholders, resolve_hostname_addresses
+
+        resolve_hostname_addresses.cache_clear()
+
+        command, target_host = apply_preferred_target_placeholders(
+            "nmap -Pn -sV [IP] -p [PORT]",
+            hostname="portal.example",
+            ip="203.0.113.50",
+            port="443",
+        )
+
+        self.assertEqual("portal.example", target_host)
+        self.assertIn("portal.example", command)
+        self.assertNotIn("203.0.113.50", command)
 
 
 if __name__ == "__main__":

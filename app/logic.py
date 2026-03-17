@@ -29,7 +29,7 @@ import sys
 from app.Project import Project
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.logging.legionLog import getAppLogger
-from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
+from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_screenshot_host
 from app.tools.ToolCoordinator import ToolCoordinator
 from app.shell.Shell import Shell
 from app.tools.nmap.NmapPaths import getNmapOutputFolder
@@ -207,6 +207,11 @@ class Logic:
                             port=str(host_port or ""),
                             protocol=str(host_protocol or "tcp"),
                             service=str(host_service or ""),
+                            family_id=str(getattr(decision, "family_id", "") or ""),
+                            command_signature=scheduler_orchestrator.planner._command_signature(
+                                str(host_protocol or "tcp"),
+                                str(getattr(decision, "command_template", "") or ""),
+                            ),
                             artifact_refs=list(artifact_refs or []),
                         )
                     ],
@@ -280,23 +285,31 @@ class Logic:
 
             def build_command(request):
                 command_template = str(request.command_template or "")
-                if str(request.tool_id or "").strip().lower() == "nuclei-web":
+                normalized_tool = str(request.tool_id or "").strip().lower()
+                if normalized_tool == "banner":
+                    command_template = AppSettings._ensure_banner_command(command_template)
+                if normalized_tool == "nuclei-web":
                     command_template = AppSettings._ensure_nuclei_auto_scan(command_template)
+                elif "nuclei" in normalized_tool or "nuclei" in str(command_template).lower():
+                    command_template = AppSettings._ensure_nuclei_command(command_template, automatic_scan=False)
                 if str(request.tool_id or "").strip().lower() == "web-content-discovery":
                     command_template = AppSettings._ensure_web_content_discovery_command(command_template)
+                if "nmap" in str(command_template).lower():
+                    command_template = AppSettings._ensure_nmap_stats_every(command_template)
                 running_folder = self.activeProject.properties.runningFolder
                 outputfile = os.path.join(
                     running_folder,
                     f"{getTimestamp()}-{request.tool_id}-{request.host_ip}-{request.port}",
                 )
                 outputfile = os.path.normpath(outputfile).replace("\\", "/")
-                command, _target_host = apply_preferred_target_placeholders(
+                command, target_host = apply_preferred_target_placeholders(
                     command_template,
                     hostname=str(request.hostname or ""),
                     ip=str(request.host_ip),
                     port=str(request.port),
                     output=outputfile,
                 )
+                command = AppSettings._ensure_nmap_hostname_target_support(command, target_host)
                 return command, outputfile
 
             def execute_local_command(*, request, rendered_command, outputfile, runner_type):
@@ -349,7 +362,7 @@ class Logic:
 
             def execute_browser_action(*, request, browser_settings, runner_type):
                 started_at = getTimestamp(True)
-                target_host = choose_preferred_host(str(request.hostname or ""), str(request.host_ip or ""))
+                target_host = choose_preferred_screenshot_host(str(request.hostname or ""), str(request.host_ip or ""))
                 url = f"{target_host}:{request.port}"
                 if isHttps(target_host, request.port):
                     url = f"https://{url}"

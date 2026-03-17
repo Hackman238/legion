@@ -1,6 +1,18 @@
 import unittest
 
 
+class _DummyProgressRepo:
+    def __init__(self):
+        self.calls = []
+
+    def storeProcessProgress(self, process_id, percent=None, estimated_remaining=None):
+        self.calls.append({
+            "process_id": process_id,
+            "percent": percent,
+            "estimated_remaining": estimated_remaining,
+        })
+
+
 class WebRuntimeNmapProgressTest(unittest.TestCase):
     def test_extracts_percent_and_eta_from_nmap_stats_line(self):
         from app.web.runtime import WebRuntime
@@ -19,6 +31,34 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
 
         self.assertEqual(15.32, percent)
         self.assertEqual(741, remaining)
+
+    def test_extracts_percent_without_eta_and_keeps_remaining_empty(self):
+        from app.web.runtime import WebRuntime
+
+        line = "NSE Timing: About 0.00% done"
+        percent, remaining = WebRuntime._extract_nmap_progress_from_text(line)
+
+        self.assertEqual(0.0, percent)
+        self.assertIsNone(remaining)
+
+    def test_update_nmap_process_progress_clears_stale_eta_when_line_has_no_eta(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        repo = _DummyProgressRepo()
+        state = {"percent": 12.0, "remaining": 99, "updated_at": 0.0}
+
+        runtime._update_nmap_process_progress(
+            repo,
+            process_id=7,
+            text_chunk="NSE Timing: About 0.00% done",
+            state=state,
+        )
+
+        self.assertEqual(0.0, state["percent"])
+        self.assertEqual(0, state["remaining"])
+        self.assertEqual("0.0", repo.calls[-1]["percent"])
+        self.assertEqual(0, repo.calls[-1]["estimated_remaining"])
 
     def test_append_nmap_stats_every_once(self):
         from app.web.runtime import WebRuntime

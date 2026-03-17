@@ -1,13 +1,16 @@
 :root {
-    --bg-top: #2f2859;
-    --bg-bottom: #121327;
-    --panel: rgba(31, 35, 71, 0.85);
-    --panel-border: rgba(147, 159, 229, 0.22);
-    --text-main: #eef1ff;
-    --text-muted: #b4bbdd;
-    --accent: #7b83ff;
-    --accent-soft: #4f56b8;
+    --bg-top: #0d0015;
+    --bg-mid: #1a0a2e;
+    --bg-bottom: #050010;
+    --panel: rgba(26, 10, 46, 0.82);
+    --panel-border: rgba(255, 255, 255, 0.12);
+    --text-main: #f8f7ff;
+    --text-muted: #9ca3af;
+    --accent: #c084fc;
+    --accent-soft: #9333ea;
+    --accent-hot: #8b1a3a;
     --good: #6ce0c7;
+    --warning: #f5a623;
 }
 
 * {
@@ -17,8 +20,13 @@
 body {
     margin: 0;
     min-height: 100vh;
-    font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-    background: linear-gradient(160deg, var(--bg-top) 0%, var(--bg-bottom) 70%);
+    font-family: "Space Grotesk", "Segoe UI", "Helvetica Neue", sans-serif;
+    color-scheme: dark;
+    background:
+            radial-gradient(circle at 12% 14%, rgba(30, 58, 95, 0.34), transparent 28%),
+            radial-gradient(circle at 78% 18%, rgba(75, 0, 130, 0.34), transparent 34%),
+            radial-gradient(circle at 88% 28%, rgba(139, 26, 58, 0.26), transparent 26%),
+            linear-gradient(165deg, var(--bg-top) 0%, var(--bg-mid) 42%, var(--bg-bottom) 100%);
     color: var(--text-main);
 }
 
@@ -31,8 +39,9 @@ body.modal-open {
     inset: 0;
     pointer-events: none;
     background:
-            radial-gradient(circle at 10% 10%, rgba(123, 131, 255, 0.22), transparent 40%),
-            radial-gradient(circle at 85% 20%, rgba(108, 224, 199, 0.14), transparent 40%);
+            radial-gradient(circle at 8% 12%, rgba(30, 58, 95, 0.24), transparent 34%),
+            radial-gradient(circle at 62% 18%, rgba(75, 0, 130, 0.2), transparent 36%),
+            radial-gradient(circle at 92% 22%, rgba(139, 26, 58, 0.18), transparent 24%);
 }
 
 .logo-watermark {
@@ -65,8 +74,8 @@ body.modal-open {
     position: relative;
     z-index: 1;
     width: 100%;
-    max-width: 1920px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     padding: clamp(0.9rem, 1.2vw, 1.4rem);
 }
 
@@ -78,10 +87,12 @@ body.modal-open {
     margin-bottom: 1rem;
 }
 
+.topbar-brand h1,
 .topbar h1 {
     margin: 0;
-    font-size: 1.8rem;
-    letter-spacing: 0.02em;
+    font-size: clamp(2rem, 1.8vw, 2.4rem);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
 }
 
 .eyebrow {
@@ -118,9 +129,9 @@ body.modal-open {
     display: flex;
     gap: 0.45rem;
     padding: 0.45rem;
-    border: 1px solid rgba(173, 181, 227, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 10px;
-    background: rgba(16, 20, 44, 0.58);
+    background: rgba(13, 0, 21, 0.68);
     flex-wrap: wrap;
 }
 
@@ -132,12 +143,13 @@ body.modal-open {
     align-items: center;
     justify-content: center;
     gap: 0.28rem;
-    border: 1px solid rgba(123, 131, 255, 0.35);
+    border: 1px solid rgba(192, 132, 252, 0.28);
     border-radius: 10px;
-    background: rgba(123, 131, 255, 0.18);
+    background: linear-gradient(135deg, rgba(45, 27, 105, 0.72) 0%, rgba(147, 51, 234, 0.34) 55%, rgba(139, 26, 58, 0.4) 100%);
     color: var(--text-main);
     padding: 0.5rem 0.45rem;
     cursor: pointer;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .ribbon-btn i {
@@ -178,9 +190,9 @@ body.modal-open {
     left: 0;
     min-width: 170px;
     padding: 0.35rem;
-    border: 1px solid var(--panel-border);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 10px;
-    background: rgba(22, 26, 55, 0.97);
+    background: rgba(13, 0, 21, 0.96);
     box-shadow: 0 12px 24px rgba(0, 0, 0, 0.38);
     z-index: 30;
     gap: 0.25rem;
@@ -193,9 +205,9 @@ body.modal-open {
 
 .ribbon-submenu-item {
     width: 100%;
-    border: 1px solid rgba(123, 131, 255, 0.28);
+    border: 1px solid rgba(192, 132, 252, 0.22);
     border-radius: 8px;
-    background: rgba(123, 131, 255, 0.16);
+    background: linear-gradient(135deg, rgba(45, 27, 105, 0.5) 0%, rgba(139, 26, 58, 0.28) 100%);
     color: var(--text-main);
     text-align: left;
     padding: 0.45rem 0.55rem;
@@ -212,7 +224,7 @@ body.modal-open {
     padding: 0.25rem 0.7rem;
     color: var(--text-muted);
     font-size: 0.75rem;
-    background: rgba(18, 21, 43, 0.65);
+    background: rgba(13, 0, 21, 0.72);
 }
 
 .text-muted {
@@ -221,7 +233,7 @@ body.modal-open {
 
 .grid {
     display: grid;
-    grid-template-columns: repeat(12, 1fr);
+    grid-template-columns: repeat(12, minmax(0, 1fr));
     gap: clamp(0.7rem, 0.8vw, 1rem);
 }
 
@@ -232,6 +244,7 @@ body.modal-open {
     border-radius: 14px;
     padding: 1rem;
     backdrop-filter: blur(10px);
+    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .panel-full {
@@ -303,9 +316,9 @@ body.modal-open {
 .action-block input,
 .action-block select,
 .action-block textarea {
-    border: 1px solid rgba(173, 181, 227, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
-    background: rgba(13, 16, 34, 0.66);
+    background: rgba(13, 0, 21, 0.84);
     color: var(--text-main);
     padding: 0.45rem 0.55rem;
 }
@@ -316,12 +329,49 @@ input {
     color: var(--text-main);
 }
 
+select,
+input,
+textarea {
+    transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    padding-right: 2rem;
+    background-image:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M5 7l5 6 5-6' stroke='%23c084fc' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat, no-repeat;
+    background-position: 0 0, calc(100% - 0.65rem) 50%;
+    background-size: 100% 100%, 0.9rem;
+}
+
+select::-ms-expand {
+    display: none;
+}
+
+option,
+optgroup {
+    background: #0d0015;
+    color: #f8f7ff;
+}
+
+select:focus,
+input:focus,
+textarea:focus {
+    outline: none;
+    border-color: rgba(192, 132, 252, 0.62);
+    box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.22), 0 0 22px rgba(147, 51, 234, 0.16);
+}
+
 .ansi-output-view {
     width: 100%;
     display: block;
-    border: 1px solid rgba(173, 181, 227, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
-    background: rgba(13, 16, 34, 0.66);
+    background: rgba(13, 0, 21, 0.84);
     color: var(--text-main);
     padding: 0.45rem 0.55rem;
     font-family: "Consolas", "Menlo", monospace;
@@ -361,9 +411,9 @@ input {
 .process-command-text {
     width: 100%;
     min-height: 2.1rem;
-    border: 1px solid rgba(173, 181, 227, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
-    background: rgba(13, 16, 34, 0.66);
+    background: rgba(13, 0, 21, 0.84);
     color: var(--text-main);
     padding: 0.45rem 0.55rem;
     font-family: "Consolas", "Menlo", monospace;
@@ -470,12 +520,13 @@ button:disabled {
 }
 
 button {
-    border: 1px solid var(--accent-soft);
-    background: rgba(123, 131, 255, 0.2);
+    border: 1px solid rgba(192, 132, 252, 0.3);
+    background: linear-gradient(135deg, rgba(45, 27, 105, 0.8) 0%, rgba(147, 51, 234, 0.34) 55%, rgba(139, 26, 58, 0.44) 100%);
     color: var(--text-main);
     border-radius: 8px;
     padding: 0.35rem 0.55rem;
     cursor: pointer;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 button:hover {
@@ -485,6 +536,14 @@ button:hover {
 .action-block .scheduler-actions {
     gap: 0.45rem;
     flex-wrap: wrap;
+}
+
+.approval-action-buttons {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    min-width: 240px;
 }
 
 .nmap-wizard {
@@ -611,6 +670,7 @@ button:hover {
 
 .graph-panel {
     overflow: hidden;
+    order: -1;
 }
 
 .graph-toolbar {
@@ -709,9 +769,9 @@ button:hover {
 
 .graph-canvas-panel,
 .graph-sidebar {
-    border: 1px solid rgba(173, 181, 227, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 14px;
-    background: rgba(15, 18, 39, 0.58);
+    background: rgba(13, 0, 21, 0.7);
     padding: 0.75rem;
 }
 
@@ -720,12 +780,13 @@ button:hover {
 }
 
 .graph-canvas-scroll {
-    border: 1px solid rgba(173, 181, 227, 0.16);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 12px;
     background:
-        radial-gradient(circle at top left, rgba(123, 131, 255, 0.14), transparent 38%),
-        radial-gradient(circle at bottom right, rgba(108, 224, 199, 0.1), transparent 42%),
-        rgba(11, 14, 28, 0.88);
+        radial-gradient(circle at top left, rgba(30, 58, 95, 0.2), transparent 34%),
+        radial-gradient(circle at top right, rgba(75, 0, 130, 0.16), transparent 32%),
+        radial-gradient(circle at bottom right, rgba(139, 26, 58, 0.14), transparent 30%),
+        rgba(5, 0, 16, 0.92);
     overflow: auto;
     min-height: 580px;
     max-height: 820px;
@@ -741,7 +802,7 @@ button:hover {
 
 .graph-empty-state {
     margin-bottom: 0.65rem;
-    border: 1px dashed rgba(173, 181, 227, 0.28);
+    border: 1px dashed rgba(192, 132, 252, 0.28);
     border-radius: 10px;
     padding: 0.55rem 0.7rem;
     color: var(--text-muted);
@@ -845,6 +906,71 @@ button:hover {
     font-size: 0.86rem;
 }
 
+.graph-content-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.graph-content-card {
+    border: 1px solid rgba(173, 181, 227, 0.16);
+    border-radius: 10px;
+    background: rgba(22, 26, 55, 0.46);
+    padding: 0.55rem 0.6rem;
+}
+
+.graph-content-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+
+.graph-content-kind,
+.graph-content-meta {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+}
+
+.graph-content-meta {
+    margin-top: 0.2rem;
+    word-break: break-word;
+}
+
+.graph-content-image {
+    display: block;
+    width: 100%;
+    max-height: 220px;
+    object-fit: contain;
+    margin-top: 0.45rem;
+    border: 1px solid rgba(173, 181, 227, 0.18);
+    border-radius: 10px;
+    background: rgba(8, 10, 24, 0.94);
+    cursor: zoom-in;
+}
+
+.graph-content-text {
+    margin: 0.45rem 0 0;
+    max-height: 240px;
+    overflow: auto;
+    border: 1px solid rgba(173, 181, 227, 0.16);
+    border-radius: 10px;
+    background: rgba(10, 13, 27, 0.72);
+    color: var(--text-main);
+    padding: 0.55rem;
+    font-family: "Consolas", "Menlo", monospace;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.graph-content-actions {
+    margin-top: 0.5rem;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+
 .graph-detail-evidence {
     margin: 0;
     padding-left: 1.1rem;
@@ -905,6 +1031,7 @@ button:hover {
 
 .stat-card {
     grid-column: span 2;
+    order: -2;
 }
 
 .stat-card p {

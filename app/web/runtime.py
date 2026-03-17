@@ -1,6 +1,7 @@
 import datetime
 import glob
 import json
+import mimetypes
 import os
 import queue
 import re
@@ -100,7 +101,11 @@ from app.scheduler.reporting import (
     render_project_report_markdown as render_scheduler_project_report_markdown,
 )
 from app.scheduler.risk import classify_command_danger
-from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
+from app.screenshot_targets import (
+    apply_preferred_target_placeholders,
+    choose_preferred_command_host,
+    choose_preferred_screenshot_host,
+)
 from app.settings import AppSettings, Settings
 from app.timing import getTimestamp
 from app.web.jobs import WebJobManager
@@ -219,8 +224,8 @@ _SCHEDULER_ONLY_LABELS = {
 }
 _DEFAULT_AI_FEEDBACK_CONFIG = {
     "enabled": True,
-    "max_rounds_per_target": 4,
-    "max_actions_per_round": 4,
+    "max_rounds_per_target": 5,
+    "max_actions_per_round": 6,
     "recent_output_chars": 900,
 }
 _DIG_DEEPER_MAX_RUNTIME_SECONDS = 900
@@ -640,12 +645,13 @@ class WebRuntime:
 
         previews = []
         for target in filtered_targets:
-            attempted_tool_ids = sorted(self._existing_tool_attempts_for_target(
+            attempted_summary = self._existing_attempt_summary_for_target(
                 host_id=int(target.host_id or 0),
                 host_ip=str(target.host_ip or ""),
                 port=str(target.port or ""),
                 protocol=str(target.protocol or "tcp"),
-            ))
+            )
+            attempted_tool_ids = sorted(attempted_summary["tool_ids"])
             context = self._build_scheduler_target_context(
                 host_id=int(target.host_id or 0),
                 host_ip=str(target.host_ip or ""),
@@ -653,6 +659,8 @@ class WebRuntime:
                 protocol=str(target.protocol or "tcp"),
                 service_name=str(target.service_name or ""),
                 attempted_tool_ids=set(attempted_tool_ids),
+                attempted_family_ids=set(attempted_summary["family_ids"]),
+                attempted_command_signatures=set(attempted_summary["command_signatures"]),
                 recent_output_chars=recent_output_chars,
                 analysis_mode="standard",
             )
@@ -664,6 +672,8 @@ class WebRuntime:
                     settings,
                     context=context,
                     excluded_tool_ids=list(attempted_tool_ids),
+                    excluded_family_ids=sorted(attempted_summary["family_ids"]),
+                    excluded_command_signatures=sorted(attempted_summary["command_signatures"]),
                     limit=max_actions,
                     engagement_policy=engagement_policy,
                     mode_override=selected_mode,
@@ -690,6 +700,7 @@ class WebRuntime:
                     "service_name": str(target.service_name or ""),
                 },
                 "attempted_tool_ids": list(attempted_tool_ids),
+                "attempted_family_ids": sorted(attempted_summary["family_ids"]),
             }
             if requested_mode == "compare":
                 deterministic_preview = _preview_for_mode("deterministic")
@@ -892,10 +903,218 @@ class WebRuntime:
                 min_confidence=float(resolved.get("min_confidence", 0.0) or 0.0),
                 search=str(resolved.get("search", "") or ""),
                 include_ai_suggested=bool(resolved.get("include_ai_suggested", True)),
+                hide_nmap_xml_artifacts=bool(resolved.get("hide_nmap_xml_artifacts", False)),
                 host_id=int(resolved.get("host_id", 0) or 0) or None,
                 limit_nodes=int(resolved.get("limit_nodes", 600) or 600),
                 limit_edges=int(resolved.get("limit_edges", 1200) or 1200),
             )
+
+    @staticmethod
+    def _path_within(base_path: str, candidate_path: str) -> bool:
+        root = os.path.abspath(str(base_path or "").strip())
+        target = os.path.abspath(str(candidate_path or "").strip())
+        if not root or not target:
+            return False
+        try:
+            return os.path.commonpath([root, target]) == root
+        except Exception:
+            return False
+
+    def _is_project_artifact_path(self, project, path: str) -> bool:
+        candidate = os.path.abspath(str(path or "").strip())
+        if not candidate or not os.path.isfile(candidate):
+            return False
+        roots = [
+            getattr(getattr(project, "properties", None), "outputFolder", ""),
+            getattr(getattr(project, "properties", None), "runningFolder", ""),
+        ]
+        return any(self._path_within(root, candidate) for root in roots if str(root or "").strip())
+
+    @staticmethod
+    def _read_text_file_head(path: str, max_chars: int = 12000) -> str:
+        normalized_path = str(path or "").strip()
+        if not normalized_path or not os.path.isfile(normalized_path):
+            return ""
+        safe_max_chars = max(0, min(int(max_chars or 12000), 200000))
+        if safe_max_chars <= 0:
+            return ""
+        try:
+            read_bytes = max(4096, min(safe_max_chars * 4, 2_000_000))
+            with open(normalized_path, "rb") as handle:
+                data = handle.read(read_bytes)
+            return data.decode("utf-8", errors="replace")[:safe_max_chars]
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _binary_file_signature(path: str, sample_size: int = 8192) -> bool:
+        normalized_path = str(path or "").strip()
+        if not normalized_path or not os.path.isfile(normalized_path):
+            return False
+        try:
+            with open(normalized_path, "rb") as handle:
+                sample = handle.read(max(256, min(int(sample_size or 8192), 65536)))
+            if not sample:
+                return False
+            return b"\x00" in sample
+        except Exception:
+            return False
+
+    def _get_graph_snapshot_locked(self) -> Dict[str, Any]:
+        project = self._require_active_project()
+        ensure_scheduler_graph_tables(project.database)
+        return query_evidence_graph(project.database, limit_nodes=5000, limit_edges=10000)
+
+    def _resolve_graph_content_entry_locked(self, project, node: Dict[str, Any], *, max_chars: int = 12000) -> Dict[str, Any]:
+        node_id = str(node.get("node_id", "") or "")
+        node_type = str(node.get("type", "") or "").strip().lower()
+        props = node.get("properties", {}) if isinstance(node.get("properties", {}), dict) else {}
+        ref = str(
+            props.get("artifact_ref", "")
+            or props.get("ref", "")
+            or ""
+        ).strip()
+        label = str(node.get("label", "") or os.path.basename(ref) or node_id)
+        filename = str(props.get("filename", "") or os.path.basename(ref) or f"{node_type or 'graph-content'}-{node_id}")
+        base = {
+            "node_id": node_id,
+            "node_type": node_type,
+            "label": label,
+            "filename": filename,
+            "ref": ref,
+            "kind": "unavailable",
+            "available": False,
+            "preview_text": "",
+            "preview_url": "",
+            "download_url": "",
+            "message": "No preview is available for this graph node.",
+        }
+
+        if ref.startswith("process_output:"):
+            try:
+                process_id = int(ref.split(":", 1)[1])
+            except (TypeError, ValueError):
+                return base
+            payload = self.get_process_output(process_id, offset=0, max_chars=max_chars)
+            output_text = str(payload.get("output", "") or payload.get("output_chunk", "") or "")
+            return {
+                **base,
+                "kind": "text",
+                "available": bool(output_text),
+                "preview_text": output_text,
+                "filename": filename if filename.endswith(".txt") else f"process-{process_id}-output.txt",
+                "download_url": f"/api/graph/content/{node_id}?download=1",
+                "message": "" if output_text else "No captured process output is available.",
+            }
+
+        if not ref or not self._is_project_artifact_path(project, ref):
+            return base
+
+        mimetype = mimetypes.guess_type(ref)[0] or "application/octet-stream"
+        if node_type == "screenshot" or ref.lower().endswith(".png"):
+            return {
+                **base,
+                "kind": "image",
+                "available": True,
+                "preview_url": f"/api/graph/content/{node_id}",
+                "download_url": f"/api/graph/content/{node_id}?download=1",
+                "message": "",
+            }
+
+        if self._binary_file_signature(ref):
+            return {
+                **base,
+                "kind": "binary",
+                "available": True,
+                "download_url": f"/api/graph/content/{node_id}?download=1",
+                "message": f"Binary artifact ({mimetype}) is available for download.",
+            }
+
+        preview_text = self._read_text_file_head(ref, max_chars=max_chars)
+        return {
+            **base,
+            "kind": "text",
+            "available": bool(preview_text),
+            "preview_text": preview_text,
+            "download_url": f"/api/graph/content/{node_id}?download=1",
+            "message": "" if preview_text else "Artifact file is empty.",
+        }
+
+    def get_graph_related_content(self, node_id: str, *, max_chars: int = 12000) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            snapshot = self._get_graph_snapshot_locked()
+            nodes = {
+                str(item.get("node_id", "") or ""): item
+                for item in list(snapshot.get("nodes", []) or [])
+                if isinstance(item, dict) and str(item.get("node_id", "") or "").strip()
+            }
+            selected_id = str(node_id or "").strip()
+            selected_node = nodes.get(selected_id)
+            if selected_node is None:
+                raise KeyError(f"Unknown graph node id: {node_id}")
+
+            candidate_ids = []
+            if str(selected_node.get("type", "") or "").strip().lower() in {"artifact", "screenshot", "evidence_record"}:
+                candidate_ids.append(selected_id)
+            for edge in list(snapshot.get("edges", []) or []):
+                if not isinstance(edge, dict):
+                    continue
+                from_id = str(edge.get("from_node_id", "") or "")
+                to_id = str(edge.get("to_node_id", "") or "")
+                if selected_id not in {from_id, to_id}:
+                    continue
+                other_id = to_id if from_id == selected_id else from_id
+                other_node = nodes.get(other_id)
+                other_type = str(other_node.get("type", "") or "").strip().lower() if isinstance(other_node, dict) else ""
+                if other_type in {"artifact", "screenshot", "evidence_record"} and other_id not in candidate_ids:
+                    candidate_ids.append(other_id)
+
+            entries = [
+                self._resolve_graph_content_entry_locked(project, nodes[candidate_id], max_chars=max_chars)
+                for candidate_id in candidate_ids[:8]
+                if candidate_id in nodes
+            ]
+            return {
+                "node_id": selected_id,
+                "entry_count": len(entries),
+                "entries": entries,
+            }
+
+    def get_graph_content(self, node_id: str, *, download: bool = False, max_chars: int = 12000) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            snapshot = self._get_graph_snapshot_locked()
+            node = next(
+                (
+                    item for item in list(snapshot.get("nodes", []) or [])
+                    if isinstance(item, dict) and str(item.get("node_id", "") or "") == str(node_id or "").strip()
+                ),
+                None,
+            )
+            if node is None:
+                raise KeyError(f"Unknown graph node id: {node_id}")
+            entry = self._resolve_graph_content_entry_locked(project, node, max_chars=max_chars)
+            ref = str(entry.get("ref", "") or "").strip()
+            if str(entry.get("kind", "") or "") == "text" and ref.startswith("process_output:"):
+                return {
+                    "kind": "text",
+                    "text": str(entry.get("preview_text", "") or ""),
+                    "filename": str(entry.get("filename", "") or f"{node_id}.txt"),
+                    "mimetype": "text/plain; charset=utf-8",
+                    "download": bool(download),
+                }
+            if str(entry.get("kind", "") or "") in {"image", "binary", "text"} and ref and self._is_project_artifact_path(project, ref):
+                return {
+                    "kind": str(entry.get("kind", "") or "binary"),
+                    "path": ref,
+                    "filename": str(entry.get("filename", "") or os.path.basename(ref) or f"{node_id}.bin"),
+                    "mimetype": mimetypes.guess_type(ref)[0] or (
+                        "text/plain; charset=utf-8" if str(entry.get("kind", "") or "") == "text" else "application/octet-stream"
+                    ),
+                    "download": bool(download),
+                }
+            raise FileNotFoundError(str(entry.get("message", "") or "Graph content is not available."))
 
     def rebuild_evidence_graph(self, host_id: Optional[int] = None) -> Dict[str, Any]:
         with self._lock:
@@ -1630,12 +1849,15 @@ class WebRuntime:
             if host is None:
                 raise KeyError(f"Unknown host id: {host_id}")
             host_ip = str(getattr(host, "ip", "") or "").strip()
+            hostname = str(getattr(host, "hostname", "") or "").strip()
             if not host_ip:
                 raise ValueError(f"Host {host_id} does not have a valid IP.")
 
+        scan_target = choose_preferred_command_host(hostname, host_ip, "nmap")
+        uses_hostname_target = scan_target != host_ip
         default_scan_options = {
             "discovery": True,
-            "skip_dns": True,
+            "skip_dns": not uses_hostname_target,
             "timing": "T3",
             "top_ports": 1000,
             "service_detection": True,
@@ -1648,7 +1870,7 @@ class WebRuntime:
             "arp_ping": False,
         }
         return self.start_nmap_scan_job(
-            targets=[host_ip],
+            targets=[scan_target],
             discovery=True,
             staged=False,
             run_actions=False,
@@ -1910,6 +2132,53 @@ class WebRuntime:
     def get_workspace_tools(self, service: str = "", limit: int = 300, offset: int = 0) -> List[Dict[str, Any]]:
         return self.get_workspace_tools_page(service=service, limit=limit, offset=offset).get("tools", [])
 
+    @staticmethod
+    def _strip_nmap_preamble(output_text: str) -> str:
+        text_value = str(output_text or "")
+        if not text_value.strip():
+            return ""
+        filtered = []
+        for raw_line in text_value.splitlines():
+            line = str(raw_line or "")
+            stripped = line.strip()
+            if not stripped:
+                if filtered:
+                    filtered.append("")
+                continue
+            if re.match(r"(?i)^Starting Nmap\b", stripped):
+                continue
+            if re.match(r"(?i)^Nmap scan report for\b", stripped):
+                continue
+            if re.match(r"(?i)^Host is up\b", stripped):
+                continue
+            if re.match(r"(?i)^Not shown:\b", stripped):
+                continue
+            if re.match(r"(?i)^All \d+ scanned ports\b", stripped):
+                continue
+            if re.match(r"(?i)^NSE:\s+(Loaded|Script Pre-scanning|Starting runlevel|Ending runlevel)\b", stripped):
+                continue
+            if re.match(r"(?i)^Service detection performed\b", stripped):
+                continue
+            if re.match(r"(?i)^PORT\s+STATE\s+SERVICE\b", stripped):
+                continue
+            if re.match(r"(?i)^Nmap done:\b", stripped):
+                continue
+            filtered.append(line)
+        cleaned = "\n".join(filtered).strip()
+        return cleaned or text_value.strip()
+
+    @classmethod
+    def _host_detail_script_preview(cls, script_id: str, output_text: str, max_chars: int = 220) -> str:
+        raw_output = str(output_text or "")
+        display = raw_output
+        lowered = " ".join([str(script_id or ""), raw_output[:400]]).lower()
+        if "nmap" in lowered or "nse:" in lowered:
+            display = cls._strip_nmap_preamble(raw_output)
+        display = re.sub(r"\s+", " ", str(display or "")).strip()
+        if len(display) > int(max_chars or 220):
+            return display[:max(0, int(max_chars or 220) - 1)].rstrip() + "..."
+        return display
+
     def get_host_workspace(self, host_id: int) -> Dict[str, Any]:
         with self._lock:
             project = self._require_active_project()
@@ -1934,10 +2203,13 @@ class WebRuntime:
 
                 scripts = []
                 for script in script_repo.getScriptsByPortId(port.id):
+                    script_id = str(getattr(script, "scriptId", "") or "")
+                    output = str(getattr(script, "output", "") or "")
                     scripts.append({
                         "id": int(getattr(script, "id", 0) or 0),
-                        "script_id": str(getattr(script, "scriptId", "") or ""),
-                        "output": str(getattr(script, "output", "") or ""),
+                        "script_id": script_id,
+                        "output": output,
+                        "display_output": self._host_detail_script_preview(script_id, output),
                     })
 
                 ports_data.append({
@@ -3378,14 +3650,22 @@ class WebRuntime:
             return int(job_identifier or 0) > 0 and self.jobs.is_cancel_requested(int(job_identifier or 0))
 
         def _existing_attempts(*, target, **_kwargs):
-            return self._existing_tool_attempts_for_target(
+            return self._existing_attempt_summary_for_target(
                 host_id=int(target.host_id or 0),
                 host_ip=str(target.host_ip or ""),
                 port=str(target.port or ""),
                 protocol=str(target.protocol or "tcp"),
             )
 
-        def _build_context(*, target, attempted_tool_ids, recent_output_chars, analysis_mode):
+        def _build_context(
+                *,
+                target,
+                attempted_tool_ids,
+                attempted_family_ids=None,
+                attempted_command_signatures=None,
+                recent_output_chars,
+                analysis_mode,
+        ):
             return self._build_scheduler_target_context(
                 host_id=int(target.host_id or 0),
                 host_ip=str(target.host_ip or ""),
@@ -3393,6 +3673,8 @@ class WebRuntime:
                 protocol=str(target.protocol or "tcp"),
                 service_name=str(target.service_name or ""),
                 attempted_tool_ids=set(attempted_tool_ids or set()),
+                attempted_family_ids=set(attempted_family_ids or set()),
+                attempted_command_signatures=set(attempted_command_signatures or set()),
                 recent_output_chars=int(recent_output_chars or 900),
                 analysis_mode=str(analysis_mode or "standard"),
             )
@@ -3427,6 +3709,11 @@ class WebRuntime:
                     port=str(target.port or ""),
                     protocol=str(target.protocol or "tcp"),
                     service=str(target.service_name or ""),
+                    family_id=str(decision.family_id or ""),
+                    command_signature=self._command_signature_for_target(
+                        str(command_template or decision.command_template or ""),
+                        str(target.protocol or "tcp"),
+                    ),
                 ),
             )
             self._record_scheduler_decision(
@@ -3470,6 +3757,11 @@ class WebRuntime:
                     port=str(target.port or ""),
                     protocol=str(target.protocol or "tcp"),
                     service=str(target.service_name or ""),
+                    family_id=str(decision.family_id or ""),
+                    command_signature=self._command_signature_for_target(
+                        str(command_template or decision.command_template or ""),
+                        str(target.protocol or "tcp"),
+                    ),
                 ),
             )
             self._record_scheduler_decision(
@@ -3532,6 +3824,11 @@ class WebRuntime:
                     port=str(target.port or ""),
                     protocol=str(target.protocol or "tcp"),
                     service=str(target.service_name or ""),
+                    family_id=str(decision.family_id or ""),
+                    command_signature=self._command_signature_for_target(
+                        str(getattr(decision, "command_template", "") or ""),
+                        str(target.protocol or "tcp"),
+                    ),
                     artifact_refs=artifact_refs,
                 ),
                 artifact_refs=artifact_refs,
@@ -3744,14 +4041,19 @@ class WebRuntime:
         merged["recent_output_chars"] = max(320, min(int(merged["recent_output_chars"]), 4000))
         return merged
 
-    def _existing_tool_attempts_for_target(self, host_id: int, host_ip: str, port: str, protocol: str) -> set:
-        attempted = set()
+    def _existing_attempt_summary_for_target(self, host_id: int, host_ip: str, port: str, protocol: str) -> Dict[str, set]:
+        attempted = {
+            "tool_ids": set(),
+            "family_ids": set(),
+            "command_signatures": set(),
+        }
         with self._lock:
             project = getattr(self.logic, "activeProject", None)
             if not project:
                 return attempted
 
             self._ensure_scheduler_approval_store()
+            self._ensure_scheduler_table()
             session = project.database.session()
             try:
                 scripts_result = session.execute(text(
@@ -3771,10 +4073,25 @@ class WebRuntime:
                 for row in scripts_result.fetchall():
                     tool = str(row[0] or "").strip().lower()
                     if tool:
-                        attempted.add(tool)
+                        attempted["tool_ids"].add(tool)
+
+                target_state = get_target_state(project.database, int(host_id or 0)) or {}
+                for item in list(target_state.get("attempted_actions", []) or []):
+                    if not isinstance(item, dict) or not self._target_attempt_matches(item, port, protocol):
+                        continue
+                    tool = str(item.get("tool_id", "") or "").strip().lower()
+                    family_id = str(item.get("family_id", "") or "").strip().lower()
+                    command_signature = str(item.get("command_signature", "") or "").strip().lower()
+                    if tool:
+                        attempted["tool_ids"].add(tool)
+                    if family_id:
+                        attempted["family_ids"].add(family_id)
+                    if command_signature:
+                        attempted["command_signatures"].add(command_signature)
 
                 process_result = session.execute(text(
-                    "SELECT COALESCE(p.name, '') AS tool_id "
+                    "SELECT COALESCE(p.name, '') AS tool_id, "
+                    "COALESCE(p.command, '') AS command_text "
                     "FROM process AS p "
                     "WHERE COALESCE(p.hostIp, '') = :host_ip "
                     "AND COALESCE(p.port, '') = :port "
@@ -3787,11 +4104,17 @@ class WebRuntime:
                 })
                 for row in process_result.fetchall():
                     tool = str(row[0] or "").strip().lower()
+                    command_text = str(row[1] or "")
                     if tool:
-                        attempted.add(tool)
+                        attempted["tool_ids"].add(tool)
+                    command_signature = self._command_signature_for_target(command_text, protocol)
+                    if command_signature:
+                        attempted["command_signatures"].add(str(command_signature).strip().lower())
 
                 approval_result = session.execute(text(
-                    "SELECT COALESCE(tool_id, '') AS tool_id "
+                    "SELECT COALESCE(tool_id, '') AS tool_id, "
+                    "COALESCE(command_template, '') AS command_template, "
+                    "COALESCE(command_family_id, '') AS command_family_id "
                     "FROM scheduler_pending_approval "
                     "WHERE COALESCE(host_ip, '') = :host_ip "
                     "AND COALESCE(port, '') = :port "
@@ -3805,11 +4128,22 @@ class WebRuntime:
                 })
                 for row in approval_result.fetchall():
                     tool = str(row[0] or "").strip().lower()
+                    command_template = str(row[1] or "")
+                    family_id = str(row[2] or "").strip().lower()
                     if tool:
-                        attempted.add(tool)
+                        attempted["tool_ids"].add(tool)
+                    if family_id:
+                        attempted["family_ids"].add(family_id)
+                    command_signature = self._command_signature_for_target(command_template, protocol)
+                    if command_signature:
+                        attempted["command_signatures"].add(str(command_signature).strip().lower())
             finally:
                 session.close()
         return attempted
+
+    def _existing_tool_attempts_for_target(self, host_id: int, host_ip: str, port: str, protocol: str) -> set:
+        summary = self._existing_attempt_summary_for_target(host_id, host_ip, port, protocol)
+        return set(summary.get("tool_ids", set()) or set())
 
     def _build_scheduler_target_context(
             self,
@@ -3820,6 +4154,8 @@ class WebRuntime:
             protocol: str,
             service_name: str,
             attempted_tool_ids: set,
+            attempted_family_ids: Optional[set] = None,
+            attempted_command_signatures: Optional[set] = None,
             recent_output_chars: int,
             analysis_mode: str = "standard",
     ) -> Dict[str, Any]:
@@ -4260,6 +4596,8 @@ class WebRuntime:
             "target": target_data,
             "signals": signals,
             "attempted_tool_ids": sorted({str(item).strip().lower() for item in attempted_tool_ids if str(item).strip()}),
+            "attempted_family_ids": sorted({str(item).strip().lower() for item in list(attempted_family_ids or set()) if str(item).strip()}),
+            "attempted_command_signatures": sorted({str(item).strip().lower() for item in list(attempted_command_signatures or set()) if str(item).strip()}),
             "host_ports": host_port_inventory,
             "scripts": scripts,
             "recent_processes": recent_processes,
@@ -4306,9 +4644,11 @@ class WebRuntime:
         has_screenshot = _has_any("screenshooter")
         has_nmap_vuln = _has_any("nmap-vuln.nse")
         has_nuclei = _has_any("nuclei-web", "nuclei")
+        has_targeted_nuclei = _has_any("nuclei-cves", "nuclei-exposures", "nuclei-wordpress")
         has_whatweb = _has_any("whatweb", "whatweb-http", "whatweb-https")
         has_nikto = _has_any("nikto")
         has_web_content = _has_any("web-content-discovery")
+        has_http_followup = _has_any("curl-headers", "curl-options", "curl-robots")
         has_smb_signing_checks = _has_any("smb-security-mode", "smb2-security-mode")
         confident_cpe_count = 0
         for item in inferred_technologies[:120]:
@@ -4350,20 +4690,22 @@ class WebRuntime:
                 _add_gap("missing_nuclei_auto", "nuclei-web")
             if (
                     confident_cpe_count > 0
-                    and not (has_nmap_vuln and has_nuclei)
+                    and not (has_nmap_vuln and (has_nuclei or has_targeted_nuclei))
                     and int(len(host_cves or [])) == 0
                     and int(signal_map.get("vuln_hits", 0) or 0) == 0
             ):
-                _add_gap("missing_cpe_cve_enrichment", "nmap-vuln.nse", "nuclei-web")
+                _add_gap("missing_cpe_cve_enrichment", "nmap-vuln.nse", "nuclei-web", "nuclei-cves", "nuclei-exposures")
             if not inferred_technologies and not has_whatweb:
                 _add_gap("missing_technology_fingerprint", "whatweb")
-            if has_nmap_vuln or has_nuclei:
+            if has_nmap_vuln or has_nuclei or has_targeted_nuclei:
                 if not has_whatweb:
                     _add_gap("missing_whatweb", "whatweb", "whatweb-http", "whatweb-https")
                 if not has_nikto:
                     _add_gap("missing_nikto", "nikto")
                 if not has_web_content:
                     _add_gap("missing_web_content_discovery", "web-content-discovery")
+                if not has_http_followup:
+                    _add_gap("missing_http_followup", "curl-headers", "curl-options", "curl-robots")
         else:
             if not has_screenshot and (is_rdp or is_vnc):
                 _add_gap("missing_remote_screenshot", "screenshooter")
@@ -4373,8 +4715,18 @@ class WebRuntime:
                 _add_gap("missing_smb_signing_checks", "smb-security-mode", "smb2-security-mode")
 
         if int(len(host_cves or [])) > 0:
-            if is_web and not (has_whatweb and has_nikto and has_web_content):
-                _add_gap("missing_followup_after_vuln", "whatweb", "nikto", "web-content-discovery")
+            if is_web and not (has_whatweb and has_nikto and has_web_content and (has_targeted_nuclei or has_http_followup)):
+                _add_gap(
+                    "missing_followup_after_vuln",
+                    "whatweb",
+                    "nikto",
+                    "web-content-discovery",
+                    "nuclei-cves",
+                    "nuclei-exposures",
+                    "curl-headers",
+                    "curl-options",
+                    "curl-robots",
+                )
             if is_smb and not has_smb_signing_checks:
                 _add_gap("missing_smb_followup_after_vuln", "smb-security-mode", "smb2-security-mode")
 
@@ -6146,7 +6498,7 @@ class WebRuntime:
 
         normalized_browser = normalize_runner_settings({"browser": browser_settings or {}}).get("browser", {})
 
-        target_host = choose_preferred_host(self._hostname_for_ip(host_ip), host_ip)
+        target_host = choose_preferred_screenshot_host(self._hostname_for_ip(host_ip), host_ip)
         host_port = f"{target_host}:{port}"
         prefer_https = bool(isHttps(target_host, port))
         url_candidates = [
@@ -7323,6 +7675,39 @@ class WebRuntime:
         except Exception:
             return ""
 
+    @staticmethod
+    def _normalize_command_signature_source(command_text: str) -> str:
+        normalized = str(command_text or "").strip().lower()
+        if not normalized:
+            return ""
+        replacements = (
+            (r"(?i)(-oA\s+)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
+            (r"(?i)(-o\s+)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
+            (r"(?i)(--output(?:-dir)?\s+)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
+            (r"(?i)(--resume\s+)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
+            (r"(?i)(>\s*)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
+        )
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized)
+        normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+        return normalized
+
+    def _command_signature_for_target(self, command_text: str, protocol: str) -> str:
+        normalized = self._normalize_command_signature_source(command_text)
+        if not normalized:
+            return ""
+        return SchedulerPlanner._command_signature(str(protocol or "tcp"), normalized)
+
+    @staticmethod
+    def _target_attempt_matches(item: Dict[str, Any], port: str, protocol: str) -> bool:
+        entry_port = str(item.get("port", "") or "").strip()
+        entry_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
+        target_port = str(port or "").strip()
+        target_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+        if entry_port and target_port and entry_port != target_port:
+            return False
+        return entry_protocol == target_protocol
+
     def _build_command(self, template: str, host_ip: str, port: str, protocol: str, tool_id: str) -> Tuple[str, str]:
         project = self._require_active_project()
         running_folder = project.properties.runningFolder
@@ -7330,21 +7715,29 @@ class WebRuntime:
         outputfile = os.path.normpath(outputfile).replace("\\", "/")
 
         command = str(template or "")
-        if str(tool_id or "").strip().lower() == "nuclei-web":
+        normalized_tool = str(tool_id or "").strip().lower()
+        if normalized_tool == "banner":
+            command = AppSettings._ensure_banner_command(command)
+        if normalized_tool == "nuclei-web":
             command = AppSettings._ensure_nuclei_auto_scan(command)
+        elif "nuclei" in normalized_tool or "nuclei" in str(command).lower():
+            command = AppSettings._ensure_nuclei_command(command, automatic_scan=False)
         if str(tool_id or "").strip().lower() == "web-content-discovery":
             command = AppSettings._ensure_web_content_discovery_command(command)
         if "wapiti" in str(command).lower():
             normalized_tool = str(tool_id or "").strip().lower()
             scheme = "https" if "https-wapiti" in normalized_tool else "http"
             command = AppSettings._ensure_wapiti_command(command, scheme=scheme)
-        command, _target_host = apply_preferred_target_placeholders(
+        if "nmap" in str(command).lower():
+            command = AppSettings._ensure_nmap_stats_every(command)
+        command, target_host = apply_preferred_target_placeholders(
             command,
             hostname=self._hostname_for_ip(host_ip),
             ip=str(host_ip),
             port=str(port),
             output=outputfile,
         )
+        command = AppSettings._ensure_nmap_hostname_target_support(command, target_host)
         command = AppSettings._ensure_nmap_output_argument(command, outputfile)
         if "nmap" in command and str(protocol).lower() == "udp":
             command = command.replace("-sV", "-sVU")
@@ -7655,13 +8048,22 @@ class WebRuntime:
             text_chunk: str,
             state: Dict[str, Any],
     ):
-        percent, remaining = self._extract_nmap_progress_from_text(str(text_chunk or ""))
+        raw_chunk = str(text_chunk or "")
+        percent, remaining = self._extract_nmap_progress_from_text(raw_chunk)
         if percent is None and remaining is None:
             return
 
         changed = False
         percent_value = state.get("percent")
         remaining_value = state.get("remaining")
+        saw_progress_marker = bool(
+            _NMAP_PROGRESS_PERCENT_RE.search(raw_chunk)
+            or _NMAP_PROGRESS_PERCENT_ATTR_RE.search(raw_chunk)
+        )
+        saw_remaining_marker = bool(
+            _NMAP_PROGRESS_REMAINING_PAREN_RE.search(raw_chunk)
+            or _NMAP_PROGRESS_REMAINING_ATTR_RE.search(raw_chunk)
+        )
 
         if percent is not None:
             bounded = max(0.0, min(float(percent), 100.0))
@@ -7676,6 +8078,12 @@ class WebRuntime:
                 remaining_value = bounded_remaining
                 state["remaining"] = bounded_remaining
                 changed = True
+        elif saw_progress_marker and not saw_remaining_marker and remaining_value != 0:
+            # Nmap often emits percent-only timing lines. Clear any stale ETA instead of
+            # carrying forward an old value and implying precision that does not exist.
+            remaining_value = 0
+            state["remaining"] = 0
+            changed = True
 
         now = time.monotonic()
         last_update = float(state.get("updated_at", 0.0) or 0.0)

@@ -345,6 +345,12 @@ def _determine_scheduler_phase(
         "whatweb-https",
         "nikto",
         "web-content-discovery",
+        "nuclei-cves",
+        "nuclei-exposures",
+        "nuclei-wordpress",
+        "curl-headers",
+        "curl-options",
+        "curl-robots",
         "wafw00f",
         "wpscan",
         "http-wapiti",
@@ -405,7 +411,8 @@ def _build_prompt(
         "and related follow-up scans before niche checks.\n"
         "Then run protocol checks (for example SMB signing/state checks) and targeted checks driven by identified "
         "technology/vendor/CPE/CVE evidence.\n"
-        "For web services, include deeper checks like whatweb, nikto, and web content discovery.\n"
+        "For web services, include deeper checks like whatweb, nikto, web content discovery, and bounded nuclei "
+        "follow-up profiles such as CVE- or exposure-focused scans when the evidence supports them.\n"
         "If goal profile is external and Shodan is available, include external enrichment when high-value.\n"
         "Continuously reassess hostname/OS/technology/version confidence from cumulative host evidence.\n"
         "Only choose technology/vendor-specific tools when context contains matching evidence.\n"

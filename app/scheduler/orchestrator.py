@@ -13,8 +13,8 @@ from app.scheduler.policy import (
 
 DEFAULT_AI_FEEDBACK_CONFIG = {
     "enabled": True,
-    "max_rounds_per_target": 4,
-    "max_actions_per_round": 4,
+    "max_rounds_per_target": 5,
+    "max_actions_per_round": 6,
     "recent_output_chars": 900,
 }
 DIG_DEEPER_MAX_RUNTIME_SECONDS = 900
@@ -125,6 +125,25 @@ class SchedulerOrchestrator:
         merged["max_actions_per_round"] = max(1, min(int(merged["max_actions_per_round"]), 8))
         merged["recent_output_chars"] = max(320, min(int(merged["recent_output_chars"]), 4000))
         return merged
+
+    @staticmethod
+    def _normalize_text_token(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    @classmethod
+    def _normalize_attempt_summary(cls, payload: Any) -> Dict[str, Set[str]]:
+        if isinstance(payload, dict):
+            return {
+                "tool_ids": {cls._normalize_text_token(item) for item in list(payload.get("tool_ids", []) or []) if cls._normalize_text_token(item)},
+                "family_ids": {cls._normalize_text_token(item) for item in list(payload.get("family_ids", []) or []) if cls._normalize_text_token(item)},
+                "command_signatures": {cls._normalize_text_token(item) for item in list(payload.get("command_signatures", []) or []) if cls._normalize_text_token(item)},
+            }
+        normalized = {cls._normalize_text_token(item) for item in list(payload or set()) if cls._normalize_text_token(item)}
+        return {
+            "tool_ids": normalized,
+            "family_ids": set(),
+            "command_signatures": set(),
+        }
 
     def build_run_options(
             self,
@@ -338,10 +357,13 @@ class SchedulerOrchestrator:
                 str(resolved_options.scheduler_mode or "").strip().lower() == "ai"
                 and bool(resolved_options.ai_feedback_enabled)
             )
-            attempted_tool_ids = set(
+            attempted_state = self._normalize_attempt_summary(
                 existing_attempts(target=target)
-                if use_feedback_loop and existing_attempts else set()
+                if use_feedback_loop and existing_attempts else {}
             )
+            attempted_tool_ids = set(attempted_state["tool_ids"])
+            attempted_family_ids = set(attempted_state["family_ids"])
+            attempted_command_signatures = set(attempted_state["command_signatures"])
 
             for _round in range(int(resolved_options.max_rounds or 1) if use_feedback_loop else 1):
                 if should_cancel and should_cancel(int(resolved_options.job_id or 0)):
@@ -366,6 +388,8 @@ class SchedulerOrchestrator:
                     context = build_context(
                         target=target,
                         attempted_tool_ids=set(attempted_tool_ids),
+                        attempted_family_ids=set(attempted_family_ids),
+                        attempted_command_signatures=set(attempted_command_signatures),
                         recent_output_chars=int(resolved_options.recent_output_chars or 900),
                         analysis_mode=resolved_options.analysis_mode,
                     )
@@ -376,6 +400,8 @@ class SchedulerOrchestrator:
                     settings,
                     context=context,
                     excluded_tool_ids=sorted(attempted_tool_ids),
+                    excluded_family_ids=sorted(attempted_family_ids),
+                    excluded_command_signatures=sorted(attempted_command_signatures),
                     limit=int(resolved_options.max_actions_per_round or 0) or None,
                     engagement_policy=engagement_policy,
                 )
@@ -391,13 +417,18 @@ class SchedulerOrchestrator:
                 round_progress = False
                 execution_tasks: List[SchedulerExecutionTask] = []
                 round_scheduled_tool_ids: Set[str] = set()
+                round_scheduled_family_ids: Set[str] = set()
+                round_scheduled_command_signatures: Set[str] = set()
 
                 for decision in decisions:
                     normalized_tool_id = str(decision.tool_id or "").strip().lower()
+                    normalized_family_id = self._normalize_text_token(getattr(decision, "family_id", ""))
                     if (
                             not normalized_tool_id
                             or normalized_tool_id in attempted_tool_ids
                             or normalized_tool_id in round_scheduled_tool_ids
+                            or (normalized_family_id and normalized_family_id in attempted_family_ids)
+                            or (normalized_family_id and normalized_family_id in round_scheduled_family_ids)
                     ):
                         continue
 
@@ -406,6 +437,17 @@ class SchedulerOrchestrator:
                         settings,
                         decision.tool_id,
                     )
+                    normalized_command_signature = self._normalize_text_token(
+                        SchedulerPlanner._command_signature(str(target.protocol or "tcp"), command_template)
+                    )
+                    if (
+                            normalized_command_signature
+                            and (
+                                normalized_command_signature in attempted_command_signatures
+                                or normalized_command_signature in round_scheduled_command_signatures
+                            )
+                    ):
+                        continue
 
                     if decision.is_blocked:
                         disposition = (
@@ -421,6 +463,10 @@ class SchedulerOrchestrator:
                             )
                         )
                         attempted_tool_ids.add(normalized_tool_id)
+                        if normalized_family_id:
+                            attempted_family_ids.add(normalized_family_id)
+                        if normalized_command_signature:
+                            attempted_command_signatures.add(normalized_command_signature)
                         summary["skipped"] += 1
                         round_progress = True
                         _ = disposition
@@ -442,6 +488,10 @@ class SchedulerOrchestrator:
                         action = str(getattr(disposition, "action", "queued") or "queued").strip().lower()
                         if action == "execute":
                             round_scheduled_tool_ids.add(normalized_tool_id)
+                            if normalized_family_id:
+                                round_scheduled_family_ids.add(normalized_family_id)
+                            if normalized_command_signature:
+                                round_scheduled_command_signatures.add(normalized_command_signature)
                             execution_tasks.append(SchedulerExecutionTask(
                                 decision=decision,
                                 tool_id=normalized_tool_id,
@@ -459,6 +509,10 @@ class SchedulerOrchestrator:
                             ))
                         else:
                             attempted_tool_ids.add(normalized_tool_id)
+                            if normalized_family_id:
+                                attempted_family_ids.add(normalized_family_id)
+                            if normalized_command_signature:
+                                attempted_command_signatures.add(normalized_command_signature)
                             round_progress = True
                             if action == "queued":
                                 summary["approval_queued"] += 1
@@ -467,6 +521,10 @@ class SchedulerOrchestrator:
                         continue
 
                     round_scheduled_tool_ids.add(normalized_tool_id)
+                    if normalized_family_id:
+                        round_scheduled_family_ids.add(normalized_family_id)
+                    if normalized_command_signature:
+                        round_scheduled_command_signatures.add(normalized_command_signature)
                     execution_tasks.append(SchedulerExecutionTask(
                         decision=decision,
                         tool_id=normalized_tool_id,
@@ -497,6 +555,17 @@ class SchedulerOrchestrator:
 
                     if normalized_tool_id:
                         attempted_tool_ids.add(normalized_tool_id)
+                    normalized_family_id = self._normalize_text_token(getattr(decision, "family_id", ""))
+                    if normalized_family_id:
+                        attempted_family_ids.add(normalized_family_id)
+                    command_template = str(getattr(decision, "command_template", "") or "")
+                    if not command_template:
+                        command_template = self._find_command_template_for_tool(settings, getattr(decision, "tool_id", ""))
+                    normalized_command_signature = self._normalize_text_token(
+                        SchedulerPlanner._command_signature(str(target.protocol or "tcp"), command_template)
+                    )
+                    if normalized_command_signature:
+                        attempted_command_signatures.add(normalized_command_signature)
                     round_progress = True
                     if executed:
                         summary["executed"] += 1

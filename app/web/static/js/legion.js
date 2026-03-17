@@ -10,7 +10,8 @@ const workspaceState = {
 
 const graphWorkspaceState = {
     viewId: "attack_surface",
-    groupBy: "subnet",
+    groupBy: "finding",
+    zoomPercent: 70,
     data: {
         nodes: [],
         edges: [],
@@ -35,6 +36,8 @@ const graphWorkspaceState = {
     selectedKind: "",
     selectedRef: "",
     selectedPayload: null,
+    relatedContent: [],
+    contentRequestId: 0,
     annotations: [],
     drag: null,
 };
@@ -42,8 +45,8 @@ const graphWorkspaceState = {
 const GRAPH_VIEW_PRESETS = {
     attack_surface: {
         label: "attack surface",
-        defaultGroup: "subnet",
-        nodeTypes: ["scope", "subnet", "host", "fqdn", "port", "service", "url", "technology", "finding", "cpe", "cve"],
+        defaultGroup: "finding",
+        nodeTypes: ["scope", "subnet", "host", "fqdn", "port", "service", "url", "technology", "finding", "cpe", "cve", "screenshot"],
     },
     host_service_topology: {
         label: "host/service topology",
@@ -127,26 +130,36 @@ const GRAPH_NODE_SIZE = {
 };
 
 const GRAPH_TYPE_ORDER = [
-    "scope",
-    "subnet",
-    "host",
-    "fqdn",
-    "port",
-    "service",
-    "url",
-    "technology",
-    "cpe",
     "finding",
     "cve",
     "exploit_reference",
     "credential",
     "identity",
     "session",
+    "scope",
+    "subnet",
+    "host",
+    "fqdn",
+    "service",
+    "url",
+    "port",
+    "technology",
+    "cpe",
+    "screenshot",
     "action",
     "artifact",
-    "screenshot",
     "evidence_record",
 ];
+
+const GRAPH_SEVERITY_ORDER = {
+    critical: 0,
+    high: 1,
+    medium: 2,
+    moderate: 2,
+    low: 3,
+    info: 4,
+    informational: 4,
+};
 
 const processOutputState = {
     processId: null,
@@ -167,6 +180,7 @@ const scriptOutputState = {
     output: "",
     command: "",
     status: "",
+    downloadName: "",
     modalOpen: false,
 };
 
@@ -1789,6 +1803,8 @@ function closeScriptOutputModal(resetSelection = true) {
         scriptOutputState.output = "";
         scriptOutputState.command = "";
         scriptOutputState.status = "";
+        scriptOutputState.downloadName = "";
+        setText("script-output-modal-title", "Script Output");
         setScriptOutputMeta("No script selected");
         setScriptOutputCommand("");
         setScriptOutputText("");
@@ -1837,6 +1853,7 @@ async function openScriptOutputModal(scriptDbId) {
         return;
     }
     setScriptOutputModalOpen(true);
+    setText("script-output-modal-title", "Script Output");
     setScriptOutputMeta(`Script ${sid} | loading...`);
     setScriptOutputCommand("");
     setScriptOutputText("");
@@ -1847,6 +1864,7 @@ async function openScriptOutputModal(scriptDbId) {
     scriptOutputState.output = "";
     scriptOutputState.command = "";
     scriptOutputState.status = "";
+    scriptOutputState.downloadName = "";
     try {
         const payload = await fetchJson(`/api/workspace/scripts/${sid}/output?max_chars=50000`);
         const outputText = String(payload.output || payload.output_chunk || "");
@@ -1859,6 +1877,7 @@ async function openScriptOutputModal(scriptDbId) {
         scriptOutputState.output = outputText;
         scriptOutputState.command = String(payload.command || "");
         scriptOutputState.status = String(payload.status || "");
+        scriptOutputState.downloadName = "";
         setScriptOutputCommand(payload.command || "(no associated process command)");
         setScriptOutputText(outputText);
         setScriptOutputMeta(
@@ -1868,6 +1887,22 @@ async function openScriptOutputModal(scriptDbId) {
         setScriptOutputMeta(`Script ${sid} | load failed`);
         setScriptOutputText(`Failed to load script output: ${err.message || err}`);
     }
+}
+
+function openTextPreviewModal({title = "Artifact Preview", meta = "", command = "", output = "", downloadName = ""} = {}) {
+    setScriptOutputModalOpen(true);
+    scriptOutputState.scriptDbId = null;
+    scriptOutputState.processId = 0;
+    scriptOutputState.scriptId = "";
+    scriptOutputState.source = "graph";
+    scriptOutputState.output = String(output || "");
+    scriptOutputState.command = String(command || "");
+    scriptOutputState.status = "";
+    scriptOutputState.downloadName = String(downloadName || "");
+    setText("script-output-modal-title", title || "Artifact Preview");
+    setScriptOutputMeta(String(meta || "Artifact preview"));
+    setScriptOutputCommand(command || "(no associated command)");
+    setScriptOutputText(output || "");
 }
 
 function openScreenshotModal(url, filename, port = "") {
@@ -2005,6 +2040,19 @@ function downloadScriptOutputAction() {
     const text = scriptOutputState.output || "";
     if (!text) {
         setWorkspaceStatus("No script output to download", true);
+        return;
+    }
+    if (scriptOutputState.downloadName) {
+        const blob = new Blob([text], {type: "text/plain;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = scriptOutputState.downloadName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setWorkspaceStatus(`${scriptOutputState.downloadName} downloaded`);
         return;
     }
     const scriptDbId = parseInt(scriptOutputState.scriptDbId, 10) || "unknown";
@@ -2340,27 +2388,23 @@ function renderApprovals(approvals) {
         rejectBtn.dataset.action = "reject";
         rejectBtn.dataset.approvalId = String(item.id || "");
 
-        const familyLabel = document.createElement("label");
-        familyLabel.textContent = "Family action";
-        const familySelect = document.createElement("select");
-        familySelect.dataset.approvalFamilyAction = String(item.id || "");
-        [
-            ["", "none"],
-            ["allowed", "allow family"],
-            ["approval_required", "always require approval"],
-            ["suppressed", "suppress family"],
-            ["blocked", "block family"],
-        ].forEach(([value, label]) => {
-            const option = document.createElement("option");
-            option.value = value;
-            option.textContent = label;
-            familySelect.appendChild(option);
-        });
-        familyLabel.appendChild(familySelect);
+        const allowFamilyBtn = document.createElement("button");
+        allowFamilyBtn.type = "button";
+        allowFamilyBtn.textContent = "Allow Family";
+        allowFamilyBtn.dataset.action = "allow-family";
+        allowFamilyBtn.dataset.approvalId = String(item.id || "");
 
+        const suppressFamilyBtn = document.createElement("button");
+        suppressFamilyBtn.type = "button";
+        suppressFamilyBtn.textContent = "Suppress Family";
+        suppressFamilyBtn.dataset.action = "suppress-family";
+        suppressFamilyBtn.dataset.approvalId = String(item.id || "");
+
+        actionsCell.className = "approval-action-buttons";
         actionsCell.appendChild(approveBtn);
         actionsCell.appendChild(rejectBtn);
-        actionsCell.appendChild(familyLabel);
+        actionsCell.appendChild(allowFamilyBtn);
+        actionsCell.appendChild(suppressFamilyBtn);
 
         const target = formatTargetLabel(item.host_ip, item.port, item.protocol);
         tr.appendChild(makeCell(item.id || ""));
@@ -2484,7 +2528,7 @@ function renderHostDetail(payload) {
                 const tr = document.createElement("tr");
                 tr.appendChild(makeCell(scriptRow.id || ""));
                 tr.appendChild(makeCell(scriptRow.script_id || ""));
-                tr.appendChild(makeCell((scriptRow.output || "").slice(0, 140)));
+                tr.appendChild(makeCell(scriptRow.display_output || (scriptRow.output || "").slice(0, 140)));
                 const actions = document.createElement("td");
                 const view = document.createElement("button");
                 view.type = "button";
@@ -3114,6 +3158,12 @@ function graphUpdateConfidenceLabel() {
     setText("graph-min-confidence-value", value);
 }
 
+function graphUpdateZoomLabel() {
+    const value = Math.max(50, Math.min(200, parseInt(getValue("graph-zoom-slider"), 10) || graphWorkspaceState.zoomPercent || 70));
+    graphWorkspaceState.zoomPercent = value;
+    setText("graph-zoom-value", `${value}%`);
+}
+
 function graphCurrentViewConfig() {
     const viewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim();
     return GRAPH_VIEW_PRESETS[viewId] || GRAPH_VIEW_PRESETS.attack_surface;
@@ -3239,6 +3289,7 @@ function graphCollectServerQuery() {
         search: String(getValue("graph-search-input") || "").trim(),
         minConfidence,
         hideAiSuggested: getChecked("graph-hide-ai-suggested"),
+        hideNmapXmlArtifacts: getChecked("graph-hide-nmap-xml-artifacts"),
     };
 }
 
@@ -3331,6 +3382,111 @@ function graphSortNodes(left, right) {
     return String(left?.label || "").localeCompare(String(right?.label || ""));
 }
 
+function graphSeverityRank(entity) {
+    const severity = String(graphPropertyValue(entity, "severity") || "").trim().toLowerCase();
+    if (!severity) {
+        return 99;
+    }
+    return Object.prototype.hasOwnProperty.call(GRAPH_SEVERITY_ORDER, severity)
+        ? GRAPH_SEVERITY_ORDER[severity]
+        : 80;
+}
+
+function graphGroupTypePriority(nodeType, groupBy) {
+    const type = String(nodeType || "").trim().toLowerCase();
+    if (groupBy === "finding") {
+        if (type === "finding") {
+            return 0;
+        }
+        if (type === "cve" || type === "exploit_reference") {
+            return 1;
+        }
+        if (["credential", "identity", "session"].includes(type)) {
+            return 2;
+        }
+        if (["service", "url"].includes(type)) {
+            return 3;
+        }
+        if (type === "technology" || type === "cpe") {
+            return 4;
+        }
+        if (type === "screenshot") {
+            return 5;
+        }
+        if (["host", "fqdn", "port", "subnet", "scope"].includes(type)) {
+            return 6;
+        }
+        return 7;
+    }
+    if (groupBy === "service") {
+        if (["service", "url"].includes(type)) {
+            return 0;
+        }
+        if (type === "technology" || type === "cpe") {
+            return 1;
+        }
+        if (["finding", "cve", "exploit_reference"].includes(type)) {
+            return 2;
+        }
+        if (type === "screenshot") {
+            return 3;
+        }
+        if (["host", "fqdn", "port"].includes(type)) {
+            return 4;
+        }
+        return 5;
+    }
+    if (groupBy === "host" || groupBy === "domain" || groupBy === "subnet") {
+        if (["host", "fqdn", "subnet", "scope"].includes(type)) {
+            return 0;
+        }
+        if (["service", "url", "port"].includes(type)) {
+            return 1;
+        }
+        if (["finding", "cve", "exploit_reference"].includes(type)) {
+            return 2;
+        }
+        if (["credential", "identity", "session"].includes(type)) {
+            return 3;
+        }
+        if (type === "screenshot") {
+            return 4;
+        }
+        return 5;
+    }
+    return 9;
+}
+
+function graphNaturalCompare(left, right) {
+    return String(left || "").localeCompare(String(right || ""), undefined, {
+        numeric: true,
+        sensitivity: "base",
+    });
+}
+
+function graphSortGroups(groupsMap, groupBy) {
+    return Array.from(groupsMap.entries()).sort((left, right) => {
+        const [leftKey, leftNodes] = left;
+        const [rightKey, rightNodes] = right;
+        const leftPriority = Math.min(...leftNodes.map((item) => graphGroupTypePriority(item?.type, groupBy)), 9);
+        const rightPriority = Math.min(...rightNodes.map((item) => graphGroupTypePriority(item?.type, groupBy)), 9);
+        if (leftPriority !== rightPriority) {
+            return leftPriority - rightPriority;
+        }
+        const leftSeverity = Math.min(...leftNodes.map((item) => graphSeverityRank(item)), 99);
+        const rightSeverity = Math.min(...rightNodes.map((item) => graphSeverityRank(item)), 99);
+        if (leftSeverity !== rightSeverity) {
+            return leftSeverity - rightSeverity;
+        }
+        const leftFindings = leftNodes.filter((item) => ["finding", "cve", "exploit_reference"].includes(String(item?.type || "").trim().toLowerCase())).length;
+        const rightFindings = rightNodes.filter((item) => ["finding", "cve", "exploit_reference"].includes(String(item?.type || "").trim().toLowerCase())).length;
+        if (leftFindings !== rightFindings) {
+            return rightFindings - leftFindings;
+        }
+        return graphNaturalCompare(leftKey, rightKey);
+    });
+}
+
 function graphApplyLocalFilters(snapshot) {
     const viewConfig = graphCurrentViewConfig();
     const filters = graphCollectServerQuery();
@@ -3410,8 +3566,7 @@ function graphApplyLocalFilters(snapshot) {
     const leftPad = 36;
     const topPad = 72;
     let maxRows = 0;
-    Array.from(groupsMap.keys()).sort().forEach((groupKey, index) => {
-        const groupNodes = groupsMap.get(groupKey) || [];
+    graphSortGroups(groupsMap, filters.groupBy || viewConfig.defaultGroup || "subnet").forEach(([groupKey, groupNodes], index) => {
         maxRows = Math.max(maxRows, groupNodes.length);
         const groupX = leftPad + (index * (groupWidth + groupGap));
         const groupHeight = Math.max(150, 94 + (groupNodes.length * 84));
@@ -3563,6 +3718,7 @@ function graphRenderSelectionDetail() {
         propertiesNode.textContent = "No graph selection";
         pinButton.disabled = true;
         pinButton.textContent = "Pin Node";
+        graphRenderRelatedContent("No related artifacts or screenshots.");
         return;
     }
 
@@ -3656,9 +3812,153 @@ function graphRenderSelectionDetail() {
 
     pinButton.disabled = kind !== "node";
     pinButton.textContent = kind === "node" && graphWorkspaceState.pinnedNodeIds[String(entity.node_id || "")] ? "Unpin Node" : "Pin Node";
+    graphRenderRelatedContent();
 }
 
-function graphRenderWorkspace() {
+function graphRenderRelatedContent(statusMessage = "") {
+    const listNode = document.getElementById("graph-detail-content-list");
+    const statusNode = document.getElementById("graph-detail-content-status");
+    if (!listNode || !statusNode) {
+        return;
+    }
+    listNode.innerHTML = "";
+    const entries = Array.isArray(graphWorkspaceState.relatedContent) ? graphWorkspaceState.relatedContent : [];
+    const fallback = statusMessage || "No related artifacts or screenshots.";
+    if (!entries.length) {
+        statusNode.textContent = fallback;
+        return;
+    }
+    statusNode.textContent = `${entries.length} related item${entries.length === 1 ? "" : "s"}`;
+    entries.forEach((entry) => {
+        const card = document.createElement("article");
+        card.className = "graph-content-card";
+
+        const header = document.createElement("div");
+        header.className = "graph-content-header";
+        const title = document.createElement("strong");
+        title.textContent = entry.label || entry.filename || entry.node_id || "artifact";
+        header.appendChild(title);
+        const kind = document.createElement("span");
+        kind.className = "graph-content-kind";
+        kind.textContent = graphFriendlyLabel(entry.kind || entry.node_type || "artifact");
+        header.appendChild(kind);
+        card.appendChild(header);
+
+        const meta = document.createElement("div");
+        meta.className = "graph-content-meta";
+        meta.textContent = entry.ref || entry.filename || "";
+        card.appendChild(meta);
+
+        if (entry.kind === "image" && entry.preview_url) {
+            const image = document.createElement("img");
+            image.className = "graph-content-image";
+            image.src = `${entry.preview_url}${entry.preview_url.includes("?") ? "&" : "?"}t=${Date.now()}`;
+            image.alt = entry.filename || entry.label || "Graph artifact preview";
+            image.addEventListener("click", () => {
+                openScreenshotModal(entry.preview_url, entry.filename || entry.label || "screenshot.png", "");
+            });
+            card.appendChild(image);
+        } else if (entry.kind === "text") {
+            const preview = document.createElement("pre");
+            preview.className = "graph-content-text";
+            preview.textContent = String(entry.preview_text || entry.message || "").trim() || "No text preview available.";
+            card.appendChild(preview);
+        } else {
+            const message = document.createElement("p");
+            message.className = "text-muted";
+            message.textContent = entry.message || "Preview unavailable.";
+            card.appendChild(message);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "scheduler-actions graph-content-actions";
+        const copyButton = document.createElement("button");
+        copyButton.type = "button";
+        copyButton.textContent = "Copy";
+        copyButton.addEventListener("click", async () => {
+            if (entry.kind === "image" && entry.preview_url) {
+                screenshotModalState.url = String(entry.preview_url || "");
+                screenshotModalState.filename = String(entry.filename || "screenshot.png");
+                screenshotModalState.port = "";
+                await copyScreenshotAction();
+                return;
+            }
+            await copyTextToClipboard(
+                String(entry.preview_text || entry.ref || ""),
+                `${entry.filename || entry.label || "Artifact"} copied to clipboard`,
+                "Nothing to copy",
+            );
+        });
+        actions.appendChild(copyButton);
+
+        const downloadButton = document.createElement("button");
+        downloadButton.type = "button";
+        downloadButton.textContent = "Download";
+        downloadButton.addEventListener("click", () => {
+            if (entry.download_url) {
+                window.location.assign(`${entry.download_url}${entry.download_url.includes("?") ? "&" : "?"}t=${Date.now()}`);
+            }
+        });
+        actions.appendChild(downloadButton);
+
+        if (entry.kind === "image" && entry.preview_url) {
+            const openButton = document.createElement("button");
+            openButton.type = "button";
+            openButton.textContent = "Open";
+            openButton.addEventListener("click", () => {
+                openScreenshotModal(entry.preview_url, entry.filename || entry.label || "screenshot.png", "");
+            });
+            actions.appendChild(openButton);
+        } else if (entry.kind === "text") {
+            const openButton = document.createElement("button");
+            openButton.type = "button";
+            openButton.textContent = "Open";
+            openButton.addEventListener("click", () => {
+                openTextPreviewModal({
+                    title: "Artifact Preview",
+                    meta: entry.filename || entry.ref || "Artifact preview",
+                    command: entry.ref || "",
+                    output: entry.preview_text || "",
+                    downloadName: entry.filename || "artifact.txt",
+                });
+            });
+            actions.appendChild(openButton);
+        }
+
+        card.appendChild(actions);
+        listNode.appendChild(card);
+    });
+}
+
+async function graphFetchRelatedContent() {
+    const kind = String(graphWorkspaceState.selectedKind || "");
+    const ref = String(graphWorkspaceState.selectedRef || "");
+    if (!kind || !ref || kind !== "node") {
+        graphWorkspaceState.relatedContent = [];
+        graphRenderRelatedContent("No related artifacts or screenshots.");
+        return;
+    }
+    const requestId = Number(graphWorkspaceState.contentRequestId || 0) + 1;
+    graphWorkspaceState.contentRequestId = requestId;
+    graphWorkspaceState.relatedContent = [];
+    graphRenderRelatedContent("Loading related content...");
+    try {
+        const payload = await fetchJson(`/api/graph/nodes/${encodeURIComponent(ref)}/content?max_chars=20000`);
+        if (requestId !== graphWorkspaceState.contentRequestId) {
+            return;
+        }
+        graphWorkspaceState.relatedContent = Array.isArray(payload?.entries) ? payload.entries : [];
+        graphRenderRelatedContent();
+    } catch (err) {
+        if (requestId !== graphWorkspaceState.contentRequestId) {
+            return;
+        }
+        graphWorkspaceState.relatedContent = [];
+        graphRenderRelatedContent(`Related content load failed: ${err.message}`);
+    }
+}
+
+function graphRenderWorkspace({preserveDetail = false} = {}) {
     const svg = document.getElementById("graph-workspace-canvas");
     const emptyNode = document.getElementById("graph-workspace-empty");
     if (!svg || !emptyNode) {
@@ -3670,10 +3970,13 @@ function graphRenderWorkspace() {
     const edges = filtered.edges || [];
     const positions = filtered.positions || {};
 
+    let selectionCleared = false;
     if (graphWorkspaceState.selectedKind && !graphFindEntity(graphWorkspaceState.selectedKind, graphWorkspaceState.selectedRef)) {
         graphWorkspaceState.selectedKind = "";
         graphWorkspaceState.selectedRef = "";
         graphWorkspaceState.selectedPayload = null;
+        graphWorkspaceState.relatedContent = [];
+        selectionCleared = true;
     }
 
     setText(
@@ -3684,6 +3987,8 @@ function graphRenderWorkspace() {
     if (!nodes.length) {
         svg.innerHTML = "";
         svg.setAttribute("viewBox", "0 0 1600 900");
+        svg.style.width = "1180px";
+        svg.style.height = "620px";
         emptyNode.hidden = false;
         graphRenderSelectionDetail();
         return;
@@ -3692,6 +3997,9 @@ function graphRenderWorkspace() {
     emptyNode.hidden = true;
     svg.innerHTML = "";
     svg.setAttribute("viewBox", `0 0 ${filtered.width} ${filtered.height}`);
+    const zoomScale = Math.max(50, Math.min(200, Number(graphWorkspaceState.zoomPercent || 70))) / 100;
+    svg.style.width = `${Math.max(1180, Math.round(filtered.width * zoomScale))}px`;
+    svg.style.height = `${Math.max(620, Math.round(filtered.height * zoomScale))}px`;
 
     const defs = graphCreateSvgNode("defs");
     defs.appendChild(graphCreateSvgNode("marker", {
@@ -3837,13 +4145,17 @@ function graphRenderWorkspace() {
         svg.appendChild(groupNode);
     });
 
-    graphRenderSelectionDetail();
+    if (!preserveDetail || selectionCleared || !graphWorkspaceState.selectedKind) {
+        graphRenderSelectionDetail();
+    }
 }
 
 function graphSelectEntity(kind, ref) {
     graphWorkspaceState.selectedKind = String(kind || "");
     graphWorkspaceState.selectedRef = String(ref || "");
+    graphWorkspaceState.relatedContent = [];
     graphRenderWorkspace();
+    graphFetchRelatedContent().catch(() => {});
 }
 
 async function graphLoadMetadata({force = false} = {}) {
@@ -3916,6 +4228,9 @@ async function graphLoadSnapshot({background = false, forceMetadata = false} = {
         if (filters.hideAiSuggested) {
             params.set("hide_ai_suggested", "true");
         }
+        if (filters.hideNmapXmlArtifacts) {
+            params.set("hide_nmap_xml_artifacts", "true");
+        }
         params.set("limit_nodes", "2000");
         params.set("limit_edges", "4000");
         const body = await fetchJson(`/api/graph?${params.toString()}`);
@@ -3926,7 +4241,14 @@ async function graphLoadSnapshot({background = false, forceMetadata = false} = {
         };
         graphPopulateDynamicFilters();
         graphRenderLayoutOptions();
-        graphRenderWorkspace();
+        graphRenderWorkspace({preserveDetail: background && Boolean(graphWorkspaceState.selectedKind)});
+        if (
+            graphWorkspaceState.selectedKind === "node"
+            && graphWorkspaceState.selectedRef
+            && (!background || !Array.isArray(graphWorkspaceState.relatedContent) || !graphWorkspaceState.relatedContent.length)
+        ) {
+            graphFetchRelatedContent().catch(() => {});
+        }
         if (!background) {
             setGraphStatus(`Graph loaded: ${graphWorkspaceState.filtered.nodes.length} nodes, ${graphWorkspaceState.filtered.edges.length} edges`);
         }
@@ -4018,6 +4340,7 @@ async function graphSaveLayoutAction() {
             pack: getValue("graph-pack-filter"),
             time_window: getValue("graph-time-window-filter"),
             hide_ai_suggested: getChecked("graph-hide-ai-suggested"),
+            hide_nmap_xml_artifacts: getChecked("graph-hide-nmap-xml-artifacts"),
             min_confidence: getValue("graph-min-confidence"),
         },
     };
@@ -4116,6 +4439,12 @@ function graphHandlePointerMove(event) {
         return;
     }
     event.preventDefault();
+    const deltaX = Number(event.clientX || 0) - Number(graphWorkspaceState.drag.startClientX || 0);
+    const deltaY = Number(event.clientY || 0) - Number(graphWorkspaceState.drag.startClientY || 0);
+    if (!graphWorkspaceState.drag.active && Math.hypot(deltaX, deltaY) < 4) {
+        return;
+    }
+    graphWorkspaceState.drag.active = true;
     const point = graphSvgPoint(svg, event);
     const nodeId = String(graphWorkspaceState.drag.nodeId || "");
     graphWorkspaceState.positions[nodeId] = {
@@ -4123,7 +4452,7 @@ function graphHandlePointerMove(event) {
         y: Math.max(28, Math.round(point.y - graphWorkspaceState.drag.offsetY)),
     };
     graphWorkspaceState.pinnedNodeIds[nodeId] = true;
-    graphRenderWorkspace();
+    graphRenderWorkspace({preserveDetail: true});
 }
 
 function graphHandlePointerUp() {
@@ -4159,7 +4488,7 @@ function bindGraphWorkspaceEvents() {
             if (id === "graph-view-select") {
                 const viewId = String(event.target.value || "attack_surface").trim();
                 const viewConfig = GRAPH_VIEW_PRESETS[viewId] || GRAPH_VIEW_PRESETS.attack_surface;
-                setValue("graph-group-select", viewConfig.defaultGroup || "subnet");
+                setValue("graph-group-select", viewConfig.defaultGroup || "finding");
                 graphWorkspaceState.activeLayoutId = "";
                 graphWorkspaceState.positions = {};
                 graphWorkspaceState.pinnedNodeIds = {};
@@ -4194,12 +4523,23 @@ function bindGraphWorkspaceEvents() {
         });
     }
 
-    const hideAiNode = document.getElementById("graph-hide-ai-suggested");
-    if (hideAiNode) {
-        hideAiNode.addEventListener("change", () => {
-            graphLoadSnapshot({background: false}).catch(() => {});
+    const zoomNode = document.getElementById("graph-zoom-slider");
+    if (zoomNode) {
+        zoomNode.addEventListener("input", () => {
+            graphUpdateZoomLabel();
+            graphRenderWorkspace();
         });
     }
+
+    ["graph-hide-ai-suggested", "graph-hide-nmap-xml-artifacts"].forEach((id) => {
+        const node = document.getElementById(id);
+        if (!node) {
+            return;
+        }
+        node.addEventListener("change", () => {
+            graphLoadSnapshot({background: false}).catch(() => {});
+        });
+    });
 
     const layoutSelect = document.getElementById("graph-layout-select");
     if (layoutSelect) {
@@ -4229,6 +4569,7 @@ function bindGraphWorkspaceEvents() {
             }
             graphWorkspaceState.selectedKind = "";
             graphWorkspaceState.selectedRef = "";
+            graphWorkspaceState.relatedContent = [];
             graphRenderWorkspace();
         });
         svg.addEventListener("pointerdown", (event) => {
@@ -4246,6 +4587,9 @@ function bindGraphWorkspaceEvents() {
                 nodeId,
                 offsetX: point.x - current.x,
                 offsetY: point.y - current.y,
+                startClientX: Number(event.clientX || 0),
+                startClientY: Number(event.clientY || 0),
+                active: false,
             };
             window.addEventListener("pointermove", graphHandlePointerMove);
             window.addEventListener("pointerup", graphHandlePointerUp);
@@ -4254,6 +4598,7 @@ function bindGraphWorkspaceEvents() {
     }
 
     graphUpdateConfidenceLabel();
+    graphUpdateZoomLabel();
     graphUpdateHostFilterOptions();
     graphRenderLayoutOptions();
 }
@@ -4499,32 +4844,38 @@ async function loadApprovals() {
     }
 }
 
-async function approveApproval(approvalId) {
-    const familySelect = document.querySelector(`select[data-approval-family-action='${approvalId}']`);
-    const familyAction = String(familySelect?.value || "");
-    const approveFamily = familyAction === "allowed";
+async function approveApproval(approvalId, familyAction = "") {
+    const resolvedFamilyAction = String(familyAction || "");
+    const approveFamily = resolvedFamilyAction === "allowed";
     try {
         await postJson(`/api/scheduler/approvals/${approvalId}/approve`, {
             approve_family: approveFamily,
             run_now: true,
-            family_action: familyAction,
+            family_action: resolvedFamilyAction,
         });
-        setWorkspaceStatus(`Approval ${approvalId} accepted`);
+        setWorkspaceStatus(
+            resolvedFamilyAction === "allowed"
+                ? `Approval ${approvalId} accepted and family allowed`
+                : `Approval ${approvalId} accepted`,
+        );
         await Promise.all([loadApprovals(), pollSnapshot()]);
     } catch (err) {
         setWorkspaceStatus(`Approve failed: ${err.message}`, true);
     }
 }
 
-async function rejectApproval(approvalId) {
-    const familySelect = document.querySelector(`select[data-approval-family-action='${approvalId}']`);
-    const familyAction = String(familySelect?.value || "");
+async function rejectApproval(approvalId, familyAction = "") {
+    const resolvedFamilyAction = String(familyAction || "");
     try {
         await postJson(`/api/scheduler/approvals/${approvalId}/reject`, {
             reason: "rejected in web workspace",
-            family_action: familyAction,
+            family_action: resolvedFamilyAction,
         });
-        setWorkspaceStatus(`Approval ${approvalId} rejected`);
+        setWorkspaceStatus(
+            resolvedFamilyAction === "suppressed"
+                ? `Approval ${approvalId} rejected and family suppressed`
+                : `Approval ${approvalId} rejected`,
+        );
         await Promise.all([loadApprovals(), pollSnapshot()]);
     } catch (err) {
         setWorkspaceStatus(`Reject failed: ${err.message}`, true);
@@ -5391,8 +5742,12 @@ function bindActionButtons() {
             }
             if (btn.dataset.action === "approve") {
                 await approveApproval(approvalId);
+            } else if (btn.dataset.action === "allow-family") {
+                await approveApproval(approvalId, "allowed");
             } else if (btn.dataset.action === "reject") {
                 await rejectApproval(approvalId);
+            } else if (btn.dataset.action === "suppress-family") {
+                await rejectApproval(approvalId, "suppressed");
             }
         });
     }

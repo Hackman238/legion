@@ -16,6 +16,10 @@ DEFAULT_FEATURE_FLAGS = {
     "graph_workspace": True,
     "optional_runners": True,
 }
+DEFAULT_DISABLED_TOOL_IDS = [
+    "http-drupal-modules.nse",
+    "http-vuln-zimbra-lfi.nse",
+]
 
 
 def normalize_feature_flags(raw: Any) -> Dict[str, bool]:
@@ -25,6 +29,19 @@ def normalize_feature_flags(raw: Any) -> Dict[str, bool]:
         if key in source:
             flags[key] = bool(source.get(key))
     return flags
+
+
+def normalize_disabled_tool_ids(raw: Any) -> List[str]:
+    values = raw if isinstance(raw, list) else DEFAULT_DISABLED_TOOL_IDS
+    normalized = []
+    seen = set()
+    for item in list(values or []):
+        token = str(item or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized
 
 
 DEFAULT_SCHEDULER_CONFIG = {
@@ -61,6 +78,7 @@ DEFAULT_SCHEDULER_CONFIG = {
         "Cloud AI mode may send host/service metadata to third-party providers."
     ),
     "feature_flags": normalize_feature_flags({}),
+    "disabled_tool_ids": normalize_disabled_tool_ids(DEFAULT_DISABLED_TOOL_IDS),
     "dangerous_categories": [
         "exploit_execution",
         "credential_bruteforce",
@@ -70,8 +88,8 @@ DEFAULT_SCHEDULER_CONFIG = {
     "preapproved_command_families": [],
     "ai_feedback": {
         "enabled": True,
-        "max_rounds_per_target": 4,
-        "max_actions_per_round": 4,
+        "max_rounds_per_target": 5,
+        "max_actions_per_round": 6,
         "recent_output_chars": 900,
     },
     "runners": normalize_runner_settings({}),
@@ -221,6 +239,9 @@ class SchedulerConfigManager:
         values = self.load().get("dangerous_categories", [])
         return [str(item) for item in values if item]
 
+    def get_disabled_tool_ids(self) -> List[str]:
+        return normalize_disabled_tool_ids(self.load().get("disabled_tool_ids", []))
+
     def list_preapproved_families(self) -> List[Dict[str, Any]]:
         return [
             dict(item)
@@ -365,6 +386,9 @@ class SchedulerConfigManager:
         config["providers"] = providers
         config["feature_flags"] = normalize_feature_flags(raw.get("feature_flags", config.get("feature_flags", {})))
         config["runners"] = normalize_runner_settings(raw.get("runners", config.get("runners", {})))
+        config["disabled_tool_ids"] = normalize_disabled_tool_ids(
+            raw.get("disabled_tool_ids", config.get("disabled_tool_ids", DEFAULT_DISABLED_TOOL_IDS))
+        )
 
         dangerous_categories = raw.get("dangerous_categories", config["dangerous_categories"])
         if not isinstance(dangerous_categories, list):

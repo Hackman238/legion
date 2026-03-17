@@ -1442,6 +1442,7 @@ def evidence_graph():
     include_ai_suggested = not _as_bool(request.args.get("hide_ai_suggested", False), default=False)
     if request.args.get("include_ai_suggested") is not None:
         include_ai_suggested = _as_bool(request.args.get("include_ai_suggested"), default=True)
+    hide_nmap_xml_artifacts = _as_bool(request.args.get("hide_nmap_xml_artifacts", False), default=False)
     try:
         payload = runtime.get_evidence_graph(filters={
             "node_types": _split_query_tokens(request.args.get("node_types", request.args.get("node_type", ""))),
@@ -1450,6 +1451,7 @@ def evidence_graph():
             "min_confidence": min_confidence,
             "search": str(request.args.get("q", "") or ""),
             "include_ai_suggested": include_ai_suggested,
+            "hide_nmap_xml_artifacts": hide_nmap_xml_artifacts,
             "host_id": host_id or None,
             "limit_nodes": max(1, min(limit_nodes, 5000)),
             "limit_edges": max(1, min(limit_edges, 10000)),
@@ -1498,6 +1500,56 @@ def evidence_graph_export_graphml():
         response = current_app.response_class(payload, mimetype="application/graphml+xml")
         response.headers["Content-Disposition"] = f'attachment; filename="legion-evidence-graph-{timestamp}.graphml"'
         return response
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/graph/nodes/<path:node_id>/content")
+def evidence_graph_node_content(node_id):
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        max_chars = int(request.args.get("max_chars", 12000) or 12000)
+    except (TypeError, ValueError):
+        max_chars = 12000
+    try:
+        return jsonify(runtime.get_graph_related_content(node_id, max_chars=max_chars))
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/graph/content/<path:node_id>")
+def evidence_graph_content(node_id):
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        max_chars = int(request.args.get("max_chars", 12000) or 12000)
+    except (TypeError, ValueError):
+        max_chars = 12000
+    download = _as_bool(request.args.get("download", False), default=False)
+    try:
+        payload = runtime.get_graph_content(node_id, download=download, max_chars=max_chars)
+        if payload.get("path"):
+            return send_file(
+                str(payload.get("path", "")),
+                mimetype=str(payload.get("mimetype", "application/octet-stream") or "application/octet-stream"),
+                as_attachment=bool(payload.get("download", False)),
+                download_name=str(payload.get("filename", "") or None),
+                max_age=0,
+            )
+        response = current_app.response_class(
+            str(payload.get("text", "") or ""),
+            mimetype=str(payload.get("mimetype", "text/plain; charset=utf-8") or "text/plain; charset=utf-8"),
+        )
+        if bool(payload.get("download", False)):
+            response.headers["Content-Disposition"] = (
+                f'attachment; filename="{str(payload.get("filename", "") or "graph-content.txt")}"'
+            )
+        return response
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except FileNotFoundError as exc:
+        return _json_error(str(exc), 404)
     except Exception as exc:
         return _json_error(str(exc), 500)
 

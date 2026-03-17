@@ -13,7 +13,9 @@ from app.hostsfile import normalize_hostname_alias
 from app.nmap_enrichment import is_unknown_hostname
 
 _NUMERIC_TARGET_COMMAND_PATTERNS = (
+    re.compile(r"(?i)\blegion_banner_target="),
     re.compile(r"(?i)\b(?:nc|netcat)\b(?:(?![;&|()]).)*\s-n(?:\s|$)"),
+    re.compile(r"(?i)\b(?:nc|netcat)\b(?:(?![;&|()]).)*\s-[A-Za-z]*n[A-Za-z]*(?:\s|$)"),
     re.compile(r"(?i)^\s*nbtscan\b"),
     re.compile(r"(?i)^\s*unicornscan\b"),
 )
@@ -47,12 +49,14 @@ def resolve_hostname_addresses(hostname: str) -> Tuple[str, ...]:
     return tuple(resolved)
 
 
-def choose_preferred_host(hostname: str, ip: str) -> str:
+def choose_preferred_host(hostname: str, ip: str, *, prefer_unresolved_hostname: bool = False) -> str:
     ip_text = str(ip or "").strip()
     candidate = normalize_hostname_alias(hostname)
     if not candidate or is_unknown_hostname(candidate):
         return ip_text or candidate
     if resolve_hostname_addresses(candidate):
+        return candidate
+    if prefer_unresolved_hostname:
         return candidate
     return ip_text or candidate
 
@@ -67,7 +71,7 @@ def command_prefers_numeric_target(command_template: str) -> bool:
 def choose_preferred_command_host(hostname: str, ip: str, command_template: str) -> str:
     if command_prefers_numeric_target(command_template):
         return str(ip or "").strip() or normalize_hostname_alias(hostname)
-    return choose_preferred_host(hostname, ip)
+    return choose_preferred_host(hostname, ip, prefer_unresolved_hostname=True)
 
 
 def apply_preferred_target_placeholders(
@@ -89,4 +93,4 @@ def apply_preferred_target_placeholders(
 
 
 def choose_preferred_screenshot_host(hostname: str, ip: str) -> str:
-    return choose_preferred_host(hostname, ip)
+    return choose_preferred_host(hostname, ip, prefer_unresolved_hostname=True)

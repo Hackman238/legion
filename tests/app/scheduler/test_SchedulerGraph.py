@@ -218,6 +218,47 @@ class SchedulerEvidenceGraphTest(unittest.TestCase):
         finally:
             project_manager.closeProject(project)
 
+    def test_query_evidence_graph_hides_nmap_text_artifacts_and_can_hide_xml(self):
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="portal.local", osMatch="Linux")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+            session.close()
+
+            upsert_target_state(project.database, host_id, {
+                "host_ip": "10.0.0.5",
+                "hostname": "portal.local",
+                "artifacts": [
+                    {"ref": "/tmp/web-nmap-01.xml", "tool_id": "nmap", "port": "443", "protocol": "tcp"},
+                    {"ref": "/tmp/web-nmap-01.gnmap", "tool_id": "nmap", "port": "443", "protocol": "tcp"},
+                    {"ref": "/tmp/nuclei-findings.txt", "tool_id": "nuclei-web", "port": "443", "protocol": "tcp"},
+                ],
+            })
+
+            default_graph = query_evidence_graph(project.database, host_id=host_id, limit_nodes=100, limit_edges=100)
+            default_labels = {str(item["label"]) for item in default_graph["nodes"] if item["type"] == "artifact"}
+            self.assertIn("web-nmap-01.xml", default_labels)
+            self.assertIn("nuclei-findings.txt", default_labels)
+            self.assertNotIn("web-nmap-01.gnmap", default_labels)
+
+            hidden_xml_graph = query_evidence_graph(
+                project.database,
+                host_id=host_id,
+                hide_nmap_xml_artifacts=True,
+                limit_nodes=100,
+                limit_edges=100,
+            )
+            hidden_labels = {str(item["label"]) for item in hidden_xml_graph["nodes"] if item["type"] == "artifact"}
+            self.assertNotIn("web-nmap-01.xml", hidden_labels)
+            self.assertIn("nuclei-findings.txt", hidden_labels)
+            self.assertTrue(hidden_xml_graph["meta"]["filters"]["hide_nmap_xml_artifacts"])
+        finally:
+            project_manager.closeProject(project)
+
     def test_graph_layout_and_annotation_round_trip(self):
         project_manager, project = self._create_project()
         try:

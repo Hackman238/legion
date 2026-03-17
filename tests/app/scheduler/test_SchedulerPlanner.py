@@ -368,6 +368,66 @@ class SchedulerPlannerTest(unittest.TestCase):
             self.assertNotIn("nuclei-web", tool_ids)
             self.assertIn("nmap-vuln.nse", tool_ids)
 
+    def test_planner_excludes_blacklisted_tool_ids_from_config(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "provider": "none",
+                "disabled_tool_ids": ["http-drupal-modules.nse", "http-vuln-zimbra-lfi.nse"],
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["Drupal Modules", "http-drupal-modules.nse", "nmap --script http-drupal-modules.nse [IP]", "http"],
+                    ["Zimbra LFI", "http-vuln-zimbra-lfi.nse", "nmap --script http-vuln-zimbra-lfi.nse [IP]", "http"],
+                    ["WhatWeb", "whatweb", "whatweb http://[IP]:[PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions("http", "tcp", settings, limit=6)
+            tool_ids = {item.tool_id for item in actions}
+            self.assertNotIn("http-drupal-modules.nse", tool_ids)
+            self.assertNotIn("http-vuln-zimbra-lfi.nse", tool_ids)
+            self.assertIn("whatweb", tool_ids)
+
+    def test_ai_mode_excludes_already_attempted_family_and_command_signature(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "goal_profile": "external_pentest",
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["Run nuclei web scan", "nuclei-web", "nuclei -u http://[IP]:[PORT] -silent", "http"],
+                    ["WhatWeb", "whatweb", "whatweb http://[IP]:[PORT]", "http"],
+                ],
+            )
+            signature = SchedulerPlanner._command_signature("tcp", "nuclei -u http://[IP]:[PORT] -silent")
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                excluded_family_ids=["nuclei-web"],
+                excluded_command_signatures=[signature],
+                limit=6,
+            )
+            tool_ids = [item.tool_id for item in actions]
+            self.assertNotIn("nuclei-web", tool_ids)
+            self.assertIn("whatweb", tool_ids)
+
     @patch("app.scheduler.planner.rank_actions_with_provider")
     def test_ai_mode_forwards_context_to_provider(self, mock_rank_actions):
         from app.scheduler.config import SchedulerConfigManager
@@ -562,6 +622,54 @@ class SchedulerPlannerTest(unittest.TestCase):
             tool_ids = [item.tool_id for item in actions]
             self.assertIn("nmap-vuln.nse", tool_ids)
             self.assertIn("nuclei-web", tool_ids)
+
+    def test_ai_mode_dig_deeper_promotes_targeted_nuclei_and_generic_http_follow_up(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-dig-deeper.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "engagement_policy": {"preset": "external_pentest"},
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[["screenshooter", "http", "tcp"]],
+                portActions=[
+                    ["Run nuclei web scan", "nuclei-web", "nuclei -u http://[IP]:[PORT] -silent", "http"],
+                    ["nmap-vuln.nse", "nmap-vuln.nse", "nmap --script vuln [IP] -p [PORT]", "http"],
+                    ["Run nuclei CVE follow-up", "nuclei-cves", "nuclei -tags cve -u http://[IP]:[PORT] -silent", "http"],
+                    ["Run nuclei exposure follow-up", "nuclei-exposures", "nuclei -tags exposure,panel -u http://[IP]:[PORT] -silent", "http"],
+                    ["WhatWeb", "whatweb", "whatweb http://[IP]:[PORT]", "http"],
+                    ["Nikto", "nikto", "nikto -h [IP] -p [PORT]", "http"],
+                    ["Web Discovery", "web-content-discovery", "gobuster dir -u http://[IP]:[PORT]", "http"],
+                    ["HTTP Headers", "curl-headers", "curl -I http://[IP]:[PORT] > [OUTPUT].txt", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True, "vuln_hits": 2},
+                    "host_cves": [{"cve": "CVE-2025-1111"}],
+                    "coverage": {
+                        "analysis_mode": "dig_deeper",
+                        "missing": ["missing_followup_after_vuln", "missing_cpe_cve_enrichment"],
+                    },
+                },
+            )
+
+            tool_ids = {item.tool_id for item in actions}
+            self.assertIn("nmap-vuln.nse", tool_ids)
+            self.assertIn("nuclei-web", tool_ids)
+            self.assertIn("nuclei-cves", tool_ids)
+            self.assertIn("nuclei-exposures", tool_ids)
+            self.assertIn("nikto", tool_ids)
+            self.assertTrue({"whatweb", "web-content-discovery", "curl-headers"} & tool_ids)
 
     def test_deterministic_mode_uses_strategy_packs_to_close_explicit_gap_when_context_exists(self):
         from app.scheduler.config import SchedulerConfigManager

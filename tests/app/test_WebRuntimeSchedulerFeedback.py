@@ -175,6 +175,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 "whatweb",
                 "nikto",
                 "web-content-discovery",
+                "curl-headers",
                 "sslscan",
                 "sslyze",
                 "wafw00f",

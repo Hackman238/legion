@@ -23,6 +23,7 @@ import re
 
 from app.core.config_store import IniSettingsStore
 from app.core.common import sortArrayWithArray
+from app.hostsfile import normalize_hostname_alias
 from app.logging.legionLog import getAppLogger
 from app.paths import (
     ensure_legion_home,
@@ -40,6 +41,14 @@ class AppSettings():
     WEB_SERVICE_SCOPE = "http,https,ssl,soap,http-proxy,http-alt,https-alt"
     REMOTE_SCREEN_SERVICE_SCOPE = "ms-wbt-server,rdp,vmrdp,vnc,vnc-http,rfb"
     SCREENSHOT_SERVICE_SCOPE = f"{WEB_SERVICE_SCOPE},{REMOTE_SCREEN_SERVICE_SCOPE}"
+    BANNER_COMMAND = (
+        "LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] "
+        "LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe"
+    )
+    DISABLED_PORT_ACTION_IDS = {
+        "http-drupal-modules.nse",
+        "http-vuln-zimbra-lfi.nse",
+    }
     WEB_CONTENT_GOBUSTER_COMMAND = (
         "(command -v gobuster >/dev/null 2>&1 && "
         "((gobuster -m dir -k -q -u https://[IP]:[PORT]/ -w /usr/share/wordlists/dirb/common.txt -o [OUTPUT].txt || "
@@ -68,9 +77,45 @@ class AppSettings():
     )
     NUCLEI_WEB_COMMAND = (
         "(command -v nuclei >/dev/null 2>&1 && "
-        "(nuclei -as -u https://[IP]:[PORT] -ni -o [OUTPUT].txt || "
-        "nuclei -as -u http://[IP]:[PORT] -ni -o [OUTPUT].txt)) || "
+        "(nuclei -as -stats -si 15 -u https://[IP]:[PORT] -ni -o [OUTPUT].txt || "
+        "nuclei -as -stats -si 15 -u http://[IP]:[PORT] -ni -o [OUTPUT].txt)) || "
         "echo nuclei not found"
+    )
+    NUCLEI_CVES_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "(nuclei -tags cve -stats -si 15 -u https://[IP]:[PORT] -ni -o [OUTPUT].txt || "
+        "nuclei -tags cve -stats -si 15 -u http://[IP]:[PORT] -ni -o [OUTPUT].txt)) || "
+        "echo nuclei not found"
+    )
+    NUCLEI_EXPOSURES_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "(nuclei -tags exposure,panel -stats -si 15 -u https://[IP]:[PORT] -ni -o [OUTPUT].txt || "
+        "nuclei -tags exposure,panel -stats -si 15 -u http://[IP]:[PORT] -ni -o [OUTPUT].txt)) || "
+        "echo nuclei not found"
+    )
+    NUCLEI_WORDPRESS_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "(nuclei -tags wordpress,wp-plugin -stats -si 15 -u https://[IP]:[PORT] -ni -o [OUTPUT].txt || "
+        "nuclei -tags wordpress,wp-plugin -stats -si 15 -u http://[IP]:[PORT] -ni -o [OUTPUT].txt)) || "
+        "echo nuclei not found"
+    )
+    CURL_HEADERS_COMMAND = (
+        "(command -v curl >/dev/null 2>&1 && "
+        "(curl -k -I --max-time 20 https://[IP]:[PORT] > [OUTPUT].txt || "
+        "curl -I --max-time 20 http://[IP]:[PORT] > [OUTPUT].txt)) || "
+        "echo curl not found"
+    )
+    CURL_OPTIONS_COMMAND = (
+        "(command -v curl >/dev/null 2>&1 && "
+        "(curl -k -X OPTIONS -i --max-time 20 https://[IP]:[PORT] > [OUTPUT].txt || "
+        "curl -X OPTIONS -i --max-time 20 http://[IP]:[PORT] > [OUTPUT].txt)) || "
+        "echo curl not found"
+    )
+    CURL_ROBOTS_COMMAND = (
+        "(command -v curl >/dev/null 2>&1 && "
+        "(curl -k --max-time 20 https://[IP]:[PORT]/robots.txt -o [OUTPUT].txt || "
+        "curl --max-time 20 http://[IP]:[PORT]/robots.txt -o [OUTPUT].txt)) || "
+        "echo curl not found"
     )
     NIKTO_COMMAND = "nikto -o [OUTPUT].txt -p [PORT] -h [IP] -C all"
     WAFW00F_COMMAND = (
@@ -101,6 +146,12 @@ class AppSettings():
         "wafw00f": ("Run wafw00f", WAFW00F_COMMAND, "https,ssl,https-alt"),
         "sslscan": ("Run sslscan", SSLSCAN_COMMAND, "https,ssl,https-alt"),
         "sslyze": ("Run sslyze", SSLYZE_COMMAND, "https,ssl,ms-wbt-server,imap,pop3,smtp,https-alt"),
+        "nuclei-cves": ("Run nuclei CVE follow-up", NUCLEI_CVES_COMMAND, WEB_SERVICE_SCOPE),
+        "nuclei-exposures": ("Run nuclei exposure/panel follow-up", NUCLEI_EXPOSURES_COMMAND, WEB_SERVICE_SCOPE),
+        "nuclei-wordpress": ("Run nuclei WordPress follow-up", NUCLEI_WORDPRESS_COMMAND, WEB_SERVICE_SCOPE),
+        "curl-headers": ("Collect HTTP headers (curl)", CURL_HEADERS_COMMAND, WEB_SERVICE_SCOPE),
+        "curl-options": ("Collect HTTP OPTIONS response (curl)", CURL_OPTIONS_COMMAND, WEB_SERVICE_SCOPE),
+        "curl-robots": ("Fetch robots.txt (curl)", CURL_ROBOTS_COMMAND, WEB_SERVICE_SCOPE),
         "wpscan": ("Run wpscan", WPSCAN_COMMAND, "http,https,ssl,https-alt"),
         "http-wapiti": ("Run wapiti (http)", WAPITI_HTTP_COMMAND, "http"),
         "https-wapiti": ("Run wapiti (https)", WAPITI_HTTPS_COMMAND, "https"),
@@ -122,16 +173,41 @@ class AppSettings():
 
     def _apply_default_action_migrations(self):
         changed = False
+        changed = self._migrate_host_actions() or changed
         changed = self._migrate_port_actions() or changed
         changed = self._migrate_scheduler_settings() or changed
         if changed:
             self.actions.sync()
-            log.info("Applied legion.conf action migration updates (nuclei/vuln/web-content-discovery).")
+            log.info("Applied legion.conf action migration updates (nmap stats, banner, nuclei, vuln, web-content-discovery).")
+
+    def _migrate_host_actions(self):
+        changed = False
+        self.actions.beginGroup('HostActions')
+        try:
+            keys = self.actions.childKeys()
+            for key in keys:
+                value = self.actions.value(key)
+                if not isinstance(value, (list, tuple)) or len(value) < 2:
+                    continue
+                label = str(value[0] or "")
+                command = str(value[1] or "")
+                updated_command = self._normalize_action_command(str(key), command)
+                if updated_command != command:
+                    self.actions.setValue(str(key), [label, updated_command])
+                    changed = True
+        finally:
+            self.actions.endGroup()
+        return changed
 
     def _migrate_port_actions(self):
         changed = False
         self.actions.beginGroup('PortActions')
         try:
+            for key in sorted(self.DISABLED_PORT_ACTION_IDS):
+                if self.actions.value(key) is not None:
+                    self.actions.remove(key)
+                    changed = True
+
             # Remove legacy GUI-only dirbuster action in favor of headless-safe web discovery.
             if self.actions.value('dirbuster') is not None:
                 self.actions.remove('dirbuster')
@@ -254,14 +330,51 @@ class AppSettings():
                 if self.actions.value(key) is None:
                     self.actions.setValue(key, [value[0], value[1], value[2]])
                     changed = True
+
+            keys = self.actions.childKeys()
+            for key in keys:
+                value = self.actions.value(key)
+                if not isinstance(value, (list, tuple)) or len(value) < 2:
+                    continue
+                label = str(value[0] or "")
+                command = str(value[1] or "")
+                scope = str(value[2] or "") if len(value) > 2 else ""
+                updated_command = self._normalize_action_command(str(key), command)
+                if updated_command != command:
+                    self.actions.setValue(str(key), [label, updated_command, scope])
+                    changed = True
         finally:
             self.actions.endGroup()
         return changed
+
+    @classmethod
+    def _normalize_action_command(cls, tool_id: str, command: str) -> str:
+        normalized_tool = str(tool_id or "").strip().lower()
+        normalized = str(command or "")
+        if normalized_tool == "banner":
+            normalized = cls._ensure_banner_command(normalized)
+        if normalized_tool == "nuclei-web":
+            normalized = cls._ensure_nuclei_auto_scan(normalized)
+        elif "nuclei" in normalized_tool or "nuclei" in normalized.lower():
+            normalized = cls._ensure_nuclei_command(normalized, automatic_scan=False)
+        if normalized_tool == "web-content-discovery":
+            normalized = cls._ensure_web_content_discovery_command(normalized)
+        if "wapiti" in normalized.lower():
+            scheme = "https" if "https" in normalized_tool else "http"
+            normalized = cls._ensure_wapiti_command(normalized, scheme=scheme)
+        if "nmap" in normalized.lower():
+            normalized = cls._ensure_nmap_stats_every(normalized)
+        return normalized
 
     def _migrate_scheduler_settings(self):
         changed = False
         self.actions.beginGroup('SchedulerSettings')
         try:
+            for key in sorted(self.DISABLED_PORT_ACTION_IDS):
+                if self.actions.value(key) is not None:
+                    self.actions.remove(key)
+                    changed = True
+
             if self.actions.value('dirbuster') is not None:
                 self.actions.remove('dirbuster')
                 changed = True
@@ -303,17 +416,132 @@ class AppSettings():
         return changed
 
     @staticmethod
-    def _ensure_nuclei_auto_scan(command: str) -> str:
+    def _ensure_nuclei_command(command: str, automatic_scan: bool = False) -> str:
         raw = str(command or "")
         if "nuclei" not in raw.lower():
             return raw
-        # Only patch direct scan invocations (`nuclei -u ...`), not probe checks
-        # like `command -v nuclei` and not tokens embedded in output filenames.
-        normalized = re.sub(r"(?i)\bnuclei\b(?!\s+-as\b)(?=\s+-u\b)", "nuclei -as", raw)
+        probe_marker = "__LEGION_NUCLEI_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+nuclei", f"command -v {probe_marker}", raw)
+        if automatic_scan:
+            # Only patch direct scan invocations (`nuclei -u ...`), not probe checks
+            # like `command -v nuclei` and not tokens embedded in output filenames.
+            normalized = re.sub(
+                r"(?i)\bnuclei\b(?!\s+-as\b)(?=[^|;&()\n]*\s+-u\b)",
+                "nuclei -as",
+                normalized,
+            )
+        normalized = re.sub(
+            r"(?i)\bnuclei(?:\s+-as)?(?![^|;&()\n]*\s+-stats\b)(?=[^|;&()\n]*\s+-u\b)",
+            lambda match: f"{match.group(0)} -stats",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)(\s(?:-si|--stats-interval)\b(?:\s+|=))\S+",
+            lambda match: f"{match.group(1)}15",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)\bnuclei(?:\s+-as)?(?:\s+-stats)?(?![^|;&()\n]*\s+(?:-si|--stats-interval)(?:\s+|=))(?=[^|;&()\n]*\s+-u\b)",
+            lambda match: f"{match.group(0)} -si 15",
+            normalized,
+        )
         normalized = re.sub(r"(?i)(?<!\S)--?silent\b", "", normalized)
         normalized = re.sub(r"(?i)(?<!\S)--?no-color\b", "", normalized)
         normalized = re.sub(r"[ \t]{2,}", " ", normalized)
-        return normalized
+        return normalized.replace(probe_marker, "nuclei")
+
+    @staticmethod
+    def _ensure_nuclei_auto_scan(command: str) -> str:
+        return AppSettings._ensure_nuclei_command(command, automatic_scan=True)
+
+    @staticmethod
+    def _ensure_banner_command(command: str) -> str:
+        raw = str(command or "").strip()
+        lowered = raw.lower()
+        if "nc" not in lowered and "netcat" not in lowered:
+            return raw
+        if "[ip]" not in lowered or "[port]" not in lowered:
+            return raw
+        protocol = "udp" if re.search(r"(?i)(?:^|\s)-u(?:\s|$)", raw) else "tcp"
+        return AppSettings.BANNER_COMMAND.replace("LEGION_BANNER_PROTOCOL=tcp", f"LEGION_BANNER_PROTOCOL={protocol}")
+
+    @staticmethod
+    def _ensure_nmap_stats_every(command: str, interval: str = "15s") -> str:
+        raw = str(command or "")
+        stats_interval = str(interval or "15s").strip() or "15s"
+        if "nmap" not in raw.lower():
+            return raw
+
+        separators = {"||", "&&", ";", "|", "(", ")", "\n"}
+        parts = []
+        start = 0
+        index = 0
+        quote = ""
+        escaped = False
+
+        while index < len(raw):
+            char = raw[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+            if char == "\\" and quote != "'":
+                escaped = True
+                index += 1
+                continue
+            if quote:
+                if char == quote:
+                    quote = ""
+                index += 1
+                continue
+            if char in ("'", '"'):
+                quote = char
+                index += 1
+                continue
+            if raw.startswith("||", index) or raw.startswith("&&", index):
+                parts.append(raw[start:index])
+                parts.append(raw[index:index + 2])
+                index += 2
+                start = index
+                continue
+            if char in ";|()\n":
+                parts.append(raw[start:index])
+                parts.append(char)
+                index += 1
+                start = index
+                continue
+            index += 1
+        parts.append(raw[start:])
+
+        updated_parts = []
+        nmap_prefix = re.compile(r"(?i)^(?:(?:sudo|doas|env|timeout|nice|ionice)\b[^\n;|&()]*?\s+)*nmap\b")
+        has_stats = re.compile(r"(?i)(?:^|\s)--stats-every(?:=|\s)")
+
+        for part in parts:
+            if part in separators:
+                updated_parts.append(part)
+                continue
+            stripped = part.strip()
+            if not stripped or not nmap_prefix.match(stripped) or has_stats.search(stripped):
+                updated_parts.append(part)
+                continue
+            leading = part[:len(part) - len(part.lstrip())]
+            trailing = part[len(part.rstrip()):]
+            updated_parts.append(f"{leading}{stripped} --stats-every {stats_interval}{trailing}")
+
+        return "".join(updated_parts)
+
+    @staticmethod
+    def _ensure_nmap_hostname_target_support(command: str, target_host: str) -> str:
+        raw = str(command or "")
+        hostname = normalize_hostname_alias(target_host)
+        if "nmap" not in raw.lower() or not hostname:
+            return raw
+        normalized = re.sub(r"(?<!\S)-n(?!\S)", "", raw)
+        normalized = re.sub(r"[ \t]{2,}", " ", normalized)
+        normalized = re.sub(r"\(\s+", "(", normalized)
+        normalized = re.sub(r"\s+\)", ")", normalized)
+        return normalized.strip()
 
     @staticmethod
     def _ensure_nmap_vuln_command(command: str) -> str:
@@ -506,8 +734,11 @@ class AppSettings():
         sortArray = []
         keys = self.actions.childKeys()
         for k in keys:
-            hostactions.append([self.actions.value(k)[0], str(k), self.actions.value(k)[1]])
-            sortArray.append(self.actions.value(k)[0])
+            value = self.actions.value(k)
+            label = value[0]
+            command = self._normalize_action_command(str(k), value[1])
+            hostactions.append([label, str(k), command])
+            sortArray.append(label)
         self.actions.endGroup()
         sortArrayWithArray(sortArray, hostactions)  # sort by label so that it appears nicely in the context menu
         return hostactions
@@ -519,8 +750,14 @@ class AppSettings():
         sortArray = []
         keys = self.actions.childKeys()
         for k in keys:
-            portactions.append([self.actions.value(k)[0], str(k), self.actions.value(k)[1], self.actions.value(k)[2]])
-            sortArray.append(self.actions.value(k)[0])
+            if str(k or "").strip().lower() in self.DISABLED_PORT_ACTION_IDS:
+                continue
+            value = self.actions.value(k)
+            label = value[0]
+            command = self._normalize_action_command(str(k), value[1])
+            scope = value[2]
+            portactions.append([label, str(k), command, scope])
+            sortArray.append(label)
         self.actions.endGroup()
         sortArrayWithArray(sortArray, portactions)  # sort by label so that it appears nicely in the context menu
         return portactions
@@ -544,6 +781,8 @@ class AppSettings():
         self.actions.beginGroup('SchedulerSettings')
         keys = self.actions.childKeys()
         for k in keys:
+            if str(k or "").strip().lower() in self.DISABLED_PORT_ACTION_IDS:
+                continue
             settings.append([str(k), self.actions.value(k)[0], self.actions.value(k)[1]])
         self.actions.endGroup()
         return settings

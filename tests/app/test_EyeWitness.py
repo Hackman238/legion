@@ -204,7 +204,7 @@ class EyeWitnessHelpersTest(unittest.TestCase):
     @patch("app.eyewitness._run_browser_cli_fallback_capture")
     @patch("app.eyewitness.resolve_eyewitness_executables")
     @patch("app.eyewitness.subprocess.run")
-    def test_run_eyewitness_capture_uses_browser_fallback_before_selenium(
+    def test_run_eyewitness_capture_uses_browser_fallback_after_selenium_chromium_failure(
             self,
             mock_run,
             mock_resolve,
@@ -216,6 +216,17 @@ class EyeWitnessHelpersTest(unittest.TestCase):
 
         mock_resolve.return_value = ["/usr/local/bin/eyewitness"]
         mock_run.return_value = SimpleNamespace(returncode=1, stdout="", stderr="eyewitness failed")
+        mock_chromium_fallback.return_value = {
+            "ok": False,
+            "executable": "selenium-chromium-direct",
+            "output_dir": "",
+            "command": [],
+            "error": "selenium chromium fallback timeout",
+            "returncode": 124,
+            "stdout": "",
+            "stderr": "",
+            "screenshot_path": None,
+        }
 
         with tempfile.TemporaryDirectory() as temp_dir:
             fallback_png = os.path.join(temp_dir, "browser-fallback", "screens", "capture.png")
@@ -244,8 +255,8 @@ class EyeWitnessHelpersTest(unittest.TestCase):
         self.assertTrue(result.get("ok"))
         self.assertEqual("/usr/bin/chromium", result.get("executable"))
         self.assertEqual(fallback_png, result.get("screenshot_path"))
+        self.assertTrue(mock_chromium_fallback.called)
         self.assertTrue(mock_browser_fallback.called)
-        self.assertFalse(mock_chromium_fallback.called)
         self.assertFalse(mock_selenium_fallback.called)
 
     @patch("app.eyewitness._resolve_browser_screenshot_executables")

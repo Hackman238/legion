@@ -20,6 +20,9 @@ ScheduledAction = PlanStep
 class SchedulerPlanner:
     WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
     WEB_AI_BASELINE_TOOL_IDS = ("nuclei-web", "nmap-vuln.nse", "screenshooter")
+    WEB_AI_DEEP_WEB_TOOL_IDS = ("whatweb", "whatweb-http", "whatweb-https", "nikto", "web-content-discovery")
+    WEB_AI_TARGETED_NUCLEI_TOOL_IDS = ("nuclei-cves", "nuclei-exposures", "nuclei-wordpress")
+    WEB_AI_GENERIC_HTTP_FOLLOWUP_TOOL_IDS = ("curl-headers", "curl-options", "curl-robots")
     GENERIC_WEB_TOOL_TOKENS = {
         "http", "https", "ssl", "tls", "web", "proxy", "alt",
         "scan", "scanner", "check", "checker", "test", "testing",
@@ -93,6 +96,8 @@ class SchedulerPlanner:
             *,
             context: Optional[Dict[str, Any]] = None,
             excluded_tool_ids: Optional[List[str]] = None,
+            excluded_family_ids: Optional[List[str]] = None,
+            excluded_command_signatures: Optional[List[str]] = None,
             limit: Optional[int] = None,
             engagement_policy: Optional[Dict[str, Any]] = None,
             mode_override: Optional[str] = None,
@@ -103,6 +108,8 @@ class SchedulerPlanner:
             settings,
             context=context,
             excluded_tool_ids=excluded_tool_ids,
+            excluded_family_ids=excluded_family_ids,
+            excluded_command_signatures=excluded_command_signatures,
             limit=limit,
             engagement_policy=engagement_policy,
             mode_override=mode_override,
@@ -116,6 +123,8 @@ class SchedulerPlanner:
             *,
             context: Optional[Dict[str, Any]] = None,
             excluded_tool_ids: Optional[List[str]] = None,
+            excluded_family_ids: Optional[List[str]] = None,
+            excluded_command_signatures: Optional[List[str]] = None,
             limit: Optional[int] = None,
             engagement_policy: Optional[Dict[str, Any]] = None,
             mode_override: Optional[str] = None,
@@ -131,6 +140,9 @@ class SchedulerPlanner:
         )
         dangerous_categories = self.config_manager.get_dangerous_categories()
         excluded = self._normalize_tool_id_set(excluded_tool_ids)
+        excluded.update(self._normalize_tool_id_set(prefs.get("disabled_tool_ids", [])))
+        excluded_families = self._normalize_text_token_set(excluded_family_ids)
+        excluded_signatures = self._normalize_text_token_set(excluded_command_signatures)
         registry = self.build_action_registry(settings, dangerous_categories)
 
         if mode == "ai":
@@ -142,6 +154,8 @@ class SchedulerPlanner:
                 dangerous_categories,
                 context=context,
                 excluded_tool_ids=excluded,
+                excluded_family_ids=excluded_families,
+                excluded_command_signatures=excluded_signatures,
                 limit=limit,
             )
             if actions:
@@ -158,6 +172,8 @@ class SchedulerPlanner:
             mode=mode,
             context=context,
             excluded_tool_ids=excluded,
+            excluded_family_ids=excluded_families,
+            excluded_command_signatures=excluded_signatures,
             limit=limit,
         )
 
@@ -169,11 +185,15 @@ class SchedulerPlanner:
                             dangerous_categories: List[str], mode: str = "deterministic",
                             context: Optional[Dict[str, Any]] = None,
                             excluded_tool_ids: Optional[Set[str]] = None,
+                            excluded_family_ids: Optional[Set[str]] = None,
+                            excluded_command_signatures: Optional[Set[str]] = None,
                             limit: Optional[int] = None) -> List[PlanStep]:
         service_name = str(service or "").strip().rstrip("?")
         protocol_name = str(protocol or "tcp").strip().lower()
         decisions = []
         excluded = set(excluded_tool_ids or set())
+        excluded_families = set(excluded_family_ids or set())
+        excluded_signatures = set(excluded_command_signatures or set())
         policy_snapshot_hash = self._policy_snapshot_hash(policy, dangerous_categories)
         target_ref = self._build_target_ref(service_name, protocol_name, policy=policy, context=context)
         selected_packs = self._select_strategy_packs(
@@ -186,9 +206,14 @@ class SchedulerPlanner:
 
         for index, action in enumerate(registry.for_deterministic(service_name, protocol_name)):
             tool_id = str(action.tool_id)
-            if self._normalized_tool_id(tool_id) in excluded:
-                continue
             family_id = build_command_family_id(tool_id, protocol_name, action.command_template or tool_id)
+            command_signature = self._command_signature(protocol_name, action.command_template or tool_id)
+            if (
+                    self._normalized_tool_id(tool_id) in excluded
+                    or self._normalize_text_token(family_id) in excluded_families
+                    or self._normalize_text_token(command_signature) in excluded_signatures
+            ):
+                continue
             strategy_guidance = evaluate_action_strategy(
                 action,
                 selected_packs,
@@ -235,11 +260,15 @@ class SchedulerPlanner:
                  dangerous_categories: List[str],
                  context: Optional[Dict[str, Any]] = None,
                  excluded_tool_ids: Optional[Set[str]] = None,
+                 excluded_family_ids: Optional[Set[str]] = None,
+                 excluded_command_signatures: Optional[Set[str]] = None,
                  limit: Optional[int] = None) -> List[PlanStep]:
         service_name = str(service or "").strip().rstrip("?")
         protocol_name = str(protocol or "tcp").strip().lower()
         candidates_by_tool = {}
         excluded = set(excluded_tool_ids or set())
+        excluded_families = set(excluded_family_ids or set())
+        excluded_signatures = set(excluded_command_signatures or set())
         policy_snapshot_hash = self._policy_snapshot_hash(policy, dangerous_categories)
         target_ref = self._build_target_ref(service_name, protocol_name, policy=policy, context=context)
         selected_packs = self._select_strategy_packs(
@@ -252,7 +281,13 @@ class SchedulerPlanner:
         for action in registry.for_ai_selection(service_name, protocol_name):
             label = str(action.label)
             tool_id = str(action.tool_id)
-            if self._normalized_tool_id(tool_id) in excluded:
+            family_id = build_command_family_id(tool_id, protocol_name, action.command_template or tool_id)
+            command_signature = self._command_signature(protocol_name, action.command_template or tool_id)
+            if (
+                    self._normalized_tool_id(tool_id) in excluded
+                    or self._normalize_text_token(family_id) in excluded_families
+                    or self._normalize_text_token(command_signature) in excluded_signatures
+            ):
                 continue
 
             candidates_by_tool[tool_id] = {
@@ -261,6 +296,8 @@ class SchedulerPlanner:
                 "label": label,
                 "command_template": str(action.command_template),
                 "service_scope": ",".join(action.service_scope),
+                "family_id": family_id,
+                "command_signature": command_signature,
             }
 
         candidates = list(candidates_by_tool.values())
@@ -315,7 +352,8 @@ class SchedulerPlanner:
             tool_id = candidate["tool_id"]
             label = candidate["label"]
             command_template = candidate["command_template"]
-            family_id = build_command_family_id(tool_id, protocol_name, command_template)
+            family_id = str(candidate.get("family_id", "") or build_command_family_id(tool_id, protocol_name, command_template))
+            command_signature = str(candidate.get("command_signature", "") or self._command_signature(protocol_name, command_template))
 
             score = scores_by_tool.get(tool_id)
             provider_supplied_score = score is not None
@@ -324,6 +362,8 @@ class SchedulerPlanner:
             score = self._score_with_context(
                 score,
                 tool_id=tool_id,
+                family_id=family_id,
+                command_signature=command_signature,
                 label=label,
                 command_template=command_template,
                 context=context,
@@ -343,6 +383,14 @@ class SchedulerPlanner:
                     score = max(score, 94.0)
                 elif tool_id == "screenshooter":
                     score = max(score, 92.0)
+                elif tool_id == "nuclei-cves":
+                    score = max(score, 90.0)
+                elif tool_id == "nuclei-exposures":
+                    score = max(score, 88.0)
+                elif tool_id in {"whatweb", "whatweb-http", "whatweb-https"}:
+                    score = max(score, 84.0)
+                elif tool_id == "nikto":
+                    score = max(score, 82.0)
             rationale = rationales_by_tool.get(tool_id) or self._build_rationale(
                 tool_id,
                 policy,
@@ -376,7 +424,7 @@ class SchedulerPlanner:
             decisions.append(step)
 
         decisions.sort(key=lambda item: item.score, reverse=True)
-        resolved_limit = 4
+        resolved_limit = self._default_ai_limit(service_name, context=context)
         if limit is not None:
             try:
                 max_items = int(limit)
@@ -384,7 +432,7 @@ class SchedulerPlanner:
                 max_items = 0
             if max_items > 0:
                 resolved_limit = max_items
-        return self._apply_web_ai_baseline(service_name, decisions, limit=resolved_limit)
+        return self._apply_web_ai_baseline(service_name, decisions, context=context, limit=resolved_limit)
 
     @staticmethod
     def _parse_services(raw: str) -> List[str]:
@@ -467,6 +515,8 @@ class SchedulerPlanner:
             score: float,
             *,
             tool_id: str,
+            family_id: str = "",
+            command_signature: str = "",
             label: str,
             command_template: str,
             context: Optional[Dict[str, Any]],
@@ -477,6 +527,8 @@ class SchedulerPlanner:
 
         tool_norm = cls._normalized_tool_id(tool_id)
         attempted = cls._normalize_tool_id_set(context.get("attempted_tool_ids", []))
+        attempted_families = cls._normalize_text_token_set(context.get("attempted_family_ids", []))
+        attempted_signatures = cls._normalize_text_token_set(context.get("attempted_command_signatures", []))
         signals = context.get("signals", {}) if isinstance(context.get("signals", {}), dict) else {}
         missing_tools = cls._normalize_tool_id_set(signals.get("missing_tools", []))
         coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
@@ -497,6 +549,10 @@ class SchedulerPlanner:
         text = " ".join([str(tool_id or ""), str(label or ""), str(command_template or "")]).lower()
         if tool_norm in attempted:
             value -= 50.0
+        if cls._normalize_text_token(family_id) in attempted_families:
+            value -= 42.0
+        if cls._normalize_text_token(command_signature) in attempted_signatures:
+            value -= 58.0
         if tool_norm in missing_tools:
             value -= 90.0
         if tool_norm in coverage_recommended:
@@ -511,6 +567,25 @@ class SchedulerPlanner:
             value += 40.0
         if "missing_nuclei_auto" in coverage_missing and tool_norm == "nuclei-web":
             value += 40.0
+        if "missing_followup_after_vuln" in coverage_missing and tool_norm in {
+            "whatweb",
+            "whatweb-http",
+            "whatweb-https",
+            "nikto",
+            "web-content-discovery",
+            "nuclei-cves",
+            "nuclei-exposures",
+            "curl-headers",
+            "curl-options",
+            "curl-robots",
+        }:
+            value += 24.0
+        if "missing_http_followup" in coverage_missing and tool_norm in {
+            "curl-headers",
+            "curl-options",
+            "curl-robots",
+        }:
+            value += 22.0
         if "missing_cpe_cve_enrichment" in coverage_missing and cls._matches_any_token(
                 text,
                 ("nmap-vuln", "nuclei", "vuln", "cve"),
@@ -529,6 +604,14 @@ class SchedulerPlanner:
                 ("nikto", "whatweb", "web-content-discovery", "sslscan", "sslyze", "wafw00f"),
         ):
             value += 18.0
+        if analysis_mode == "dig_deeper" and tool_norm in {
+            "nuclei-cves",
+            "nuclei-exposures",
+            "curl-headers",
+            "curl-options",
+            "curl-robots",
+        }:
+            value += 16.0
 
         if bool(signals.get("web_service")) and any(token in text for token in ["http", "https", "web", "nuclei", "waf"]):
             value += 7.0
@@ -548,10 +631,26 @@ class SchedulerPlanner:
             value += 10.0
         if int(signals.get("vuln_hits", 0) or 0) > 0 and any(token in text for token in ["vuln", "cve", "nuclei", "exploit"]):
             value += 6.0
+        if int(signals.get("vuln_hits", 0) or 0) > 0 and tool_norm in {"nmap-vuln.nse", "nuclei-cves", "nuclei-exposures"}:
+            value += 18.0
         if cls._matches_any_token(text, ("ubiquiti", "unifi", "ubnt")) and bool(signals.get("ubiquiti_detected")):
             value += 10.0
         if cls._matches_any_token(text, ("nginx", "apache", "http")) and bool(signals.get("web_service")):
             value += 2.0
+        if bool(signals.get("wordpress_detected")) and tool_norm in {"wpscan", "nuclei-wordpress"}:
+            value += 22.0
+        host_cves = context.get("host_cves", []) if isinstance(context.get("host_cves", []), list) else []
+        if host_cves and tool_norm in {
+            "nmap-vuln.nse",
+            "nuclei-cves",
+            "nuclei-exposures",
+            "whatweb",
+            "whatweb-http",
+            "whatweb-https",
+            "nikto",
+            "web-content-discovery",
+        }:
+            value += 18.0
 
         specialization_delta = cls._specialized_tool_signal_delta(text, signals)
         value += specialization_delta
@@ -710,6 +809,14 @@ class SchedulerPlanner:
             label: str,
             command_template: str,
     ) -> Set[str]:
+        if cls._normalized_tool_id(tool_id) in {
+            "nuclei-cves",
+            "nuclei-exposures",
+            "curl-headers",
+            "curl-options",
+            "curl-robots",
+        }:
+            return set()
         # Include command template to catch specialized scripts referenced in command text.
         source = " ".join([
             str(tool_id or ""),
@@ -896,12 +1003,43 @@ class SchedulerPlanner:
             cls,
             service_name: str,
             decisions: List[PlanStep],
+            context: Optional[Dict[str, Any]] = None,
             limit: int = 4,
     ) -> List[PlanStep]:
         if not cls._is_web_service(service_name):
             return decisions[:limit]
 
         required = list(cls.WEB_AI_BASELINE_TOOL_IDS)
+        coverage = context.get("coverage", {}) if isinstance(context, dict) and isinstance(context.get("coverage", {}), dict) else {}
+        coverage_missing = {
+            str(item or "").strip().lower()
+            for item in (coverage.get("missing", []) if isinstance(coverage.get("missing", []), list) else [])
+            if str(item or "").strip()
+        }
+        signals = context.get("signals", {}) if isinstance(context, dict) and isinstance(context.get("signals", {}), dict) else {}
+        analysis_mode = str(
+            coverage.get("analysis_mode", "")
+            or (context.get("analysis_mode", "") if isinstance(context, dict) else "")
+            or "standard"
+        ).strip().lower()
+        host_cves = context.get("host_cves", []) if isinstance(context, dict) and isinstance(context.get("host_cves", []), list) else []
+        vuln_hits = int(signals.get("vuln_hits", 0) or 0)
+        needs_deep_web = bool(coverage_missing & {
+            "missing_whatweb",
+            "missing_nikto",
+            "missing_web_content_discovery",
+            "missing_followup_after_vuln",
+        }) or analysis_mode == "dig_deeper" or vuln_hits > 0 or bool(host_cves)
+        needs_targeted_nuclei = bool(coverage_missing & {
+            "missing_cpe_cve_enrichment",
+            "missing_followup_after_vuln",
+        }) or analysis_mode == "dig_deeper" or vuln_hits > 0 or bool(host_cves)
+        if needs_deep_web:
+            required.extend(cls.WEB_AI_DEEP_WEB_TOOL_IDS)
+        if needs_targeted_nuclei:
+            required.extend(("nuclei-cves", "nuclei-exposures"))
+        if bool(signals.get("wordpress_detected")):
+            required.extend(("nuclei-wordpress", "wpscan"))
         selected = list(decisions[:limit])
         selected_ids = {item.tool_id for item in selected}
 
@@ -921,6 +1059,37 @@ class SchedulerPlanner:
 
         selected.sort(key=lambda item: item.score, reverse=True)
         return selected[:limit]
+
+    @classmethod
+    def _default_ai_limit(
+            cls,
+            service_name: str,
+            *,
+            context: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        if not cls._is_web_service(service_name):
+            return 4
+        coverage = context.get("coverage", {}) if isinstance(context, dict) and isinstance(context.get("coverage", {}), dict) else {}
+        coverage_missing = {
+            str(item or "").strip().lower()
+            for item in (coverage.get("missing", []) if isinstance(coverage.get("missing", []), list) else [])
+            if str(item or "").strip()
+        }
+        signals = context.get("signals", {}) if isinstance(context, dict) and isinstance(context.get("signals", {}), dict) else {}
+        analysis_mode = str(
+            coverage.get("analysis_mode", "")
+            or (context.get("analysis_mode", "") if isinstance(context, dict) else "")
+            or "standard"
+        ).strip().lower()
+        host_cves = context.get("host_cves", []) if isinstance(context, dict) and isinstance(context.get("host_cves", []), list) else []
+        if (
+                analysis_mode == "dig_deeper"
+                or bool(host_cves)
+                or int(signals.get("vuln_hits", 0) or 0) > 0
+                or bool(coverage_missing & {"missing_followup_after_vuln", "missing_cpe_cve_enrichment"})
+        ):
+            return 6
+        return 4
 
     @staticmethod
     def _policy_snapshot_hash(policy: EngagementPolicy, dangerous_categories: List[str]) -> str:
@@ -1091,6 +1260,10 @@ class SchedulerPlanner:
     def _normalized_tool_id(tool_id: str) -> str:
         return str(tool_id or "").strip().lower()
 
+    @staticmethod
+    def _normalize_text_token(value: Any) -> str:
+        return str(value or "").strip().lower()
+
     @classmethod
     def _normalize_tool_id_set(cls, values) -> Set[str]:
         if values is None:
@@ -1103,6 +1276,26 @@ class SchedulerPlanner:
             if token:
                 normalized.add(token)
         return normalized
+
+    @classmethod
+    def _normalize_text_token_set(cls, values) -> Set[str]:
+        if values is None:
+            return set()
+        if isinstance(values, str):
+            values = [values]
+        normalized = set()
+        for item in values:
+            token = cls._normalize_text_token(item)
+            if token:
+                normalized.add(token)
+        return normalized
+
+    @staticmethod
+    def _command_signature(protocol_name: str, command_template: str) -> str:
+        rendered = str(command_template or "").strip().lower()
+        if not rendered:
+            rendered = "unknown"
+        return build_command_family_id("scheduler-command", str(protocol_name or "tcp"), rendered)
 
     @classmethod
     def _active_context_signals(cls, context: Optional[Dict[str, Any]]) -> List[str]:

@@ -41,7 +41,7 @@ class WebRuntimeScreenshotTargetTest(unittest.TestCase):
             )
             runtime._require_active_project = lambda: project
 
-            with patch("app.web.runtime.choose_preferred_host", return_value="bing.com") as mock_choose:
+            with patch("app.web.runtime.choose_preferred_screenshot_host", return_value="bing.com") as mock_choose:
                 with patch("app.web.runtime.isHttps", return_value=False):
                     with patch("app.web.runtime.run_eyewitness_capture", return_value={
                         "ok": True,

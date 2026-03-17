@@ -106,6 +106,10 @@ def build_eyewitness_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     env = dict(base_env or os.environ)
     # Force stdlib HTTPS clients to skip certificate validation.
     env["PYTHONHTTPSVERIFY"] = "0"
+    # Browser fallback paths run in headless/offline environments where accessibility
+    # and desktop-bus integrations are often unavailable and noisy.
+    env.setdefault("NO_AT_BRIDGE", "1")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=/dev/null")
     return env
 
 
@@ -306,15 +310,23 @@ def _run_browser_cli_fallback_capture(
                 executable,
                 headless_flag,
                 "--disable-gpu",
+                "--disable-background-networking",
+                "--disable-breakpad",
+                "--disable-component-update",
                 "--disable-dev-shm-usage",
+                "--disable-features=MediaRouter,OptimizationHints,Translate",
+                "--disable-renderer-backgrounding",
                 "--hide-scrollbars",
                 "--ignore-certificate-errors",
                 "--allow-insecure-localhost",
                 "--allow-running-insecure-content",
+                "--metrics-recording-only",
                 "--no-default-browser-check",
                 "--no-first-run",
                 "--no-sandbox",
+                "--password-store=basic",
                 "--disable-setuid-sandbox",
+                "--use-mock-keychain",
                 f"--window-size=1366,768",
                 f"--virtual-time-budget={max(3000, min(effective_timeout * 1000, 15000))}",
                 f"--user-data-dir={profile_dir}",
@@ -787,26 +799,6 @@ def run_eyewitness_capture(
                 "attempts": attempts,
             }
 
-    browser_fallback = _run_browser_cli_fallback_capture(
-        url=str(url),
-        output_parent_dir=output_parent_dir,
-        timeout=int(timeout),
-    )
-    attempts.append(browser_fallback)
-    if browser_fallback.get("ok"):
-        return {
-            "ok": True,
-            "reason": "completed",
-            "executable": str(browser_fallback.get("executable", "browser-cli-fallback")),
-            "output_dir": str(browser_fallback.get("output_dir", "")),
-            "command": list(browser_fallback.get("command", [])),
-            "returncode": int(browser_fallback.get("returncode", 0) or 0),
-            "stdout": str(browser_fallback.get("stdout", "") or ""),
-            "stderr": str(browser_fallback.get("stderr", "") or ""),
-            "screenshot_path": str(browser_fallback.get("screenshot_path", "") or ""),
-            "attempts": attempts,
-        }
-
     selenium_chromium_fallback = _run_selenium_chromium_fallback_capture(
         url=str(url),
         output_parent_dir=output_parent_dir,
@@ -825,6 +817,26 @@ def run_eyewitness_capture(
             "stdout": str(selenium_chromium_fallback.get("stdout", "") or ""),
             "stderr": str(selenium_chromium_fallback.get("stderr", "") or ""),
             "screenshot_path": str(selenium_chromium_fallback.get("screenshot_path", "") or ""),
+            "attempts": attempts,
+        }
+
+    browser_fallback = _run_browser_cli_fallback_capture(
+        url=str(url),
+        output_parent_dir=output_parent_dir,
+        timeout=int(timeout),
+    )
+    attempts.append(browser_fallback)
+    if browser_fallback.get("ok"):
+        return {
+            "ok": True,
+            "reason": "completed",
+            "executable": str(browser_fallback.get("executable", "browser-cli-fallback")),
+            "output_dir": str(browser_fallback.get("output_dir", "")),
+            "command": list(browser_fallback.get("command", [])),
+            "returncode": int(browser_fallback.get("returncode", 0) or 0),
+            "stdout": str(browser_fallback.get("stdout", "") or ""),
+            "stderr": str(browser_fallback.get("stderr", "") or ""),
+            "screenshot_path": str(browser_fallback.get("screenshot_path", "") or ""),
             "attempts": attempts,
         }
 
