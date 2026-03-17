@@ -1,4 +1,5 @@
 import datetime
+import glob
 import json
 import os
 import queue
@@ -40,6 +41,12 @@ from app.scheduler.audit import (
     log_scheduler_decision,
     update_scheduler_decision_for_approval,
 )
+from app.scheduler.execution import (
+    ensure_scheduler_execution_table,
+    list_execution_records,
+    store_execution_record,
+)
+from app.scheduler.models import ExecutionRecord
 from app.scheduler.insights import (
     delete_host_ai_state,
     ensure_scheduler_ai_state_table,
@@ -236,6 +243,7 @@ class WebRuntime:
                 "scheduler": self._scheduler_preferences(),
                 "scheduler_decisions": self.get_scheduler_decisions(limit=80),
                 "scheduler_approvals": self.get_scheduler_approvals(limit=40, status="pending"),
+                "scheduler_executions": self.get_scheduler_execution_records(limit=40),
                 "jobs": self.jobs.list_jobs(limit=20),
             }
 
@@ -297,6 +305,54 @@ class WebRuntime:
             project = self._require_active_project()
             ensure_scheduler_approval_table(project.database)
             return list_pending_approvals(project.database, limit=limit, status=status)
+
+    def get_scheduler_execution_records(self, limit: int = 200) -> List[Dict[str, Any]]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scheduler_execution_table(project.database)
+            return list_execution_records(project.database, limit=limit)
+
+    @staticmethod
+    def _collect_command_artifacts(outputfile: str) -> List[str]:
+        base_path = str(outputfile or "").strip()
+        if not base_path:
+            return []
+        matches = []
+        for path in sorted(set(glob.glob(f"{base_path}*"))):
+            if os.path.exists(path):
+                matches.append(path)
+        return matches
+
+    def _persist_scheduler_execution_record(
+            self,
+            decision: ScheduledAction,
+            execution_record: Optional[ExecutionRecord],
+            *,
+            host_ip: str,
+            port: str,
+            protocol: str,
+            service_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(execution_record, ExecutionRecord):
+            return None
+        with self._lock:
+            project = getattr(self.logic, "activeProject", None)
+            database = getattr(project, "database", None) if project else None
+            if database is None:
+                return None
+            try:
+                ensure_scheduler_execution_table(database)
+                return store_execution_record(
+                    database,
+                    execution_record,
+                    step=decision,
+                    host_ip=host_ip,
+                    port=port,
+                    protocol=protocol,
+                    service=service_name,
+                )
+            except Exception:
+                return None
 
     def approve_scheduler_approval(self, approval_id: int, approve_family: bool = False, run_now: bool = True):
         with self._lock:
@@ -2702,6 +2758,7 @@ class WebRuntime:
                         executed = bool(result.get("executed", False))
                         reason = str(result.get("reason", "") or "")
                         process_id = int(result.get("process_id", 0) or 0)
+                        execution_record = result.get("execution_record")
 
                         self._record_scheduler_decision(
                             decision,
@@ -2712,6 +2769,14 @@ class WebRuntime:
                             approved=True,
                             executed=executed,
                             reason=reason,
+                        )
+                        self._persist_scheduler_execution_record(
+                            decision,
+                            execution_record,
+                            host_ip=host_ip,
+                            port=port,
+                            protocol=protocol,
+                            service_name=service_name,
                         )
                         if normalized_tool_id:
                             attempted_tool_ids.add(normalized_tool_id)
@@ -2850,12 +2915,13 @@ class WebRuntime:
                         "executed": False,
                         "reason": f"error: {exc}",
                         "process_id": 0,
+                        "execution_record": None,
                     })
         return results
 
     def _execute_scheduler_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         decision = task["decision"]
-        executed, reason, process_id = self._execute_scheduler_decision(
+        execution_result = self._execute_scheduler_decision(
             decision,
             host_ip=str(task.get("host_ip", "") or ""),
             port=str(task.get("port", "") or ""),
@@ -2864,13 +2930,15 @@ class WebRuntime:
             command_template=str(task.get("command_template", "") or ""),
             timeout=int(task.get("timeout", 300) or 300),
             job_id=int(task.get("job_id", 0) or 0),
+            capture_metadata=True,
         )
         return {
             "decision": decision,
             "tool_id": str(task.get("tool_id", "") or ""),
-            "executed": bool(executed),
-            "reason": str(reason),
-            "process_id": int(process_id or 0),
+            "executed": bool(execution_result.get("executed", False)),
+            "reason": str(execution_result.get("reason", "") or ""),
+            "process_id": int(execution_result.get("process_id", 0) or 0),
+            "execution_record": execution_result.get("execution_record"),
         }
 
     @staticmethod
@@ -4879,7 +4947,7 @@ class WebRuntime:
             },
         )
 
-        executed, reason, process_id = self._execute_scheduler_decision(
+        execution_result = self._execute_scheduler_decision(
             decision,
             host_ip=str(item.get("host_ip", "")),
             port=str(item.get("port", "")),
@@ -4888,7 +4956,13 @@ class WebRuntime:
             command_template=str(item.get("command_template", "")),
             timeout=300,
             job_id=int(job_id or 0),
+            capture_metadata=True,
+            approval_id=int(approval_id),
         )
+        executed = bool(execution_result.get("executed", False))
+        reason = str(execution_result.get("reason", "") or "")
+        process_id = int(execution_result.get("process_id", 0) or 0)
+        execution_record = execution_result.get("execution_record")
 
         with self._lock:
             project = self._require_active_project()
@@ -4920,6 +4994,15 @@ class WebRuntime:
                 approval_id=int(approval_id),
             )
 
+        self._persist_scheduler_execution_record(
+            decision,
+            execution_record,
+            host_ip=str(item.get("host_ip", "")),
+            port=str(item.get("port", "")),
+            protocol=str(item.get("protocol", "")),
+            service_name=str(item.get("service", "")),
+        )
+
         if process_id and executed:
             self._save_script_result_if_missing(
                 host_ip=str(item.get("host_ip", "")),
@@ -4947,17 +5030,57 @@ class WebRuntime:
             command_template: str,
             timeout: int,
             job_id: int = 0,
-    ) -> Tuple[bool, str, int]:
+            capture_metadata: bool = False,
+            approval_id: int = 0,
+    ) -> Any:
         if str(decision.tool_id) == "screenshooter":
+            started_at = getTimestamp(True)
+            if capture_metadata:
+                executed, reason, artifact_refs = self._take_screenshot(
+                    host_ip,
+                    port,
+                    service_name=service_name,
+                    return_artifacts=True,
+                )
+                execution_record = ExecutionRecord.from_plan_step(
+                    decision,
+                    started_at=started_at,
+                    finished_at=getTimestamp(True),
+                    exit_status=reason,
+                    artifact_refs=artifact_refs,
+                    approval_id=str(approval_id or ""),
+                )
+                return {
+                    "executed": bool(executed),
+                    "reason": str(reason),
+                    "process_id": 0,
+                    "execution_record": execution_record,
+                }
             executed, reason = self._take_screenshot(host_ip, port, service_name=service_name)
             return executed, reason, 0
 
         if not command_template:
-            return False, "skipped: no matching command template", 0
+            reason = "skipped: no matching command template"
+            if not capture_metadata:
+                return False, reason, 0
+            timestamp = getTimestamp(True)
+            execution_record = ExecutionRecord.from_plan_step(
+                decision,
+                started_at=timestamp,
+                finished_at=timestamp,
+                exit_status=reason,
+                approval_id=str(approval_id or ""),
+            )
+            return {
+                "executed": False,
+                "reason": reason,
+                "process_id": 0,
+                "execution_record": execution_record,
+            }
 
         command, outputfile = self._build_command(command_template, host_ip, port, protocol, decision.tool_id)
         tab_title = f"{decision.tool_id} ({port}/{protocol})"
-        return self._run_command_with_tracking(
+        command_result = self._run_command_with_tracking(
             tool_name=decision.tool_id,
             tab_title=tab_title,
             host_ip=host_ip,
@@ -4967,7 +5090,28 @@ class WebRuntime:
             outputfile=outputfile,
             timeout=timeout,
             job_id=int(job_id or 0),
+            return_metadata=bool(capture_metadata),
         )
+        if not capture_metadata:
+            return command_result
+
+        executed, reason, process_id, metadata = command_result
+        execution_record = ExecutionRecord.from_plan_step(
+            decision,
+            started_at=str(metadata.get("started_at", "") or ""),
+            finished_at=str(metadata.get("finished_at", "") or ""),
+            exit_status=str(reason or ""),
+            stdout_ref=str(metadata.get("stdout_ref", "") or ""),
+            stderr_ref=str(metadata.get("stderr_ref", "") or ""),
+            artifact_refs=list(metadata.get("artifact_refs", []) or []),
+            approval_id=str(approval_id or ""),
+        )
+        return {
+            "executed": bool(executed),
+            "reason": str(reason),
+            "process_id": int(process_id or 0),
+            "execution_record": execution_record,
+        }
 
     @staticmethod
     def _is_rdp_service(service_name: str) -> bool:
@@ -4979,13 +5123,20 @@ class WebRuntime:
         value = str(service_name or "").strip().rstrip("?").lower()
         return value in {"vnc", "vnc-http", "rfb"}
 
-    def _take_screenshot(self, host_ip: str, port: str, service_name: str = "") -> Tuple[bool, str]:
+    def _take_screenshot(
+            self,
+            host_ip: str,
+            port: str,
+            service_name: str = "",
+            return_artifacts: bool = False,
+    ) -> Any:
         normalized_service = str(service_name or "").strip().rstrip("?").lower()
         if self._is_rdp_service(normalized_service) or self._is_vnc_service(normalized_service):
             return self._take_remote_service_screenshot(
                 host_ip=host_ip,
                 port=port,
                 service_name=normalized_service,
+                return_artifacts=return_artifacts,
             )
 
         with self._lock:
@@ -5025,14 +5176,22 @@ class WebRuntime:
             failed = failure_capture or {}
             reason = str(failed.get("reason", "") or "")
             if reason == "eyewitness missing":
+                if return_artifacts:
+                    return False, "skipped: eyewitness missing", []
                 return False, "skipped: eyewitness missing"
             detail = summarize_eyewitness_failure(failed.get("attempts", []))
             if detail:
+                if return_artifacts:
+                    return False, f"skipped: screenshot png missing ({detail})", []
                 return False, f"skipped: screenshot png missing ({detail})"
+            if return_artifacts:
+                return False, "skipped: screenshot png missing", []
             return False, "skipped: screenshot png missing"
 
         src_path = str(capture.get("screenshot_path", "") or "")
         if not src_path or not os.path.isfile(src_path):
+            if return_artifacts:
+                return False, "skipped: screenshot output missing", []
             return False, "skipped: screenshot output missing"
 
         deterministic_name = f"{host_ip}-{port}-screenshot.png"
@@ -5040,10 +5199,21 @@ class WebRuntime:
         shutil.copy2(src_path, dst_path)
         returncode = int(capture.get("returncode", 0) or 0)
         if returncode != 0:
+            if return_artifacts:
+                return True, f"completed (eyewitness exited {returncode})", [dst_path]
             return True, f"completed (eyewitness exited {returncode})"
+        if return_artifacts:
+            return True, "completed", [dst_path]
         return True, "completed"
 
-    def _take_remote_service_screenshot(self, *, host_ip: str, port: str, service_name: str) -> Tuple[bool, str]:
+    def _take_remote_service_screenshot(
+            self,
+            *,
+            host_ip: str,
+            port: str,
+            service_name: str,
+            return_artifacts: bool = False,
+    ) -> Any:
         with self._lock:
             project = self._require_active_project()
             screenshots_dir = os.path.join(project.properties.outputFolder, "screenshots")
@@ -5088,6 +5258,8 @@ class WebRuntime:
                     "output": output,
                 })
                 if result.returncode == 0 and os.path.isfile(dst_path) and os.path.getsize(dst_path) > 0:
+                    if return_artifacts:
+                        return True, "completed", [dst_path]
                     return True, "completed"
             except FileNotFoundError:
                 attempts.append({
@@ -5108,7 +5280,12 @@ class WebRuntime:
                 f"{item.get('command', '')} rc={item.get('returncode', '')} {item.get('output', '')}".strip()
             )
         if detail_parts:
-            return False, "skipped: remote screenshot missing (" + " | ".join(detail_parts) + ")"
+            reason = "skipped: remote screenshot missing (" + " | ".join(detail_parts) + ")"
+            if return_artifacts:
+                return False, reason, []
+            return False, reason
+        if return_artifacts:
+            return False, "skipped: remote screenshot missing", []
         return False, "skipped: remote screenshot missing"
 
     def _run_command_with_tracking(
@@ -5123,7 +5300,8 @@ class WebRuntime:
             outputfile: str,
             timeout: int,
             job_id: int = 0,
-    ) -> Tuple[bool, str, int]:
+            return_metadata: bool = False,
+    ) -> Any:
         with self._lock:
             project = self._require_active_project()
             self._ensure_process_tables()
@@ -5149,7 +5327,16 @@ class WebRuntime:
             process_id = int(process_repo.storeProcess(stub) or 0)
 
         if process_id <= 0:
-            return False, "error: failed to create process record", 0
+            failed_result = (False, "error: failed to create process record", 0)
+            if not return_metadata:
+                return failed_result
+            return failed_result + ({
+                "started_at": start_time,
+                "finished_at": getTimestamp(True),
+                "stdout_ref": "",
+                "stderr_ref": "",
+                "artifact_refs": [],
+            },)
 
         resolved_job_id = int(job_id or 0)
         if resolved_job_id > 0:
@@ -5159,7 +5346,16 @@ class WebRuntime:
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
                 process_repo.storeProcessOutput(str(process_id), "[cancelled before start]")
                 self._unregister_job_process(int(process_id))
-                return False, "killed", int(process_id)
+                cancelled_result = (False, "killed", int(process_id))
+                if not return_metadata:
+                    return cancelled_result
+                return cancelled_result + ({
+                    "started_at": start_time,
+                    "finished_at": getTimestamp(True),
+                    "stdout_ref": f"process_output:{int(process_id)}",
+                    "stderr_ref": "",
+                    "artifact_refs": self._collect_command_artifacts(outputfile),
+                },)
 
         proc: Optional[subprocess.Popen] = None
         output_parts: List[str] = []
@@ -5211,6 +5407,18 @@ class WebRuntime:
                 except Exception:
                     pass
                 reader_done.set()
+
+        def _build_result(executed: bool, reason: str, process_identifier: int):
+            result = (bool(executed), str(reason), int(process_identifier or 0))
+            if not return_metadata:
+                return result
+            return result + ({
+                "started_at": start_time,
+                "finished_at": getTimestamp(True),
+                "stdout_ref": f"process_output:{int(process_identifier)}" if int(process_identifier or 0) > 0 else "",
+                "stderr_ref": "",
+                "artifact_refs": self._collect_command_artifacts(outputfile),
+            },)
 
         try:
             proc = subprocess.Popen(
@@ -5324,19 +5532,19 @@ class WebRuntime:
                 process_repo.storeProcessProblemStatus(str(process_id))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
-                return False, f"failed: timeout after {int(timeout)}s without output", int(process_id)
+                return _build_result(False, f"failed: timeout after {int(timeout)}s without output", int(process_id))
 
             if killed:
                 process_repo.storeProcessKillStatus(str(process_id))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
-                return False, "killed", int(process_id)
+                return _build_result(False, "killed", int(process_id))
 
             if int(proc.returncode or 0) != 0:
                 _store_failure_status(_classify_nonzero_exit(proc.returncode, runtime_seconds))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
-                return False, f"failed: exit {proc.returncode}", int(process_id)
+                return _build_result(False, f"failed: exit {proc.returncode}", int(process_id))
 
             try:
                 process_repo.storeProcessProgress(
@@ -5348,7 +5556,7 @@ class WebRuntime:
                 pass
 
             process_repo.storeProcessOutput(str(process_id), combined_output)
-            return True, "completed", int(process_id)
+            return _build_result(True, "completed", int(process_id))
         except Exception as exc:
             process_repo.storeProcessProblemStatus(str(process_id))
             try:
@@ -5356,7 +5564,7 @@ class WebRuntime:
             except Exception:
                 pass
             process_repo.storeProcessOutput(str(process_id), f"[error] {exc}\n{''.join(output_parts)}")
-            return False, f"error: {exc}", int(process_id)
+            return _build_result(False, f"error: {exc}", int(process_id))
         finally:
             with self._process_runtime_lock:
                 self._active_processes.pop(int(process_id), None)

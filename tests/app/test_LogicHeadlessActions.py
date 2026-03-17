@@ -55,6 +55,72 @@ class LogicHeadlessActionsTest(unittest.TestCase):
         command = mock_subprocess_run.call_args[0][0]
         self.assertIn("dc01.local:445", command)
 
+    @patch("subprocess.run")
+    @patch("app.settings.AppSettings")
+    @patch("app.settings.Settings")
+    def test_run_scripted_actions_persists_execution_record_for_real_project(
+            self,
+            mock_settings_cls,
+            _mock_app_settings_cls,
+            mock_subprocess_run,
+    ):
+        from app.ProjectManager import ProjectManager
+        from app.logic import Logic
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.execution import list_execution_records
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+        from db.entities.port import portObj
+        from db.entities.service import serviceObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="")
+            session.add(host)
+            session.commit()
+
+            service = serviceObj(name="smb", host=host.id)
+            session.add(service)
+            session.commit()
+
+            port = portObj("445", "tcp", "open", host.id, service.id)
+            session.add(port)
+            session.commit()
+            session.close()
+
+            settings = SimpleNamespace(
+                automatedAttacks=[["smb-enum-users.nse", "smb", "tcp"]],
+                portActions=[[
+                    "SMB Enum Users",
+                    "smb-enum-users.nse",
+                    "echo [IP]:[PORT] > [OUTPUT]",
+                    "smb",
+                ]],
+            )
+            mock_settings_cls.return_value = settings
+            mock_subprocess_run.return_value = SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+            logic = Logic(MagicMock(), MagicMock(), MagicMock())
+            logic.activeProject = project
+
+            logic.run_scripted_actions()
+
+            records = list_execution_records(project.database, limit=10)
+
+            self.assertEqual(1, len(records))
+            self.assertEqual("smb-enum-users.nse", records[0]["tool_id"])
+            self.assertEqual("deterministic", records[0]["scheduler_mode"])
+            self.assertEqual("10.0.0.5", records[0]["host_ip"])
+            self.assertEqual("445", records[0]["port"])
+            self.assertEqual("completed", records[0]["exit_status"])
+        finally:
+            project_manager.closeProject(project)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ Copyright (c) 2025 Shane William Scott
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
+import glob
 import ntpath
 import os
 import re
@@ -50,6 +51,8 @@ class Logic:
         from app.settings import AppSettings, Settings
         from app.scheduler.audit import log_scheduler_decision
         from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.execution import ensure_scheduler_execution_table, store_execution_record
+        from app.scheduler.models import ExecutionRecord
         from app.scheduler.planner import SchedulerPlanner
         from app.timing import getTimestamp
         from app.httputil.isHttps import isHttps
@@ -84,6 +87,48 @@ class Logic:
                 "reason": str(reason),
                 "rationale": str(decision.rationale),
             })
+
+        def record_execution(
+                decision,
+                host_ip,
+                host_port,
+                host_protocol,
+                host_service,
+                *,
+                started_at,
+                finished_at,
+                exit_status,
+                artifact_refs=None,
+                approval_id="",
+                stdout_ref="",
+                stderr_ref="",
+        ):
+            database = getattr(self.activeProject, "database", None)
+            if database is None:
+                return
+            try:
+                ensure_scheduler_execution_table(database)
+                execution_record = ExecutionRecord.from_plan_step(
+                    decision,
+                    started_at=str(started_at or ""),
+                    finished_at=str(finished_at or ""),
+                    exit_status=str(exit_status or ""),
+                    stdout_ref=str(stdout_ref or ""),
+                    stderr_ref=str(stderr_ref or ""),
+                    artifact_refs=list(artifact_refs or []),
+                    approval_id=str(approval_id or ""),
+                )
+                store_execution_record(
+                    database,
+                    execution_record,
+                    step=decision,
+                    host_ip=str(host_ip),
+                    port=str(host_port),
+                    protocol=str(host_protocol),
+                    service=str(host_service),
+                )
+            except Exception:
+                return
 
         # For each host
         hosts = repo_container.hostRepository.getAllHostObjs()
@@ -127,6 +172,7 @@ class Logic:
                         continue
 
                     if decision.tool_id == "screenshooter":
+                        started_at = getTimestamp(True)
                         try:
                             target_host = choose_preferred_host(hostname, ip)
                             url = f"{target_host}:{port_num}"
@@ -150,6 +196,16 @@ class Logic:
                                     print("[!] EyeWitness executable was not found on this system.")
                                     record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
                                            reason="skipped: eyewitness missing")
+                                    record_execution(
+                                        decision,
+                                        ip,
+                                        port_num,
+                                        protocol,
+                                        service_name,
+                                        started_at=started_at,
+                                        finished_at=getTimestamp(True),
+                                        exit_status="skipped: eyewitness missing",
+                                    )
                                     continue
                                 detail = summarize_eyewitness_failure(capture.get("attempts", []))
                                 if detail:
@@ -158,6 +214,16 @@ class Logic:
                                     print("[!] EyeWitness did not produce a screenshot PNG.")
                                 record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
                                        reason="skipped: screenshot png missing")
+                                record_execution(
+                                    decision,
+                                    ip,
+                                    port_num,
+                                    protocol,
+                                    service_name,
+                                    started_at=started_at,
+                                    finished_at=getTimestamp(True),
+                                    exit_status="skipped: screenshot png missing",
+                                )
                                 continue
 
                             command = capture.get("command", [])
@@ -176,6 +242,16 @@ class Logic:
                                 print("[!] EyeWitness reported success but screenshot file is missing.")
                                 record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
                                        reason="skipped: screenshot output missing")
+                                record_execution(
+                                    decision,
+                                    ip,
+                                    port_num,
+                                    protocol,
+                                    service_name,
+                                    started_at=started_at,
+                                    finished_at=getTimestamp(True),
+                                    exit_status="skipped: screenshot output missing",
+                                )
                                 continue
 
                             deterministic_name = f"{ip}-{port_num}-screenshot.png"
@@ -189,10 +265,35 @@ class Logic:
                                 )
                             record(decision, ip, port_num, protocol, service_name, approved=True, executed=True,
                                    reason="completed")
+                            record_execution(
+                                decision,
+                                ip,
+                                port_num,
+                                protocol,
+                                service_name,
+                                started_at=started_at,
+                                finished_at=getTimestamp(True),
+                                exit_status=(
+                                    f"completed (eyewitness exited {capture.get('returncode')})"
+                                    if int(capture.get("returncode", 0) or 0) != 0 else
+                                    "completed"
+                                ),
+                                artifact_refs=[deterministic_path],
+                            )
                         except Exception as e:
                             print(f"[!] Error taking screenshot for {ip}:{port_num}: {e}")
                             record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
                                    reason=f"error: {e}")
+                            record_execution(
+                                decision,
+                                ip,
+                                port_num,
+                                protocol,
+                                service_name,
+                                started_at=started_at,
+                                finished_at=getTimestamp(True),
+                                exit_status=f"error: {e}",
+                            )
                         continue
 
                     matched_action = None
@@ -221,6 +322,7 @@ class Logic:
                         output=outputfile,
                     )
                     print(f"[+] Running tool '{decision.tool_id}' for {ip}:{port_num}/{protocol}: {command}")
+                    started_at = getTimestamp(True)
                     try:
                         result = subprocess.run(
                             command,
@@ -234,10 +336,42 @@ class Logic:
                             print(f"[{decision.tool_id} STDERR]\n{result.stderr}")
                         record(decision, ip, port_num, protocol, service_name, approved=True, executed=True,
                                reason="completed")
+                        record_execution(
+                            decision,
+                            ip,
+                            port_num,
+                            protocol,
+                            service_name,
+                            started_at=started_at,
+                            finished_at=getTimestamp(True),
+                            exit_status=(
+                                "completed"
+                                if int(getattr(result, "returncode", 0) or 0) == 0 else
+                                f"completed (exit {int(getattr(result, 'returncode', 0) or 0)})"
+                            ),
+                            artifact_refs=[
+                                path for path in sorted(set(glob.glob(f"{outputfile}*")))
+                                if os.path.exists(path)
+                            ],
+                        )
                     except Exception as e:
                         print(f"[!] Error running tool '{decision.tool_id}' for {ip}:{port_num}: {e}")
                         record(decision, ip, port_num, protocol, service_name, approved=True, executed=False,
                                reason=f"error: {e}")
+                        record_execution(
+                            decision,
+                            ip,
+                            port_num,
+                            protocol,
+                            service_name,
+                            started_at=started_at,
+                            finished_at=getTimestamp(True),
+                            exit_status=f"error: {e}",
+                            artifact_refs=[
+                                path for path in sorted(set(glob.glob(f"{outputfile}*")))
+                                if os.path.exists(path)
+                            ],
+                        )
 
     def createFolderForTool(self, tool):
         if 'nmap' in tool:
