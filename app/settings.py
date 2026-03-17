@@ -445,7 +445,11 @@ class AppSettings():
             lambda match: f"{match.group(0)} -si 15",
             normalized,
         )
-        normalized = re.sub(r"(?i)(?<!\S)--?silent\b", "", normalized)
+        normalized = re.sub(
+            r"(?i)\bnuclei(?:\s+-as)?(?:\s+-stats)?(?:\s+-si\s+15)?(?![^|;&()\n]*\s+(?:-silent|--silent)\b)(?=[^|;&()\n]*\s+-u\b)",
+            lambda match: f"{match.group(0)} -silent",
+            normalized,
+        )
         normalized = re.sub(r"(?i)(?<!\S)--?no-color\b", "", normalized)
         normalized = re.sub(r"[ \t]{2,}", " ", normalized)
         return normalized.replace(probe_marker, "nuclei")
@@ -675,6 +679,41 @@ class AppSettings():
         if legacy_gobuster_block in raw:
             return raw.replace(legacy_gobuster_block, cls.WEB_CONTENT_GOBUSTER_COMMAND)
         return raw
+
+    @staticmethod
+    def _canonicalize_web_target_placeholders(command: str) -> str:
+        normalized = str(command or "")
+        replacements = (
+            ("https://[IP]:[PORT]", "[WEB_URL]"),
+            ("http://[IP]:[PORT]", "[WEB_URL]"),
+            ("https://[IP]", "[WEB_URL]"),
+            ("http://[IP]", "[WEB_URL]"),
+        )
+        for old, new in replacements:
+            normalized = normalized.replace(old, new)
+        return normalized
+
+    @staticmethod
+    def _collapse_redundant_fallbacks(command: str) -> str:
+        normalized = str(command or "")
+        duplicate_or_pattern = re.compile(r"\(\s*([^()]+?)\s*\|\|\s*([^()]+?)\s*\)")
+
+        while True:
+            changed = False
+
+            def _replace(match):
+                nonlocal changed
+                left = re.sub(r"\s+", " ", str(match.group(1) or "")).strip()
+                right = re.sub(r"\s+", " ", str(match.group(2) or "")).strip()
+                if left == right and left:
+                    changed = True
+                    return f"({left})"
+                return match.group(0)
+
+            updated = duplicate_or_pattern.sub(_replace, normalized)
+            if not changed:
+                return updated
+            normalized = updated
 
     @staticmethod
     def _ensure_wapiti_command(command: str, scheme: str = "http") -> str:

@@ -97,7 +97,7 @@ class ProcessRepository:
                     '0 AS progress, '
                     'COALESCE(process.display, "False") AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
-                    'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
+                    'process.estimatedRemaining AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
@@ -124,7 +124,7 @@ class ProcessRepository:
                     '0 AS progress, '
                     'process.display AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
-                    'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
+                    'process.estimatedRemaining AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
@@ -153,7 +153,7 @@ class ProcessRepository:
                     '0 AS progress, '
                     'process.display AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
-                    'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
+                    'process.estimatedRemaining AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
@@ -216,7 +216,7 @@ class ProcessRepository:
         p = process(str(proc.processId()), str(proc.name), str(proc.tabTitle),
                     str(proc.hostIp), str(proc.port), str(proc.protocol),
                     unicode(proc.command), proc.startTime, "", str(proc.outputfile),
-                    'Waiting', [p_output], 100, 0)
+                    'Waiting', [p_output], None, 0)
 
         self.log.info(f"Adding process: {p}")
         session.add(p)
@@ -247,7 +247,7 @@ class ProcessRepository:
             session.add(proc_output)
 
             proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = 0
+            proc.estimatedRemaining = None
 
             if proc.status not in {"Killed", "Cancelled", "Crashed", "Problem"}:
                 proc.status = 'Finished'
@@ -291,7 +291,7 @@ class ProcessRepository:
                 '0 AS progress, '
                 'process.display AS display, '
                 'COALESCE(process.elapsed, 0) AS elapsed, '
-                'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
+                'process.estimatedRemaining AS estimatedRemaining, '
                 'COALESCE(process.percent, "") AS percent, '
                 'COALESCE(process.pid, "") AS pid, '
                 'COALESCE(process.name, "") AS name, '
@@ -318,7 +318,7 @@ class ProcessRepository:
                 '0 AS progress, '
                 'process.display AS display, '
                 'COALESCE(process.elapsed, 0) AS elapsed, '
-                'COALESCE(process.estimatedRemaining, 0) AS estimatedRemaining, '
+                'process.estimatedRemaining AS estimatedRemaining, '
                 'COALESCE(process.percent, "") AS percent, '
                 'COALESCE(process.pid, "") AS pid, '
                 'COALESCE(process.name, "") AS name, '
@@ -392,7 +392,7 @@ class ProcessRepository:
         if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
             proc.status = 'Crashed'
             proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = 0
+            proc.estimatedRemaining = None
             session.add(proc)
             session.commit()
         session.close()
@@ -403,7 +403,7 @@ class ProcessRepository:
         if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
             proc.status = 'Problem'
             proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = 0
+            proc.estimatedRemaining = None
             session.add(proc)
             session.commit()
         session.close()
@@ -414,7 +414,7 @@ class ProcessRepository:
         if proc:
             proc.status = 'Cancelled'
             proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = 0
+            proc.estimatedRemaining = None
             session.add(proc)
             session.commit()
         session.close()
@@ -425,7 +425,7 @@ class ProcessRepository:
         if proc and not proc.status == 'Finished':
             proc.status = 'Killed'
             proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = 0
+            proc.estimatedRemaining = None
             session.add(proc)
             session.commit()
         session.close()
@@ -458,21 +458,24 @@ class ProcessRepository:
     def storeProcessEstimatedRemaining(self, processId: str, estimated_remaining):
         self.storeProcessProgress(processId, estimated_remaining=estimated_remaining)
 
-    def storeProcessProgress(self, processId: str, percent=None, estimated_remaining=None):
+    def storeProcessProgress(self, processId: str, percent=Ellipsis, estimated_remaining=Ellipsis):
         session = self.dbAdapter.session()
         try:
             proc = session.query(process).filter_by(id=processId).first()
             if not proc:
                 return
 
-            if percent is not None:
-                proc.percent = str(percent)
+            if percent is not Ellipsis:
+                proc.percent = None if percent is None else str(percent)
 
-            if estimated_remaining is not None:
-                try:
-                    proc.estimatedRemaining = max(0, int(float(estimated_remaining)))
-                except Exception:
-                    pass
+            if estimated_remaining is not Ellipsis:
+                if estimated_remaining in ("", None):
+                    proc.estimatedRemaining = None
+                else:
+                    try:
+                        proc.estimatedRemaining = max(0, int(float(estimated_remaining)))
+                    except Exception:
+                        proc.estimatedRemaining = None
 
             session.add(proc)
             session.commit()
@@ -491,7 +494,7 @@ class ProcessRepository:
     def storeScreenshot(self, ip: str, port: str, filename: str):
         session = self.dbAdapter.session()
         p = process(0, "screenshooter", "screenshot (" + str(port) + "/tcp)", str(ip), str(port), "tcp", "",
-                    getTimestamp(True), getTimestamp(True), str(filename), "Finished", [process_output()], 2, 0)
+                    getTimestamp(True), getTimestamp(True), str(filename), "Finished", [process_output()], None, 0)
         if p:
             session.add(p)
             session.commit()

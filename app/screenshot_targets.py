@@ -19,6 +19,7 @@ _NUMERIC_TARGET_COMMAND_PATTERNS = (
     re.compile(r"(?i)^\s*nbtscan\b"),
     re.compile(r"(?i)^\s*unicornscan\b"),
 )
+_TLS_WEB_SERVICE_IDS = {"https", "ssl", "https-alt", "https?", "ssl/http", "ssl|http"}
 
 
 @lru_cache(maxsize=1024)
@@ -74,6 +75,15 @@ def choose_preferred_command_host(hostname: str, ip: str, command_template: str)
     return choose_preferred_host(hostname, ip, prefer_unresolved_hostname=True)
 
 
+def choose_preferred_web_scheme(service_name: str) -> str:
+    token = str(service_name or "").strip().rstrip("?").lower()
+    if token in _TLS_WEB_SERVICE_IDS:
+        return "https"
+    if token.startswith("https") or token.endswith("ssl") or token.endswith("tls"):
+        return "https"
+    return "http"
+
+
 def apply_preferred_target_placeholders(
         template: str,
         *,
@@ -81,12 +91,17 @@ def apply_preferred_target_placeholders(
         ip: str,
         port: Optional[str] = None,
         output: Optional[str] = None,
+        service_name: str = "",
 ) -> Tuple[str, str]:
     command = str(template or "")
     target_host = choose_preferred_command_host(hostname, ip, command)
     command = command.replace("[IP]", target_host)
     if port is not None:
         command = command.replace("[PORT]", str(port))
+        command = command.replace(
+            "[WEB_URL]",
+            f"{choose_preferred_web_scheme(service_name)}://{target_host}:{str(port)}",
+        )
     if output is not None:
         command = command.replace("[OUTPUT]", str(output))
     return command, target_host

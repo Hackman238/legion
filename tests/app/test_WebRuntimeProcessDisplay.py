@@ -21,7 +21,7 @@ class _DummyProcessRepo:
 
 
 class WebRuntimeProcessDisplayTest(unittest.TestCase):
-    def test_terminal_statuses_force_zero_eta_and_finished_forces_100_percent(self):
+    def test_terminal_statuses_hide_eta_and_finished_forces_100_percent(self):
         from app.web.runtime import WebRuntime
 
         runtime = WebRuntime.__new__(WebRuntime)
@@ -70,8 +70,8 @@ class WebRuntimeProcessDisplayTest(unittest.TestCase):
         rows = runtime._processes(limit=10)
 
         self.assertEqual("100", rows[0]["percent"])
-        self.assertEqual(0, rows[0]["estimatedRemaining"])
-        self.assertEqual(0, rows[1]["estimatedRemaining"])
+        self.assertIsNone(rows[0]["estimatedRemaining"])
+        self.assertIsNone(rows[1]["estimatedRemaining"])
         self.assertEqual("35.2", rows[2]["percent"])
         self.assertEqual(44, rows[2]["estimatedRemaining"])
         self.assertEqual("Problem", rows[1]["status"])

@@ -337,6 +337,133 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertEqual(1, len(pihole_rows))
         self.assertEqual("", str(pihole_rows[0].get("version", "")).strip())
 
+    def test_infer_technologies_uses_tool_specific_whatweb_and_httpx_parsers(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        technologies = runtime._infer_technologies_from_observations(
+            service_records=[],
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "whatweb-http",
+                    "output_excerpt": (
+                        "https://portal.example [200 OK] Apache[2.4.57], PHP[8.2.8], "
+                        "Country[UNITED STATES][US], HTTPServer[Apache/2.4.57 (Ubuntu)]"
+                    ),
+                },
+                {
+                    "tool_id": "httpx-web",
+                    "output_excerpt": (
+                        '{"url":"https://portal.example/admin","title":"Admin Console",'
+                        '"tech":["Bootstrap","Vue.js"],"webserver":"nginx/1.25.3"}'
+                    ),
+                },
+            ],
+            limit=64,
+        )
+
+        names = {str(item.get("name", "")).strip().lower() for item in technologies}
+        self.assertIn("apache", names)
+        self.assertIn("php", names)
+        self.assertIn("bootstrap", names)
+        self.assertIn("nginx", names)
+
+    def test_infer_findings_uses_tool_specific_nuclei_and_tls_parsers(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        findings = runtime._infer_findings_from_observations(
+            host_cves_raw=[],
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "nuclei-cves",
+                    "output_excerpt": (
+                        "[\u001b[31mWRN\u001b[0m] no templates provided for scan\n"
+                        "[0:00:05] | Templates: 0 | Hosts: 1 | RPS: 0 | Matched: 0 | Errors: 0 | Requests: 0/0 (9223372036854775808%)\n"
+                        "[CVE-2025-1111] [http] [critical] https://portal.example/admin "
+                        "authenticated admin panel exposure"
+                    ),
+                },
+                {
+                    "tool_id": "sslscan",
+                    "output_excerpt": "TLSv1.0 enabled\nSelf signed certificate",
+                },
+            ],
+            limit=64,
+        )
+
+        finding_titles = {str(item.get("title", "")).strip() for item in findings}
+        finding_cves = {str(item.get("cve", "")).strip().upper() for item in findings}
+        self.assertIn("CVE-2025-1111", finding_cves)
+        self.assertIn("TLSv1.0 supported", finding_titles)
+        self.assertIn("Self-signed TLS certificate", finding_titles)
+        self.assertNotIn("WRN", finding_titles)
+        self.assertNotIn("0:00:05", finding_titles)
+
+    def test_infer_urls_extracts_urls_from_httpx_and_nuclei_outputs(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        urls = runtime._infer_urls_from_observations(
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "httpx-web",
+                    "output_excerpt": (
+                        '{"url":"https://portal.example/admin","title":"Admin Console",'
+                        '"tech":["Vue.js"]}'
+                    ),
+                },
+                {
+                    "tool_id": "nuclei-web",
+                    "output_excerpt": "[exposed-panel] [medium] https://portal.example/login",
+                },
+            ],
+            limit=32,
+        )
+
+        extracted_urls = {str(item.get("url", "")).strip() for item in urls}
+        self.assertIn("https://portal.example/admin", extracted_urls)
+        self.assertIn("https://portal.example/login", extracted_urls)
+
+    def test_infer_urls_ignores_nmap_boilerplate_urls(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        urls = runtime._infer_urls_from_observations(
+            script_records=[
+                {
+                    "script_id": "nmap-vuln.nse",
+                    "excerpt": (
+                        "Starting Nmap 7.80 ( https://nmap.org ) at 2026-03-17 07:15 CDT\n"
+                        "| http-title: example portal\n"
+                        "Service detection performed. Please report any incorrect results at "
+                        "https://nmap.org/submit/ .\n"
+                    ),
+                }
+            ],
+            process_records=[],
+            limit=16,
+        )
+
+        extracted_urls = {str(item.get("url", "")).strip() for item in urls}
+        self.assertNotIn("https://nmap.org", extracted_urls)
+        self.assertNotIn("https://nmap.org/submit/", extracted_urls)
+
+    def test_strip_nmap_preamble_removes_header_and_footer_reference_lines(self):
+        from app.web.runtime import WebRuntime
+
+        cleaned = WebRuntime._strip_nmap_preamble(
+            "Starting Nmap 7.80 ( https://nmap.org ) at 2026-03-17 07:15 CDT\n"
+            "| http-title: portal.example\n"
+            "Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .\n"
+            "Nmap done: 1 IP address (1 host up) scanned in 4.72 seconds\n"
+        )
+
+        self.assertEqual("| http-title: portal.example", cleaned)
+
 
 if __name__ == "__main__":
     unittest.main()

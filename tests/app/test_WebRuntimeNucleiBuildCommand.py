@@ -10,7 +10,7 @@ for legacy_name in ("Mapping", "MutableMapping", "Sequence", "Callable"):
 
 
 class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
-    def test_build_command_keeps_output_filename_and_adds_as(self):
+    def test_build_command_uses_http_scheme_for_http_service_and_adds_as(self):
         from app.web.runtime import WebRuntime
 
         runtime = WebRuntime.__new__(WebRuntime)
@@ -24,19 +24,26 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
             "nuclei -u http://[IP]:[PORT] -ni -silent -no-color -o [OUTPUT].txt)) || echo nuclei not found"
         )
 
-        command, outputfile = runtime._build_command(template, "192.168.3.1", "80", "tcp", "nuclei-web")
+        command, outputfile = runtime._build_command(
+            template,
+            "192.168.3.1",
+            "80",
+            "tcp",
+            "nuclei-web",
+            "http",
+        )
 
         self.assertIn("command -v nuclei >/dev/null 2>&1", command)
-        self.assertIn("nuclei -as -stats -si 15 -u https://192.168.3.1:80", command)
         self.assertIn("nuclei -as -stats -si 15 -u http://192.168.3.1:80", command)
+        self.assertNotIn("https://192.168.3.1:80", command)
         self.assertIn(f"{outputfile}.txt", command)
         self.assertIn("-nuclei-web-192.168.3.1-80", outputfile)
         self.assertNotIn("nuclei -as >/dev/null", command)
         self.assertNotIn("nuclei -as-web", command)
-        self.assertNotIn("-silent", command)
+        self.assertIn("-silent", command)
         self.assertNotIn("-no-color", command)
 
-    def test_build_command_normalizes_targeted_nuclei_follow_up_without_forcing_as(self):
+    def test_build_command_uses_https_scheme_for_https_service_without_forcing_as(self):
         from app.web.runtime import WebRuntime
 
         runtime = WebRuntime.__new__(WebRuntime)
@@ -50,13 +57,20 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
             "nuclei -tags cve -u http://[IP]:[PORT] -ni -silent -o [OUTPUT].txt)) || echo nuclei not found"
         )
 
-        command, outputfile = runtime._build_command(template, "192.168.3.1", "443", "tcp", "nuclei-cves")
+        command, outputfile = runtime._build_command(
+            template,
+            "192.168.3.1",
+            "443",
+            "tcp",
+            "nuclei-cves",
+            "https",
+        )
 
         self.assertIn("nuclei -stats -si 15 -tags cve -u https://192.168.3.1:443", command)
-        self.assertIn("nuclei -stats -si 15 -tags cve -u http://192.168.3.1:443", command)
+        self.assertNotIn("http://192.168.3.1:443", command)
         self.assertNotIn("nuclei -as -tags cve", command)
         self.assertIn(f"{outputfile}.txt", command)
-        self.assertNotIn("-silent", command)
+        self.assertIn("-silent", command)
 
     def test_build_command_normalizes_legacy_gobuster_dir_template(self):
         from app.web.runtime import WebRuntime
@@ -75,10 +89,18 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
             "echo feroxbuster/gobuster not found"
         )
 
-        command, outputfile = runtime._build_command(template, "192.168.3.1", "443", "tcp", "web-content-discovery")
+        command, outputfile = runtime._build_command(
+            template,
+            "192.168.3.1",
+            "443",
+            "tcp",
+            "web-content-discovery",
+            "https",
+        )
 
         self.assertIn("gobuster -m dir", command)
-        self.assertIn("gobuster dir -q -u http://192.168.3.1:443/", command)
+        self.assertIn("gobuster dir -q -u https://192.168.3.1:443/", command)
+        self.assertNotIn("http://192.168.3.1:443/", command)
         self.assertIn(f"{outputfile}.txt", command)
 
     def test_build_command_normalizes_legacy_wapiti_template(self):
@@ -91,7 +113,14 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
 
         template = "wapiti https://[IP] -n 10 -b folder -u -v 1 -f txt -o [OUTPUT]"
 
-        command, outputfile = runtime._build_command(template, "192.168.3.100", "443", "tcp", "https-wapiti")
+        command, outputfile = runtime._build_command(
+            template,
+            "192.168.3.100",
+            "443",
+            "tcp",
+            "https-wapiti",
+            "https",
+        )
 
         self.assertIn("wapiti -u https://192.168.3.100:443", command)
         self.assertNotIn(" -u -v ", command)
@@ -124,6 +153,7 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
             "443",
             "tcp",
             "web-content-discovery",
+            "https",
         )
 
         self.assertIn("https://bing.com:443", command)
@@ -148,6 +178,7 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
             "443",
             "tcp",
             "nmap-fast-tcp",
+            "https",
         )
 
         self.assertIn("nmap -Pn -sV portal.example -p 443", command)
@@ -168,7 +199,14 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
             "nmap -Pn -n -sV -p [PORT] --script=vuln --stats-every 15s [IP])"
         )
 
-        command, outputfile = runtime._build_command(template, "192.168.3.1", "443", "tcp", "nmap-vuln.nse")
+        command, outputfile = runtime._build_command(
+            template,
+            "192.168.3.1",
+            "443",
+            "tcp",
+            "nmap-vuln.nse",
+            "https",
+        )
 
         self.assertEqual(command.count(f"-oA {outputfile}"), 2)
         self.assertNotIn(f") -oA {outputfile}", command)
@@ -194,6 +232,7 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
             "22",
             "tcp",
             "nmap-fast-tcp",
+            "",
         )
 
         self.assertIn("--stats-every 15s", command)
@@ -213,9 +252,14 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
             "21",
             "tcp",
             "banner",
+            "ftp",
         )
 
-        self.assertEqual("printf '\\n' | nc -n -v -w1 192.168.3.1 21", command)
+        self.assertEqual(
+            "LEGION_BANNER_TARGET=192.168.3.1 LEGION_BANNER_PORT=21 "
+            "LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
+            command,
+        )
 
 
 if __name__ == "__main__":

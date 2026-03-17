@@ -30,6 +30,7 @@ import ipaddress
 from app.httputil.isHttps import isHttps
 from app.logging.legionLog import getAppLogger
 from app.timing import timing
+from app.tooling import build_tool_execution_env
 
 from PyQt6.QtWidgets import QAbstractItemView
 import subprocess
@@ -209,6 +210,10 @@ class MyQProcess(QProcess):
 
     def __init__(self, name, tabTitle, hostIp, port, protocol, command, startTime, outputfile, textbox):
         QProcess.__init__(self)
+        process_env = QtCore.QProcessEnvironment.systemEnvironment()
+        for key, value in build_tool_execution_env().items():
+            process_env.insert(str(key), str(value))
+        self.setProcessEnvironment(process_env)
         self.id = -1
         self.name = name
         self.tabTitle = tabTitle

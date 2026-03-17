@@ -56,7 +56,7 @@ class process(Base):
         outputfile='',
         status='',
         output=None,
-        estimatedRemaining=0,
+        estimatedRemaining=None,
         elapsed=0,
         percent=None,
         **kwargs
@@ -76,6 +76,13 @@ class process(Base):
         self.output = output_value
         self.status = kwargs.get('status', status) or ''
         self.closed = kwargs.get('closed', 'False') or 'False'
-        self.estimatedRemaining = kwargs.get('estimatedRemaining', estimatedRemaining) or 0
+        estimated_remaining_value = kwargs.get('estimatedRemaining', estimatedRemaining)
+        if estimated_remaining_value in ("", None):
+            self.estimatedRemaining = None
+        else:
+            try:
+                self.estimatedRemaining = max(0, int(float(estimated_remaining_value)))
+            except Exception:
+                self.estimatedRemaining = None
         self.elapsed = kwargs.get('elapsed', elapsed) or 0
         self.percent = kwargs.get('percent', percent)

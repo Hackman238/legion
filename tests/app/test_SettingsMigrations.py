@@ -88,9 +88,13 @@ class SettingsMigrationTest(unittest.TestCase):
                 nuclei_cmd = str(port_actions["nuclei-web"][2])
                 self.assertIn("nuclei -as", nuclei_cmd)
                 self.assertIn("-stats -si 15", nuclei_cmd)
-                self.assertNotIn("-silent", nuclei_cmd)
+                self.assertIn("-silent", nuclei_cmd)
                 self.assertNotIn("-no-color", nuclei_cmd)
-                self.assertEqual("printf '\\n' | nc -n -v -w1 [IP] [PORT]", str(port_actions["banner"][2]))
+                self.assertEqual(
+                    "LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] "
+                    "LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
+                    str(port_actions["banner"][2]),
+                )
 
                 scheduler_ids = {row[0] for row in app_settings.getSchedulerSettings()}
                 self.assertIn("web-content-discovery", scheduler_ids)
@@ -112,7 +116,7 @@ class SettingsMigrationTest(unittest.TestCase):
         self.assertIn("/tmp/scan-nuclei-web-1.2.3.4.txt", normalized)
         self.assertNotIn("nuclei -as >/dev/null", normalized)
         self.assertNotIn("nuclei -as-web", normalized)
-        self.assertNotIn("-silent", normalized)
+        self.assertIn("-silent", normalized)
         self.assertNotIn("-no-color", normalized)
 
     def test_nuclei_normalization_rewrites_existing_stats_interval_to_15_seconds(self):
@@ -135,7 +139,7 @@ class SettingsMigrationTest(unittest.TestCase):
 
         self.assertIn("nuclei -stats -si 15 -tags cve -u https://portal.example:443", normalized)
         self.assertNotIn("nuclei -as -tags cve", normalized)
-        self.assertNotIn("-silent", normalized)
+        self.assertIn("-silent", normalized)
 
     def test_nmap_hostname_target_support_removes_skip_dns_for_hostnames(self):
         from app.settings import AppSettings
@@ -280,7 +284,11 @@ class SettingsMigrationTest(unittest.TestCase):
 
         command = 'bash -c \\"echo \\"\\" | nc -v -n -w1 [IP] [PORT]\\"'
         normalized = AppSettings._ensure_banner_command(command)
-        self.assertEqual("printf '\\n' | nc -n -v -w1 [IP] [PORT]", normalized)
+        self.assertEqual(
+            "LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] "
+            "LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
+            normalized,
+        )
 
     def test_disabled_broken_nse_actions_are_pruned_from_settings(self):
         with tempfile.TemporaryDirectory() as tmpdir:

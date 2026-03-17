@@ -101,6 +101,7 @@ from app.scheduler.reporting import (
     render_project_report_markdown as render_scheduler_project_report_markdown,
 )
 from app.scheduler.risk import classify_command_danger
+from app.scheduler.observation_parsers import extract_tool_observations
 from app.screenshot_targets import (
     apply_preferred_target_placeholders,
     choose_preferred_command_host,
@@ -108,6 +109,7 @@ from app.screenshot_targets import (
 )
 from app.settings import AppSettings, Settings
 from app.timing import getTimestamp
+from app.tooling import build_tool_execution_env
 from app.web.jobs import WebJobManager
 from db.entities.cve import cve
 from db.entities.host import hostObj
@@ -2141,6 +2143,7 @@ class WebRuntime:
         for raw_line in text_value.splitlines():
             line = str(raw_line or "")
             stripped = line.strip()
+            lowered = stripped.lower()
             if not stripped:
                 if filtered:
                     filtered.append("")
@@ -2159,9 +2162,16 @@ class WebRuntime:
                 continue
             if re.match(r"(?i)^Service detection performed\b", stripped):
                 continue
+            if "nmap.org" in lowered and (
+                    lowered.startswith("starting nmap")
+                    or lowered.startswith("service detection performed")
+                    or lowered.startswith("read data files from")
+                    or lowered.startswith("please report")
+            ):
+                continue
             if re.match(r"(?i)^PORT\s+STATE\s+SERVICE\b", stripped):
                 continue
-            if re.match(r"(?i)^Nmap done:\b", stripped):
+            if re.match(r"(?i)^Nmap done:", stripped):
                 continue
             filtered.append(line)
         cleaned = "\n".join(filtered).strip()
@@ -2230,6 +2240,11 @@ class WebRuntime:
             cves = self._load_cves_for_host(project, int(host.id))
             screenshots = self._list_screenshots_for_host(project, str(getattr(host, "ip", "") or ""))
             ai_analysis = self._load_host_ai_analysis(project, int(host.id), str(getattr(host, "ip", "") or ""))
+            inferred_urls = self._infer_host_urls(
+                project,
+                host_id=int(host.id),
+                host_ip=str(getattr(host, "ip", "") or ""),
+            )
             self._persist_shared_target_state(
                 host_id=int(host.id),
                 host_ip=str(getattr(host, "ip", "") or ""),
@@ -2256,6 +2271,7 @@ class WebRuntime:
                     for item in ports_data
                     if isinstance(item, dict)
                 ],
+                urls=inferred_urls,
                 screenshots=screenshots,
             )
             target_state = get_target_state(project.database, int(host.id)) or {}
@@ -3807,6 +3823,21 @@ class WebRuntime:
             process_id = int(result.get("process_id", 0) or 0)
             execution_record = result.get("execution_record")
             artifact_refs = list(getattr(execution_record, "artifact_refs", []) or [])
+            observed_payload = {}
+            if process_id > 0:
+                try:
+                    process_output = self.get_process_output(int(process_id), offset=0, max_chars=200000)
+                    output_text = str(process_output.get("output", "") or "")
+                except Exception:
+                    output_text = ""
+                if output_text:
+                    observed_payload = extract_tool_observations(
+                        str(decision.tool_id or ""),
+                        output_text,
+                        port=str(target.port or ""),
+                        protocol=str(target.protocol or "tcp"),
+                        service=str(target.service_name or ""),
+                    )
             self._persist_shared_target_state(
                 host_id=int(target.host_id or 0),
                 host_ip=str(target.host_ip or ""),
@@ -3832,6 +3863,9 @@ class WebRuntime:
                     artifact_refs=artifact_refs,
                 ),
                 artifact_refs=artifact_refs,
+                technologies=list(observed_payload.get("technologies", []) or []) or None,
+                findings=list(observed_payload.get("findings", []) or []) or None,
+                urls=list(observed_payload.get("urls", []) or []) or None,
             )
             self._record_scheduler_decision(
                 decision,
@@ -5303,6 +5337,22 @@ class WebRuntime:
             output = str(record.get("excerpt", "") or record.get("output_excerpt", "")).strip()
             if not output:
                 continue
+            parsed = extract_tool_observations(
+                source_id,
+                output,
+                port=str(record.get("port", "") or ""),
+                protocol=str(record.get("protocol", "tcp") or "tcp"),
+                service=str(record.get("service", "") or ""),
+            )
+            for item in list(parsed.get("technologies", []) or [])[:24]:
+                if not isinstance(item, dict):
+                    continue
+                _add(
+                    item.get("name", ""),
+                    item.get("version", ""),
+                    item.get("cpe", ""),
+                    item.get("evidence", "") or f"{source_id} parsed output",
+                )
             cpes = self._extract_cpe_tokens(output, limit=4)
             for token in cpes:
                 _add("", "", token, f"{source_id} output CPE")
@@ -5567,6 +5617,23 @@ class WebRuntime:
             excerpt = str(record.get("excerpt", "") or record.get("output_excerpt", "")).strip()
             if not excerpt:
                 continue
+            parsed = extract_tool_observations(
+                source_id,
+                excerpt,
+                port=str(record.get("port", "") or ""),
+                protocol=str(record.get("protocol", "tcp") or "tcp"),
+                service=str(record.get("service", "") or ""),
+            )
+            for item in list(parsed.get("findings", []) or [])[:32]:
+                if not isinstance(item, dict):
+                    continue
+                rows.append({
+                    "title": str(item.get("title", "") or ""),
+                    "severity": self._severity_from_text(item.get("severity", "info")),
+                    "cvss": 0.0,
+                    "cve": str(item.get("cve", "") or "").upper(),
+                    "evidence": self._truncate_scheduler_text(item.get("evidence", "") or excerpt, 420),
+                })
             for match in _CVE_TOKEN_RE.findall(excerpt):
                 cve_id = str(match or "").strip().upper()
                 if not cve_id:
@@ -5647,6 +5714,95 @@ class WebRuntime:
             script_records=script_records,
             process_records=process_records,
             limit=220,
+        )
+
+    def _infer_urls_from_observations(
+            self,
+            *,
+            script_records: List[Dict[str, Any]],
+            process_records: List[Dict[str, Any]],
+            limit: int = 160,
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for record in (script_records[:320] + process_records[:220]):
+            if not isinstance(record, dict):
+                continue
+            source_id = str(record.get("script_id", "") or record.get("tool_id", "")).strip()
+            output = str(record.get("excerpt", "") or record.get("output_excerpt", "")).strip()
+            if not output:
+                continue
+            parsed = extract_tool_observations(
+                source_id,
+                output,
+                port=str(record.get("port", "") or ""),
+                protocol=str(record.get("protocol", "tcp") or "tcp"),
+                service=str(record.get("service", "") or ""),
+            )
+            for item in list(parsed.get("urls", []) or [])[:32]:
+                if not isinstance(item, dict):
+                    continue
+                rows.append({
+                    "url": str(item.get("url", "") or ""),
+                    "port": str(item.get("port", "") or record.get("port", "") or ""),
+                    "protocol": str(item.get("protocol", "tcp") or record.get("protocol", "tcp") or "tcp"),
+                    "service": str(item.get("service", "") or record.get("service", "") or ""),
+                    "label": str(item.get("label", "") or source_id),
+                    "confidence": float(item.get("confidence", 90.0) or 90.0),
+                    "source_kind": str(item.get("source_kind", "observed") or "observed"),
+                    "observed": bool(item.get("observed", True)),
+                })
+            if len(rows) >= int(limit):
+                break
+        return rows[:int(limit)]
+
+    def _infer_host_urls(self, project, *, host_id: int, host_ip: str = "") -> List[Dict[str, Any]]:
+        session = project.database.session()
+        script_rows = []
+        process_rows = []
+        try:
+            script_result = session.execute(text(
+                "SELECT COALESCE(s.scriptId, '') AS script_id, "
+                "COALESCE(s.output, '') AS output "
+                "FROM l1ScriptObj AS s "
+                "WHERE s.hostId = :host_id "
+                "ORDER BY s.id DESC LIMIT 360"
+            ), {"host_id": int(host_id)})
+            script_rows = script_result.fetchall()
+
+            if str(host_ip or "").strip():
+                process_result = session.execute(text(
+                    "SELECT COALESCE(p.name, '') AS tool_id, "
+                    "COALESCE(o.output, '') AS output_text "
+                    "FROM process AS p "
+                    "LEFT JOIN process_output AS o ON o.processId = p.id "
+                    "WHERE COALESCE(p.hostIp, '') = :host_ip "
+                    "ORDER BY p.id DESC LIMIT 220"
+                ), {"host_ip": str(host_ip or "").strip()})
+                process_rows = process_result.fetchall()
+        except Exception:
+            script_rows = []
+            process_rows = []
+        finally:
+            session.close()
+
+        script_records = [
+            {
+                "script_id": str(row[0] or "").strip(),
+                "excerpt": str(row[1] or "").strip(),
+            }
+            for row in script_rows
+        ]
+        process_records = [
+            {
+                "tool_id": str(row[0] or "").strip(),
+                "output_excerpt": str(row[1] or "").strip(),
+            }
+            for row in process_rows
+        ]
+        return self._infer_urls_from_observations(
+            script_records=script_records,
+            process_records=process_records,
+            limit=160,
         )
 
     def _normalize_ai_findings(self, items: Any) -> List[Dict[str, Any]]:
@@ -5792,6 +5948,7 @@ class WebRuntime:
             findings: Optional[List[Dict[str, Any]]] = None,
             manual_tests: Optional[List[Dict[str, Any]]] = None,
             service_inventory: Optional[List[Dict[str, Any]]] = None,
+            urls: Optional[List[Dict[str, Any]]] = None,
             coverage: Optional[Dict[str, Any]] = None,
             attempted_action: Optional[Dict[str, Any]] = None,
             artifact_refs: Optional[List[str]] = None,
@@ -5818,6 +5975,9 @@ class WebRuntime:
             else:
                 resolved_service_inventory = list(service_inventory or [])
             resolved_urls = build_target_urls(resolved_host_ip, resolved_hostname, resolved_service_inventory)
+            for item in list(urls or []):
+                if isinstance(item, dict):
+                    resolved_urls.append(dict(item))
             coverage_gaps = self._coverage_gaps_from_summary(coverage)
             attempted_actions = [attempted_action] if isinstance(attempted_action, dict) and attempted_action else []
             artifact_entries = build_artifact_entries(
@@ -6374,6 +6534,7 @@ class WebRuntime:
                 str(request_payload.port or ""),
                 str(request_payload.protocol or "tcp"),
                 str(request_payload.tool_id or ""),
+                str(getattr(request_payload, "service_name", "") or ""),
             )
 
         def _execute_local_command(*, request, rendered_command, outputfile, runner_type):
@@ -6607,6 +6768,7 @@ class WebRuntime:
                     stderr=subprocess.STDOUT,
                     text=True,
                     timeout=timeout,
+                    env=build_tool_execution_env(),
                 )
                 output = self._truncate_scheduler_text(result.stdout or "", 260)
                 attempts.append({
@@ -6700,7 +6862,7 @@ class WebRuntime:
             self._register_job_process(resolved_job_id, int(process_id))
             if self.jobs.is_cancel_requested(resolved_job_id):
                 process_repo.storeProcessCancelStatus(str(process_id))
-                process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
+                process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), "[cancelled before start]")
                 self._unregister_job_process(int(process_id))
                 cancelled_result = (False, "killed", int(process_id))
@@ -6786,6 +6948,7 @@ class WebRuntime:
                 text=True,
                 bufsize=1,
                 start_new_session=(os.name != "nt"),
+                env=build_tool_execution_env(),
             )
             process_repo.storeProcessRunningStatus(str(process_id), str(proc.pid))
             with self._process_runtime_lock:
@@ -6887,19 +7050,19 @@ class WebRuntime:
             if timed_out:
                 combined_output += f"\n[timeout after {int(timeout)}s without output]"
                 process_repo.storeProcessProblemStatus(str(process_id))
-                process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
+                process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
                 return _build_result(False, f"failed: timeout after {int(timeout)}s without output", int(process_id))
 
             if killed:
                 process_repo.storeProcessKillStatus(str(process_id))
-                process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
+                process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
                 return _build_result(False, "killed", int(process_id))
 
             if int(proc.returncode or 0) != 0:
                 _store_failure_status(_classify_nonzero_exit(proc.returncode, runtime_seconds))
-                process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
+                process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
                 return _build_result(False, f"failed: exit {proc.returncode}", int(process_id))
 
@@ -6907,7 +7070,7 @@ class WebRuntime:
                 process_repo.storeProcessProgress(
                     str(process_id),
                     percent="100",
-                    estimated_remaining=0,
+                    estimated_remaining=None,
                 )
             except Exception:
                 pass
@@ -6917,7 +7080,7 @@ class WebRuntime:
         except Exception as exc:
             process_repo.storeProcessProblemStatus(str(process_id))
             try:
-                process_repo.storeProcessProgress(str(process_id), estimated_remaining=0)
+                process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
             except Exception:
                 pass
             process_repo.storeProcessOutput(str(process_id), f"[error] {exc}\n{''.join(output_parts)}")
@@ -7371,9 +7534,9 @@ class WebRuntime:
             status = str(row.get("status", "") or "")
             status_lower = status.strip().lower()
             terminal = status_lower in {"finished", "crashed", "problem", "cancelled", "killed", "failed"}
-            estimated_remaining = row.get("estimatedRemaining", 0)
+            estimated_remaining = row.get("estimatedRemaining")
             if terminal:
-                estimated_remaining = 0
+                estimated_remaining = None
 
             percent_value = str(row.get("percent", "") or "")
             if status_lower == "finished":
@@ -7675,6 +7838,36 @@ class WebRuntime:
         except Exception:
             return ""
 
+    def _service_name_for_target(self, host_ip: str, port: str, protocol: str) -> str:
+        try:
+            project = self._require_active_project()
+            host_repo = getattr(getattr(project, "repositoryContainer", None), "hostRepository", None)
+            host_obj = host_repo.getHostByIP(str(host_ip)) if host_repo else None
+            host_id = int(getattr(host_obj, "id", 0) or 0)
+            if host_id <= 0:
+                return ""
+
+            session = project.database.session()
+            try:
+                result = session.execute(text(
+                    "SELECT COALESCE(s.name, '') "
+                    "FROM portObj AS p "
+                    "LEFT JOIN serviceObj AS s ON s.id = p.serviceId "
+                    "WHERE p.hostId = :host_id "
+                    "AND COALESCE(p.portId, '') = :port "
+                    "AND LOWER(COALESCE(p.protocol, '')) = LOWER(:protocol) "
+                    "ORDER BY p.id DESC LIMIT 1"
+                ), {
+                    "host_id": host_id,
+                    "port": str(port or ""),
+                    "protocol": str(protocol or "tcp"),
+                }).fetchone()
+                return str(result[0] or "") if result else ""
+            finally:
+                session.close()
+        except Exception:
+            return ""
+
     @staticmethod
     def _normalize_command_signature_source(command_text: str) -> str:
         normalized = str(command_text or "").strip().lower()
@@ -7708,7 +7901,15 @@ class WebRuntime:
             return False
         return entry_protocol == target_protocol
 
-    def _build_command(self, template: str, host_ip: str, port: str, protocol: str, tool_id: str) -> Tuple[str, str]:
+    def _build_command(
+            self,
+            template: str,
+            host_ip: str,
+            port: str,
+            protocol: str,
+            tool_id: str,
+            service_name: str = "",
+    ) -> Tuple[str, str]:
         project = self._require_active_project()
         running_folder = project.properties.runningFolder
         outputfile = os.path.join(running_folder, f"{getTimestamp()}-{tool_id}-{host_ip}-{port}")
@@ -7716,6 +7917,7 @@ class WebRuntime:
 
         command = str(template or "")
         normalized_tool = str(tool_id or "").strip().lower()
+        resolved_service_name = str(service_name or "").strip() or self._service_name_for_target(host_ip, port, protocol)
         if normalized_tool == "banner":
             command = AppSettings._ensure_banner_command(command)
         if normalized_tool == "nuclei-web":
@@ -7728,6 +7930,7 @@ class WebRuntime:
             normalized_tool = str(tool_id or "").strip().lower()
             scheme = "https" if "https-wapiti" in normalized_tool else "http"
             command = AppSettings._ensure_wapiti_command(command, scheme=scheme)
+        command = AppSettings._canonicalize_web_target_placeholders(command)
         if "nmap" in str(command).lower():
             command = AppSettings._ensure_nmap_stats_every(command)
         command, target_host = apply_preferred_target_placeholders(
@@ -7736,7 +7939,9 @@ class WebRuntime:
             ip=str(host_ip),
             port=str(port),
             output=outputfile,
+            service_name=resolved_service_name,
         )
+        command = AppSettings._collapse_redundant_fallbacks(command)
         command = AppSettings._ensure_nmap_hostname_target_support(command, target_host)
         command = AppSettings._ensure_nmap_output_argument(command, outputfile)
         if "nmap" in command and str(protocol).lower() == "udp":
@@ -8078,11 +8283,11 @@ class WebRuntime:
                 remaining_value = bounded_remaining
                 state["remaining"] = bounded_remaining
                 changed = True
-        elif saw_progress_marker and not saw_remaining_marker and remaining_value != 0:
+        elif saw_progress_marker and not saw_remaining_marker and remaining_value is not None:
             # Nmap often emits percent-only timing lines. Clear any stale ETA instead of
             # carrying forward an old value and implying precision that does not exist.
-            remaining_value = 0
-            state["remaining"] = 0
+            remaining_value = None
+            state["remaining"] = None
             changed = True
 
         now = time.monotonic()

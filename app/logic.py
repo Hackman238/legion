@@ -55,6 +55,7 @@ class Logic:
         from app.scheduler.execution import ensure_scheduler_execution_table, store_execution_record
         from app.scheduler.models import ExecutionRecord
         from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
+        from app.scheduler.observation_parsers import extract_tool_observations
         from app.scheduler.state import (
             build_attempted_action_entry,
             build_target_urls,
@@ -72,6 +73,7 @@ class Logic:
             normalize_runner_settings,
         )
         from app.timing import getTimestamp
+        from app.tooling import build_tool_execution_env
         from app.httputil.isHttps import isHttps
 
         print("[*] Running scripted actions/automated attacks (headless mode)...")
@@ -179,6 +181,7 @@ class Logic:
                 status,
                 reason,
                 artifact_refs=None,
+                observations=None,
         ):
             database = getattr(self.activeProject, "database", None)
             if database is None or int(host_id or 0) <= 0:
@@ -241,6 +244,16 @@ class Logic:
                         if str(ref or "").strip().lower().endswith(".png")
                     ],
                 }, merge=True)
+                if isinstance(observations, dict):
+                    observation_updates = {}
+                    if isinstance(observations.get("technologies", []), list) and observations.get("technologies", []):
+                        observation_updates["technologies"] = list(observations.get("technologies", []) or [])
+                    if isinstance(observations.get("findings", []), list) and observations.get("findings", []):
+                        observation_updates["findings"] = list(observations.get("findings", []) or [])
+                    if isinstance(observations.get("urls", []), list) and observations.get("urls", []):
+                        observation_updates["urls"] = list(observations.get("urls", []) or []) + list(urls or [])
+                    if observation_updates:
+                        upsert_target_state(database, int(host_id or 0), observation_updates, merge=True)
             except Exception:
                 return
 
@@ -294,6 +307,10 @@ class Logic:
                     command_template = AppSettings._ensure_nuclei_command(command_template, automatic_scan=False)
                 if str(request.tool_id or "").strip().lower() == "web-content-discovery":
                     command_template = AppSettings._ensure_web_content_discovery_command(command_template)
+                if "wapiti" in str(command_template).lower():
+                    scheme = "https" if "https-wapiti" in normalized_tool else "http"
+                    command_template = AppSettings._ensure_wapiti_command(command_template, scheme=scheme)
+                command_template = AppSettings._canonicalize_web_target_placeholders(command_template)
                 if "nmap" in str(command_template).lower():
                     command_template = AppSettings._ensure_nmap_stats_every(command_template)
                 running_folder = self.activeProject.properties.runningFolder
@@ -308,7 +325,9 @@ class Logic:
                     ip=str(request.host_ip),
                     port=str(request.port),
                     output=outputfile,
+                    service_name=str(request.service_name or ""),
                 )
+                command = AppSettings._collapse_redundant_fallbacks(command)
                 command = AppSettings._ensure_nmap_hostname_target_support(command, target_host)
                 return command, outputfile
 
@@ -325,6 +344,21 @@ class Logic:
                         capture_output=True,
                         text=True,
                         timeout=int(request.timeout or 300),
+                        env=build_tool_execution_env(),
+                    )
+                    combined_output = "\n".join(
+                        part for part in [
+                            str(getattr(result, "stdout", "") or ""),
+                            str(getattr(result, "stderr", "") or ""),
+                        ]
+                        if str(part or "").strip()
+                    )
+                    observations = extract_tool_observations(
+                        str(request.tool_id or ""),
+                        combined_output,
+                        port=str(request.port or ""),
+                        protocol=str(request.protocol or "tcp"),
+                        service=str(request.service_name or ""),
                     )
                     print(f"[{request.tool_id} STDOUT]\n{result.stdout}")
                     if result.stderr:
@@ -344,6 +378,7 @@ class Logic:
                         started_at=started_at,
                         finished_at=getTimestamp(True),
                         artifact_refs=artifact_refs,
+                        metadata={"observations": observations},
                     )
                 except Exception as exc:
                     print(f"[!] Error running tool '{request.tool_id}' for {request.host_ip}:{request.port}: {exc}")
@@ -483,6 +518,7 @@ class Logic:
                     "process_id": int(runner_result.process_id or 0),
                     "execution_record": execution_record,
                     "approval_id": int(task.approval_id or 0),
+                    "metadata": dict(getattr(runner_result, "metadata", {}) or {}),
                 })
             return results
 
@@ -605,6 +641,7 @@ class Logic:
                     status="executed" if bool(result.get("executed", False)) else "failed",
                     reason=str(result.get("reason", "") or ""),
                     artifact_refs=list(getattr(result.get("execution_record"), "artifact_refs", []) or []),
+                    observations=(result.get("metadata", {}) if isinstance(result.get("metadata", {}), dict) else {}).get("observations"),
                 ),
             ),
         )

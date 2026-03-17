@@ -31,7 +31,7 @@ class ProcessRepositoryStoreOutputTest(unittest.TestCase):
         output_query.filter_by.assert_called_once_with(processId="7")
         self.assertEqual("tool output", mock_output.output)
         self.assertEqual("Finished", mock_proc.status)
-        self.assertEqual(0, mock_proc.estimatedRemaining)
+        self.assertIsNone(mock_proc.estimatedRemaining)
         self.assertEqual("100", mock_proc.percent)
         self.session.commit.assert_called_once()
 
@@ -57,7 +57,7 @@ class ProcessRepositoryStoreOutputTest(unittest.TestCase):
         self.assertTrue(created_output_rows)
         self.assertEqual(11, created_output_rows[0].processId)
         self.assertEqual("Killed", mock_proc.status)
-        self.assertEqual(0, mock_proc.estimatedRemaining)
+        self.assertIsNone(mock_proc.estimatedRemaining)
         self.session.commit.assert_called_once()
 
     def test_storeProcessCrashStatus_sets_eta_to_zero(self):
@@ -70,7 +70,7 @@ class ProcessRepositoryStoreOutputTest(unittest.TestCase):
         self.repository.storeProcessCrashStatus("19")
 
         self.assertEqual("Crashed", mock_proc.status)
-        self.assertEqual(0, mock_proc.estimatedRemaining)
+        self.assertIsNone(mock_proc.estimatedRemaining)
         self.session.commit.assert_called_once()
 
     def test_storeProcessProblemStatus_sets_eta_to_zero(self):
@@ -83,7 +83,7 @@ class ProcessRepositoryStoreOutputTest(unittest.TestCase):
         self.repository.storeProcessProblemStatus("20")
 
         self.assertEqual("Problem", mock_proc.status)
-        self.assertEqual(0, mock_proc.estimatedRemaining)
+        self.assertIsNone(mock_proc.estimatedRemaining)
         self.session.commit.assert_called_once()
 
     def test_storeProcessOutput_keeps_problem_status(self):
@@ -103,7 +103,7 @@ class ProcessRepositoryStoreOutputTest(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual("Problem", mock_proc.status)
-        self.assertEqual(0, mock_proc.estimatedRemaining)
+        self.assertIsNone(mock_proc.estimatedRemaining)
         self.session.commit.assert_called_once()
 
 

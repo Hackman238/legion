@@ -56,9 +56,9 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
         )
 
         self.assertEqual(0.0, state["percent"])
-        self.assertEqual(0, state["remaining"])
+        self.assertIsNone(state["remaining"])
         self.assertEqual("0.0", repo.calls[-1]["percent"])
-        self.assertEqual(0, repo.calls[-1]["estimated_remaining"])
+        self.assertIsNone(repo.calls[-1]["estimated_remaining"])
 
     def test_append_nmap_stats_every_once(self):
         from app.web.runtime import WebRuntime

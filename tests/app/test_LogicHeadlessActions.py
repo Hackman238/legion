@@ -41,6 +41,8 @@ class LogicHeadlessActionsTest(unittest.TestCase):
             ]]
         )
         _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
+        _mock_app_settings_cls._canonicalize_web_target_placeholders.side_effect = lambda command: command
+        _mock_app_settings_cls._collapse_redundant_fallbacks.side_effect = lambda command: command
         mock_settings_cls.return_value = settings
         mock_subprocess_run.return_value = SimpleNamespace(stdout="", stderr="")
 
@@ -106,6 +108,8 @@ class LogicHeadlessActionsTest(unittest.TestCase):
                 ]],
             )
             _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
+            _mock_app_settings_cls._canonicalize_web_target_placeholders.side_effect = lambda command: command
+            _mock_app_settings_cls._collapse_redundant_fallbacks.side_effect = lambda command: command
             mock_settings_cls.return_value = settings
             mock_subprocess_run.return_value = SimpleNamespace(stdout="ok", stderr="", returncode=0)
 
@@ -128,6 +132,78 @@ class LogicHeadlessActionsTest(unittest.TestCase):
             self.assertEqual("445", target_state["last_port"])
             self.assertEqual("smb-enum-users.nse", target_state["attempted_actions"][0]["tool_id"])
             self.assertEqual("executed", target_state["attempted_actions"][0]["status"])
+        finally:
+            project_manager.closeProject(project)
+
+    @patch("subprocess.run")
+    @patch("app.settings.AppSettings")
+    @patch("app.settings.Settings")
+    def test_run_scripted_actions_parses_tool_output_into_target_state(
+            self,
+            mock_settings_cls,
+            _mock_app_settings_cls,
+            mock_subprocess_run,
+    ):
+        from app.ProjectManager import ProjectManager
+        from app.logic import Logic
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.state import get_target_state
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+        from db.entities.port import portObj
+        from db.entities.service import serviceObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+
+            service = serviceObj(name="https", host=host_id)
+            session.add(service)
+            session.commit()
+
+            port = portObj("443", "tcp", "open", host_id, service.id)
+            session.add(port)
+            session.commit()
+            session.close()
+
+            settings = SimpleNamespace(
+                automatedAttacks=[["nuclei-web", "https", "tcp"]],
+                portActions=[[
+                    "Run nuclei web scan",
+                    "nuclei-web",
+                    "nuclei -u https://[IP]:[PORT] -o [OUTPUT].txt",
+                    "https",
+                ]],
+            )
+            _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
+            _mock_app_settings_cls._canonicalize_web_target_placeholders.side_effect = lambda command: command
+            _mock_app_settings_cls._collapse_redundant_fallbacks.side_effect = lambda command: command
+            mock_settings_cls.return_value = settings
+            mock_subprocess_run.return_value = SimpleNamespace(
+                stdout="[CVE-2025-1111] [critical] https://10.0.0.5:443/admin authenticated admin panel exposure\n",
+                stderr="",
+                returncode=0,
+            )
+
+            logic = Logic(MagicMock(), MagicMock(), MagicMock())
+            logic.activeProject = project
+
+            logic.run_scripted_actions()
+
+            target_state = get_target_state(project.database, host_id)
+            self.assertIsNotNone(target_state)
+            finding_cves = {str(item.get("cve", "")).strip().upper() for item in target_state["findings"]}
+            discovered_urls = {str(item.get("url", "")).strip() for item in target_state["urls"]}
+            self.assertIn("CVE-2025-1111", finding_cves)
+            self.assertIn("https://10.0.0.5:443/admin", discovered_urls)
         finally:
             project_manager.closeProject(project)
 
@@ -200,6 +276,8 @@ class LogicHeadlessActionsTest(unittest.TestCase):
                 ]],
             )
             _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
+            _mock_app_settings_cls._canonicalize_web_target_placeholders.side_effect = lambda command: command
+            _mock_app_settings_cls._collapse_redundant_fallbacks.side_effect = lambda command: command
             mock_settings_cls.return_value = settings
             mock_subprocess_run.return_value = SimpleNamespace(stdout="ok", stderr="", returncode=0)
 
