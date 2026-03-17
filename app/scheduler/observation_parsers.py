@@ -3,6 +3,8 @@ import re
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
+from app.url_normalization import normalize_discovered_url
+
 
 _URL_RE = re.compile(r"https?://[^\s<>()\"']+", flags=re.IGNORECASE)
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -40,12 +42,9 @@ def _clean_text(value: Any, limit: int = 320) -> str:
 
 
 def _clean_url(value: Any) -> str:
-    text = str(value or "").strip()
+    text = normalize_discovered_url(value)
     if not text:
         return ""
-    if "://" not in text:
-        return ""
-    text = text.rstrip(".,;)]}>\"'")
     try:
         parsed = urlparse(text)
         hostname = str(parsed.hostname or "").strip().lower()

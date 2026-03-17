@@ -41,7 +41,11 @@ class SchedulerTargetStateStoreTest(unittest.TestCase):
                 "findings": [{"title": "Admin panel exposed", "severity": "medium", "cvss": 5.0, "cve": "", "evidence": "/admin"}],
                 "manual_tests": [{"why": "validate auth", "command": "curl -k https://10.0.0.5/admin", "scope_note": "safe"}],
                 "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https", "service_product": "nginx"}],
-                "urls": [{"url": "https://10.0.0.5", "port": "443", "protocol": "tcp", "service": "https"}],
+                "urls": [
+                    {"url": "https://10.0.0.5:443/", "port": "443", "protocol": "tcp", "service": "https"},
+                    {"url": "https://10.0.0.5", "port": "", "protocol": "tcp", "service": "https"},
+                    {"url": "http://10.0.0.5:8080/", "port": "8080", "protocol": "tcp", "service": "http"},
+                ],
                 "coverage_gaps": [{"gap_id": "missing_nikto", "description": "missing nikto", "recommended_tool_ids": ["nikto"]}],
                 "attempted_actions": [{"tool_id": "nuclei-web", "status": "executed", "attempted_at": "2026-03-17T01:00:00Z", "port": "443", "protocol": "tcp", "service": "https"}],
                 "credentials": [{"username": "svc-web", "realm": "local", "type": "password", "evidence": "manual note"}],
@@ -57,6 +61,9 @@ class SchedulerTargetStateStoreTest(unittest.TestCase):
             self.assertEqual("portal.local", loaded["hostname"])
             self.assertEqual("nginx", loaded["technologies"][0]["name"])
             self.assertEqual("Admin panel exposed", loaded["findings"][0]["title"])
+            loaded_urls = {str(item.get("url", "")): str(item.get("port", "")) for item in loaded["urls"]}
+            self.assertEqual("443", loaded_urls["https://10.0.0.5"])
+            self.assertEqual("8080", loaded_urls["http://10.0.0.5:8080"])
             self.assertEqual("missing_nikto", loaded["coverage_gaps"][0]["gap_id"])
             self.assertEqual("nuclei-web", loaded["attempted_actions"][0]["tool_id"])
             self.assertEqual("svc-web", loaded["credentials"][0]["username"])

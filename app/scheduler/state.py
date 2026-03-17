@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 
 from app.scheduler.policy import preset_from_legacy_goal_profile
+from app.url_normalization import normalize_discovered_url
 
 
 WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
@@ -250,11 +251,11 @@ def _normalize_urls(items: Any) -> List[Dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        url = str(item.get("url", "") or "").strip()[:320]
+        url = normalize_discovered_url(item.get("url", ""))
         if not url:
             continue
         rows.append({
-            "url": url,
+            "url": url[:320],
             "port": str(item.get("port", "") or "").strip()[:20],
             "protocol": str(item.get("protocol", "tcp") or "tcp").strip().lower()[:12],
             "service": str(item.get("service", "") or "").strip()[:64],
@@ -263,6 +264,12 @@ def _normalize_urls(items: Any) -> List[Dict[str, Any]]:
             "source_kind": _normalize_source_kind(item.get("source_kind", "observed"), "observed"),
             "observed": bool(item.get("observed", True)),
         })
+    rows.sort(key=lambda item: (
+        0 if str(item.get("port", "") or "").strip() else 1,
+        0 if str(item.get("service", "") or "").strip() else 1,
+        -float(item.get("confidence", 0.0) or 0.0),
+        str(item.get("url", "") or ""),
+    ))
     return _merge_rows([], rows, key_fields=["url"], limit=240)
 
 

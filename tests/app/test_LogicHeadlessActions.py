@@ -203,7 +203,7 @@ class LogicHeadlessActionsTest(unittest.TestCase):
             finding_cves = {str(item.get("cve", "")).strip().upper() for item in target_state["findings"]}
             discovered_urls = {str(item.get("url", "")).strip() for item in target_state["urls"]}
             self.assertIn("CVE-2025-1111", finding_cves)
-            self.assertIn("https://10.0.0.5:443/admin", discovered_urls)
+            self.assertIn("https://10.0.0.5/admin", discovered_urls)
         finally:
             project_manager.closeProject(project)
 

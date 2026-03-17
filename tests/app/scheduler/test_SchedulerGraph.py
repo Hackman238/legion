@@ -1,5 +1,7 @@
 import unittest
 
+from sqlalchemy import text
+
 from app.ProjectManager import ProjectManager
 from app.logging.legionLog import getAppLogger, getDbLogger
 from app.scheduler.execution import get_execution_record, store_execution_record
@@ -215,6 +217,53 @@ class SchedulerEvidenceGraphTest(unittest.TestCase):
             self.assertEqual("observed", filtered["nodes"][0]["source_kind"])
             self.assertEqual(0, len([item for item in filtered["nodes"] if item["source_kind"] == "ai_suggested"]))
             self.assertEqual(host_id, filtered["meta"]["filters"]["host_id"])
+        finally:
+            project_manager.closeProject(project)
+
+    def test_target_state_sync_removes_stale_url_nodes_after_normalization(self):
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="portal.local", osMatch="Linux")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+
+            session.execute(
+                text(
+                    "INSERT INTO graph_node (node_id, node_key, type, label, confidence, source_kind, source_ref, first_seen, last_seen, properties_json) "
+                    "VALUES (:node_id, :node_key, 'url', :label, 90.0, 'observed', :source_ref, :first_seen, :last_seen, :properties_json)"
+                ),
+                {
+                    "node_id": "url-stale-1",
+                    "node_key": f"url:{host_id}:https://portal.local:443/",
+                    "label": "https://portal.local:443/",
+                    "source_ref": "url:https://portal.local:443/",
+                    "first_seen": "2026-03-17T00:00:00Z",
+                    "last_seen": "2026-03-17T00:00:00Z",
+                    "properties_json": "{\"host_id\": %d, \"url\": \"https://portal.local:443/\"}" % host_id,
+                },
+            )
+            session.commit()
+            session.close()
+
+            upsert_target_state(project.database, host_id, {
+                "host_ip": "10.0.0.5",
+                "hostname": "portal.local",
+                "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https"}],
+                "urls": [
+                    {"url": "https://portal.local:443/", "port": "443", "protocol": "tcp", "service": "https"},
+                    {"url": "https://portal.local/", "port": "443", "protocol": "tcp", "service": "https"},
+                ],
+            })
+
+            snapshot = get_evidence_graph_snapshot(project.database)
+            url_labels = [item["label"] for item in snapshot["nodes"] if item["type"] == "url"]
+
+            self.assertIn("https://portal.local", url_labels)
+            self.assertNotIn("https://portal.local:443/", url_labels)
+            self.assertEqual(1, len([item for item in url_labels if item == "https://portal.local"]))
         finally:
             project_manager.closeProject(project)
 

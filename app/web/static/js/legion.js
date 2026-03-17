@@ -40,6 +40,7 @@ const graphWorkspaceState = {
     contentRequestId: 0,
     annotations: [],
     drag: null,
+    suppressClickUntil: 0,
 };
 
 const GRAPH_VIEW_PRESETS = {
@@ -735,6 +736,16 @@ function renderHosts(hosts) {
         rescanBtn.setAttribute("aria-label", "Rescan");
         rescanBtn.innerHTML = '<i class="fa-solid fa-rotate-right" aria-hidden="true"></i>';
         actionsCell.appendChild(rescanBtn);
+
+        const screenshotBtn = document.createElement("button");
+        screenshotBtn.type = "button";
+        screenshotBtn.className = "icon-btn";
+        screenshotBtn.dataset.hostAction = "refresh-screenshots";
+        screenshotBtn.dataset.hostId = String(host.id || "");
+        screenshotBtn.title = "Refresh screenshots";
+        screenshotBtn.setAttribute("aria-label", "Refresh screenshots");
+        screenshotBtn.innerHTML = '<i class="fa-solid fa-camera-retro" aria-hidden="true"></i>';
+        actionsCell.appendChild(screenshotBtn);
 
         const digDeeperBtn = document.createElement("button");
         digDeeperBtn.type = "button";
@@ -2173,6 +2184,48 @@ async function digDeeperHostAction(hostId) {
     }
 }
 
+async function refreshHostScreenshotsAction(hostId) {
+    const id = parseInt(hostId, 10);
+    if (!id) {
+        return;
+    }
+    try {
+        const body = await postJson(`/api/workspace/hosts/${id}/refresh-screenshots`, {});
+        const jobId = Number(body?.job?.id || 0);
+        if (body?.job?.existing) {
+            setWorkspaceStatus(`Screenshot refresh already queued/running (job ${jobId || "?"})`);
+            await pollSnapshot();
+            return;
+        }
+        setWorkspaceStatus(`Screenshot refresh queued (job ${jobId || "?"})`);
+        await pollSnapshot();
+        if (jobId > 0) {
+            waitForJobCompletion(jobId, 300000, 1500).then(async (job) => {
+                const result = job?.result || {};
+                const completed = Number(result.completed || 0);
+                const targetCount = Number(result.target_count || 0);
+                if (String(workspaceState.selectedHostId || "") === String(id)) {
+                    await loadHostDetail(id);
+                }
+                await pollSnapshot();
+                setWorkspaceStatus(
+                    targetCount > 0
+                        ? `Screenshot refresh completed (${completed}/${targetCount})`
+                        : "Screenshot refresh completed",
+                );
+            }).catch(async (err) => {
+                if (String(workspaceState.selectedHostId || "") === String(id)) {
+                    await loadHostDetail(id).catch(() => {});
+                }
+                await pollSnapshot();
+                setWorkspaceStatus(`Screenshot refresh failed: ${err.message}`, true);
+            });
+        }
+    } catch (err) {
+        setWorkspaceStatus(`Screenshot refresh failed: ${err.message}`, true);
+    }
+}
+
 async function confirmHostRemoveAction() {
     const hostId = parseInt(hostRemoveState.hostId, 10);
     if (!hostId) {
@@ -3577,6 +3630,7 @@ function graphApplyLocalFilters(snapshot) {
             y: 20,
             width: groupWidth,
             height: groupHeight,
+            nodeIds: groupNodes.map((item) => String(item?.node_id || "")).filter(Boolean),
         });
         groupNodes.forEach((item, rowIndex) => {
             const nodeId = String(item?.node_id || "");
@@ -3610,17 +3664,52 @@ function graphApplyLocalFilters(snapshot) {
         });
     }
 
+    const renderedGroups = groups.map((group) => {
+        const nodeIdsForGroup = Array.isArray(group.nodeIds) ? group.nodeIds : [];
+        if (!nodeIdsForGroup.length) {
+            return group;
+        }
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxX = 0;
+        let maxY = 0;
+        nodeIdsForGroup.forEach((nodeId) => {
+            const point = positions[String(nodeId || "")];
+            if (!point) {
+                return;
+            }
+            minX = Math.min(minX, Number(point.x) || 0);
+            minY = Math.min(minY, Number(point.y) || 0);
+            maxX = Math.max(maxX, (Number(point.x) || 0) + GRAPH_NODE_SIZE.width);
+            maxY = Math.max(maxY, (Number(point.y) || 0) + GRAPH_NODE_SIZE.height);
+        });
+        if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+            return group;
+        }
+        return {
+            ...group,
+            x: Math.max(12, Math.round(minX - 18)),
+            y: Math.max(12, Math.round(minY - 42)),
+            width: Math.max(group.width, Math.round((maxX - minX) + 36)),
+            height: Math.max(132, Math.round((maxY - minY) + 62)),
+        };
+    });
+
     let width = Math.max(1200, leftPad + (Math.max(groups.length, 1) * (groupWidth + groupGap)) + 48);
     let height = Math.max(760, topPad + (maxRows * 84) + 140);
     Object.values(positions).forEach((point) => {
         width = Math.max(width, (Number(point?.x) || 0) + GRAPH_NODE_SIZE.width + 80);
         height = Math.max(height, (Number(point?.y) || 0) + GRAPH_NODE_SIZE.height + 120);
     });
+    renderedGroups.forEach((group) => {
+        width = Math.max(width, (Number(group?.x) || 0) + (Number(group?.width) || 0) + 48);
+        height = Math.max(height, (Number(group?.y) || 0) + (Number(group?.height) || 0) + 48);
+    });
 
     return {
         nodes,
         edges,
-        groups,
+        groups: renderedGroups,
         positions,
         width,
         height,
@@ -3689,6 +3778,10 @@ function graphFindEntity(kind, ref) {
         return (graphWorkspaceState.filtered.edges || []).find((item) => String(item?.edge_id || "") === String(ref || "")) || null;
     }
     return (graphWorkspaceState.filtered.nodes || []).find((item) => String(item?.node_id || "") === String(ref || "")) || null;
+}
+
+function graphFindGroup(groupKey) {
+    return (graphWorkspaceState.filtered.groups || []).find((item) => String(item?.key || "") === String(groupKey || "")) || null;
 }
 
 function graphRenderSelectionDetail() {
@@ -4019,7 +4112,10 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
     svg.appendChild(defs);
 
     (filtered.groups || []).forEach((group) => {
-        const groupNode = graphCreateSvgNode("g", {"class": "graph-group"});
+        const groupNode = graphCreateSvgNode("g", {
+            "class": "graph-group",
+            "data-graph-group-key": group.key || "",
+        });
         groupNode.appendChild(graphCreateSvgNode("rect", {
             x: group.x,
             y: group.y,
@@ -4028,11 +4124,13 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
             rx: 18,
             fill: "rgba(14, 18, 38, 0.55)",
             stroke: "rgba(147, 159, 229, 0.16)",
+            "data-graph-group-key": group.key || "",
         }));
         groupNode.appendChild(graphCreateSvgNode("text", {
             x: group.x + 16,
             y: group.y + 28,
             "class": "graph-group-label",
+            "data-graph-group-key": group.key || "",
         }, group.label));
         svg.appendChild(groupNode);
     });
@@ -4322,6 +4420,110 @@ function graphApplyLayoutById(layoutId) {
     graphRenderWorkspace();
 }
 
+function graphTidyLayoutAction() {
+    const filtered = graphApplyLocalFilters(graphWorkspaceState.data);
+    const groups = Array.isArray(filtered?.groups) ? filtered.groups : [];
+    if (!Array.isArray(filtered?.nodes) || !filtered.nodes.length || !groups.length) {
+        setGraphStatus("No graph nodes are available to tidy.", true);
+        return;
+    }
+
+    const workingPositions = {};
+    Object.entries(filtered.positions || {}).forEach(([nodeId, point]) => {
+        workingPositions[nodeId] = {
+            x: Number(point?.x) || 0,
+            y: Number(point?.y) || 0,
+        };
+    });
+
+    const neighborMap = new Map();
+    (filtered.edges || []).forEach((edge) => {
+        const fromId = String(edge?.from_node_id || "");
+        const toId = String(edge?.to_node_id || "");
+        if (!fromId || !toId) {
+            return;
+        }
+        if (!neighborMap.has(fromId)) {
+            neighborMap.set(fromId, []);
+        }
+        if (!neighborMap.has(toId)) {
+            neighborMap.set(toId, []);
+        }
+        neighborMap.get(fromId).push(toId);
+        neighborMap.get(toId).push(fromId);
+    });
+
+    const nodeById = new Map((filtered.nodes || []).map((node) => [String(node?.node_id || ""), node]));
+    const groupIndexByNodeId = new Map();
+    groups.forEach((group, index) => {
+        (group.nodeIds || []).forEach((nodeId) => {
+            groupIndexByNodeId.set(String(nodeId || ""), index);
+        });
+    });
+
+    const tidyGroup = (group) => {
+        const nodeIds = (group.nodeIds || []).filter((nodeId) => workingPositions[String(nodeId || "")]);
+        if (!nodeIds.length) {
+            return;
+        }
+        const baseX = Math.max(20, Math.round((Number(group?.x) || 0) + 24));
+        const spacing = GRAPH_NODE_SIZE.height + 16;
+        const startY = Math.max(28, Math.round((Number(group?.y) || 0) + 48));
+        const rows = nodeIds.map((nodeId) => {
+            const current = workingPositions[String(nodeId || "")] || {x: baseX, y: startY};
+            const neighbors = neighborMap.get(String(nodeId || "")) || [];
+            const neighborCenters = neighbors
+                .filter((otherNodeId) => groupIndexByNodeId.get(String(otherNodeId || "")) !== groupIndexByNodeId.get(String(nodeId || "")))
+                .map((otherNodeId) => {
+                    const point = workingPositions[String(otherNodeId || "")];
+                    return point ? (Number(point.y) || 0) + (GRAPH_NODE_SIZE.height / 2) : NaN;
+                })
+                .filter((value) => Number.isFinite(value));
+            const desiredY = neighborCenters.length
+                ? (neighborCenters.reduce((sum, value) => sum + value, 0) / neighborCenters.length) - (GRAPH_NODE_SIZE.height / 2)
+                : Number(current.y) || startY;
+            return {
+                nodeId: String(nodeId || ""),
+                label: String(nodeById.get(String(nodeId || ""))?.label || ""),
+                desiredY,
+            };
+        });
+
+        rows.sort((left, right) => {
+            if (left.desiredY !== right.desiredY) {
+                return left.desiredY - right.desiredY;
+            }
+            return graphNaturalCompare(left.label, right.label);
+        });
+
+        let cursorY = startY;
+        rows.forEach((row) => {
+            const nextY = Math.max(cursorY, Math.round(row.desiredY));
+            workingPositions[row.nodeId] = {
+                x: baseX,
+                y: nextY,
+            };
+            cursorY = nextY + spacing;
+        });
+    };
+
+    for (let iteration = 0; iteration < 2; iteration += 1) {
+        groups.forEach((group) => tidyGroup(group));
+        groups.slice().reverse().forEach((group) => tidyGroup(group));
+    }
+
+    Object.entries(workingPositions).forEach(([nodeId, point]) => {
+        graphWorkspaceState.positions[nodeId] = {
+            x: Number(point?.x) || 0,
+            y: Number(point?.y) || 0,
+        };
+        graphWorkspaceState.pinnedNodeIds[nodeId] = true;
+    });
+    graphWorkspaceState.activeLayoutId = "";
+    graphRenderWorkspace({preserveDetail: true});
+    setGraphStatus("Layout tidied to reduce overlap");
+}
+
 async function graphSaveLayoutAction() {
     const viewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim();
     const name = String(getValue("graph-layout-name") || "default").trim() || "default";
@@ -4446,12 +4648,15 @@ function graphHandlePointerMove(event) {
     }
     graphWorkspaceState.drag.active = true;
     const point = graphSvgPoint(svg, event);
-    const nodeId = String(graphWorkspaceState.drag.nodeId || "");
-    graphWorkspaceState.positions[nodeId] = {
-        x: Math.max(20, Math.round(point.x - graphWorkspaceState.drag.offsetX)),
-        y: Math.max(28, Math.round(point.y - graphWorkspaceState.drag.offsetY)),
-    };
-    graphWorkspaceState.pinnedNodeIds[nodeId] = true;
+    const offsetX = Number(point.x || 0) - Number(graphWorkspaceState.drag.startPointX || 0);
+    const offsetY = Number(point.y || 0) - Number(graphWorkspaceState.drag.startPointY || 0);
+    Object.entries(graphWorkspaceState.drag.initialPositions || {}).forEach(([nodeId, origin]) => {
+        graphWorkspaceState.positions[nodeId] = {
+            x: Math.max(20, Math.round((Number(origin?.x) || 0) + offsetX)),
+            y: Math.max(28, Math.round((Number(origin?.y) || 0) + offsetY)),
+        };
+        graphWorkspaceState.pinnedNodeIds[nodeId] = true;
+    });
     graphRenderWorkspace({preserveDetail: true});
 }
 
@@ -4459,9 +4664,13 @@ function graphHandlePointerUp() {
     if (!graphWorkspaceState.drag) {
         return;
     }
+    const wasActive = Boolean(graphWorkspaceState.drag.active);
     window.removeEventListener("pointermove", graphHandlePointerMove);
     window.removeEventListener("pointerup", graphHandlePointerUp);
     graphWorkspaceState.drag = null;
+    if (wasActive) {
+        graphWorkspaceState.suppressClickUntil = Date.now() + 180;
+    }
 }
 
 function bindGraphWorkspaceEvents() {
@@ -4557,6 +4766,9 @@ function bindGraphWorkspaceEvents() {
     const svg = document.getElementById("graph-workspace-canvas");
     if (svg) {
         svg.addEventListener("click", (event) => {
+            if (Number(graphWorkspaceState.suppressClickUntil || 0) > Date.now()) {
+                return;
+            }
             const nodeTarget = event.target.closest("[data-graph-node-id]");
             if (nodeTarget) {
                 graphSelectEntity("node", nodeTarget.getAttribute("data-graph-node-id"));
@@ -4565,6 +4777,10 @@ function bindGraphWorkspaceEvents() {
             const edgeTarget = event.target.closest("[data-graph-edge-id]");
             if (edgeTarget) {
                 graphSelectEntity("edge", edgeTarget.getAttribute("data-graph-edge-id"));
+                return;
+            }
+            const groupTarget = event.target.closest("[data-graph-group-key]");
+            if (groupTarget) {
                 return;
             }
             graphWorkspaceState.selectedKind = "";
@@ -4584,9 +4800,57 @@ function bindGraphWorkspaceEvents() {
                 return;
             }
             graphWorkspaceState.drag = {
-                nodeId,
-                offsetX: point.x - current.x,
-                offsetY: point.y - current.y,
+                kind: "node",
+                nodeIds: [nodeId],
+                initialPositions: {
+                    [nodeId]: {
+                        x: Number(current.x) || 0,
+                        y: Number(current.y) || 0,
+                    },
+                },
+                startPointX: Number(point.x || 0),
+                startPointY: Number(point.y || 0),
+                startClientX: Number(event.clientX || 0),
+                startClientY: Number(event.clientY || 0),
+                active: false,
+            };
+            window.addEventListener("pointermove", graphHandlePointerMove);
+            window.addEventListener("pointerup", graphHandlePointerUp);
+            event.preventDefault();
+        });
+        svg.addEventListener("pointerdown", (event) => {
+            const groupTarget = event.target.closest("[data-graph-group-key]");
+            if (!groupTarget || event.target.closest("[data-graph-node-id]")) {
+                return;
+            }
+            const groupKey = String(groupTarget.getAttribute("data-graph-group-key") || "");
+            const group = graphFindGroup(groupKey);
+            const nodeIds = Array.isArray(group?.nodeIds) ? group.nodeIds.filter(Boolean) : [];
+            if (!nodeIds.length) {
+                return;
+            }
+            const point = graphSvgPoint(svg, event);
+            const initialPositions = {};
+            nodeIds.forEach((nodeId) => {
+                const current = graphWorkspaceState.filtered.positions?.[nodeId] || graphWorkspaceState.positions?.[nodeId];
+                if (!current) {
+                    return;
+                }
+                initialPositions[nodeId] = {
+                    x: Number(current.x) || 0,
+                    y: Number(current.y) || 0,
+                };
+            });
+            if (!Object.keys(initialPositions).length) {
+                return;
+            }
+            graphWorkspaceState.drag = {
+                kind: "group",
+                groupKey,
+                nodeIds: Object.keys(initialPositions),
+                initialPositions,
+                startPointX: Number(point.x || 0),
+                startPointY: Number(point.y || 0),
                 startClientX: Number(event.clientX || 0),
                 startClientY: Number(event.clientY || 0),
                 active: false,
@@ -5700,6 +5964,10 @@ function bindActionButtons() {
                     await rescanHostAction(hostId);
                     return;
                 }
+                if (action === "refresh-screenshots") {
+                    await refreshHostScreenshotsAction(hostId);
+                    return;
+                }
                 if (action === "dig-deeper") {
                     await digDeeperHostAction(hostId);
                     return;
@@ -5891,6 +6159,7 @@ function bindActionButtons() {
     bind("screenshot-modal-close", () => closeScreenshotModal(true));
     bind("screenshot-copy-button", copyScreenshotAction);
     bind("screenshot-download-button", downloadScreenshotAction);
+    bind("graph-layout-tidy-button", graphTidyLayoutAction);
 
     const restoreZipInput = document.getElementById("project-restore-zip-file");
     if (restoreZipInput) {

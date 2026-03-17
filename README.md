@@ -20,10 +20,16 @@ Having [screenshot issues](#screenshot-issues)?
 
 ## Web Interface (Flask)
 
-Legion now includes a local web interface (localhost only):
+Legion now includes a local web interface (localhost by default):
 
 ```shell
 python3 legion.py --web --web-port 5000
+```
+
+To explicitly bind the web UI on all interfaces:
+
+```shell
+python3 legion.py --web --web-port 5000 --web-bind-all
 ```
 
 The web path currently includes:
@@ -329,6 +335,9 @@ Legion can be run in headless (CLI) mode for automation and scripting. The follo
 |-------------------|----------------------------------------------------------------------------------------------|
 | `--mcp-server`    | Start the MCP server for AI integration.                                                     |
 | `--headless`      | Run Legion in headless (CLI) mode (no GUI).                                                  |
+| `--web`           | Run Legion with the Flask web interface.                                                     |
+| `--web-port`      | Web interface port (default: `5000`).                                                        |
+| `--web-bind-all`  | When used with `--web`, bind the web interface to `0.0.0.0` instead of `127.0.0.1`.         |
 | `--input-file`    | Path to a text file with targets (hostnames, subnets, IPs, etc.). Required in headless mode. |
 | `--discovery`     | Enable host discovery (default: enabled).                                                    |
 | `--staged-scan`   | Enable staged scan (performs a fast scan, then a service scan).                              |

@@ -815,6 +815,14 @@ button:hover {
     letter-spacing: 0.08em;
 }
 
+.graph-group {
+    cursor: grab;
+}
+
+.graph-group:active {
+    cursor: grabbing;
+}
+
 .graph-node {
     cursor: grab;
 }

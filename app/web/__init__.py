@@ -22,7 +22,16 @@ def create_app(runtime: "WebRuntime") -> Flask:
     )
     app.config["LEGION_WS_SNAPSHOT_INTERVAL_SECONDS"] = 1.0
     app.config["LEGION_AUTH_ENABLED"] = False
+    app.config["LEGION_WEB_BIND_HOST"] = "127.0.0.1"
+    app.config["LEGION_WEB_BIND_LABEL"] = "Localhost only"
     app.extensions["legion_runtime"] = runtime
+
+    @app.context_processor
+    def inject_legion_runtime_flags():
+        return {
+            "legion_web_bind_host": app.config.get("LEGION_WEB_BIND_HOST", "127.0.0.1"),
+            "legion_web_bind_label": app.config.get("LEGION_WEB_BIND_LABEL", "Localhost only"),
+        }
 
     app.register_blueprint(web_bp)
 

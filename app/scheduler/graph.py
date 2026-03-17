@@ -7,6 +7,8 @@ from xml.sax.saxutils import escape as xml_escape
 
 from sqlalchemy import text
 
+from app.url_normalization import normalize_discovered_url
+
 
 GRAPH_SOURCE_KINDS = {"observed", "inferred", "ai_suggested", "user_entered"}
 _SOURCE_PRIORITY = {
@@ -208,6 +210,71 @@ def _to_json(value: Any, fallback: Any) -> str:
         return json.dumps(value if value is not None else fallback, ensure_ascii=False)
     except Exception:
         return json.dumps(fallback, ensure_ascii=False)
+
+
+def _sql_in_clause(prefix: str, values: Iterable[str]) -> Tuple[str, Dict[str, Any]]:
+    params: Dict[str, Any] = {}
+    placeholders: List[str] = []
+    for index, value in enumerate(list(values or [])):
+        key = f"{prefix}_{index}"
+        placeholders.append(f":{key}")
+        params[key] = str(value or "")
+    if not placeholders:
+        return "", {}
+    return ", ".join(placeholders), params
+
+
+def _delete_url_nodes(session, node_ids: List[str]):
+    resolved_node_ids = [str(item or "").strip() for item in list(node_ids or []) if str(item or "").strip()]
+    if not resolved_node_ids:
+        return
+
+    node_placeholders, node_params = _sql_in_clause("node_id", resolved_node_ids)
+    if not node_placeholders:
+        return
+
+    edge_rows = session.execute(text(
+        f"SELECT edge_id FROM graph_edge "
+        f"WHERE from_node_id IN ({node_placeholders}) OR to_node_id IN ({node_placeholders})"
+    ), dict(node_params)).fetchall()
+    edge_ids = [str(row[0] or "").strip() for row in edge_rows if row and str(row[0] or "").strip()]
+
+    if edge_ids:
+        edge_placeholders, edge_params = _sql_in_clause("edge_id", edge_ids)
+        session.execute(text(
+            f"DELETE FROM graph_evidence_ref WHERE owner_kind = 'edge' AND owner_id IN ({edge_placeholders})"
+        ), edge_params)
+        session.execute(text(
+            f"DELETE FROM graph_annotation WHERE target_kind = 'edge' AND target_ref IN ({edge_placeholders})"
+        ), edge_params)
+        session.execute(text(
+            f"DELETE FROM graph_edge WHERE edge_id IN ({edge_placeholders})"
+        ), edge_params)
+
+    session.execute(text(
+        f"DELETE FROM graph_evidence_ref WHERE owner_kind = 'node' AND owner_id IN ({node_placeholders})"
+    ), node_params)
+    session.execute(text(
+        f"DELETE FROM graph_annotation WHERE target_kind = 'node' AND target_ref IN ({node_placeholders})"
+    ), node_params)
+    session.execute(text(
+        f"DELETE FROM graph_node WHERE node_id IN ({node_placeholders})"
+    ), node_params)
+
+
+def _delete_stale_host_url_nodes(session, *, host_id: int, keep_node_keys: Iterable[str]):
+    resolved_host_id = int(host_id or 0)
+    keep = {str(item or "").strip() for item in list(keep_node_keys or []) if str(item or "").strip()}
+    rows = session.execute(text(
+        "SELECT node_id, node_key FROM graph_node "
+        "WHERE type = 'url' AND node_key LIKE :prefix"
+    ), {"prefix": f"url:{resolved_host_id}:%"}).fetchall()
+    stale_node_ids = [
+        str(row[0] or "").strip()
+        for row in rows
+        if row and str(row[0] or "").strip() and str(row[1] or "").strip() not in keep
+    ]
+    _delete_url_nodes(session, stale_node_ids)
 
 
 def _safe_float(value: Any, default: float = 0.0, minimum: float = 0.0, maximum: float = 100.0) -> float:
@@ -1046,17 +1113,21 @@ def sync_target_state_to_evidence_graph(
             if changed:
                 _remember_mutation(mutations, "edge", edge_id)
 
+        normalized_url_keys = set()
         for item in list(context.get("urls", []) or []):
             if not isinstance(item, dict):
                 continue
-            url = _clean_text(item.get("url", ""), limit=320, allow_unknown=True)
+            url = normalize_discovered_url(item.get("url", ""))
+            url = _clean_text(url, limit=320, allow_unknown=True)
             if not url:
                 continue
             port = _clean_text(item.get("port", ""), limit=20, allow_unknown=True)
             protocol = _clean_text(item.get("protocol", "tcp"), limit=12, lower=True, allow_unknown=True) or "tcp"
+            node_key = f"url:{resolved_host_id}:{url}"
+            normalized_url_keys.add(node_key)
             url_node_id, changed = _upsert_node(
                 session,
-                node_key=f"url:{resolved_host_id}:{url}",
+                node_key=node_key,
                 node_type="url",
                 label=url,
                 confidence=_safe_float(item.get("confidence", 90.0), 90.0),
@@ -1084,6 +1155,12 @@ def sync_target_state_to_evidence_graph(
             )
             if changed:
                 _remember_mutation(mutations, "edge", edge_id)
+
+        _delete_stale_host_url_nodes(
+            session,
+            host_id=resolved_host_id,
+            keep_node_keys=normalized_url_keys,
+        )
 
         for item in list(context.get("technologies", []) or []):
             if not isinstance(item, dict):

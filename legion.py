@@ -44,14 +44,20 @@ def doPathSetup():
     if not os.path.exists(conf_path):
         shutil.copy('./legion.conf', conf_path)
 
-if __name__ == "__main__":
+
+def build_arg_parser():
     import argparse
 
     parser = argparse.ArgumentParser(description="Start Legion")
     parser.add_argument("--mcp-server", action="store_true", help="Start MCP server for AI integration")
     parser.add_argument("--headless", action="store_true", help="Run Legion in headless (CLI) mode")
     parser.add_argument("--web", action="store_true", help="Run Legion with the local Flask web interface")
-    parser.add_argument("--web-port", type=int, default=5000, help="Local web interface port (localhost only)")
+    parser.add_argument("--web-port", type=int, default=5000, help="Local web interface port")
+    parser.add_argument(
+        "--web-bind-all",
+        action="store_true",
+        help="When used with --web, bind the web interface to 0.0.0.0 instead of 127.0.0.1",
+    )
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
     parser.add_argument("--discovery", action="store_true", help="Enable host discovery (default: enabled)")
     parser.add_argument("--staged-scan", action="store_true", help="Enable staged scan")
@@ -61,6 +67,23 @@ if __name__ == "__main__":
         action="store_true",
         help="Run scripted actions/automated attacks after scan/import"
     )
+    return parser
+
+
+def resolve_web_bind_host(args) -> str:
+    if bool(getattr(args, "web_bind_all", False)):
+        return "0.0.0.0"
+    return "127.0.0.1"
+
+
+def describe_web_bind_host(host: str) -> str:
+    host_value = str(host or "").strip()
+    if host_value == "0.0.0.0":
+        return "All interfaces"
+    return "Localhost only"
+
+if __name__ == "__main__":
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     if args.mcp_server:
@@ -84,11 +107,14 @@ if __name__ == "__main__":
         from app.web.bootstrap import create_default_logic
         from app.web.runtime import WebRuntime
 
-        startupLog.info("Starting Legion web interface on http://127.0.0.1:%s", args.web_port)
+        web_bind_host = resolve_web_bind_host(args)
+        startupLog.info("Starting Legion web interface on http://%s:%s", web_bind_host, args.web_port)
         logic = create_default_logic()
         runtime = WebRuntime(logic)
         web_app = create_app(runtime)
-        web_app.run(host="127.0.0.1", port=args.web_port, debug=False, use_reloader=False)
+        web_app.config["LEGION_WEB_BIND_HOST"] = web_bind_host
+        web_app.config["LEGION_WEB_BIND_LABEL"] = describe_web_bind_host(web_bind_host)
+        web_app.run(host=web_bind_host, port=args.web_port, debug=False, use_reloader=False)
         sys.exit(0)
 
     if args.headless:

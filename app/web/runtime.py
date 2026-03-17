@@ -1919,6 +1919,38 @@ class WebRuntime:
             payload={"host_id": int(host_id), "host_ip": host_ip, "dig_deeper": True},
         )
 
+    def start_host_screenshot_refresh_job(self, host_id: int) -> Dict[str, Any]:
+        resolved_host_id = int(host_id or 0)
+        with self._lock:
+            host = self._resolve_host(resolved_host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+            host_ip = str(getattr(host, "ip", "") or "").strip()
+            if not host_ip:
+                raise ValueError(f"Host {host_id} does not have a valid IP.")
+            existing = self._find_active_job(job_type="host-screenshot-refresh", host_id=resolved_host_id)
+            if existing is not None:
+                existing_copy = dict(existing)
+                existing_copy["existing"] = True
+                return existing_copy
+
+        targets = self._collect_host_screenshot_targets(resolved_host_id)
+        if not targets:
+            raise ValueError("Host does not have any open HTTP/HTTPS services to screenshot.")
+
+        return self._start_job(
+            "host-screenshot-refresh",
+            lambda job_id: self._run_host_screenshot_refresh(
+                host_id=resolved_host_id,
+                job_id=int(job_id or 0),
+            ),
+            payload={
+                "host_id": resolved_host_id,
+                "host_ip": host_ip,
+                "target_count": len(targets),
+            },
+        )
+
     def _find_active_job(self, *, job_type: str, host_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         for job in self.jobs.list_jobs(limit=200):
             if str(job.get("type", "")).strip() != str(job_type or "").strip():
@@ -6633,6 +6665,156 @@ class WebRuntime:
     def _is_vnc_service(service_name: str) -> bool:
         value = str(service_name or "").strip().rstrip("?").lower()
         return value in {"vnc", "vnc-http", "rfb"}
+
+    @staticmethod
+    def _port_sort_key(port_value: str) -> Tuple[int, str]:
+        token = str(port_value or "").strip()
+        try:
+            return 0, f"{int(token):08d}"
+        except (TypeError, ValueError):
+            return 1, token
+
+    @classmethod
+    def _is_web_screenshot_target(cls, port: str, protocol: str, service_name: str) -> bool:
+        if str(protocol or "").strip().lower() != "tcp":
+            return False
+        service_lower = str(service_name or "").strip().rstrip("?").lower()
+        if (
+                service_lower in SchedulerPlanner.WEB_SERVICE_IDS
+                or service_lower.startswith("http")
+                or "https" in service_lower
+                or service_lower.endswith("http")
+                or service_lower.endswith("https")
+                or service_lower in {"soap", "ssl/http", "ssl|http", "webcache", "www"}
+        ):
+            return True
+        return str(port or "").strip() in {
+            "80",
+            "81",
+            "82",
+            "88",
+            "443",
+            "591",
+            "593",
+            "8000",
+            "8008",
+            "8080",
+            "8081",
+            "8088",
+            "8443",
+            "8888",
+            "9000",
+            "9090",
+            "9443",
+        }
+
+    def _collect_host_screenshot_targets(self, host_id: int) -> List[Dict[str, str]]:
+        resolved_host_id = int(host_id or 0)
+        with self._lock:
+            project = self._require_active_project()
+            host = self._resolve_host(resolved_host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+            repo_container = getattr(project, "repositoryContainer", None)
+            port_repo = getattr(repo_container, "portRepository", None)
+            service_repo = getattr(repo_container, "serviceRepository", None)
+            port_rows = list(port_repo.getPortsByHostId(host.id)) if port_repo else []
+
+        targets: List[Dict[str, str]] = []
+        seen = set()
+        for port_row in port_rows:
+            port_value = str(getattr(port_row, "portId", "") or "").strip()
+            protocol = str(getattr(port_row, "protocol", "tcp") or "tcp").strip().lower() or "tcp"
+            state = str(getattr(port_row, "state", "") or "").strip().lower()
+            if not port_value or protocol != "tcp":
+                continue
+            if state and "open" not in state:
+                continue
+            service_name = ""
+            service_id = getattr(port_row, "serviceId", None)
+            if service_id and service_repo:
+                try:
+                    service_obj = service_repo.getServiceById(service_id)
+                except Exception:
+                    service_obj = None
+                service_name = str(getattr(service_obj, "name", "") or "") if service_obj else ""
+            if not self._is_web_screenshot_target(port_value, protocol, service_name):
+                continue
+            dedupe_key = (port_value, protocol)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            targets.append({
+                "port": port_value,
+                "protocol": protocol,
+                "service_name": service_name,
+            })
+        targets.sort(key=lambda item: (self._port_sort_key(item.get("port", "")), item.get("protocol", "")))
+        return targets
+
+    def _run_host_screenshot_refresh(self, *, host_id: int, job_id: int = 0) -> Dict[str, Any]:
+        resolved_host_id = int(host_id or 0)
+        with self._lock:
+            host = self._resolve_host(resolved_host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+            host_ip = str(getattr(host, "ip", "") or "").strip()
+            hostname = str(getattr(host, "hostname", "") or "").strip()
+            if not host_ip:
+                raise ValueError(f"Host {host_id} does not have a valid IP.")
+
+        targets = self._collect_host_screenshot_targets(resolved_host_id)
+        if not targets:
+            return {
+                "host_id": resolved_host_id,
+                "host_ip": host_ip,
+                "hostname": hostname,
+                "target_count": 0,
+                "completed": 0,
+                "results": [],
+                "screenshots": [],
+            }
+
+        results = []
+        completed = 0
+        for target in targets:
+            if int(job_id or 0) > 0 and self.jobs.is_cancel_requested(int(job_id)):
+                break
+            executed, reason, artifact_refs = self._take_screenshot(
+                host_ip,
+                str(target.get("port", "") or ""),
+                service_name=str(target.get("service_name", "") or ""),
+                return_artifacts=True,
+            )
+            if executed:
+                completed += 1
+            results.append({
+                "port": str(target.get("port", "") or ""),
+                "protocol": str(target.get("protocol", "tcp") or "tcp"),
+                "service_name": str(target.get("service_name", "") or ""),
+                "executed": bool(executed),
+                "reason": str(reason or ""),
+                "artifact_refs": list(artifact_refs or []),
+            })
+
+        with self._lock:
+            project = self._require_active_project()
+            screenshots = self._list_screenshots_for_host(project, host_ip)
+
+        try:
+            self.get_host_workspace(resolved_host_id)
+        except Exception:
+            pass
+
+        return {
+            "host_id": resolved_host_id,
+            "host_ip": host_ip,
+            "hostname": hostname,
+            "target_count": len(targets),
+            "completed": int(completed),
+            "results": results,
+            "screenshots": screenshots,
+        }
 
     def _take_screenshot(
             self,

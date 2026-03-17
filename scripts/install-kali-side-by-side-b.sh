@@ -92,6 +92,7 @@ main() {
   log ""
   log "Run:"
   log "  legion-web-dev                   # starts local web UI on 127.0.0.1:5000"
+  log "  legion-web-dev --web --web-port 5000 --web-bind-all"
   log "  legion-web-dev --web --web-port 5001"
   log "  legion-web-dev --headless --input-file targets.txt --discovery"
 

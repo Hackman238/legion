@@ -522,6 +522,16 @@ class DummyRuntime:
             "payload": {"host_id": 11, "host_ip": "10.0.0.5"},
         }
 
+    def start_host_screenshot_refresh_job(self, host_id):
+        if int(host_id) != 11:
+            raise KeyError(host_id)
+        return {
+            "id": 12,
+            "type": "host-screenshot-refresh",
+            "status": "queued",
+            "payload": {"host_id": 11, "host_ip": "10.0.0.5", "target_count": 2},
+        }
+
     def delete_host_workspace(self, host_id):
         if int(host_id) != 11:
             raise KeyError(host_id)
@@ -1338,19 +1348,30 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
         self.assertIn("<h1>LEGION</h1>", body)
+        self.assertIn("Localhost only", body)
         self.assertNotIn("Web Console", body)
         self.assertIn("Graph Workspace", body)
         self.assertIn("graph-workspace-canvas", body)
         self.assertIn("graph-zoom-slider", body)
         self.assertIn("graph-hide-nmap-xml-artifacts", body)
         self.assertIn("graph-detail-content-list", body)
+        self.assertIn("graph-layout-tidy-button", body)
         self.assertIn("graph-layout-save-button", body)
         self.assertIn("graph-annotation-save-button", body)
+        self.assertIn("drag nodes or groups to reposition them", body)
         self.assertNotIn("<h2>Tools</h2>", body)
         self.assertLess(body.index('id="stat-hosts"'), body.index("<h2>Project</h2>"))
         self.assertLess(body.index("<h2>Project</h2>"), body.index('id="ribbon-launch-wizard-button"'))
         self.assertLess(body.index('id="ribbon-launch-wizard-button"'), body.index("<h2>Graph Workspace</h2>"))
         self.assertLess(body.index("<h2>Graph Workspace</h2>"), body.index('<h2>Hosts</h2>'))
+
+    def test_index_renders_all_interfaces_chip_when_configured(self):
+        self.app.config["LEGION_WEB_BIND_HOST"] = "0.0.0.0"
+        self.app.config["LEGION_WEB_BIND_LABEL"] = "All interfaces"
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn("All interfaces", body)
 
     def test_index_hides_graph_workspace_when_rollout_flag_is_disabled(self):
         self.runtime.scheduler_config.update_preferences({
@@ -1767,6 +1788,10 @@ class WebAppTest(unittest.TestCase):
         host_rescan = self.client.post("/api/workspace/hosts/11/rescan", json={})
         self.assertEqual(202, host_rescan.status_code)
         self.assertEqual("accepted", host_rescan.json["status"])
+
+        host_screenshots = self.client.post("/api/workspace/hosts/11/refresh-screenshots", json={})
+        self.assertEqual(202, host_screenshots.status_code)
+        self.assertEqual("accepted", host_screenshots.json["status"])
 
         host_dig = self.client.post("/api/workspace/hosts/11/dig-deeper", json={})
         self.assertEqual(202, host_dig.status_code)

@@ -412,13 +412,13 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 {
                     "tool_id": "httpx-web",
                     "output_excerpt": (
-                        '{"url":"https://portal.example/admin","title":"Admin Console",'
+                        '{"url":"https://portal.example:443/admin/","title":"Admin Console",'
                         '"tech":["Vue.js"]}'
                     ),
                 },
                 {
                     "tool_id": "nuclei-web",
-                    "output_excerpt": "[exposed-panel] [medium] https://portal.example/login",
+                    "output_excerpt": "[exposed-panel] [medium] https://portal.example:443/login/",
                 },
             ],
             limit=32,
@@ -427,6 +427,36 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         extracted_urls = {str(item.get("url", "")).strip() for item in urls}
         self.assertIn("https://portal.example/admin", extracted_urls)
         self.assertIn("https://portal.example/login", extracted_urls)
+
+    def test_infer_urls_normalizes_default_ports_and_malformed_suffixes(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        urls = runtime._infer_urls_from_observations(
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "httpx-web",
+                    "output_excerpt": '{"url":"http://atlas.tantalumlabs.io:80/:","title":"Atlas"}',
+                },
+                {
+                    "tool_id": "nuclei-web",
+                    "output_excerpt": "[login-panel] [medium] https://tantalumlabs.io:443/",
+                },
+                {
+                    "tool_id": "nuclei-web",
+                    "output_excerpt": "[alt-panel] [medium] https://tantalumlabs.io:8080/",
+                },
+            ],
+            limit=32,
+        )
+
+        extracted_urls = {str(item.get("url", "")).strip() for item in urls}
+        self.assertIn("http://atlas.tantalumlabs.io", extracted_urls)
+        self.assertIn("https://tantalumlabs.io", extracted_urls)
+        self.assertIn("https://tantalumlabs.io:8080", extracted_urls)
+        self.assertNotIn("http://atlas.tantalumlabs.io:80/:", extracted_urls)
+        self.assertNotIn("https://tantalumlabs.io:443/", extracted_urls)
 
     def test_infer_urls_ignores_nmap_boilerplate_urls(self):
         from app.web.runtime import WebRuntime

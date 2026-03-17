@@ -918,6 +918,20 @@ def workspace_host_dig_deeper(host_id):
         return _json_error(str(exc), 500)
 
 
+@web_bp.post("/api/workspace/hosts/<int:host_id>/refresh-screenshots")
+def workspace_host_refresh_screenshots(host_id):
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        job = runtime.start_host_screenshot_refresh_job(host_id)
+        return jsonify({"status": "accepted", "job": job}), 202
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
 @web_bp.delete("/api/workspace/hosts/<int:host_id>")
 def workspace_host_remove(host_id):
     runtime = current_app.extensions["legion_runtime"]
