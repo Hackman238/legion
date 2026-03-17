@@ -4,10 +4,19 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from app.paths import ensure_legion_home, get_scheduler_config_path
+from app.scheduler.policy import (
+    legacy_goal_profile_from_policy,
+    normalize_engagement_policy,
+    preset_from_legacy_goal_profile,
+)
 
 DEFAULT_SCHEDULER_CONFIG = {
     "mode": "deterministic",
     "goal_profile": "internal_asset_discovery",
+    "engagement_policy": normalize_engagement_policy(
+        {"preset": "internal_recon"},
+        fallback_goal_profile="internal_asset_discovery",
+    ).to_dict(),
     "provider": "none",
     "max_concurrency": 1,
     "max_jobs": 200,
@@ -128,6 +137,21 @@ class SchedulerConfigManager:
                     else:
                         delivery[delivery_key] = delivery_value
                 merged["project_report_delivery"] = delivery
+            elif key == "engagement_policy" and isinstance(value, dict):
+                policy = dict(merged.get("engagement_policy", {}))
+                for policy_key, policy_value in value.items():
+                    if policy_key == "custom_overrides" and isinstance(policy_value, dict):
+                        overrides = dict(policy.get("custom_overrides", {}))
+                        overrides.update(policy_value)
+                        policy["custom_overrides"] = overrides
+                    else:
+                        policy[policy_key] = policy_value
+                merged["engagement_policy"] = policy
+            elif key == "goal_profile":
+                merged["goal_profile"] = value
+                policy = dict(merged.get("engagement_policy", {}))
+                policy["preset"] = preset_from_legacy_goal_profile(str(value or ""))
+                merged["engagement_policy"] = policy
             else:
                 merged[key] = value
         return self._normalize_config(merged)
@@ -142,6 +166,9 @@ class SchedulerConfigManager:
 
     def get_goal_profile(self) -> str:
         return self.load().get("goal_profile", "internal_asset_discovery")
+
+    def get_engagement_policy(self) -> Dict[str, Any]:
+        return dict(self.load().get("engagement_policy", {}))
 
     def get_dangerous_categories(self) -> List[str]:
         values = self.load().get("dangerous_categories", [])
@@ -192,10 +219,21 @@ class SchedulerConfigManager:
             mode = "deterministic"
         config["mode"] = mode
 
-        goal_profile = str(config.get("goal_profile", "internal_asset_discovery")).strip().lower()
+        goal_profile = str(raw.get("goal_profile", config.get("goal_profile", "internal_asset_discovery"))).strip().lower()
         if goal_profile not in VALID_GOAL_PROFILES:
             goal_profile = "internal_asset_discovery"
-        config["goal_profile"] = goal_profile
+
+        policy_input = raw.get("engagement_policy", config.get("engagement_policy", {}))
+        normalized_policy = normalize_engagement_policy(
+            policy_input,
+            fallback_goal_profile=goal_profile,
+        )
+        config["engagement_policy"] = normalized_policy.to_dict()
+        config["goal_profile"] = legacy_goal_profile_from_policy(
+            normalized_policy.preset,
+            scope=normalized_policy.scope,
+            intent=normalized_policy.intent,
+        )
 
         provider = str(config.get("provider", "none")).strip().lower()
         config["provider"] = provider

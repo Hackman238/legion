@@ -119,7 +119,7 @@ def store_execution_record(
             "tool_id": str(action.tool_id if action else ""),
             "label": str(action.label if action else ""),
             "scheduler_mode": str(step.origin_mode if isinstance(step, PlanStep) else ""),
-            "goal_profile": str(step.engagement_preset if isinstance(step, PlanStep) else ""),
+            "goal_profile": str(step.goal_profile if isinstance(step, PlanStep) else ""),
             "host_ip": str(host_ip or ""),
             "port": str(port or ""),
             "protocol": str(protocol or ""),

@@ -2403,12 +2403,27 @@ function applySchedulerPreferences(prefs) {
     if (!prefs) {
         return;
     }
+    const policy = normalizeEngagementPolicyPayload(
+        prefs.engagement_policy,
+        prefs.goal_profile || "internal_asset_discovery",
+    );
     setText("scheduler-mode", prefs.mode || "");
-    setText("scheduler-goal", prefs.goal_profile || "");
+    setText("scheduler-goal", policy.preset_label || policy.preset || prefs.goal_profile || "");
     setText("scheduler-families", prefs.preapproved_families_count || 0);
 
     setValue("scheduler-mode-select", prefs.mode || "deterministic");
-    setValue("scheduler-goal-select", prefs.goal_profile || "internal_asset_discovery");
+    setValue("scheduler-goal-select", policy.preset || "internal_recon");
+    setValue("engagement-scope-select", policy.scope || "internal");
+    setValue("engagement-intent-select", policy.intent || "recon");
+    setChecked("engagement-allow-exploitation", Boolean(policy.allow_exploitation));
+    setChecked("engagement-allow-lateral", Boolean(policy.allow_lateral_movement));
+    setValue("engagement-credential-mode", policy.credential_attack_mode || "blocked");
+    setValue("engagement-lockout-mode", policy.lockout_risk_mode || "blocked");
+    setValue("engagement-stability-mode", policy.stability_risk_mode || "approval");
+    setValue("engagement-detection-mode", policy.detection_risk_mode || "low");
+    setValue("engagement-approval-mode", policy.approval_mode || "risky");
+    setValue("engagement-runner-preference", policy.runner_preference || "local");
+    setValue("engagement-noise-budget", policy.noise_budget || "low");
     setValue("scheduler-provider-select", prefs.provider || "none");
     setValue("scheduler-concurrency-input", String(prefs.max_concurrency || 1));
     setValue("scheduler-max-jobs-input", String(prefs.max_jobs || 200));
@@ -2457,6 +2472,124 @@ function applySchedulerPreferences(prefs) {
     });
 
     setSchedulerProviderFieldVisibility(prefs.provider || "none");
+}
+
+function defaultEngagementPolicyForPreset(preset) {
+    const normalizedPreset = String(preset || "").trim().toLowerCase();
+    const defaults = {
+        external_recon: {
+            preset: "external_recon",
+            preset_label: "External Recon",
+            scope: "external",
+            intent: "recon",
+            allow_exploitation: false,
+            allow_lateral_movement: false,
+            credential_attack_mode: "blocked",
+            lockout_risk_mode: "blocked",
+            stability_risk_mode: "approval",
+            detection_risk_mode: "low",
+            approval_mode: "risky",
+            runner_preference: "local",
+            noise_budget: "low",
+            custom_overrides: {},
+            legacy_goal_profile: "external_pentest",
+        },
+        external_pentest: {
+            preset: "external_pentest",
+            preset_label: "External Pentest",
+            scope: "external",
+            intent: "pentest",
+            allow_exploitation: true,
+            allow_lateral_movement: false,
+            credential_attack_mode: "approval",
+            lockout_risk_mode: "approval",
+            stability_risk_mode: "approval",
+            detection_risk_mode: "medium",
+            approval_mode: "risky",
+            runner_preference: "local",
+            noise_budget: "medium",
+            custom_overrides: {},
+            legacy_goal_profile: "external_pentest",
+        },
+        internal_recon: {
+            preset: "internal_recon",
+            preset_label: "Internal Recon",
+            scope: "internal",
+            intent: "recon",
+            allow_exploitation: false,
+            allow_lateral_movement: false,
+            credential_attack_mode: "blocked",
+            lockout_risk_mode: "blocked",
+            stability_risk_mode: "approval",
+            detection_risk_mode: "low",
+            approval_mode: "risky",
+            runner_preference: "local",
+            noise_budget: "low",
+            custom_overrides: {},
+            legacy_goal_profile: "internal_asset_discovery",
+        },
+        internal_pentest: {
+            preset: "internal_pentest",
+            preset_label: "Internal Pentest",
+            scope: "internal",
+            intent: "pentest",
+            allow_exploitation: true,
+            allow_lateral_movement: true,
+            credential_attack_mode: "approval",
+            lockout_risk_mode: "approval",
+            stability_risk_mode: "approval",
+            detection_risk_mode: "medium",
+            approval_mode: "risky",
+            runner_preference: "local",
+            noise_budget: "medium",
+            custom_overrides: {},
+            legacy_goal_profile: "internal_asset_discovery",
+        },
+    };
+    return defaults[normalizedPreset] || {
+        ...defaults.internal_recon,
+        preset: normalizedPreset || "custom",
+        preset_label: normalizedPreset ? normalizedPreset.replace(/_/g, " ") : "Custom",
+    };
+}
+
+function presetFromLegacyGoalProfile(goalProfile) {
+    const normalized = String(goalProfile || "").trim().toLowerCase();
+    if (normalized === "external_pentest") {
+        return "external_pentest";
+    }
+    if (normalized === "internal_pentest") {
+        return "internal_pentest";
+    }
+    if (normalized === "external_recon") {
+        return "external_recon";
+    }
+    return "internal_recon";
+}
+
+function legacyGoalProfileFromEngagementPolicy(policy) {
+    const preset = String(policy?.preset || "").trim().toLowerCase();
+    if (preset === "external_recon" || preset === "external_pentest") {
+        return "external_pentest";
+    }
+    return "internal_asset_discovery";
+}
+
+function normalizeEngagementPolicyPayload(policy, fallbackGoalProfile) {
+    const fallbackPreset = presetFromLegacyGoalProfile(fallbackGoalProfile);
+    const provided = policy && typeof policy === "object" ? policy : {};
+    const base = defaultEngagementPolicyForPreset(provided.preset || fallbackPreset);
+    return {
+        ...base,
+        ...provided,
+        custom_overrides: provided.custom_overrides && typeof provided.custom_overrides === "object"
+            ? provided.custom_overrides
+            : {},
+        legacy_goal_profile: provided.legacy_goal_profile || legacyGoalProfileFromEngagementPolicy({
+            ...base,
+            ...provided,
+        }),
+    };
 }
 
 function setSchedulerProviderFieldVisibility(providerName) {
@@ -2525,9 +2658,29 @@ function collectSchedulerPreferencesFromForm() {
         providers.claude.api_key = claudeApiKey;
     }
 
+    const engagementPolicy = normalizeEngagementPolicyPayload(
+        {
+            preset: getValue("scheduler-goal-select"),
+            scope: getValue("engagement-scope-select"),
+            intent: getValue("engagement-intent-select"),
+            allow_exploitation: getChecked("engagement-allow-exploitation"),
+            allow_lateral_movement: getChecked("engagement-allow-lateral"),
+            credential_attack_mode: getValue("engagement-credential-mode"),
+            lockout_risk_mode: getValue("engagement-lockout-mode"),
+            stability_risk_mode: getValue("engagement-stability-mode"),
+            detection_risk_mode: getValue("engagement-detection-mode"),
+            approval_mode: getValue("engagement-approval-mode"),
+            runner_preference: getValue("engagement-runner-preference"),
+            noise_budget: getValue("engagement-noise-budget"),
+            custom_overrides: {},
+        },
+        getValue("scheduler-goal-select"),
+    );
+
     return {
         mode,
-        goal_profile: getValue("scheduler-goal-select"),
+        goal_profile: legacyGoalProfileFromEngagementPolicy(engagementPolicy),
+        engagement_policy: engagementPolicy,
         provider: selectedProvider,
         max_concurrency: maxConcurrency,
         max_jobs: maxJobs,

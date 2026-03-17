@@ -1008,6 +1008,7 @@ def scheduler_preferences_update():
     allowed_fields = {
         "mode",
         "goal_profile",
+        "engagement_policy",
         "provider",
         "max_concurrency",
         "max_jobs",
@@ -1029,6 +1030,7 @@ def scheduler_provider_test():
     allowed_fields = {
         "mode",
         "goal_profile",
+        "engagement_policy",
         "provider",
         "max_concurrency",
         "max_jobs",
@@ -1041,6 +1043,27 @@ def scheduler_provider_test():
         return jsonify(runtime.test_scheduler_provider(updates))
     except Exception as exc:
         return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/engagement-policy")
+def engagement_policy_get():
+    runtime = current_app.extensions["legion_runtime"]
+    if hasattr(runtime, "get_engagement_policy"):
+        return jsonify(runtime.get_engagement_policy())
+    return jsonify(runtime.get_scheduler_preferences().get("engagement_policy", {}))
+
+
+@web_bp.post("/api/engagement-policy")
+def engagement_policy_update():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    if hasattr(runtime, "set_engagement_policy"):
+        return jsonify(runtime.set_engagement_policy(payload))
+    updates = {"engagement_policy": payload}
+    if hasattr(runtime, "apply_scheduler_preferences"):
+        return jsonify(runtime.apply_scheduler_preferences(updates))
+    runtime.scheduler_config.update_preferences(updates)
+    return jsonify(runtime.get_scheduler_preferences().get("engagement_policy", {}))
 
 
 @web_bp.get("/api/scheduler/provider/logs")

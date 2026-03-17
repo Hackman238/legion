@@ -26,6 +26,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             defaults = manager.load()
             self.assertEqual("deterministic", defaults["mode"])
             self.assertEqual("internal_asset_discovery", defaults["goal_profile"])
+            self.assertEqual("internal_recon", defaults["engagement_policy"]["preset"])
             self.assertEqual(1, int(defaults["max_concurrency"]))
             self.assertEqual(200, int(defaults["max_jobs"]))
             self.assertIn("ai_feedback", defaults)
@@ -50,6 +51,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             })
             self.assertEqual("ai", updated["mode"])
             self.assertEqual("external_pentest", updated["goal_profile"])
+            self.assertEqual("external_pentest", updated["engagement_policy"]["preset"])
             self.assertEqual("openai", updated["provider"])
             self.assertEqual(1, int(updated["max_concurrency"]))
             self.assertEqual("gpt-5-mini", updated["providers"]["openai"]["model"])
@@ -110,6 +112,18 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual(12, int(normalized["ai_feedback"]["max_rounds_per_target"]))
             self.assertEqual(1, int(normalized["ai_feedback"]["max_actions_per_round"]))
             self.assertEqual(320, int(normalized["ai_feedback"]["recent_output_chars"]))
+
+            updated_policy = manager.update_preferences({
+                "engagement_policy": {
+                    "preset": "internal_pentest",
+                    "intent": "pentest",
+                    "allow_exploitation": True,
+                    "allow_lateral_movement": True,
+                }
+            })
+            self.assertEqual("internal_pentest", updated_policy["engagement_policy"]["preset"])
+            self.assertEqual("internal_asset_discovery", updated_policy["goal_profile"])
+            self.assertTrue(updated_policy["engagement_policy"]["allow_exploitation"])
 
             self.assertFalse(manager.is_family_preapproved("abc123"))
             manager.approve_family("abc123", {"tool_id": "hydra", "label": "Hydra", "danger_categories": []})

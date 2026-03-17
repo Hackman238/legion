@@ -10,7 +10,7 @@
         <div class="scheduler-meta">
             <span class="chip">Type: <strong id="project-kind">{{ "temporary" if snapshot.project.is_temporary else "saved" }}</strong></span>
             <span class="chip">Scheduler: <strong id="scheduler-mode">{{ snapshot.scheduler.mode }}</strong></span>
-            <span class="chip">Goal: <strong id="scheduler-goal">{{ snapshot.scheduler.goal_profile }}</strong></span>
+            <span class="chip">Engagement: <strong id="scheduler-goal">{{ snapshot.scheduler.engagement_policy.preset_label if snapshot.scheduler.engagement_policy else snapshot.scheduler.goal_profile }}</strong></span>
             <span class="chip">Preapproved Families: <strong id="scheduler-families">{{ snapshot.scheduler.preapproved_families_count }}</strong></span>
         </div>
         <p class="meta-note" id="project-output-folder">{{ snapshot.project.output_folder }}</p>
@@ -910,10 +910,94 @@
                 </select>
             </label>
             <label>
-                Goal Profile
+                Engagement Preset
                 <select id="scheduler-goal-select" name="goal_profile">
-                    <option value="internal_asset_discovery">internal_asset_discovery</option>
+                    <option value="external_recon">external_recon</option>
                     <option value="external_pentest">external_pentest</option>
+                    <option value="internal_recon">internal_recon</option>
+                    <option value="internal_pentest">internal_pentest</option>
+                    <option value="custom">custom</option>
+                </select>
+            </label>
+            <label>
+                Scope
+                <select id="engagement-scope-select" name="engagement_scope">
+                    <option value="internal">internal</option>
+                    <option value="external">external</option>
+                    <option value="mixed">mixed</option>
+                </select>
+            </label>
+            <label>
+                Intent
+                <select id="engagement-intent-select" name="engagement_intent">
+                    <option value="recon">recon</option>
+                    <option value="pentest">pentest</option>
+                </select>
+            </label>
+            <label class="checkbox">
+                <input id="engagement-allow-exploitation" type="checkbox" name="engagement_allow_exploitation">
+                Allow exploitation
+            </label>
+            <label class="checkbox">
+                <input id="engagement-allow-lateral" type="checkbox" name="engagement_allow_lateral">
+                Allow lateral movement
+            </label>
+            <label>
+                Credential attack mode
+                <select id="engagement-credential-mode" name="engagement_credential_mode">
+                    <option value="blocked">blocked</option>
+                    <option value="approval">approval</option>
+                    <option value="allowed">allowed</option>
+                </select>
+            </label>
+            <label>
+                Lockout risk mode
+                <select id="engagement-lockout-mode" name="engagement_lockout_mode">
+                    <option value="blocked">blocked</option>
+                    <option value="approval">approval</option>
+                    <option value="allowed">allowed</option>
+                </select>
+            </label>
+            <label>
+                Stability risk mode
+                <select id="engagement-stability-mode" name="engagement_stability_mode">
+                    <option value="blocked">blocked</option>
+                    <option value="approval">approval</option>
+                    <option value="allowed">allowed</option>
+                </select>
+            </label>
+            <label>
+                Detection tolerance
+                <select id="engagement-detection-mode" name="engagement_detection_mode">
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                </select>
+            </label>
+            <label>
+                Approval mode
+                <select id="engagement-approval-mode" name="engagement_approval_mode">
+                    <option value="never">never</option>
+                    <option value="risky">risky</option>
+                    <option value="always">always</option>
+                </select>
+            </label>
+            <label>
+                Runner preference
+                <select id="engagement-runner-preference" name="engagement_runner_preference">
+                    <option value="local">local</option>
+                    <option value="container">container</option>
+                    <option value="browser">browser</option>
+                    <option value="manual">manual</option>
+                    <option value="auto">auto</option>
+                </select>
+            </label>
+            <label>
+                Noise budget
+                <select id="engagement-noise-budget" name="engagement_noise_budget">
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
                 </select>
             </label>
             <label>

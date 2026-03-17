@@ -11,6 +11,23 @@ class DummySchedulerConfig:
         self.state = {
             "mode": "deterministic",
             "goal_profile": "internal_asset_discovery",
+            "engagement_policy": {
+                "preset": "internal_recon",
+                "preset_label": "Internal Recon",
+                "scope": "internal",
+                "intent": "recon",
+                "allow_exploitation": False,
+                "allow_lateral_movement": False,
+                "credential_attack_mode": "blocked",
+                "lockout_risk_mode": "blocked",
+                "stability_risk_mode": "approval",
+                "detection_risk_mode": "low",
+                "approval_mode": "risky",
+                "runner_preference": "local",
+                "noise_budget": "low",
+                "custom_overrides": {},
+                "legacy_goal_profile": "internal_asset_discovery",
+            },
             "provider": "none",
             "providers": {},
             "project_report_delivery": {
@@ -32,7 +49,19 @@ class DummySchedulerConfig:
         }
 
     def update_preferences(self, updates):
+        updates = dict(updates or {})
+        if isinstance(updates.get("engagement_policy"), dict):
+            policy = dict(self.state.get("engagement_policy", {}))
+            policy.update(updates.get("engagement_policy", {}))
+            updates["engagement_policy"] = policy
+        elif "goal_profile" in updates:
+            policy = dict(self.state.get("engagement_policy", {}))
+            policy["preset"] = "external_pentest" if str(updates.get("goal_profile", "")).strip().lower() == "external_pentest" else "internal_recon"
+            updates["engagement_policy"] = policy
         self.state.update(updates)
+        if isinstance(self.state.get("engagement_policy"), dict):
+            preset = str(self.state["engagement_policy"].get("preset", "") or "").strip().lower()
+            self.state["goal_profile"] = "external_pentest" if preset in {"external_recon", "external_pentest"} else "internal_asset_discovery"
         return self.state
 
     def approve_family(self, family_id, metadata):
@@ -343,6 +372,14 @@ class DummyRuntime:
         return {
             "mode": self.scheduler_config.state["mode"],
             "goal_profile": self.scheduler_config.state["goal_profile"],
+            "engagement_policy": self.scheduler_config.state["engagement_policy"],
+            "engagement_presets": [
+                {"id": "external_recon", "name": "External Recon"},
+                {"id": "external_pentest", "name": "External Pentest"},
+                {"id": "internal_recon", "name": "Internal Recon"},
+                {"id": "internal_pentest", "name": "Internal Pentest"},
+                {"id": "custom", "name": "Custom"},
+            ],
             "provider": self.scheduler_config.state["provider"],
             "providers": self.scheduler_config.state["providers"],
             "project_report_delivery": self.scheduler_config.state["project_report_delivery"],
@@ -350,6 +387,17 @@ class DummyRuntime:
             "preapproved_families_count": len(self.scheduler_config.state["preapproved_command_families"]),
             "cloud_notice": "Cloud AI mode may send host/service metadata to third-party providers.",
         }
+
+    def get_engagement_policy(self):
+        return dict(self.scheduler_config.state["engagement_policy"])
+
+    def set_engagement_policy(self, updates):
+        policy = dict(self.scheduler_config.state["engagement_policy"])
+        policy.update(dict(updates or {}))
+        policy["legacy_goal_profile"] = "external_pentest" if policy.get("preset") in {"external_recon", "external_pentest"} else "internal_asset_discovery"
+        self.scheduler_config.state["engagement_policy"] = policy
+        self.scheduler_config.state["goal_profile"] = policy["legacy_goal_profile"]
+        return dict(policy)
 
     def get_scheduler_decisions(self, limit=100):
         return [
@@ -696,6 +744,39 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("ai", response.json["mode"])
         self.assertEqual("external_pentest", response.json["goal_profile"])
+
+    def test_scheduler_preferences_update_accepts_engagement_policy(self):
+        response = self.client.post(
+            "/api/scheduler/preferences",
+            json={
+                "engagement_policy": {
+                    "preset": "external_recon",
+                    "scope": "external",
+                    "intent": "recon",
+                    "noise_budget": "low",
+                }
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("external_pentest", response.json["goal_profile"])
+        self.assertEqual("external_recon", response.json["engagement_policy"]["preset"])
+
+    def test_engagement_policy_endpoints(self):
+        current = self.client.get("/api/engagement-policy")
+        self.assertEqual(200, current.status_code)
+        self.assertEqual("internal_recon", current.json["preset"])
+
+        updated = self.client.post(
+            "/api/engagement-policy",
+            json={
+                "preset": "internal_pentest",
+                "intent": "pentest",
+                "allow_exploitation": True,
+            },
+        )
+        self.assertEqual(200, updated.status_code)
+        self.assertEqual("internal_pentest", updated.json["preset"])
+        self.assertTrue(updated.json["allow_exploitation"])
 
     def test_scheduler_provider_test_endpoint(self):
         response = self.client.post(

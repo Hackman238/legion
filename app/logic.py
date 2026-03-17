@@ -53,6 +53,10 @@ class Logic:
         from app.scheduler.config import SchedulerConfigManager
         from app.scheduler.execution import ensure_scheduler_execution_table, store_execution_record
         from app.scheduler.models import ExecutionRecord
+        from app.scheduler.policy import (
+            ensure_scheduler_engagement_policy_table,
+            get_project_engagement_policy,
+        )
         from app.scheduler.planner import SchedulerPlanner
         from app.timing import getTimestamp
         from app.httputil.isHttps import isHttps
@@ -64,6 +68,14 @@ class Logic:
         service_repo = getattr(repo_container, "serviceRepository", None)
         scheduler_config = SchedulerConfigManager()
         scheduler_planner = SchedulerPlanner(scheduler_config)
+        engagement_policy = None
+        database = getattr(self.activeProject, "database", None)
+        if database is not None:
+            try:
+                ensure_scheduler_engagement_policy_table(database)
+                engagement_policy = get_project_engagement_policy(database)
+            except Exception:
+                engagement_policy = None
 
         def record(decision, host_ip, host_port, host_protocol, host_service, approved, executed, reason):
             database = getattr(self.activeProject, "database", None)
@@ -160,7 +172,12 @@ class Logic:
                         service_name = ""
                 if service_name.endswith("?"):
                     service_name = service_name[:-1]
-                decisions = scheduler_planner.plan_actions(service_name, protocol, settings)
+                decisions = scheduler_planner.plan_actions(
+                    service_name,
+                    protocol,
+                    settings,
+                    engagement_policy=engagement_policy,
+                )
                 for decision in decisions:
                     if decision.requires_approval:
                         print(

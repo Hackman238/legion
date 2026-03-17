@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from app.scheduler.policy import legacy_goal_profile_from_policy
+
 
 WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
 
@@ -251,7 +253,7 @@ class PlanStep:
 
     @property
     def goal_profile(self) -> str:
-        return str(self.engagement_preset)
+        return legacy_goal_profile_from_policy(str(self.engagement_preset or ""))
 
     @property
     def danger_categories(self) -> List[str]:

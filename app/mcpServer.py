@@ -26,6 +26,33 @@ class MCPServer:
                 },
                 "handler": self.run_discovery,
             },
+            "get_engagement_policy": {
+                "description": "Get the current normalized Legion engagement policy",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+                "handler": self.get_engagement_policy,
+            },
+            "set_engagement_policy": {
+                "description": "Update the normalized Legion engagement policy",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "preset": {"type": "string"},
+                        "scope": {"type": "string"},
+                        "intent": {"type": "string"},
+                        "allow_exploitation": {"type": "boolean"},
+                        "allow_lateral_movement": {"type": "boolean"},
+                        "credential_attack_mode": {"type": "string"},
+                        "lockout_risk_mode": {"type": "string"},
+                        "stability_risk_mode": {"type": "string"},
+                        "detection_risk_mode": {"type": "string"},
+                        "approval_mode": {"type": "string"},
+                        "runner_preference": {"type": "string"},
+                        "noise_budget": {"type": "string"},
+                    },
+                    "required": []
+                },
+                "handler": self.set_engagement_policy,
+            },
             # Add more tools here as needed
         }
 
@@ -154,6 +181,31 @@ class MCPServer:
                 "error": str(e),
                 "debug_info": debug_info
             }
+
+    async def get_engagement_policy(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        _ = arguments
+        from app.scheduler.config import SchedulerConfigManager
+
+        manager = SchedulerConfigManager()
+        return manager.get_engagement_policy()
+
+    async def set_engagement_policy(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.policy import normalize_engagement_policy
+
+        manager = SchedulerConfigManager()
+        current = manager.get_engagement_policy()
+        merged = dict(current)
+        merged.update({key: value for key, value in (arguments or {}).items() if value is not None})
+        normalized = normalize_engagement_policy(
+            merged,
+            fallback_goal_profile=str(manager.get_goal_profile() or "internal_asset_discovery"),
+        )
+        manager.update_preferences({
+            "engagement_policy": normalized.to_dict(),
+            "goal_profile": normalized.legacy_goal_profile,
+        })
+        return manager.get_engagement_policy()
 
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         if request.get("method") == "list_tools":

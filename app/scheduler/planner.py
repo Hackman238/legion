@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from app.scheduler.family import build_command_family_id
 from app.scheduler.models import PlanStep
+from app.scheduler.policy import EngagementPolicy, normalize_engagement_policy
 from app.scheduler.providers import ProviderError, get_last_provider_payload, rank_actions_with_provider
 from app.scheduler.registry import ActionRegistry
 from app.scheduler.risk import classify_command_danger
@@ -92,6 +93,7 @@ class SchedulerPlanner:
             context: Optional[Dict[str, Any]] = None,
             excluded_tool_ids: Optional[List[str]] = None,
             limit: Optional[int] = None,
+            engagement_policy: Optional[Dict[str, Any]] = None,
     ) -> List[PlanStep]:
         return self.plan_steps(
             service,
@@ -100,6 +102,7 @@ class SchedulerPlanner:
             context=context,
             excluded_tool_ids=excluded_tool_ids,
             limit=limit,
+            engagement_policy=engagement_policy,
         )
 
     def plan_steps(
@@ -111,11 +114,15 @@ class SchedulerPlanner:
             context: Optional[Dict[str, Any]] = None,
             excluded_tool_ids: Optional[List[str]] = None,
             limit: Optional[int] = None,
+            engagement_policy: Optional[Dict[str, Any]] = None,
     ) -> List[PlanStep]:
         self._set_last_provider_payload({})
         prefs = self.config_manager.load()
         mode = prefs.get("mode", "deterministic")
-        goal_profile = prefs.get("goal_profile", "internal_asset_discovery")
+        policy = normalize_engagement_policy(
+            engagement_policy or prefs.get("engagement_policy", {}),
+            fallback_goal_profile=str(prefs.get("goal_profile", "internal_asset_discovery") or "internal_asset_discovery"),
+        )
         dangerous_categories = self.config_manager.get_dangerous_categories()
         excluded = self._normalize_tool_id_set(excluded_tool_ids)
         registry = self.build_action_registry(settings, dangerous_categories)
@@ -125,7 +132,7 @@ class SchedulerPlanner:
                 service,
                 protocol,
                 registry,
-                goal_profile,
+                policy,
                 dangerous_categories,
                 context=context,
                 excluded_tool_ids=excluded,
@@ -140,7 +147,7 @@ class SchedulerPlanner:
             service,
             protocol,
             registry,
-            goal_profile,
+            policy,
             dangerous_categories,
             mode=mode,
             context=context,
@@ -152,7 +159,7 @@ class SchedulerPlanner:
     def build_action_registry(settings, dangerous_categories: Optional[List[str]] = None) -> ActionRegistry:
         return ActionRegistry.from_settings(settings, dangerous_categories=dangerous_categories)
 
-    def _plan_deterministic(self, service: str, protocol: str, registry: ActionRegistry, goal_profile: str,
+    def _plan_deterministic(self, service: str, protocol: str, registry: ActionRegistry, policy: EngagementPolicy,
                             dangerous_categories: List[str], mode: str = "deterministic",
                             context: Optional[Dict[str, Any]] = None,
                             excluded_tool_ids: Optional[Set[str]] = None,
@@ -161,8 +168,8 @@ class SchedulerPlanner:
         protocol_name = str(protocol or "tcp").strip().lower()
         decisions = []
         excluded = set(excluded_tool_ids or set())
-        policy_snapshot_hash = self._policy_snapshot_hash(goal_profile, dangerous_categories)
-        target_ref = self._build_target_ref(service_name, protocol_name, context=context)
+        policy_snapshot_hash = self._policy_snapshot_hash(policy, dangerous_categories)
+        target_ref = self._build_target_ref(service_name, protocol_name, policy=policy, context=context)
 
         for action in registry.for_deterministic(service_name, protocol_name):
             tool_id = str(action.tool_id)
@@ -174,7 +181,7 @@ class SchedulerPlanner:
                 action,
                 origin_mode=mode,
                 origin_planner="scheduler_deterministic",
-                engagement_preset=goal_profile,
+                engagement_preset=policy.preset,
                 policy_snapshot_hash=policy_snapshot_hash,
                 target_ref=target_ref,
                 parameters={"protocol": protocol_name},
@@ -194,7 +201,7 @@ class SchedulerPlanner:
                 return decisions[:max_items]
         return decisions
 
-    def _plan_ai(self, service: str, protocol: str, registry: ActionRegistry, goal_profile: str,
+    def _plan_ai(self, service: str, protocol: str, registry: ActionRegistry, policy: EngagementPolicy,
                  dangerous_categories: List[str],
                  context: Optional[Dict[str, Any]] = None,
                  excluded_tool_ids: Optional[Set[str]] = None,
@@ -203,8 +210,8 @@ class SchedulerPlanner:
         protocol_name = str(protocol or "tcp").strip().lower()
         candidates_by_tool = {}
         excluded = set(excluded_tool_ids or set())
-        policy_snapshot_hash = self._policy_snapshot_hash(goal_profile, dangerous_categories)
-        target_ref = self._build_target_ref(service_name, protocol_name, context=context)
+        policy_snapshot_hash = self._policy_snapshot_hash(policy, dangerous_categories)
+        target_ref = self._build_target_ref(service_name, protocol_name, policy=policy, context=context)
 
         for action in registry.for_ai_selection(service_name, protocol_name):
             label = str(action.label)
@@ -236,7 +243,7 @@ class SchedulerPlanner:
         try:
             provider_ranked = rank_actions_with_provider(
                 config=config,
-                goal_profile=goal_profile,
+                goal_profile=policy.legacy_goal_profile,
                 service=service_name,
                 protocol=protocol_name,
                 candidates=candidates,
@@ -277,7 +284,7 @@ class SchedulerPlanner:
 
             score = scores_by_tool.get(tool_id)
             if score is None:
-                score = self._score_candidate(tool_id, label, command_template, goal_profile)
+                score = self._score_candidate(tool_id, label, command_template, policy)
             score = self._score_with_context(
                 score,
                 tool_id=tool_id,
@@ -294,7 +301,7 @@ class SchedulerPlanner:
                     score = max(score, 92.0)
             rationale = rationales_by_tool.get(tool_id) or self._build_rationale(
                 tool_id,
-                goal_profile,
+                policy,
                 danger,
                 provider_name=provider_name if provider_enabled else "",
                 provider_error=provider_error,
@@ -306,7 +313,7 @@ class SchedulerPlanner:
                 action,
                 origin_mode="ai",
                 origin_planner="scheduler_ai",
-                engagement_preset=goal_profile,
+                engagement_preset=policy.preset,
                 policy_snapshot_hash=policy_snapshot_hash,
                 target_ref=target_ref,
                 parameters={"protocol": protocol_name},
@@ -349,7 +356,7 @@ class SchedulerPlanner:
         return result
 
     @staticmethod
-    def _score_candidate(tool_id: str, label: str, command_template: str, goal_profile: str) -> float:
+    def _score_candidate(tool_id: str, label: str, command_template: str, policy: EngagementPolicy) -> float:
         score = 50.0
         text = " ".join([tool_id.lower(), label.lower(), command_template.lower()])
         has_vuln_signal = any(token in text for token in [
@@ -362,32 +369,42 @@ class SchedulerPlanner:
         has_web_content_discovery = any(token in text for token in ["feroxbuster", "gobuster"])
         has_legacy_dirbuster = any(token in text for token in ["dirbuster", "java -xmx256m -jar"])
 
-        if goal_profile == "internal_asset_discovery":
-            if any(token in text for token in ["enum", "discover", "info", "list", "scan"]):
-                score += 22
-            if any(token in text for token in ["smb", "ldap", "rpc", "snmp"]):
-                score += 12
-            if any(token in text for token in ["brute", "exploit", "flood"]):
-                score -= 18
-            if has_vuln_signal:
-                score += 16
-            if has_nuclei_signal:
-                score += 10
-            if has_web_content_discovery:
-                score += 8
-        elif goal_profile == "external_pentest":
-            if any(token in text for token in ["whatweb", "sslscan", "sslyze", "nikto", "nmap"]):
+        if policy.intent == "recon":
+            if any(token in text for token in ["enum", "discover", "info", "list", "scan", "fingerprint", "title", "headers"]):
                 score += 20
-            if any(token in text for token in ["http", "https", "web"]):
-                score += 10
-            if any(token in text for token in ["flood", "dos"]):
-                score -= 20
-            if has_vuln_signal:
-                score += 24
-            if has_nuclei_signal:
-                score += 30
-            if has_web_content_discovery:
+            if policy.scope == "internal" and any(token in text for token in ["smb", "ldap", "rpc", "snmp", "kerberos", "rdp", "winrm"]):
                 score += 12
+            if policy.scope == "external" and any(token in text for token in ["whatweb", "sslscan", "sslyze", "http", "https", "web", "screenshot"]):
+                score += 14
+            if has_vuln_signal:
+                score += 14
+            if has_nuclei_signal:
+                score += 8 if policy.scope == "internal" else 12
+            if has_web_content_discovery:
+                score += 6 if policy.noise_budget == "low" else 10
+        else:
+            if any(token in text for token in ["whatweb", "sslscan", "sslyze", "nikto", "nmap", "validate", "check"]):
+                score += 18
+            if policy.scope == "external" and any(token in text for token in ["http", "https", "web"]):
+                score += 10
+            if policy.scope == "internal" and any(token in text for token in ["smb", "ldap", "rpc", "kerberos", "rdp", "winrm"]):
+                score += 10
+            if has_vuln_signal:
+                score += 22
+            if has_nuclei_signal:
+                score += 18 if policy.scope == "internal" else 28
+            if has_web_content_discovery:
+                score += 10 if policy.scope == "external" else 6
+
+        if any(token in text for token in ["brute", "spray", "relay", "responder", "persistence", "pivot", "lateral", "exploit"]):
+            if not policy.allow_exploitation:
+                score -= 30
+            if policy.credential_attack_mode == "blocked":
+                score -= 18
+        if any(token in text for token in ["flood", "dos", "masscan"]):
+            score -= 28 if policy.detection_risk_mode == "low" else 16
+        if policy.noise_budget == "low" and has_web_content_discovery:
+            score -= 6
 
         if has_legacy_dirbuster:
             score -= 35
@@ -853,9 +870,9 @@ class SchedulerPlanner:
         return selected[:limit]
 
     @staticmethod
-    def _policy_snapshot_hash(goal_profile: str, dangerous_categories: List[str]) -> str:
+    def _policy_snapshot_hash(policy: EngagementPolicy, dangerous_categories: List[str]) -> str:
         payload = {
-            "goal_profile": str(goal_profile or ""),
+            "engagement_policy": policy.to_dict(),
             "dangerous_categories": sorted(str(item or "") for item in list(dangerous_categories or []) if str(item or "").strip()),
         }
         rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -867,12 +884,17 @@ class SchedulerPlanner:
             service_name: str,
             protocol_name: str,
             *,
+            policy: Optional[EngagementPolicy] = None,
             context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         target_ref = {
             "service": str(service_name or ""),
             "protocol": str(protocol_name or "tcp"),
         }
+        if isinstance(policy, EngagementPolicy):
+            target_ref["scope"] = str(policy.scope)
+            target_ref["intent"] = str(policy.intent)
+            target_ref["engagement_preset"] = str(policy.preset)
         if not isinstance(context, dict):
             return target_ref
         target = context.get("target", {})
@@ -899,18 +921,14 @@ class SchedulerPlanner:
     @staticmethod
     def _build_rationale(
             tool_id: str,
-            goal_profile: str,
+            policy: EngagementPolicy,
             danger_categories: List[str],
             provider_name: str = "",
             provider_error: str = "",
             provider_returned_rankings: bool = True,
             context_signals: Optional[List[str]] = None,
     ) -> str:
-        profile_hint = (
-            "prioritizes internal visibility and safe enumeration"
-            if goal_profile == "internal_asset_discovery"
-            else "prioritizes external attack-surface fingerprinting"
-        )
+        profile_hint = f"prioritizes {policy.scope} {policy.intent} coverage for preset {policy.preset}"
         provider_hint = ""
         if provider_error and provider_name:
             provider_hint = f" Provider '{provider_name}' failed ({provider_error}); heuristic fallback applied."

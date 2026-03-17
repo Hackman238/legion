@@ -29,6 +29,23 @@ class _CompatibilityRuntime:
         self.state = {
             "mode": "deterministic",
             "goal_profile": "internal_asset_discovery",
+            "engagement_policy": {
+                "preset": "internal_recon",
+                "preset_label": "Internal Recon",
+                "scope": "internal",
+                "intent": "recon",
+                "allow_exploitation": False,
+                "allow_lateral_movement": False,
+                "credential_attack_mode": "blocked",
+                "lockout_risk_mode": "blocked",
+                "stability_risk_mode": "approval",
+                "detection_risk_mode": "low",
+                "approval_mode": "risky",
+                "runner_preference": "local",
+                "noise_budget": "low",
+                "custom_overrides": {},
+                "legacy_goal_profile": "internal_asset_discovery",
+            },
             "provider": "none",
             "providers": {},
             "dangerous_categories": ["credential_bruteforce"],
@@ -41,7 +58,20 @@ class _CompatibilityRuntime:
 
     def apply_scheduler_preferences(self, updates):
         self.last_updates = dict(updates or {})
-        self.state.update(self.last_updates)
+        state_updates = dict(self.last_updates)
+        if "goal_profile" in state_updates and "engagement_policy" not in state_updates:
+            state_updates["engagement_policy"] = {
+                **dict(self.state.get("engagement_policy", {})),
+                "preset": (
+                    "external_pentest"
+                    if str(state_updates.get("goal_profile", "")).strip().lower() == "external_pentest"
+                    else "internal_recon"
+                ),
+            }
+        self.state.update(state_updates)
+        if isinstance(self.state.get("engagement_policy"), dict):
+            preset = str(self.state["engagement_policy"].get("preset", "") or "").strip().lower()
+            self.state["goal_profile"] = "external_pentest" if preset in {"external_recon", "external_pentest"} else "internal_asset_discovery"
         return self.get_scheduler_preferences()
 
 

@@ -47,6 +47,14 @@ from app.scheduler.execution import (
     store_execution_record,
 )
 from app.scheduler.models import ExecutionRecord
+from app.scheduler.policy import (
+    ensure_scheduler_engagement_policy_table,
+    get_project_engagement_policy,
+    list_engagement_presets,
+    normalize_engagement_policy,
+    preset_from_legacy_goal_profile,
+    upsert_project_engagement_policy,
+)
 from app.scheduler.insights import (
     delete_host_ai_state,
     ensure_scheduler_ai_state_table,
@@ -251,10 +259,103 @@ class WebRuntime:
         with self._lock:
             return self._scheduler_preferences()
 
+    @staticmethod
+    def _merge_engagement_policy_payload(
+            current_policy: Optional[Dict[str, Any]],
+            updates: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        merged = dict(current_policy or {})
+        incoming = dict(updates or {}) if isinstance(updates, dict) else {}
+        if isinstance(merged.get("custom_overrides"), dict) and isinstance(incoming.get("custom_overrides"), dict):
+            custom_overrides = dict(merged.get("custom_overrides", {}))
+            custom_overrides.update(incoming.get("custom_overrides", {}))
+            incoming["custom_overrides"] = custom_overrides
+        merged.update(incoming)
+        return merged
+
+    def _load_engagement_policy_locked(self, *, persist_if_missing: bool = True) -> Dict[str, Any]:
+        config = self.scheduler_config.load()
+        fallback_policy = normalize_engagement_policy(
+            config.get("engagement_policy", {}),
+            fallback_goal_profile=str(config.get("goal_profile", "internal_asset_discovery") or "internal_asset_discovery"),
+        )
+        project = getattr(self.logic, "activeProject", None)
+        if not project:
+            return fallback_policy.to_dict()
+
+        ensure_scheduler_engagement_policy_table(project.database)
+        stored = get_project_engagement_policy(project.database)
+        if stored is None:
+            payload = fallback_policy.to_dict()
+            if persist_if_missing:
+                upsert_project_engagement_policy(
+                    project.database,
+                    payload,
+                    updated_at=getTimestamp(True),
+                )
+            return payload
+
+        normalized = normalize_engagement_policy(
+            stored,
+            fallback_goal_profile=fallback_policy.legacy_goal_profile,
+        )
+        return normalized.to_dict()
+
+    def get_engagement_policy(self) -> Dict[str, Any]:
+        with self._lock:
+            return self._load_engagement_policy_locked(persist_if_missing=True)
+
+    def set_engagement_policy(self, updates: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        with self._lock:
+            current = self._load_engagement_policy_locked(persist_if_missing=True)
+            merged = self._merge_engagement_policy_payload(current, updates)
+            normalized_policy = normalize_engagement_policy(
+                merged,
+                fallback_goal_profile=str(current.get("legacy_goal_profile", current.get("goal_profile", "internal_asset_discovery")) or "internal_asset_discovery"),
+            )
+            self.scheduler_config.update_preferences({
+                "engagement_policy": normalized_policy.to_dict(),
+                "goal_profile": normalized_policy.legacy_goal_profile,
+            })
+            project = getattr(self.logic, "activeProject", None)
+            if project:
+                ensure_scheduler_engagement_policy_table(project.database)
+                upsert_project_engagement_policy(
+                    project.database,
+                    normalized_policy.to_dict(),
+                    updated_at=getTimestamp(True),
+                )
+            return normalized_policy.to_dict()
+
     def apply_scheduler_preferences(self, updates: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self._lock:
             normalized = dict(updates or {})
+            policy_updates = normalized.get("engagement_policy") if isinstance(normalized.get("engagement_policy"), dict) else None
+            if policy_updates is not None or "goal_profile" in normalized:
+                current_policy = self._load_engagement_policy_locked(persist_if_missing=True)
+                if policy_updates is not None:
+                    merged_policy = self._merge_engagement_policy_payload(current_policy, policy_updates)
+                else:
+                    merged_policy = self._merge_engagement_policy_payload(
+                        current_policy,
+                        {"preset": preset_from_legacy_goal_profile(str(normalized.get("goal_profile", "") or ""))},
+                    )
+                resolved_policy = normalize_engagement_policy(
+                    merged_policy,
+                    fallback_goal_profile=str(current_policy.get("legacy_goal_profile", current_policy.get("goal_profile", "internal_asset_discovery")) or "internal_asset_discovery"),
+                )
+                normalized["engagement_policy"] = resolved_policy.to_dict()
+                normalized["goal_profile"] = resolved_policy.legacy_goal_profile
             saved = self.scheduler_config.update_preferences(normalized)
+            if isinstance(saved.get("engagement_policy"), dict):
+                project = getattr(self.logic, "activeProject", None)
+                if project:
+                    ensure_scheduler_engagement_policy_table(project.database)
+                    upsert_project_engagement_policy(
+                        project.database,
+                        saved.get("engagement_policy", {}),
+                        updated_at=getTimestamp(True),
+                    )
         requested_workers = self._job_worker_count(saved)
         requested_max_jobs = self._scheduler_max_jobs(saved)
         try:
@@ -2582,8 +2683,12 @@ class WebRuntime:
             port_repo = project.repositoryContainer.portRepository
             service_repo = project.repositoryContainer.serviceRepository
             scheduler_prefs = self.scheduler_config.load()
+            engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
             scheduler_mode = str(scheduler_prefs.get("mode", "deterministic") or "deterministic").strip().lower()
-            goal_profile = str(scheduler_prefs.get("goal_profile", "internal_asset_discovery") or "internal_asset_discovery")
+            goal_profile = str(
+                engagement_policy.get("legacy_goal_profile", scheduler_prefs.get("goal_profile", "internal_asset_discovery"))
+                or "internal_asset_discovery"
+            )
             scheduler_concurrency = self._scheduler_max_concurrency(scheduler_prefs)
             ai_feedback_cfg = self._scheduler_feedback_config(scheduler_prefs)
             hosts = host_repo.getAllHostObjs()
@@ -2684,6 +2789,7 @@ class WebRuntime:
                         context=context,
                         excluded_tool_ids=sorted(attempted_tool_ids),
                         limit=max_actions_per_round,
+                        engagement_policy=engagement_policy,
                     )
 
                     if scheduler_mode == "ai":
@@ -6032,6 +6138,7 @@ class WebRuntime:
 
     def _scheduler_preferences(self) -> Dict[str, Any]:
         config = self.scheduler_config.load()
+        engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
         providers = config.get("providers", {})
         sanitized_providers = {}
         for name, provider_cfg in providers.items():
@@ -6039,11 +6146,13 @@ class WebRuntime:
         return {
             "mode": config.get("mode", "deterministic"),
             "available_modes": ["deterministic", "ai"],
-            "goal_profile": config.get("goal_profile", "internal_asset_discovery"),
+            "goal_profile": str(engagement_policy.get("legacy_goal_profile", config.get("goal_profile", "internal_asset_discovery"))),
             "goal_profiles": [
                 {"id": "internal_asset_discovery", "name": "Internal Asset Discovery"},
                 {"id": "external_pentest", "name": "External Pentest"},
             ],
+            "engagement_policy": engagement_policy,
+            "engagement_presets": list_engagement_presets(),
             "provider": config.get("provider", "none"),
             "max_concurrency": self._scheduler_max_concurrency(config),
             "max_jobs": self._scheduler_max_jobs(config),
@@ -6066,6 +6175,7 @@ class WebRuntime:
             return
         ensure_scheduler_audit_table(project.database)
         ensure_scheduler_ai_state_table(project.database)
+        ensure_scheduler_engagement_policy_table(project.database)
 
     def _ensure_scheduler_approval_store(self):
         project = getattr(self.logic, "activeProject", None)

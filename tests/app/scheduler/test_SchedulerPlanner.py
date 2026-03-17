@@ -62,6 +62,36 @@ class SchedulerPlannerTest(unittest.TestCase):
             self.assertEqual("scheduler_deterministic", det_actions[0].origin_planner)
             self.assertEqual("scheduler_ai", ai_actions[0].origin_planner)
 
+    def test_planner_uses_normalized_engagement_policy_preset_for_plan_steps(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        settings = SimpleNamespace(
+            automatedAttacks=[["nuclei-web", "http", "tcp"]],
+            portActions=[
+                ["Run nuclei web scan", "nuclei-web", "nuclei -u http://[IP]:[PORT] -silent", "http"],
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "deterministic",
+                "engagement_policy": {
+                    "preset": "external_recon",
+                    "scope": "external",
+                    "intent": "recon",
+                    "noise_budget": "low",
+                },
+            })
+            planner = SchedulerPlanner(manager)
+
+            actions = planner.plan_actions("http", "tcp", settings)
+
+            self.assertEqual(1, len(actions))
+            self.assertEqual("external_recon", actions[0].engagement_preset)
+            self.assertEqual("external_pentest", actions[0].goal_profile)
+
     @patch.object(__import__("app.scheduler.planner", fromlist=["SchedulerPlanner"]).SchedulerPlanner, "_plan_ai")
     def test_ai_empty_result_falls_back_to_deterministic_plan_step(self, mock_plan_ai):
         from app.scheduler.config import SchedulerConfigManager
