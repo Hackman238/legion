@@ -62,6 +62,15 @@ from app.scheduler.insights import (
     get_host_ai_state,
     upsert_host_ai_state,
 )
+from app.scheduler.state import (
+    build_artifact_entries,
+    build_attempted_action_entry,
+    build_target_urls,
+    ensure_scheduler_target_state_table,
+    get_target_state,
+    load_observed_service_inventory,
+    upsert_target_state,
+)
 from app.scheduler.config import SchedulerConfigManager
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
 from app.scheduler.providers import get_provider_logs, test_provider_connection
@@ -1433,6 +1442,35 @@ class WebRuntime:
             cves = self._load_cves_for_host(project, int(host.id))
             screenshots = self._list_screenshots_for_host(project, str(getattr(host, "ip", "") or ""))
             ai_analysis = self._load_host_ai_analysis(project, int(host.id), str(getattr(host, "ip", "") or ""))
+            self._persist_shared_target_state(
+                host_id=int(host.id),
+                host_ip=str(getattr(host, "ip", "") or ""),
+                hostname=str(getattr(host, "hostname", "") or ""),
+                hostname_confidence=95.0 if str(getattr(host, "hostname", "") or "").strip() else 0.0,
+                os_match=str(getattr(host, "osMatch", "") or ""),
+                os_confidence=70.0 if str(getattr(host, "osMatch", "") or "").strip() else 0.0,
+                technologies=ai_analysis.get("technologies", []) if isinstance(ai_analysis.get("technologies", []), list) else [],
+                findings=ai_analysis.get("findings", []) if isinstance(ai_analysis.get("findings", []), list) else [],
+                manual_tests=ai_analysis.get("manual_tests", []) if isinstance(ai_analysis.get("manual_tests", []), list) else [],
+                next_phase=str(ai_analysis.get("next_phase", "") or ""),
+                provider=str(ai_analysis.get("provider", "") or ""),
+                goal_profile=str(ai_analysis.get("goal_profile", "") or ""),
+                service_inventory=[
+                    {
+                        "port": str(item.get("port", "") or ""),
+                        "protocol": str(item.get("protocol", "") or ""),
+                        "state": str(item.get("state", "") or ""),
+                        "service": str((item.get("service", {}) or {}).get("name", "") or ""),
+                        "service_product": str((item.get("service", {}) or {}).get("product", "") or ""),
+                        "service_version": str((item.get("service", {}) or {}).get("version", "") or ""),
+                        "service_extrainfo": str((item.get("service", {}) or {}).get("extrainfo", "") or ""),
+                    }
+                    for item in ports_data
+                    if isinstance(item, dict)
+                ],
+                screenshots=screenshots,
+            )
+            target_state = get_target_state(project.database, int(host.id)) or {}
 
             return {
                 "host": {
@@ -1447,6 +1485,7 @@ class WebRuntime:
                 "cves": cves,
                 "screenshots": screenshots,
                 "ai_analysis": ai_analysis,
+                "target_state": target_state,
             }
 
     def get_host_ai_report(self, host_id: int) -> Dict[str, Any]:
@@ -1456,6 +1495,7 @@ class WebRuntime:
         cves = details.get("cves", []) if isinstance(details.get("cves", []), list) else []
         screenshots = details.get("screenshots", []) if isinstance(details.get("screenshots", []), list) else []
         ai_analysis = details.get("ai_analysis", {}) if isinstance(details.get("ai_analysis", {}), dict) else {}
+        target_state = details.get("target_state", {}) if isinstance(details.get("target_state", {}), dict) else {}
 
         port_rows = []
         for item in ports:
@@ -1513,6 +1553,7 @@ class WebRuntime:
             "cves": cves,
             "screenshots": screenshots,
             "ai_analysis": ai_analysis,
+            "target_state": target_state,
         }
 
     @staticmethod
@@ -2784,6 +2825,25 @@ class WebRuntime:
 
         def _handle_blocked(*, target, decision, command_template):
             _ = command_template
+            self._persist_shared_target_state(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service_name=str(target.service_name or ""),
+                scheduler_mode=str(decision.mode),
+                goal_profile=str(decision.goal_profile),
+                engagement_preset=str(decision.engagement_preset),
+                attempted_action=build_attempted_action_entry(
+                    decision=decision,
+                    status="blocked",
+                    reason=str(decision.policy_reason or "blocked by policy"),
+                    attempted_at=getTimestamp(True),
+                    port=str(target.port or ""),
+                    protocol=str(target.protocol or "tcp"),
+                    service=str(target.service_name or ""),
+                ),
+            )
             self._record_scheduler_decision(
                 decision,
                 str(target.host_ip or ""),
@@ -2807,6 +2867,25 @@ class WebRuntime:
                 str(target.protocol or "tcp"),
                 str(target.service_name or ""),
                 str(command_template or ""),
+            )
+            self._persist_shared_target_state(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service_name=str(target.service_name or ""),
+                scheduler_mode=str(decision.mode),
+                goal_profile=str(decision.goal_profile),
+                engagement_preset=str(decision.engagement_preset),
+                attempted_action=build_attempted_action_entry(
+                    decision=decision,
+                    status="approval_queued",
+                    reason=f"pending approval #{approval_id}",
+                    attempted_at=getTimestamp(True),
+                    port=str(target.port or ""),
+                    protocol=str(target.protocol or "tcp"),
+                    service=str(target.service_name or ""),
+                ),
             )
             self._record_scheduler_decision(
                 decision,
@@ -2847,6 +2926,28 @@ class WebRuntime:
             reason = str(result.get("reason", "") or "")
             process_id = int(result.get("process_id", 0) or 0)
             execution_record = result.get("execution_record")
+            artifact_refs = list(getattr(execution_record, "artifact_refs", []) or [])
+            self._persist_shared_target_state(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service_name=str(target.service_name or ""),
+                scheduler_mode=str(decision.mode),
+                goal_profile=str(decision.goal_profile),
+                engagement_preset=str(decision.engagement_preset),
+                attempted_action=build_attempted_action_entry(
+                    decision=decision,
+                    status="executed" if executed else "failed",
+                    reason=reason,
+                    attempted_at=getTimestamp(True),
+                    port=str(target.port or ""),
+                    protocol=str(target.protocol or "tcp"),
+                    service=str(target.service_name or ""),
+                    artifact_refs=artifact_refs,
+                ),
+                artifact_refs=artifact_refs,
+            )
             self._record_scheduler_decision(
                 decision,
                 str(target.host_ip or ""),
@@ -3549,6 +3650,20 @@ class WebRuntime:
             host_cves=host_cves,
             inferred_technologies=inferred_technologies,
             analysis_mode=analysis_mode,
+        )
+        self._persist_shared_target_state(
+            host_id=int(host_id or 0),
+            host_ip=str(host_ip or ""),
+            port=str(port or ""),
+            protocol=str(protocol or "tcp"),
+            service_name=str(target_data.get("service", "") or service_name or ""),
+            hostname=str(target_data.get("hostname", "") or ""),
+            hostname_confidence=95.0 if str(target_data.get("hostname", "") or "").strip() else 0.0,
+            os_match=str(target_data.get("os", "") or ""),
+            os_confidence=70.0 if str(target_data.get("os", "") or "").strip() else 0.0,
+            technologies=inferred_technologies[:64],
+            service_inventory=host_port_inventory,
+            coverage=coverage,
         )
 
         return {
@@ -4687,6 +4802,145 @@ class WebRuntime:
                     return merged
         return merged
 
+    @staticmethod
+    def _coverage_gaps_from_summary(coverage: Any) -> List[Dict[str, Any]]:
+        if not isinstance(coverage, dict):
+            return []
+        missing = coverage.get("missing", [])
+        if not isinstance(missing, list):
+            return []
+        recommended = coverage.get("recommended_tool_ids", [])
+        if not isinstance(recommended, list):
+            recommended = []
+        rows = []
+        for gap_id in missing[:32]:
+            token = str(gap_id or "").strip().lower()
+            if not token:
+                continue
+            rows.append({
+                "gap_id": token,
+                "description": token.replace("_", " "),
+                "recommended_tool_ids": list(recommended[:16]),
+                "analysis_mode": str(coverage.get("analysis_mode", "") or "").strip().lower(),
+                "stage": str(coverage.get("stage", "") or "").strip().lower(),
+                "host_cve_count": int(coverage.get("host_cve_count", 0) or 0),
+                "source_kind": "inferred",
+                "observed": False,
+            })
+        return rows
+
+    def _persist_shared_target_state(
+            self,
+            *,
+            host_id: int,
+            host_ip: str,
+            port: str = "",
+            protocol: str = "tcp",
+            service_name: str = "",
+            scheduler_mode: str = "",
+            goal_profile: str = "",
+            engagement_preset: str = "",
+            provider: str = "",
+            hostname: str = "",
+            hostname_confidence: float = 0.0,
+            os_match: str = "",
+            os_confidence: float = 0.0,
+            next_phase: str = "",
+            technologies: Optional[List[Dict[str, Any]]] = None,
+            findings: Optional[List[Dict[str, Any]]] = None,
+            manual_tests: Optional[List[Dict[str, Any]]] = None,
+            service_inventory: Optional[List[Dict[str, Any]]] = None,
+            coverage: Optional[Dict[str, Any]] = None,
+            attempted_action: Optional[Dict[str, Any]] = None,
+            artifact_refs: Optional[List[str]] = None,
+            screenshots: Optional[List[Dict[str, Any]]] = None,
+            raw: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if int(host_id or 0) <= 0:
+            return {}
+
+        with self._lock:
+            project = getattr(self.logic, "activeProject", None)
+            if not project:
+                return {}
+            ensure_scheduler_target_state_table(project.database)
+            host_obj = self._resolve_host(int(host_id))
+            resolved_host_ip = str(host_ip or getattr(host_obj, "ip", "") or "")
+            resolved_hostname = str(hostname or getattr(host_obj, "hostname", "") or "")
+            resolved_os = str(os_match or getattr(host_obj, "osMatch", "") or "")
+            if service_inventory is None:
+                try:
+                    resolved_service_inventory = load_observed_service_inventory(project.database, int(host_id))
+                except Exception:
+                    resolved_service_inventory = []
+            else:
+                resolved_service_inventory = list(service_inventory or [])
+            resolved_urls = build_target_urls(resolved_host_ip, resolved_hostname, resolved_service_inventory)
+            coverage_gaps = self._coverage_gaps_from_summary(coverage)
+            attempted_actions = [attempted_action] if isinstance(attempted_action, dict) and attempted_action else []
+            artifact_entries = build_artifact_entries(
+                list(artifact_refs or []),
+                tool_id=str((attempted_action or {}).get("tool_id", "") or ""),
+                port=str(port or ""),
+                protocol=str(protocol or "tcp"),
+            )
+            screenshot_rows = []
+            for item in list(screenshots or []):
+                if not isinstance(item, dict):
+                    continue
+                screenshot_rows.append({
+                    "artifact_ref": str(item.get("artifact_ref", "") or item.get("url", "") or "").strip(),
+                    "filename": str(item.get("filename", "") or "").strip(),
+                    "port": str(item.get("port", "") or port or "").strip(),
+                    "protocol": str(item.get("protocol", "") or protocol or "tcp").strip().lower(),
+                    "source_kind": "observed",
+                    "observed": True,
+                })
+            for artifact in artifact_entries:
+                if str(artifact.get("kind", "") or "").strip().lower() != "screenshot":
+                    continue
+                screenshot_rows.append({
+                    "artifact_ref": str(artifact.get("ref", "") or "").strip(),
+                    "filename": os.path.basename(str(artifact.get("ref", "") or "").strip()),
+                    "port": str(port or artifact.get("port", "") or "").strip(),
+                    "protocol": str(protocol or artifact.get("protocol", "tcp") or "tcp").strip().lower(),
+                    "source_kind": "observed",
+                    "observed": True,
+                })
+
+            payload = {
+                "host_ip": resolved_host_ip,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "last_mode": str(scheduler_mode or ""),
+                "provider": str(provider or ""),
+                "goal_profile": str(goal_profile or ""),
+                "engagement_preset": str(engagement_preset or ""),
+                "last_port": str(port or ""),
+                "last_protocol": str(protocol or "tcp"),
+                "last_service": str(service_name or ""),
+                "hostname": resolved_hostname,
+                "hostname_confidence": float(hostname_confidence or 0.0),
+                "hostname_source_kind": "observed" if resolved_hostname else "",
+                "os_match": resolved_os,
+                "os_confidence": float(os_confidence or 0.0),
+                "os_source_kind": "observed" if resolved_os else "",
+                "next_phase": str(next_phase or ""),
+                "service_inventory": resolved_service_inventory,
+                "urls": resolved_urls,
+                "coverage_gaps": coverage_gaps,
+                "attempted_actions": attempted_actions,
+                "screenshots": screenshot_rows,
+                "artifacts": [{"artifact_ref": row.get("ref", ""), **row} for row in artifact_entries],
+                "raw": raw if isinstance(raw, dict) else {},
+            }
+            if technologies is not None:
+                payload["technologies"] = list(technologies or [])
+            if findings is not None:
+                payload["findings"] = list(findings or [])
+            if manual_tests is not None:
+                payload["manual_tests"] = list(manual_tests or [])
+            return upsert_target_state(project.database, int(host_id), payload, merge=True)
+
     def _persist_scheduler_ai_analysis(
             self,
             *,
@@ -4810,6 +5064,26 @@ class WebRuntime:
                 "raw": payload,
             }
             upsert_host_ai_state(project.database, int(host_id), state_payload)
+            self._persist_shared_target_state(
+                host_id=int(host_id),
+                host_ip=str(host_ip or ""),
+                port=str(port or ""),
+                protocol=str(protocol or "tcp"),
+                service_name=str(service_name or ""),
+                scheduler_mode="ai",
+                goal_profile=str(goal_profile or existing.get("goal_profile", "")),
+                engagement_preset=str(existing.get("engagement_preset", "") or ""),
+                provider=str(payload.get("provider", "") or existing.get("provider", "")),
+                hostname=selected_hostname,
+                hostname_confidence=selected_hostname_conf,
+                os_match=selected_os,
+                os_confidence=selected_os_conf,
+                next_phase=str(next_phase or existing.get("next_phase", "")),
+                technologies=merged_technologies,
+                findings=merged_findings,
+                manual_tests=merged_manual,
+                raw=payload,
+            )
 
         self._apply_ai_host_updates(
             host_id=int(host_id),

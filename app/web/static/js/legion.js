@@ -2260,10 +2260,16 @@ function renderHostDetail(payload) {
     const cves = payload?.cves || [];
     const screenshots = payload?.screenshots || [];
     const aiAnalysis = payload?.ai_analysis || {};
+    const targetState = payload?.target_state || {};
     const aiTechnologies = Array.isArray(aiAnalysis?.technologies) ? aiAnalysis.technologies : [];
     const aiFindings = Array.isArray(aiAnalysis?.findings) ? aiAnalysis.findings : [];
     const aiManualTests = Array.isArray(aiAnalysis?.manual_tests) ? aiAnalysis.manual_tests : [];
     const aiHostUpdates = aiAnalysis?.host_updates || {};
+    const stateAttemptedActions = Array.isArray(targetState?.attempted_actions) ? targetState.attempted_actions : [];
+    const stateCoverageGaps = Array.isArray(targetState?.coverage_gaps) ? targetState.coverage_gaps : [];
+    const stateUrls = Array.isArray(targetState?.urls) ? targetState.urls : [];
+    const stateCredentials = Array.isArray(targetState?.credentials) ? targetState.credentials : [];
+    const stateSessions = Array.isArray(targetState?.sessions) ? targetState.sessions : [];
 
     setText("host-detail-name", host.ip ? `${host.ip} (${host.hostname || "no-hostname"})` : "");
     setValue("workspace-note", payload?.note || "");
@@ -2416,6 +2422,21 @@ function renderHostDetail(payload) {
     }
     if (aiHostUpdates?.os) {
         statusBits.push(`os: ${aiHostUpdates.os}`);
+    }
+    if (stateAttemptedActions.length > 0) {
+        statusBits.push(`attempted: ${stateAttemptedActions.length}`);
+    }
+    if (stateCoverageGaps.length > 0) {
+        statusBits.push(`coverage gaps: ${stateCoverageGaps.length}`);
+    }
+    if (stateUrls.length > 0) {
+        statusBits.push(`urls: ${stateUrls.length}`);
+    }
+    if (stateCredentials.length > 0) {
+        statusBits.push(`credentials: ${stateCredentials.length}`);
+    }
+    if (stateSessions.length > 0) {
+        statusBits.push(`sessions: ${stateSessions.length}`);
     }
     setText("host-ai-analysis-status", statusBits.join(" | "));
     setText("host-ai-tech-count", aiTechnologies.length);

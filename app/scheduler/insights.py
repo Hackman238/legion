@@ -4,6 +4,15 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy import text
 
+from app.scheduler.state import (
+    delete_target_state,
+    ensure_scheduler_target_state_table,
+    get_target_state,
+    legacy_ai_payload_to_target_state,
+    target_state_to_legacy_ai_state,
+    upsert_target_state,
+)
+
 
 def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -87,6 +96,15 @@ def ensure_scheduler_ai_state_table(database):
 
 
 def get_host_ai_state(database, host_id: int) -> Optional[Dict[str, Any]]:
+    ensure_scheduler_ai_state_table(database)
+    ensure_scheduler_target_state_table(database)
+    target_state = get_target_state(database, int(host_id or 0))
+    if isinstance(target_state, dict) and target_state:
+        legacy = target_state_to_legacy_ai_state(target_state) or {}
+        if isinstance(target_state.get("raw", {}), dict):
+            legacy["raw"] = dict(target_state.get("raw", {}))
+        return legacy
+
     session = database.session()
     try:
         _ensure_table(session)
@@ -95,12 +113,11 @@ def get_host_ai_state(database, host_id: int) -> Optional[Dict[str, Any]]:
             "hostname, hostname_confidence, os_match, os_confidence, next_phase, technologies_json, findings_json, "
             "manual_tests_json, raw_json "
             "FROM scheduler_host_ai_state WHERE host_id = :host_id LIMIT 1"
-        ), {"host_id": int(host_id)})
+        ), {"host_id": int(host_id or 0)})
         row = result.fetchone()
         if row is None:
             return None
-        keys = result.keys()
-        payload = dict(zip(keys, row))
+        payload = dict(zip(result.keys(), row))
         payload["technologies"] = _from_json(payload.get("technologies_json"), [])
         payload["findings"] = _from_json(payload.get("findings_json"), [])
         payload["manual_tests"] = _from_json(payload.get("manual_tests_json"), [])
@@ -174,6 +191,18 @@ def upsert_host_ai_state(database, host_id: int, payload: Dict[str, Any]) -> Dic
             ), row_payload)
 
         session.commit()
+        try:
+            upsert_target_state(
+                database,
+                int(host_id or 0),
+                legacy_ai_payload_to_target_state(int(host_id or 0), {
+                    **dict(payload or {}),
+                    "updated_at": str(row_payload.get("updated_at", now) or now),
+                }),
+                merge=True,
+            )
+        except Exception:
+            pass
         return row_payload
     except Exception:
         session.rollback()
@@ -184,13 +213,18 @@ def upsert_host_ai_state(database, host_id: int, payload: Dict[str, Any]) -> Dic
 
 def delete_host_ai_state(database, host_id: int) -> int:
     session = database.session()
+    deleted_target = 0
     try:
         _ensure_table(session)
         result = session.execute(text(
             "DELETE FROM scheduler_host_ai_state WHERE host_id = :host_id"
         ), {"host_id": int(host_id)})
         session.commit()
-        return max(0, int(result.rowcount or 0))
+        try:
+            deleted_target = int(delete_target_state(database, int(host_id or 0)) or 0)
+        except Exception:
+            deleted_target = 0
+        return max(0, int(result.rowcount or 0), deleted_target)
     except Exception:
         session.rollback()
         return 0

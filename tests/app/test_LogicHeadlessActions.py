@@ -68,6 +68,7 @@ class LogicHeadlessActionsTest(unittest.TestCase):
         from app.logic import Logic
         from app.logging.legionLog import getAppLogger, getDbLogger
         from app.scheduler.execution import list_execution_records
+        from app.scheduler.state import get_target_state
         from app.shell.DefaultShell import DefaultShell
         from db.RepositoryFactory import RepositoryFactory
         from db.entities.host import hostObj
@@ -83,12 +84,13 @@ class LogicHeadlessActionsTest(unittest.TestCase):
             host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="")
             session.add(host)
             session.commit()
+            host_id = int(host.id)
 
-            service = serviceObj(name="smb", host=host.id)
+            service = serviceObj(name="smb", host=host_id)
             session.add(service)
             session.commit()
 
-            port = portObj("445", "tcp", "open", host.id, service.id)
+            port = portObj("445", "tcp", "open", host_id, service.id)
             session.add(port)
             session.commit()
             session.close()
@@ -118,6 +120,12 @@ class LogicHeadlessActionsTest(unittest.TestCase):
             self.assertEqual("10.0.0.5", records[0]["host_ip"])
             self.assertEqual("445", records[0]["port"])
             self.assertEqual("completed", records[0]["exit_status"])
+            target_state = get_target_state(project.database, host_id)
+            self.assertIsNotNone(target_state)
+            self.assertEqual("deterministic", target_state["last_mode"])
+            self.assertEqual("445", target_state["last_port"])
+            self.assertEqual("smb-enum-users.nse", target_state["attempted_actions"][0]["tool_id"])
+            self.assertEqual("executed", target_state["attempted_actions"][0]["status"])
         finally:
             project_manager.closeProject(project)
 

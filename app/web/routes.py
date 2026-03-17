@@ -122,10 +122,13 @@ def _safe_filename_token(value: str, fallback: str = "host") -> str:
 def _render_host_ai_report_markdown(report: dict) -> str:
     host = report.get("host", {}) if isinstance(report.get("host", {}), dict) else {}
     ai = report.get("ai_analysis", {}) if isinstance(report.get("ai_analysis", {}), dict) else {}
+    target_state = report.get("target_state", {}) if isinstance(report.get("target_state", {}), dict) else {}
     host_updates = ai.get("host_updates", {}) if isinstance(ai.get("host_updates", {}), dict) else {}
     technologies = ai.get("technologies", []) if isinstance(ai.get("technologies", []), list) else []
     findings = ai.get("findings", []) if isinstance(ai.get("findings", []), list) else []
     manual_tests = ai.get("manual_tests", []) if isinstance(ai.get("manual_tests", []), list) else []
+    coverage_gaps = target_state.get("coverage_gaps", []) if isinstance(target_state.get("coverage_gaps", []), list) else []
+    attempted_actions = target_state.get("attempted_actions", []) if isinstance(target_state.get("attempted_actions", []), list) else []
     ports = report.get("ports", []) if isinstance(report.get("ports", []), list) else []
     cves = report.get("cves", []) if isinstance(report.get("cves", []), list) else []
 
@@ -183,6 +186,13 @@ def _render_host_ai_report_markdown(report: dict) -> str:
             )
     else:
         lines.append("- none")
+
+    lines.extend(["", "## Shared Target State", ""])
+    lines.append(f"- Attempted Actions: {len(attempted_actions)}")
+    lines.append(f"- Coverage Gaps: {len(coverage_gaps)}")
+    lines.append(f"- URLs: {len(target_state.get('urls', []) if isinstance(target_state.get('urls', []), list) else [])}")
+    lines.append(f"- Credentials: {len(target_state.get('credentials', []) if isinstance(target_state.get('credentials', []), list) else [])}")
+    lines.append(f"- Sessions: {len(target_state.get('sessions', []) if isinstance(target_state.get('sessions', []), list) else [])}")
 
     lines.extend(["", "## Open Services", ""])
     if ports:

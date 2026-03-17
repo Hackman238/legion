@@ -139,6 +139,15 @@ class DummyRuntime:
                 "findings": [{"title": "SMB signing not required", "severity": "high", "cvss": 7.5, "cve": "", "evidence": "smb-security-mode"}],
                 "manual_tests": [{"why": "validate relay path", "command": "ntlmrelayx.py -tf targets.txt", "scope_note": "requires approval"}],
             },
+            "target_state": {
+                "last_mode": "deterministic",
+                "engagement_preset": "internal_recon",
+                "attempted_actions": [{"tool_id": "smb-enum-users.nse", "status": "executed"}],
+                "coverage_gaps": [{"gap_id": "missing_smb_signing_checks"}],
+                "urls": [],
+                "credentials": [],
+                "sessions": [],
+            },
         }
         self.scheduler_approvals = [
             {
@@ -478,6 +487,7 @@ class DummyRuntime:
             "cves": list(self.workspace_host_detail["cves"]),
             "screenshots": list(self.workspace_host_detail["screenshots"]),
             "ai_analysis": dict(self.workspace_host_detail.get("ai_analysis", {})),
+            "target_state": dict(self.workspace_host_detail.get("target_state", {})),
         }
 
     def render_host_ai_report_markdown(self, report):
@@ -888,12 +898,14 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, detail.status_code)
         self.assertEqual("10.0.0.5", detail.json["host"]["ip"])
         self.assertEqual("openai", detail.json["ai_analysis"]["provider"])
+        self.assertEqual("missing_smb_signing_checks", detail.json["target_state"]["coverage_gaps"][0]["gap_id"])
 
         ai_report_json = self.client.get("/api/workspace/hosts/11/ai-report?format=json")
         self.assertEqual(200, ai_report_json.status_code)
         self.assertIn("application/json", str(ai_report_json.content_type))
         self.assertIn("attachment; filename=", ai_report_json.headers.get("Content-Disposition", ""))
         self.assertIn("ai_analysis", ai_report_json.get_data(as_text=True))
+        self.assertIn("target_state", ai_report_json.get_data(as_text=True))
 
         ai_report_md = self.client.get("/api/workspace/hosts/11/ai-report?format=md")
         self.assertEqual(200, ai_report_md.status_code)

@@ -55,6 +55,13 @@ class Logic:
         from app.scheduler.execution import ensure_scheduler_execution_table, store_execution_record
         from app.scheduler.models import ExecutionRecord
         from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
+        from app.scheduler.state import (
+            build_attempted_action_entry,
+            build_target_urls,
+            ensure_scheduler_target_state_table,
+            load_observed_service_inventory,
+            upsert_target_state,
+        )
         from app.scheduler.policy import (
             ensure_scheduler_engagement_policy_table,
         )
@@ -149,6 +156,77 @@ class Logic:
                     protocol=str(host_protocol),
                     service=str(host_service),
                 )
+            except Exception:
+                return
+
+        def remember_target_state(
+                decision,
+                host_id,
+                host_ip,
+                host_port,
+                host_protocol,
+                host_service,
+                *,
+                status,
+                reason,
+                artifact_refs=None,
+        ):
+            database = getattr(self.activeProject, "database", None)
+            if database is None or int(host_id or 0) <= 0:
+                return
+            try:
+                ensure_scheduler_target_state_table(database)
+                service_inventory = load_observed_service_inventory(database, int(host_id or 0))
+                urls = build_target_urls(str(host_ip or ""), "", service_inventory)
+                upsert_target_state(database, int(host_id or 0), {
+                    "host_ip": str(host_ip or ""),
+                    "updated_at": getTimestamp(True),
+                    "last_mode": str(decision.mode),
+                    "goal_profile": str(decision.goal_profile),
+                    "engagement_preset": str(decision.engagement_preset),
+                    "last_port": str(host_port or ""),
+                    "last_protocol": str(host_protocol or "tcp"),
+                    "last_service": str(host_service or ""),
+                    "service_inventory": service_inventory,
+                    "urls": urls,
+                    "attempted_actions": [
+                        build_attempted_action_entry(
+                            decision=decision,
+                            status=str(status or ""),
+                            reason=str(reason or ""),
+                            attempted_at=getTimestamp(True),
+                            port=str(host_port or ""),
+                            protocol=str(host_protocol or "tcp"),
+                            service=str(host_service or ""),
+                            artifact_refs=list(artifact_refs or []),
+                        )
+                    ],
+                    "artifacts": [
+                        {
+                            "ref": str(ref or ""),
+                            "kind": "screenshot" if str(ref or "").lower().endswith(".png") else "artifact",
+                            "tool_id": str(decision.tool_id),
+                            "port": str(host_port or ""),
+                            "protocol": str(host_protocol or "tcp"),
+                            "source_kind": "observed",
+                            "observed": True,
+                        }
+                        for ref in list(artifact_refs or [])
+                        if str(ref or "").strip()
+                    ],
+                    "screenshots": [
+                        {
+                            "artifact_ref": str(ref or ""),
+                            "filename": os.path.basename(str(ref or "")),
+                            "port": str(host_port or ""),
+                            "protocol": str(host_protocol or "tcp"),
+                            "source_kind": "observed",
+                            "observed": True,
+                        }
+                        for ref in list(artifact_refs or [])
+                        if str(ref or "").strip().lower().endswith(".png")
+                    ],
+                }, merge=True)
             except Exception:
                 return
 
@@ -407,6 +485,15 @@ class Logic:
                 print(
                     f"[!] Skipping {decision.tool_id} for {target.host_ip}:{target.port}/{target.protocol} "
                     f"because policy blocked it: {decision.policy_reason or 'blocked by policy'}."
+                ) or remember_target_state(
+                    decision,
+                    target.host_id,
+                    target.host_ip,
+                    target.port,
+                    target.protocol,
+                    target.service_name,
+                    status="blocked",
+                    reason=decision.policy_reason or "blocked by policy",
                 ) or record(
                     decision,
                     target.host_ip,
@@ -426,6 +513,16 @@ class Logic:
                     print(
                         f"[!] Queued approval #{approval_id} for {decision.tool_id} on "
                         f"{target.host_ip}:{target.port}/{target.protocol}."
+                    ),
+                    remember_target_state(
+                        decision,
+                        target.host_id,
+                        target.host_ip,
+                        target.port,
+                        target.protocol,
+                        target.service_name,
+                        status="approval_queued",
+                        reason=f"pending approval #{approval_id}",
                     ),
                     record(
                         decision,
@@ -476,6 +573,17 @@ class Logic:
                     exit_status=str(getattr(result.get("execution_record"), "exit_status", "") or result.get("reason", "")),
                     artifact_refs=list(getattr(result.get("execution_record"), "artifact_refs", []) or []),
                     approval_id=str(result.get("approval_id", "") or ""),
+                ),
+                remember_target_state(
+                    decision,
+                    target.host_id,
+                    target.host_ip,
+                    target.port,
+                    target.protocol,
+                    target.service_name,
+                    status="executed" if bool(result.get("executed", False)) else "failed",
+                    reason=str(result.get("reason", "") or ""),
+                    artifact_refs=list(getattr(result.get("execution_record"), "artifact_refs", []) or []),
                 ),
             ),
         )
