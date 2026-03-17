@@ -129,6 +129,113 @@ class LogicHeadlessActionsTest(unittest.TestCase):
         finally:
             project_manager.closeProject(project)
 
+    @patch("app.scheduler.runners.shutil.which", return_value="/usr/bin/docker")
+    @patch("subprocess.run")
+    @patch("app.settings.AppSettings")
+    @patch("app.settings.Settings")
+    def test_run_scripted_actions_can_use_container_runner_when_enabled(
+            self,
+            mock_settings_cls,
+            _mock_app_settings_cls,
+            mock_subprocess_run,
+            _mock_which,
+    ):
+        from app.ProjectManager import ProjectManager
+        from app.logic import Logic
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.execution import list_execution_records
+        from app.scheduler.policy import ensure_scheduler_engagement_policy_table, upsert_project_engagement_policy
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+        from db.entities.port import portObj
+        from db.entities.service import serviceObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            ensure_scheduler_engagement_policy_table(project.database)
+            upsert_project_engagement_policy(project.database, {
+                "preset": "internal_recon",
+                "scope": "internal",
+                "intent": "recon",
+                "allow_exploitation": False,
+                "allow_lateral_movement": False,
+                "credential_attack_mode": "blocked",
+                "lockout_risk_mode": "blocked",
+                "stability_risk_mode": "approval",
+                "detection_risk_mode": "low",
+                "approval_mode": "risky",
+                "runner_preference": "container",
+                "noise_budget": "low",
+                "custom_overrides": {},
+            })
+
+            session = project.database.session()
+            host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+
+            service = serviceObj(name="smb", host=host_id)
+            session.add(service)
+            session.commit()
+
+            port = portObj("445", "tcp", "open", host_id, service.id)
+            session.add(port)
+            session.commit()
+            session.close()
+
+            settings = SimpleNamespace(
+                automatedAttacks=[["smb-enum-users.nse", "smb", "tcp"]],
+                portActions=[[
+                    "SMB Enum Users",
+                    "smb-enum-users.nse",
+                    "echo [IP]:[PORT] > [OUTPUT]",
+                    "smb",
+                ]],
+            )
+            mock_settings_cls.return_value = settings
+            mock_subprocess_run.return_value = SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+            logic = Logic(MagicMock(), MagicMock(), MagicMock())
+            logic.activeProject = project
+
+            with patch("app.scheduler.config.SchedulerConfigManager.load", return_value={
+                "mode": "deterministic",
+                "goal_profile": "internal_asset_discovery",
+                "engagement_policy": {"preset": "internal_recon"},
+                "max_concurrency": 1,
+                "runners": {
+                    "container": {
+                        "enabled": True,
+                        "runtime": "docker",
+                        "image": "kalilinux/kali-rolling",
+                        "network_mode": "host",
+                    },
+                    "browser": {
+                        "enabled": True,
+                        "use_xvfb": True,
+                        "delay": 5,
+                        "timeout": 180,
+                    },
+                },
+            }):
+                logic.run_scripted_actions()
+
+            self.assertTrue(mock_subprocess_run.called)
+            command = mock_subprocess_run.call_args[0][0]
+            self.assertIn("docker run --rm", command)
+            self.assertIn("kalilinux/kali-rolling", command)
+
+            records = list_execution_records(project.database, limit=10)
+            self.assertEqual(1, len(records))
+            self.assertEqual("container", records[0]["runner_type"])
+        finally:
+            project_manager.closeProject(project)
+
 
 if __name__ == "__main__":
     unittest.main()

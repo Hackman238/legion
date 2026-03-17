@@ -33,6 +33,9 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertTrue(defaults["ai_feedback"]["enabled"])
             self.assertEqual(4, int(defaults["ai_feedback"]["max_actions_per_round"]))
             self.assertEqual("gpt-4.1-mini", defaults["providers"]["openai"]["model"])
+            self.assertIn("runners", defaults)
+            self.assertFalse(defaults["runners"]["container"]["enabled"])
+            self.assertTrue(defaults["runners"]["browser"]["enabled"])
             self.assertIn("project_report_delivery", defaults)
             self.assertEqual("POST", defaults["project_report_delivery"]["method"])
             self.assertEqual("json", defaults["project_report_delivery"]["format"])
@@ -112,6 +115,25 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual(12, int(normalized["ai_feedback"]["max_rounds_per_target"]))
             self.assertEqual(1, int(normalized["ai_feedback"]["max_actions_per_round"]))
             self.assertEqual(320, int(normalized["ai_feedback"]["recent_output_chars"]))
+
+            updated_runners = manager.update_preferences({
+                "runners": {
+                    "container": {
+                        "enabled": True,
+                        "runtime": "podman",
+                        "image": "kalilinux/kali-rolling",
+                    },
+                    "browser": {
+                        "enabled": False,
+                        "timeout": 9999,
+                    },
+                }
+            })
+            self.assertTrue(updated_runners["runners"]["container"]["enabled"])
+            self.assertEqual("podman", updated_runners["runners"]["container"]["runtime"])
+            self.assertEqual("kalilinux/kali-rolling", updated_runners["runners"]["container"]["image"])
+            self.assertFalse(updated_runners["runners"]["browser"]["enabled"])
+            self.assertEqual(900, int(updated_runners["runners"]["browser"]["timeout"]))
 
             updated_policy = manager.update_preferences({
                 "engagement_policy": {

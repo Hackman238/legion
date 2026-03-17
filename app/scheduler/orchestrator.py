@@ -47,6 +47,7 @@ class SchedulerExecutionTask:
     host_id: int = 0
     hostname: str = ""
     approval_id: int = 0
+    runner_preference: str = ""
 
 
 @dataclass(frozen=True)
@@ -454,6 +455,7 @@ class SchedulerOrchestrator:
                                 timeout=int(resolved_options.task_timeout_seconds or 300),
                                 job_id=int(resolved_options.job_id or 0),
                                 approval_id=int(getattr(disposition, "approval_id", 0) or 0),
+                                runner_preference=str((engagement_policy or {}).get("runner_preference", "") or ""),
                             ))
                         else:
                             attempted_tool_ids.add(normalized_tool_id)
@@ -477,6 +479,7 @@ class SchedulerOrchestrator:
                         command_template=command_template,
                         timeout=int(resolved_options.task_timeout_seconds or 300),
                         job_id=int(resolved_options.job_id or 0),
+                        runner_preference=str((engagement_policy or {}).get("runner_preference", "") or ""),
                     ))
 
                 execution_results = execute_batch(execution_tasks, int(resolved_options.scheduler_concurrency or 1)) if execute_batch else []

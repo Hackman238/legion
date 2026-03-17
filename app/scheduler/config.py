@@ -10,6 +10,7 @@ from app.scheduler.policy import (
     normalize_engagement_policy,
     preset_from_legacy_goal_profile,
 )
+from app.scheduler.runners import normalize_runner_settings
 
 DEFAULT_SCHEDULER_CONFIG = {
     "mode": "deterministic",
@@ -57,6 +58,7 @@ DEFAULT_SCHEDULER_CONFIG = {
         "max_actions_per_round": 4,
         "recent_output_chars": 900,
     },
+    "runners": normalize_runner_settings({}),
     "project_report_delivery": {
         "provider_name": "",
         "endpoint": "",
@@ -148,6 +150,15 @@ class SchedulerConfigManager:
                     else:
                         policy[policy_key] = policy_value
                 merged["engagement_policy"] = policy
+            elif key == "runners" and isinstance(value, dict):
+                runners = normalize_runner_settings(merged.get("runners", {}))
+                for runner_name, runner_config in value.items():
+                    if not isinstance(runner_config, dict):
+                        continue
+                    merged_runner = dict(runners.get(runner_name, {}))
+                    merged_runner.update(runner_config)
+                    runners[runner_name] = merged_runner
+                merged["runners"] = runners
             elif key == "goal_profile":
                 merged["goal_profile"] = value
                 policy = dict(merged.get("engagement_policy", {}))
@@ -317,6 +328,7 @@ class SchedulerConfigManager:
                 openai_provider["model"] = str(DEFAULT_SCHEDULER_CONFIG["providers"]["openai"]["model"])
             providers["openai"] = openai_provider
         config["providers"] = providers
+        config["runners"] = normalize_runner_settings(raw.get("runners", config.get("runners", {})))
 
         dangerous_categories = raw.get("dangerous_categories", config["dangerous_categories"])
         if not isinstance(dangerous_categories, list):

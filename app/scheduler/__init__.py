@@ -41,6 +41,18 @@ from app.scheduler.policy import (
 )
 from app.scheduler.providers import ProviderError, rank_actions_with_provider, test_provider_connection
 from app.scheduler.registry import ActionRegistry
+from app.scheduler.runners import (
+    BrowserRunner,
+    ContainerRunner,
+    LocalRunner,
+    ManualRunner,
+    RunnerExecutionRequest,
+    RunnerExecutionResult,
+    RunnerSelection,
+    execute_runner_request,
+    normalize_runner_settings,
+    resolve_runner_selection,
+)
 from app.scheduler.state import (
     build_artifact_entries,
     build_attempted_action_entry,
@@ -112,6 +124,16 @@ __all__ = [
     "query_evidence_graph",
     "rank_actions_with_provider",
     "rebuild_evidence_graph",
+    "BrowserRunner",
+    "ContainerRunner",
+    "LocalRunner",
+    "ManualRunner",
+    "RunnerExecutionRequest",
+    "RunnerExecutionResult",
+    "RunnerSelection",
+    "execute_runner_request",
+    "normalize_runner_settings",
+    "resolve_runner_selection",
     "select_strategy_packs",
     "sync_execution_record_to_evidence_graph",
     "sync_target_state_to_evidence_graph",

@@ -67,6 +67,12 @@ from app.scheduler.policy import (
     preset_from_legacy_goal_profile,
     upsert_project_engagement_policy,
 )
+from app.scheduler.runners import (
+    RunnerExecutionRequest,
+    RunnerExecutionResult,
+    execute_runner_request,
+    normalize_runner_settings,
+)
 from app.scheduler.insights import (
     delete_host_ai_state,
     ensure_scheduler_ai_state_table,
@@ -3018,6 +3024,7 @@ class WebRuntime:
             )
 
         def _execute_batch(tasks, max_concurrency):
+            runner_settings = normalize_runner_settings(scheduler_prefs.get("runners", {}))
             payload = []
             for task in list(tasks or []):
                 payload.append({
@@ -3031,6 +3038,8 @@ class WebRuntime:
                     "timeout": int(task.timeout or 300),
                     "job_id": int(task.job_id or 0),
                     "approval_id": int(task.approval_id or 0),
+                    "runner_preference": str(task.runner_preference or ""),
+                    "runner_settings": runner_settings,
                 })
             return self._execute_scheduler_task_batch(payload, max_concurrency=max_concurrency)
 
@@ -3235,6 +3244,8 @@ class WebRuntime:
             job_id=int(task.get("job_id", 0) or 0),
             capture_metadata=True,
             approval_id=approval_id,
+            runner_preference=str(task.get("runner_preference", "") or ""),
+            runner_settings=task.get("runner_settings", {}),
         )
         return {
             "decision": decision,
@@ -5518,84 +5529,113 @@ class WebRuntime:
             job_id: int = 0,
             capture_metadata: bool = False,
             approval_id: int = 0,
+            runner_preference: str = "",
+            runner_settings: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        if str(decision.tool_id) == "screenshooter":
-            started_at = getTimestamp(True)
-            if capture_metadata:
-                executed, reason, artifact_refs = self._take_screenshot(
-                    host_ip,
-                    port,
-                    service_name=service_name,
-                    return_artifacts=True,
-                )
-                execution_record = ExecutionRecord.from_plan_step(
-                    decision,
-                    started_at=started_at,
-                    finished_at=getTimestamp(True),
-                    exit_status=reason,
-                    artifact_refs=artifact_refs,
-                    approval_id=str(approval_id or ""),
-                )
-                return {
-                    "executed": bool(executed),
-                    "reason": str(reason),
-                    "process_id": 0,
-                    "execution_record": execution_record,
-                }
-            executed, reason = self._take_screenshot(host_ip, port, service_name=service_name)
-            return executed, reason, 0
-
-        if not command_template:
-            reason = "skipped: no matching command template"
-            if not capture_metadata:
-                return False, reason, 0
-            timestamp = getTimestamp(True)
-            execution_record = ExecutionRecord.from_plan_step(
-                decision,
-                started_at=timestamp,
-                finished_at=timestamp,
-                exit_status=reason,
-                approval_id=str(approval_id or ""),
-            )
-            return {
-                "executed": False,
-                "reason": reason,
-                "process_id": 0,
-                "execution_record": execution_record,
-            }
-
-        command, outputfile = self._build_command(command_template, host_ip, port, protocol, decision.tool_id)
-        tab_title = f"{decision.tool_id} ({port}/{protocol})"
-        command_result = self._run_command_with_tracking(
-            tool_name=decision.tool_id,
-            tab_title=tab_title,
-            host_ip=host_ip,
-            port=port,
-            protocol=protocol,
-            command=command,
-            outputfile=outputfile,
-            timeout=timeout,
+        normalized_runner_settings = normalize_runner_settings(runner_settings or {})
+        project = self._require_active_project()
+        request = RunnerExecutionRequest(
+            decision=decision,
+            tool_id=str(decision.tool_id or ""),
+            command_template=str(command_template or ""),
+            host_ip=str(host_ip or ""),
+            hostname=str(self._hostname_for_ip(host_ip) or ""),
+            port=str(port or ""),
+            protocol=str(protocol or "tcp"),
+            service_name=str(service_name or ""),
+            timeout=int(timeout or 300),
             job_id=int(job_id or 0),
-            return_metadata=bool(capture_metadata),
+            approval_id=int(approval_id or 0),
+            declared_runner_type=str(getattr(getattr(decision, "action", None), "runner_type", "local") or "local"),
+        )
+
+        def _build_command(request_payload):
+            return self._build_command(
+                str(request_payload.command_template or ""),
+                str(request_payload.host_ip or ""),
+                str(request_payload.port or ""),
+                str(request_payload.protocol or "tcp"),
+                str(request_payload.tool_id or ""),
+            )
+
+        def _execute_local_command(*, request, rendered_command, outputfile, runner_type):
+            tab_title = f"{request.tool_id} ({request.port}/{request.protocol})"
+            command_result = self._run_command_with_tracking(
+                tool_name=request.tool_id,
+                tab_title=tab_title,
+                host_ip=request.host_ip,
+                port=request.port,
+                protocol=request.protocol,
+                command=rendered_command,
+                outputfile=outputfile,
+                timeout=int(request.timeout or 300),
+                job_id=int(request.job_id or 0),
+                return_metadata=True,
+            )
+            executed, reason, process_id, metadata = command_result
+            return RunnerExecutionResult(
+                executed=bool(executed),
+                reason=str(reason or ""),
+                runner_type=str(runner_type or "local"),
+                process_id=int(process_id or 0),
+                started_at=str(metadata.get("started_at", "") or ""),
+                finished_at=str(metadata.get("finished_at", "") or ""),
+                stdout_ref=str(metadata.get("stdout_ref", "") or ""),
+                stderr_ref=str(metadata.get("stderr_ref", "") or ""),
+                artifact_refs=list(metadata.get("artifact_refs", []) or []),
+            )
+
+        def _execute_browser_action(*, request, browser_settings, runner_type):
+            started_at = getTimestamp(True)
+            executed, reason, artifact_refs = self._take_screenshot(
+                str(request.host_ip or ""),
+                str(request.port or ""),
+                service_name=str(request.service_name or ""),
+                return_artifacts=True,
+                browser_settings=browser_settings,
+            )
+            return RunnerExecutionResult(
+                executed=bool(executed),
+                reason=str(reason or ""),
+                runner_type=str(runner_type or "browser"),
+                started_at=started_at,
+                finished_at=getTimestamp(True),
+                artifact_refs=list(artifact_refs or []),
+            )
+
+        runner_result = execute_runner_request(
+            request,
+            runner_preference=str(runner_preference or ""),
+            runner_settings=normalized_runner_settings,
+            build_command=_build_command,
+            execute_local_command=_execute_local_command,
+            execute_browser_action=_execute_browser_action,
+            mount_paths=[
+                getattr(project.properties, "runningFolder", ""),
+                getattr(project.properties, "outputFolder", ""),
+                os.getcwd(),
+            ],
+            workdir=os.getcwd(),
         )
         if not capture_metadata:
-            return command_result
+            return bool(runner_result.executed), str(runner_result.reason or ""), int(runner_result.process_id or 0)
 
-        executed, reason, process_id, metadata = command_result
+        fallback_timestamp = getTimestamp(True)
         execution_record = ExecutionRecord.from_plan_step(
             decision,
-            started_at=str(metadata.get("started_at", "") or ""),
-            finished_at=str(metadata.get("finished_at", "") or ""),
-            exit_status=str(reason or ""),
-            stdout_ref=str(metadata.get("stdout_ref", "") or ""),
-            stderr_ref=str(metadata.get("stderr_ref", "") or ""),
-            artifact_refs=list(metadata.get("artifact_refs", []) or []),
+            started_at=str(runner_result.started_at or fallback_timestamp),
+            finished_at=str(runner_result.finished_at or fallback_timestamp),
+            exit_status=str(runner_result.reason or ""),
+            runner_type=str(runner_result.runner_type or "local"),
+            stdout_ref=str(runner_result.stdout_ref or ""),
+            stderr_ref=str(runner_result.stderr_ref or ""),
+            artifact_refs=list(runner_result.artifact_refs or []),
             approval_id=str(approval_id or ""),
         )
         return {
-            "executed": bool(executed),
-            "reason": str(reason),
-            "process_id": int(process_id or 0),
+            "executed": bool(runner_result.executed),
+            "reason": str(runner_result.reason or ""),
+            "process_id": int(runner_result.process_id or 0),
             "execution_record": execution_record,
         }
 
@@ -5615,6 +5655,7 @@ class WebRuntime:
             port: str,
             service_name: str = "",
             return_artifacts: bool = False,
+            browser_settings: Optional[Dict[str, Any]] = None,
     ) -> Any:
         normalized_service = str(service_name or "").strip().rstrip("?").lower()
         if self._is_rdp_service(normalized_service) or self._is_vnc_service(normalized_service):
@@ -5623,12 +5664,15 @@ class WebRuntime:
                 port=port,
                 service_name=normalized_service,
                 return_artifacts=return_artifacts,
+                browser_settings=browser_settings,
             )
 
         with self._lock:
             project = self._require_active_project()
             screenshots_dir = os.path.join(project.properties.outputFolder, "screenshots")
             os.makedirs(screenshots_dir, exist_ok=True)
+
+        normalized_browser = normalize_runner_settings({"browser": browser_settings or {}}).get("browser", {})
 
         target_host = choose_preferred_host(self._hostname_for_ip(host_ip), host_ip)
         host_port = f"{target_host}:{port}"
@@ -5647,9 +5691,9 @@ class WebRuntime:
             current_capture = run_eyewitness_capture(
                 url=url,
                 output_parent_dir=screenshots_dir,
-                delay=5,
-                use_xvfb=True,
-                timeout=180,
+                delay=int(normalized_browser.get("delay", 5) or 5),
+                use_xvfb=bool(normalized_browser.get("use_xvfb", True)),
+                timeout=int(normalized_browser.get("timeout", 180) or 180),
             )
             if current_capture.get("ok"):
                 capture = current_capture
@@ -5699,6 +5743,7 @@ class WebRuntime:
             port: str,
             service_name: str,
             return_artifacts: bool = False,
+            browser_settings: Optional[Dict[str, Any]] = None,
     ) -> Any:
         with self._lock:
             project = self._require_active_project()
@@ -5728,6 +5773,8 @@ class WebRuntime:
             ]
 
         attempts = []
+        normalized_browser = normalize_runner_settings({"browser": browser_settings or {}}).get("browser", {})
+        timeout = max(30, min(int(normalized_browser.get("timeout", 180) or 180), 300))
         for command in commands:
             try:
                 result = subprocess.run(
@@ -5735,7 +5782,7 @@ class WebRuntime:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    timeout=90,
+                    timeout=timeout,
                 )
                 output = self._truncate_scheduler_text(result.stdout or "", 260)
                 attempts.append({
