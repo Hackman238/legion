@@ -109,6 +109,7 @@ def store_execution_record(
         service: str = "",
 ) -> Dict[str, Any]:
     session = database.session()
+    payload: Dict[str, Any] = {}
     try:
         _ensure_table(session)
         action = step.action if isinstance(step, PlanStep) else None
@@ -183,12 +184,45 @@ def store_execution_record(
             ), payload)
 
         session.commit()
-        return payload
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+    try:
+        from app.scheduler.graph import sync_execution_record_to_evidence_graph
+
+        mutations = sync_execution_record_to_evidence_graph(
+            database,
+            execution_record=record,
+            step=step,
+            host_ip=str(host_ip or ""),
+            port=str(port or ""),
+            protocol=str(protocol or ""),
+            service=str(service or ""),
+        )
+        if mutations:
+            record.graph_mutations = list(mutations)
+            payload["graph_mutations_json"] = _to_json(mutations)
+            payload["graph_mutations"] = list(mutations)
+            patch_session = database.session()
+            try:
+                _ensure_table(patch_session)
+                patch_session.execute(text(
+                    "UPDATE scheduler_execution_record SET graph_mutations_json = :graph_mutations_json "
+                    "WHERE execution_id = :execution_id"
+                ), {
+                    "graph_mutations_json": payload["graph_mutations_json"],
+                    "execution_id": payload["execution_id"],
+                })
+                patch_session.commit()
+            except Exception:
+                patch_session.rollback()
+            finally:
+                patch_session.close()
+    except Exception:
+        pass
+    return payload
 
 
 def list_execution_records(database, limit: int = 200) -> List[Dict[str, Any]]:

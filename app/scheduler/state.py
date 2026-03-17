@@ -635,6 +635,10 @@ def target_state_to_legacy_ai_state(target_state: Optional[Dict[str, Any]]) -> O
 def legacy_ai_payload_to_target_state(host_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     goal_profile = str(payload.get("goal_profile", "") or "").strip()
     engagement_preset = str(payload.get("engagement_preset", "") or "").strip().lower()
+    provider = str(payload.get("provider", "") or "").strip()
+    explicit_mode = str(payload.get("last_mode", "") or "").strip().lower()
+    resolved_mode = explicit_mode or ("ai" if provider else "deterministic")
+    default_source = "ai_suggested" if resolved_mode == "ai" else "observed"
     if not engagement_preset and goal_profile:
         try:
             engagement_preset = preset_from_legacy_goal_profile(goal_profile)
@@ -645,8 +649,8 @@ def legacy_ai_payload_to_target_state(host_id: int, payload: Dict[str, Any]) -> 
         "host_ip": str(payload.get("host_ip", "") or ""),
         "updated_at": str(payload.get("updated_at", "") or _utc_now()),
         "state_version": 1,
-        "last_mode": str(payload.get("last_mode", "ai") or "ai"),
-        "provider": str(payload.get("provider", "") or ""),
+        "last_mode": resolved_mode,
+        "provider": provider,
         "goal_profile": goal_profile,
         "engagement_preset": engagement_preset,
         "last_port": str(payload.get("last_port", "") or ""),
@@ -654,14 +658,20 @@ def legacy_ai_payload_to_target_state(host_id: int, payload: Dict[str, Any]) -> 
         "last_service": str(payload.get("last_service", "") or ""),
         "hostname": str(payload.get("hostname", "") or ""),
         "hostname_confidence": _safe_float(payload.get("hostname_confidence", 0.0)),
-        "hostname_source_kind": "ai_suggested" if str(payload.get("hostname", "") or "").strip() else "",
+        "hostname_source_kind": _normalize_source_kind(
+            payload.get("hostname_source_kind", default_source),
+            default_source,
+        ) if str(payload.get("hostname", "") or "").strip() else "",
         "os_match": str(payload.get("os_match", "") or ""),
         "os_confidence": _safe_float(payload.get("os_confidence", 0.0)),
-        "os_source_kind": "ai_suggested" if str(payload.get("os_match", "") or "").strip() else "",
+        "os_source_kind": _normalize_source_kind(
+            payload.get("os_source_kind", default_source),
+            default_source,
+        ) if str(payload.get("os_match", "") or "").strip() else "",
         "next_phase": str(payload.get("next_phase", "") or ""),
-        "technologies": _normalize_technologies(payload.get("technologies", []), default_source="ai_suggested"),
-        "findings": _normalize_findings(payload.get("findings", []), default_source="ai_suggested"),
-        "manual_tests": _normalize_manual_tests(payload.get("manual_tests", []), default_source="ai_suggested"),
+        "technologies": _normalize_technologies(payload.get("technologies", []), default_source=default_source),
+        "findings": _normalize_findings(payload.get("findings", []), default_source=default_source),
+        "manual_tests": _normalize_manual_tests(payload.get("manual_tests", []), default_source=default_source),
         "service_inventory": _normalize_service_inventory(payload.get("service_inventory", [])),
         "urls": _normalize_urls(payload.get("urls", [])),
         "coverage_gaps": _normalize_coverage_gaps(payload.get("coverage_gaps", [])),
@@ -677,6 +687,7 @@ def legacy_ai_payload_to_target_state(host_id: int, payload: Dict[str, Any]) -> 
 def migrate_legacy_ai_state_to_target_state(database, host_id: Optional[int] = None) -> int:
     session = database.session()
     migrated = 0
+    migrated_host_ids: List[int] = []
     try:
         _ensure_target_state_table(session)
         session.execute(text(
@@ -790,12 +801,21 @@ def migrate_legacy_ai_state_to_target_state(database, host_id: Optional[int] = N
                 "raw_json": _as_json(target_payload.get("raw", {}), {}),
             })
             migrated += 1
+            migrated_host_ids.append(int(target_payload.get("host_id", 0) or 0))
         session.commit()
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+    if migrated_host_ids:
+        try:
+            from app.scheduler.graph import sync_target_state_to_evidence_graph
+            for migrated_host_id in list(dict.fromkeys(migrated_host_ids)):
+                if int(migrated_host_id or 0) > 0:
+                    sync_target_state_to_evidence_graph(database, host_id=int(migrated_host_id))
+        except Exception:
+            pass
     return migrated
 
 
@@ -969,12 +989,17 @@ def upsert_target_state(database, host_id: int, payload: Dict[str, Any], *, merg
             ), row_payload)
         session.commit()
         merged["updated_at"] = row_payload["updated_at"]
-        return merged
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+    try:
+        from app.scheduler.graph import sync_target_state_to_evidence_graph
+        sync_target_state_to_evidence_graph(database, host_id=int(host_id or 0), target_state=merged)
+    except Exception:
+        pass
+    return merged
 
 
 def delete_target_state(database, host_id: int) -> int:
