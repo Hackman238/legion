@@ -668,21 +668,8 @@ button:hover {
     margin: 0.45rem 0 0.75rem;
 }
 
-.project-panel {
-    order: 1;
-}
-
-.ribbon-panel {
-    order: 2;
-}
-
 .graph-panel {
     overflow: hidden;
-    order: 3;
-}
-
-.grid > .panel:not(.stat-card):not(.project-panel):not(.ribbon-panel):not(.graph-panel) {
-    order: 4;
 }
 
 .graph-toolbar {
@@ -1043,7 +1030,6 @@ button:hover {
 
 .stat-card {
     grid-column: span 2;
-    order: 0;
 }
 
 .stat-card p {

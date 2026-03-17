@@ -2,6 +2,41 @@
 {% block title %}Legion{% endblock %}
 {% block content %}
 <main class="grid">
+    <div class="state-cache" aria-hidden="true">
+        <input id="project-open-path" type="text">
+        <input id="project-save-path" type="text">
+        <input id="project-save-replace" type="checkbox" checked>
+        <input id="project-restore-zip-file" type="file" accept=".zip,application/zip">
+        <input id="targets-file-path" type="text">
+        <input id="nmap-xml-path" type="text">
+        <input id="nmap-xml-run-actions" type="checkbox">
+    </div>
+
+    <section class="panel stat-card">
+        <h3>Hosts</h3>
+        <p id="stat-hosts">{{ snapshot.summary.hosts }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>Open Ports</h3>
+        <p id="stat-open-ports">{{ snapshot.summary.open_ports }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>Services</h3>
+        <p id="stat-services">{{ snapshot.summary.services }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>CVEs</h3>
+        <p id="stat-cves">{{ snapshot.summary.cves }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>Running Jobs</h3>
+        <p id="stat-running">{{ snapshot.summary.running_processes }}</p>
+    </section>
+    <section class="panel stat-card">
+        <h3>Finished Jobs</h3>
+        <p id="stat-finished">{{ snapshot.summary.finished_processes }}</p>
+    </section>
+
     <section class="panel panel-full project-panel">
         <div class="panel-header">
             <h2>Project</h2>
@@ -349,41 +384,6 @@
         <p class="meta-note">Graph persistence and export remain available; the interactive workspace can be re-enabled from scheduler feature flags.</p>
     </section>
     {% endif %}
-
-    <div class="state-cache" aria-hidden="true">
-        <input id="project-open-path" type="text">
-        <input id="project-save-path" type="text">
-        <input id="project-save-replace" type="checkbox" checked>
-        <input id="project-restore-zip-file" type="file" accept=".zip,application/zip">
-        <input id="targets-file-path" type="text">
-        <input id="nmap-xml-path" type="text">
-        <input id="nmap-xml-run-actions" type="checkbox">
-    </div>
-
-    <section class="panel stat-card">
-        <h3>Hosts</h3>
-        <p id="stat-hosts">{{ snapshot.summary.hosts }}</p>
-    </section>
-    <section class="panel stat-card">
-        <h3>Open Ports</h3>
-        <p id="stat-open-ports">{{ snapshot.summary.open_ports }}</p>
-    </section>
-    <section class="panel stat-card">
-        <h3>Services</h3>
-        <p id="stat-services">{{ snapshot.summary.services }}</p>
-    </section>
-    <section class="panel stat-card">
-        <h3>CVEs</h3>
-        <p id="stat-cves">{{ snapshot.summary.cves }}</p>
-    </section>
-    <section class="panel stat-card">
-        <h3>Running Jobs</h3>
-        <p id="stat-running">{{ snapshot.summary.running_processes }}</p>
-    </section>
-    <section class="panel stat-card">
-        <h3>Finished Jobs</h3>
-        <p id="stat-finished">{{ snapshot.summary.finished_processes }}</p>
-    </section>
     <section class="panel">
         <div class="panel-header">
             <h2>Hosts</h2>

@@ -109,3 +109,14 @@ class ParserTest(unittest.TestCase):
         self.assertEqual("1", session.totalHosts)
         self.assertEqual("1", session.upHosts)
         self.assertEqual("0", session.downHosts)
+
+    def test_parser_merges_duplicate_ip_hosts_without_dropping_ports(self):
+        parser = givenAnXmlFile("nmap-fixtures/duplicate-ip-nmap-report.xml")
+        hosts = list(parser.getAllHosts())
+        self.assertEqual(1, len(hosts))
+
+        host = hosts[0]
+        self.assertEqual("172.67.68.11", host.ip)
+        self.assertEqual("tantalumlabs.io", host.hostname)
+        self.assertEqual(["172.67.68.11"], parser.getAllIps())
+        self.assertEqual({"80", "443", "8080", "8443"}, {str(port.portId) for port in host.all_ports()})

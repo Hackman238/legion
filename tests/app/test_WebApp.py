@@ -1347,8 +1347,10 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("graph-layout-save-button", body)
         self.assertIn("graph-annotation-save-button", body)
         self.assertNotIn("<h2>Tools</h2>", body)
-        self.assertLess(body.index("<h2>Project</h2>"), body.index("<h2>Graph Workspace</h2>"))
-        self.assertLess(body.index("<h2>Graph Workspace</h2>"), body.index("<h3>Hosts</h3>"))
+        self.assertLess(body.index('id="stat-hosts"'), body.index("<h2>Project</h2>"))
+        self.assertLess(body.index("<h2>Project</h2>"), body.index('id="ribbon-launch-wizard-button"'))
+        self.assertLess(body.index('id="ribbon-launch-wizard-button"'), body.index("<h2>Graph Workspace</h2>"))
+        self.assertLess(body.index("<h2>Graph Workspace</h2>"), body.index('<h2>Hosts</h2>'))
 
     def test_index_hides_graph_workspace_when_rollout_flag_is_disabled(self):
         self.runtime.scheduler_config.update_preferences({

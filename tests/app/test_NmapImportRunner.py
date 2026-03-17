@@ -82,6 +82,20 @@ class NmapImportRunnerTest(unittest.TestCase):
         self.assertEqual(1, len(hosts))
         self.assertEqual("192.168.1.1", hosts[0].ip)
 
+    def test_import_duplicate_ip_fixture_merges_ports_from_all_host_entries(self):
+        project = self._create_project()
+        xml_path = os.path.join("tests", "parsers", "nmap-fixtures", "duplicate-ip-nmap-report.xml")
+
+        import_nmap_xml_into_project(project=project, xml_path=xml_path)
+
+        hosts = project.repositoryContainer.hostRepository.getAllHostObjs()
+        self.assertEqual(1, len(hosts))
+        self.assertEqual("172.67.68.11", hosts[0].ip)
+        self.assertEqual("tantalumlabs.io", hosts[0].hostname)
+
+        ports = project.repositoryContainer.portRepository.getPortsByHostId(hosts[0].id)
+        self.assertEqual({"80", "443", "8080", "8443"}, {str(item.portId) for item in ports})
+
 
 if __name__ == "__main__":
     unittest.main()

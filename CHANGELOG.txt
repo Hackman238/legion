@@ -1,3 +1,12 @@
+LEGION 0.6.0
+
+* Introduced the shared orchestrator core across Qt, web, headless, and MCP/API surfaces so planning, approvals, execution, observation, and reporting use the same governed path.
+* Added normalized scheduler models (`ActionSpec`, `PlanStep`, `ExecutionRecord`) so deterministic and AI modes speak the same execution language and share fallback behavior.
+* Added first-class engagement policy presets, richer risk taxonomy, auditable approval decisions, family-level approval controls, and policy-aware plan blocking.
+* Added shared target-state persistence, project evidence graph storage, graph export/query APIs, a browser-based graph workspace, and graph-backed reporting.
+* Added strategy packs, optional runner abstraction, expanded MCP/API coverage, report generation from graph and execution ledger, and a regression corpus for rollout hardening.
+* Hardened execution and UX details across 0.6.0: Nmap stats output normalization, Nuclei stats/silent handling, improved duplicate-action suppression, scheme-aware web targeting, screenshot fallback hardening, and improved web dashboard layout/workspace behavior.
+
 LEGION 0.5.2
 
 * Easy mode host discovery now defaults to `-Pn` so hosts that block ping probes are still scanned/imported.

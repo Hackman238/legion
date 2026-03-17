@@ -2,21 +2,25 @@
 
 This is the new home of "Legion". A major release is out! After upgrading, visit **Help → Config** to review tool paths (Responder, NTLMRelay, etc.) and adjust any customized settings.
 
-**Latest release: 0.5.2**
-- Dedicated Responder / Relay tab for launching Responder or NTLMRelay sessions with live output and one-click stop/start.
-- Captured hashes and relayed credentials are automatically parsed, stored, and displayed in a new results table per project.
-- SQLite integrity checks, safe backups, and repair tooling keep projects healthy; smoke tests now cover import, save/load, and credential workflows.
-- Easy mode host discovery now includes `-Pn` by default, improving discovery/import for hosts that block ping probes.
-- Easy mode now exposes `Stealth` (`-sS`) and `Include UDP` toggles directly in the Add Hosts dialog.
-- New Easy mode `Broad RFC1918 Discovery (Balanced)` with selectable canary sample sizes (`16/32/64/128`) and automatic defaults for `10/8`, `172.16/12`, and `192.168/16` when enabled.
-- Broad RFC1918 discovery now runs canary/full scans in controlled chunks for more frequent incremental imports on large ranges.
-- Additional process/DB hardening improves resilience against descriptor pressure and transient SQLite open failures.
+**Latest release: 0.6.0**
+- Shared orchestrator core across Qt, web, headless, and MCP/API surfaces.
+- First-class `deterministic` and `ai` scheduler modes using a shared governed action model.
+- Engagement policy presets, richer risk taxonomy, auditable approvals, and policy-aware blocking.
+- Shared target-state persistence, local evidence graph, graph workspace, graph export, and graph-backed reporting.
+- Strategy packs, optional runners, expanded MCP/API coverage, and a larger regression corpus for safer rollout.
+
+### 0.6.0 Catalog Summary
+
+- Governed scheduler registry: `17` normalized `ActionSpec` entries
+- Shipped legacy action surface: `308` configured entries (`11` host, `260` port, `23` scheduler defaults, `14` terminal launchers)
+- Distinct legacy tool families / launch targets in checked-in `legion.conf`: `51`
+- Additional dedicated runtime integrations outside static `legion.conf`: banner probe, browser screenshot runner, Responder, NTLMRelay
 
 Having [screenshot issues](#screenshot-issues)?
 
-## Web Interface Preview (Flask)
+## Web Interface (Flask)
 
-Legion now includes an in-progress local web interface scaffold (localhost only):
+Legion now includes a local web interface (localhost only):
 
 ```shell
 python3 legion.py --web --web-port 5000
@@ -25,12 +29,16 @@ python3 legion.py --web --web-port 5000
 The web path currently includes:
 - live websocket/polling dashboard,
 - scheduler mode/provider configuration,
+- engagement policy preset and override controls,
 - project lifecycle actions (new temp, open, save-as),
 - target import, Nmap XML import, and Nmap scan job submission,
 - background job status tracking for long-running web-triggered tasks,
-- hosts/services/tools workspace APIs and UI panels,
+- hosts/services workspace APIs and UI panels,
 - host detail workflows for notes, scripts, CVEs, and screenshots,
-- dangerous scheduler-action approval queue with approve/reject and family pre-approval.
+- dangerous scheduler-action approval queue with approve/reject and family controls,
+- shared target-state inspection,
+- graph query/export APIs and browser graph workspace,
+- project and host report export from shared scheduler state.
 - process controls in web (`kill`, `retry`, `hide`, clear non-running) with live-updating output viewer.
 
 The web path is still in active development and will continue to expand toward full Qt feature parity.
@@ -64,21 +72,22 @@ penetration testing framework that aids in discovery, reconnaissance, and exploi
 
 ## 🍿 Features
 
-* Automatic recon and scanning with NMAP, whatweb, nikto, Vulners, `nmap --script vuln`, nuclei, Hydra, SMBenum, feroxbuster/gobuster, sslyzer, webslayer and
-  more (with almost 100 auto-scheduled scripts).
+* Shared governed orchestration across Qt, web, headless, and MCP/API with two first-class scheduler modes: `deterministic` and `ai`.
+* Governed scheduler registry with `17` normalized action specs today, plus a broader shipped legacy/manual surface of `308` configured entries across host, port, scheduler-default, and terminal launch paths.
 * Easy to use graphical interface with rich context menus and panels that allow pentesters to quickly find and exploit
   attack vectors on hosts.
 * Modular functionality allows users to easily customize Legion and automatically call their own scripts/tools.
 * Multiple custom scan configurations ideal for testing different environments of various size and complexity. 
 * Highly customizable stage scanning for ninja-like IPS evasion.
-* Automatic detection of CPEs (Common Platform Enumeration) and CVEs (Common Vulnerabilities and Exposures), now with enhanced mapping to ExploitDB including direct links to exploits.
+* Automatic detection of CPEs (Common Platform Enumeration) and CVEs (Common Vulnerabilities and Exposures), with graph-backed evidence, exploit references, and clearer observed vs inferred provenance.
 * Integrated screenshotting: Take, view, and manage screenshots of web services directly from the UI, with support for EyeWitness and advanced screenshot management.
 * Dedicated Responder / Relay workspace to run Responder or NTLMRelay and automatically catalogue captured hashes for each project.
 * Optional IPv6 scanning support with automatic fallback when native IPv6 connectivity is unavailable.
 * Easy mode supports explicit `Stealth` (`-sS`) and `Include UDP` options, with broad private-range discovery via `Broad RFC1918 Discovery (Balanced)` for large internal environments.
-* Smarter project restores: tool tabs return exactly as you left them, Tools listings deduplicate tidily, missing screenshots display a helpful placeholder instead of blocking dialogs, the process table shows only meaningful columns, and tool tabs now offer a one-click Save option. Automated screenshots prefer hostnames when available, falling back to IP when needed.
+* Shared target-state persistence, local evidence graphing, graph workspace visualization, graph export, and reporting from the execution ledger.
+* Explicit approval gates and policy controls for risky actions, including family-level approval behavior and auditability.
 * Realtime auto-saving of project results and tasks.
-* Numerous quality of life improvements: UI enhancements, improved error handling, more robust project export (sqlite abd json), and expanded configurability.
+* Numerous quality of life improvements: UI enhancements, improved error handling, more robust project export (sqlite and json), and expanded configurability.
 
 ### Notable changes from Sparta
 

@@ -28,7 +28,14 @@ class Parser:
         self.__hosts = {}
         for hostNode in self.__dom.getElementsByTagName('host'):
             __host = Host.Host(hostNode)
-            self.__hosts[__host.ip] = __host
+            host_key = str(getattr(__host, 'ip', '') or '').strip()
+            if host_key and host_key in self.__hosts:
+                self.__hosts[host_key].merge(__host)
+            else:
+                if host_key:
+                    self.__hosts[host_key] = __host
+                else:
+                    self.__hosts["__host_{0}".format(len(self.__hosts))] = __host
 
     def get_highest_percent(self):
         '''Return the highest percent value from all <taskprogress> elements, or None if not found.'''
