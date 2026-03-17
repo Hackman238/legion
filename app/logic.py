@@ -444,6 +444,7 @@ class Logic:
                     request,
                     runner_preference=str(task.runner_preference or ""),
                     runner_settings=runner_settings,
+                    allow_optional_runners=scheduler_config.is_feature_enabled("optional_runners"),
                     build_command=build_command,
                     execute_local_command=execute_local_command,
                     execute_browser_action=execute_browser_action,

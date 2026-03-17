@@ -1,0 +1,78 @@
+{
+  "id": "internal_recon",
+  "description": "Internal recon sample project with SMB and LDAP exposure.",
+  "nmap_xml": "internal-recon.xml",
+  "engagement_policy": {
+    "preset": "internal_recon",
+    "scope": "internal",
+    "intent": "recon",
+    "approval_mode": "risky",
+    "credential_attack_mode": "blocked",
+    "lockout_risk_mode": "blocked",
+    "stability_risk_mode": "approval",
+    "noise_budget": "low"
+  },
+  "planner": {
+    "service": "smb",
+    "protocol": "tcp",
+    "automated_attacks": [
+      ["smb-enum-users.nse", "smb", "tcp"],
+      ["smb-default", "smb", "tcp"]
+    ],
+    "port_actions": [
+      ["SMB Users", "smb-enum-users.nse", "nmap --script=smb-enum-users [IP] -p [PORT]", "smb"],
+      ["SMB Default", "smb-default", "hydra -s [PORT] -u root -P pass.txt [IP] smb", "smb"]
+    ]
+  },
+  "target_state": {
+    "host_ip": "10.10.10.5",
+    "last_mode": "deterministic",
+    "goal_profile": "internal_asset_discovery",
+    "engagement_preset": "internal_recon",
+    "hostname": "dc01.internal.lab",
+    "hostname_confidence": 96,
+    "os_match": "Windows Server",
+    "os_confidence": 84,
+    "next_phase": "protocol_enumeration",
+    "technologies": [
+      {
+        "name": "Active Directory",
+        "version": "2019",
+        "evidence": "ldap banner",
+        "source_kind": "observed"
+      }
+    ],
+    "service_inventory": [
+      {
+        "port": "445",
+        "protocol": "tcp",
+        "state": "open",
+        "service": "smb",
+        "service_product": "Windows",
+        "service_version": "10.0"
+      },
+      {
+        "port": "389",
+        "protocol": "tcp",
+        "state": "open",
+        "service": "ldap",
+        "service_product": "Microsoft Windows LDAP",
+        "service_version": "10.0"
+      }
+    ],
+    "coverage_gaps": [
+      {
+        "gap_id": "missing_safe_smb_enum",
+        "description": "safe SMB enumeration has not run yet",
+        "recommended_tool_ids": ["smb-enum-users.nse"],
+        "source_kind": "inferred"
+      }
+    ]
+  },
+  "expectations": {
+    "imported_host_ip": "10.10.10.5",
+    "tool_order": ["smb-enum-users.nse", "smb-default"],
+    "blocked_tools": ["smb-default"],
+    "allowed_tools": ["smb-enum-users.nse"]
+  }
+}

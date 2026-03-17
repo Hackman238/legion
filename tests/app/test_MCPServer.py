@@ -166,6 +166,7 @@ class MCPServerTest(unittest.TestCase):
         self.assertIn("export_report", names)
         self.assertIn("get_execution_trace", names)
         self.assertIn("create_annotation", names)
+        self.assertNotIn("execute_plan_step", names)
 
     def test_project_tools_delegate_to_runtime(self):
         listing = self._call_tool("list_projects", {"limit": 10})

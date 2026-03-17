@@ -12,6 +12,21 @@ from app.scheduler.policy import (
 )
 from app.scheduler.runners import normalize_runner_settings
 
+DEFAULT_FEATURE_FLAGS = {
+    "graph_workspace": True,
+    "optional_runners": True,
+}
+
+
+def normalize_feature_flags(raw: Any) -> Dict[str, bool]:
+    source = raw if isinstance(raw, dict) else {}
+    flags = dict(DEFAULT_FEATURE_FLAGS)
+    for key in tuple(flags.keys()):
+        if key in source:
+            flags[key] = bool(source.get(key))
+    return flags
+
+
 DEFAULT_SCHEDULER_CONFIG = {
     "mode": "deterministic",
     "goal_profile": "internal_asset_discovery",
@@ -45,6 +60,7 @@ DEFAULT_SCHEDULER_CONFIG = {
     "cloud_notice": (
         "Cloud AI mode may send host/service metadata to third-party providers."
     ),
+    "feature_flags": normalize_feature_flags({}),
     "dangerous_categories": [
         "exploit_execution",
         "credential_bruteforce",
@@ -140,6 +156,13 @@ class SchedulerConfigManager:
                     else:
                         delivery[delivery_key] = delivery_value
                 merged["project_report_delivery"] = delivery
+            elif key == "feature_flags" and isinstance(value, dict):
+                feature_flags = normalize_feature_flags(merged.get("feature_flags", {}))
+                for flag_name, flag_value in value.items():
+                    if flag_name not in DEFAULT_FEATURE_FLAGS:
+                        continue
+                    feature_flags[flag_name] = bool(flag_value)
+                merged["feature_flags"] = feature_flags
             elif key == "engagement_policy" and isinstance(value, dict):
                 policy = dict(merged.get("engagement_policy", {}))
                 for policy_key, policy_value in value.items():
@@ -181,6 +204,18 @@ class SchedulerConfigManager:
 
     def get_engagement_policy(self) -> Dict[str, Any]:
         return dict(self.load().get("engagement_policy", {}))
+
+    def get_feature_flags(self) -> Dict[str, bool]:
+        return dict(self.load().get("feature_flags", {}))
+
+    def is_feature_enabled(self, feature_name: str, default: bool = True) -> bool:
+        feature_key = str(feature_name or "").strip()
+        if not feature_key:
+            return bool(default)
+        flags = self.get_feature_flags()
+        if feature_key not in DEFAULT_FEATURE_FLAGS:
+            return bool(default)
+        return bool(flags.get(feature_key, DEFAULT_FEATURE_FLAGS[feature_key]))
 
     def get_dangerous_categories(self) -> List[str]:
         values = self.load().get("dangerous_categories", [])
@@ -328,6 +363,7 @@ class SchedulerConfigManager:
                 openai_provider["model"] = str(DEFAULT_SCHEDULER_CONFIG["providers"]["openai"]["model"])
             providers["openai"] = openai_provider
         config["providers"] = providers
+        config["feature_flags"] = normalize_feature_flags(raw.get("feature_flags", config.get("feature_flags", {})))
         config["runners"] = normalize_runner_settings(raw.get("runners", config.get("runners", {})))
 
         dangerous_categories = raw.get("dangerous_categories", config["dangerous_categories"])

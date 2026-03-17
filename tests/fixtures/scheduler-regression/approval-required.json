@@ -1,0 +1,52 @@
+{
+  "id": "approval_required",
+  "description": "Risky credential validation case that must queue approval.",
+  "nmap_xml": "external-web.xml",
+  "engagement_policy": {
+    "preset": "external_pentest",
+    "scope": "external",
+    "intent": "pentest",
+    "approval_mode": "risky",
+    "credential_attack_mode": "approval",
+    "lockout_risk_mode": "approval",
+    "stability_risk_mode": "approval",
+    "noise_budget": "medium"
+  },
+  "planner": {
+    "service": "https",
+    "protocol": "tcp",
+    "automated_attacks": [
+      ["nuclei-web", "https", "tcp"],
+      ["hydra-http-form", "https", "tcp"]
+    ],
+    "port_actions": [
+      ["Run nuclei web scan", "nuclei-web", "nuclei -u https://[IP]:[PORT] -silent", "https"],
+      ["HTTP Bruteforce", "hydra-http-form", "hydra -L users.txt -P passwords.txt [IP] https-post-form '/login:user=^USER^&pass=^PASS^:Invalid'", "https"]
+    ]
+  },
+  "approval_payload": {
+    "host_ip": "198.51.100.25",
+    "port": "443",
+    "protocol": "tcp",
+    "service": "https",
+    "tool_id": "hydra-http-form",
+    "label": "HTTP Bruteforce",
+    "command_template": "hydra -L users.txt -P passwords.txt 198.51.100.25 https-post-form '/login:user=^USER^&pass=^PASS^:Invalid'",
+    "command_family_id": "hydra-http-form",
+    "danger_categories": "credential_bruteforce",
+    "risk_tags": "credential_bruteforce,high_detection_likelihood,account_lockout_risk",
+    "scheduler_mode": "deterministic",
+    "goal_profile": "external_pentest",
+    "engagement_preset": "external_pentest",
+    "rationale": "Validate weak authentication controls on the exposed portal.",
+    "policy_decision": "approval_required",
+    "policy_reason": "Credential validation requires approval in external pentest.",
+    "risk_summary": "Could trigger account lockouts and detection.",
+    "safer_alternative": "Validate known credentials first.",
+    "evidence_refs": "https://portal.example.test/wp-login.php"
+  },
+  "expectations": {
+    "approval_required_tools": ["hydra-http-form"],
+    "allowed_tools": ["nuclei-web"]
+  }
+}

@@ -33,6 +33,9 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertTrue(defaults["ai_feedback"]["enabled"])
             self.assertEqual(4, int(defaults["ai_feedback"]["max_actions_per_round"]))
             self.assertEqual("gpt-4.1-mini", defaults["providers"]["openai"]["model"])
+            self.assertIn("feature_flags", defaults)
+            self.assertTrue(defaults["feature_flags"]["graph_workspace"])
+            self.assertTrue(defaults["feature_flags"]["optional_runners"])
             self.assertIn("runners", defaults)
             self.assertFalse(defaults["runners"]["container"]["enabled"])
             self.assertTrue(defaults["runners"]["browser"]["enabled"])
@@ -134,6 +137,17 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual("kalilinux/kali-rolling", updated_runners["runners"]["container"]["image"])
             self.assertFalse(updated_runners["runners"]["browser"]["enabled"])
             self.assertEqual(900, int(updated_runners["runners"]["browser"]["timeout"]))
+
+            updated_flags = manager.update_preferences({
+                "feature_flags": {
+                    "graph_workspace": False,
+                    "optional_runners": False,
+                }
+            })
+            self.assertFalse(updated_flags["feature_flags"]["graph_workspace"])
+            self.assertFalse(updated_flags["feature_flags"]["optional_runners"])
+            self.assertFalse(manager.is_feature_enabled("graph_workspace"))
+            self.assertFalse(manager.is_feature_enabled("optional_runners"))
 
             updated_policy = manager.update_preferences({
                 "engagement_policy": {

@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "id": "internal_recon",
+      "file": "internal-recon.json",
+      "kind": "internal_project"
+    },
+    {
+      "id": "external_web",
+      "file": "external-web.json",
+      "kind": "external_project"
+    },
+    {
+      "id": "approval_required",
+      "file": "approval-required.json",
+      "kind": "approval_case"
+    }
+  ]
+}

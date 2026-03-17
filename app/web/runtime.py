@@ -6069,10 +6069,16 @@ class WebRuntime:
                 artifact_refs=list(artifact_refs or []),
             )
 
+        allow_optional_runners = True
+        scheduler_config = getattr(self, "scheduler_config", None)
+        if scheduler_config is not None and hasattr(scheduler_config, "is_feature_enabled"):
+            allow_optional_runners = bool(scheduler_config.is_feature_enabled("optional_runners"))
+
         runner_result = execute_runner_request(
             request,
             runner_preference=str(runner_preference or ""),
             runner_settings=normalized_runner_settings,
+            allow_optional_runners=allow_optional_runners,
             build_command=_build_command,
             execute_local_command=_execute_local_command,
             execute_browser_action=_execute_browser_action,
@@ -7067,6 +7073,7 @@ class WebRuntime:
             "job_workers": int(getattr(self.jobs, "worker_count", 1) or 1),
             "job_max": int(getattr(self.jobs, "max_jobs", 200) or 200),
             "providers": sanitized_providers,
+            "feature_flags": self.scheduler_config.get_feature_flags(),
             "dangerous_categories": config.get("dangerous_categories", []),
             "preapproved_families_count": len(config.get("preapproved_command_families", [])),
             "ai_feedback": self._scheduler_feedback_config(config),

@@ -2617,6 +2617,7 @@ function applySchedulerPreferences(prefs) {
     if (!prefs) {
         return;
     }
+    const featureFlags = normalizeSchedulerFeatureFlags(prefs.feature_flags);
     const policy = normalizeEngagementPolicyPayload(
         prefs.engagement_policy,
         prefs.goal_profile || "internal_asset_discovery",
@@ -2636,7 +2637,7 @@ function applySchedulerPreferences(prefs) {
     setValue("engagement-stability-mode", policy.stability_risk_mode || "approval");
     setValue("engagement-detection-mode", policy.detection_risk_mode || "low");
     setValue("engagement-approval-mode", policy.approval_mode || "risky");
-    setValue("engagement-runner-preference", policy.runner_preference || "local");
+    applySchedulerRolloutFlags(featureFlags, policy.runner_preference || "local");
     setValue("engagement-noise-budget", policy.noise_budget || "low");
     setValue("scheduler-provider-select", prefs.provider || "none");
     setValue("scheduler-concurrency-input", String(prefs.max_concurrency || 1));
@@ -2686,6 +2687,38 @@ function applySchedulerPreferences(prefs) {
     });
 
     setSchedulerProviderFieldVisibility(prefs.provider || "none");
+}
+
+function normalizeSchedulerFeatureFlags(flags) {
+    const provided = flags && typeof flags === "object" ? flags : {};
+    return {
+        graph_workspace: provided.graph_workspace !== false,
+        optional_runners: provided.optional_runners !== false,
+    };
+}
+
+function applySchedulerRolloutFlags(featureFlags, requestedRunnerPreference) {
+    const flags = normalizeSchedulerFeatureFlags(featureFlags);
+    const select = document.getElementById("engagement-runner-preference");
+    const disabledRunnerPreferences = new Set(flags.optional_runners ? [] : ["container", "browser"]);
+    if (!select) {
+        return;
+    }
+    Array.from(select.options).forEach((option) => {
+        const value = String(option?.value || "").trim().toLowerCase();
+        option.disabled = disabledRunnerPreferences.has(value);
+        if (option.disabled) {
+            option.textContent = `${value} (disabled)`;
+        } else {
+            option.textContent = value;
+        }
+    });
+    const preferred = String(requestedRunnerPreference || "local").trim().toLowerCase();
+    if (disabledRunnerPreferences.has(preferred)) {
+        setValue("engagement-runner-preference", "local");
+        return;
+    }
+    setValue("engagement-runner-preference", preferred || "local");
 }
 
 function defaultEngagementPolicyForPreset(preset) {

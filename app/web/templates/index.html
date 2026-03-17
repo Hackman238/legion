@@ -290,6 +290,7 @@
         </div>
     </section>
 
+    {% if graph_workspace_enabled %}
     <section class="panel panel-full graph-panel">
         <div class="panel-header">
             <h2>Graph Workspace</h2>
@@ -449,6 +450,15 @@
         </div>
         <p class="meta-note">Graph status: <span id="graph-workspace-status">Idle</span></p>
     </section>
+    {% else %}
+    <section class="panel panel-full graph-panel">
+        <div class="panel-header">
+            <h2>Graph Workspace</h2>
+            <p>Disabled by rollout flag.</p>
+        </div>
+        <p class="meta-note">Graph persistence and export remain available; the interactive workspace can be re-enabled from scheduler feature flags.</p>
+    </section>
+    {% endif %}
 
     <section class="panel panel-full">
         <div class="panel-header">

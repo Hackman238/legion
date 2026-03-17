@@ -112,17 +112,28 @@ def resolve_runner_selection(
         *,
         runner_preference: Any = "",
         runner_settings: Any = None,
+        allow_optional_runners: bool = True,
 ) -> RunnerSelection:
     _ = normalize_runner_settings(runner_settings)
     declared = _normalize_runner_type(action_runner_type, "local")
     preferred = _normalize_runner_type(runner_preference, "auto" if str(runner_preference or "").strip().lower() == "auto" else "local")
 
     if declared in {"browser", "manual"}:
+        if declared == "browser" and not allow_optional_runners:
+            return RunnerSelection(
+                declared_runner_type=declared,
+                requested_runner_preference=preferred,
+                effective_runner_type=declared,
+                reason="optional runner rollout flag disabled browser execution",
+            )
         return RunnerSelection(
             declared_runner_type=declared,
             requested_runner_preference=preferred,
             effective_runner_type=declared,
         )
+
+    if not allow_optional_runners and preferred in {"container", "browser", "auto"}:
+        preferred = "local"
 
     if preferred == "container":
         return RunnerSelection(
@@ -316,18 +327,23 @@ def execute_runner_request(
         *,
         runner_preference: Any = "",
         runner_settings: Any = None,
+        allow_optional_runners: bool = True,
         build_command: Callable[[RunnerExecutionRequest], Tuple[str, str]],
         execute_local_command: Callable[..., RunnerExecutionResult],
         execute_browser_action: Callable[..., RunnerExecutionResult],
         mount_paths: Optional[Sequence[Any]] = None,
         workdir: str = "",
 ) -> RunnerExecutionResult:
+    settings = normalize_runner_settings(runner_settings)
+    if not allow_optional_runners:
+        settings["container"]["enabled"] = False
+        settings["browser"]["enabled"] = False
     selection = resolve_runner_selection(
         request.declared_runner_type,
         runner_preference=runner_preference,
-        runner_settings=runner_settings,
+        runner_settings=settings,
+        allow_optional_runners=allow_optional_runners,
     )
-    settings = normalize_runner_settings(runner_settings)
 
     if selection.effective_runner_type == "browser":
         result = BrowserRunner(settings).execute(

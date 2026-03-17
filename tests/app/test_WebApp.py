@@ -30,6 +30,10 @@ class DummySchedulerConfig:
             },
             "provider": "none",
             "providers": {},
+            "feature_flags": {
+                "graph_workspace": True,
+                "optional_runners": True,
+            },
             "project_report_delivery": {
                 "provider_name": "",
                 "endpoint": "",
@@ -54,6 +58,10 @@ class DummySchedulerConfig:
             policy = dict(self.state.get("engagement_policy", {}))
             policy.update(updates.get("engagement_policy", {}))
             updates["engagement_policy"] = policy
+        if isinstance(updates.get("feature_flags"), dict):
+            feature_flags = dict(self.state.get("feature_flags", {}))
+            feature_flags.update(updates.get("feature_flags", {}))
+            updates["feature_flags"] = feature_flags
         elif "goal_profile" in updates:
             policy = dict(self.state.get("engagement_policy", {}))
             policy["preset"] = "external_pentest" if str(updates.get("goal_profile", "")).strip().lower() == "external_pentest" else "internal_recon"
@@ -535,6 +543,7 @@ class DummyRuntime:
             ],
             "provider": self.scheduler_config.state["provider"],
             "providers": self.scheduler_config.state["providers"],
+            "feature_flags": self.scheduler_config.state["feature_flags"],
             "project_report_delivery": self.scheduler_config.state["project_report_delivery"],
             "dangerous_categories": self.scheduler_config.state["dangerous_categories"],
             "preapproved_families_count": len(self.scheduler_config.state["preapproved_command_families"]),
@@ -1208,6 +1217,19 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("graph-layout-save-button", body)
         self.assertIn("graph-annotation-save-button", body)
 
+    def test_index_hides_graph_workspace_when_rollout_flag_is_disabled(self):
+        self.runtime.scheduler_config.update_preferences({
+            "feature_flags": {
+                "graph_workspace": False,
+            }
+        })
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn("Graph Workspace", body)
+        self.assertIn("Disabled by rollout flag.", body)
+        self.assertNotIn("graph-workspace-canvas", body)
+
     def test_snapshot_endpoint(self):
         response = self.client.get("/api/snapshot")
         self.assertEqual(200, response.status_code)
@@ -1284,6 +1306,20 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("external_pentest", response.json["goal_profile"])
         self.assertEqual("external_recon", response.json["engagement_policy"]["preset"])
 
+    def test_scheduler_preferences_update_accepts_feature_flags(self):
+        response = self.client.post(
+            "/api/scheduler/preferences",
+            json={
+                "feature_flags": {
+                    "graph_workspace": False,
+                    "optional_runners": False,
+                }
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertFalse(response.json["feature_flags"]["graph_workspace"])
+        self.assertFalse(response.json["feature_flags"]["optional_runners"])
+
     def test_engagement_policy_endpoints(self):
         current = self.client.get("/api/engagement-policy")
         self.assertEqual(200, current.status_code)
@@ -1344,6 +1380,7 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("compare", response.json["requested_mode"])
         self.assertEqual(1, response.json["target_count"])
         self.assertEqual(["smb-security-mode"], response.json["targets"][0]["agreement"])
+        self.assertEqual("allowed", response.json["targets"][0]["deterministic"]["steps"][0]["policy_decision"])
 
     def test_scheduler_execution_trace_endpoints(self):
         listing = self.client.get("/api/scheduler/executions?include_output=true")

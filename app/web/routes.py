@@ -227,9 +227,13 @@ def _render_host_ai_report_markdown(report: dict) -> str:
 def index():
     runtime = current_app.extensions["legion_runtime"]
     snapshot = runtime.get_snapshot()
+    graph_workspace_enabled = bool(
+        ((snapshot.get("scheduler", {}) or {}).get("feature_flags", {}) or {}).get("graph_workspace", True)
+    )
     return render_template(
         "index.html",
         snapshot=snapshot,
+        graph_workspace_enabled=graph_workspace_enabled,
         ws_enabled=current_app.config.get("LEGION_WEBSOCKETS_ENABLED", False),
         console_logo_art=_get_sanitized_console_logo(),
     )
@@ -1164,6 +1168,7 @@ def scheduler_preferences_update():
         "mode",
         "goal_profile",
         "engagement_policy",
+        "feature_flags",
         "provider",
         "max_concurrency",
         "max_jobs",
@@ -1186,6 +1191,7 @@ def scheduler_provider_test():
         "mode",
         "goal_profile",
         "engagement_policy",
+        "feature_flags",
         "provider",
         "max_concurrency",
         "max_jobs",

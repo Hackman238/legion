@@ -1,0 +1,160 @@
+{
+  "id": "external_web",
+  "description": "External web sample project with screenshot and CVE enrichment.",
+  "nmap_xml": "external-web.xml",
+  "engagement_policy": {
+    "preset": "external_pentest",
+    "scope": "external",
+    "intent": "pentest",
+    "approval_mode": "risky",
+    "credential_attack_mode": "approval",
+    "lockout_risk_mode": "approval",
+    "stability_risk_mode": "approval",
+    "noise_budget": "medium"
+  },
+  "target_state": {
+    "host_ip": "198.51.100.25",
+    "last_mode": "deterministic",
+    "goal_profile": "external_pentest",
+    "engagement_preset": "external_pentest",
+    "hostname": "portal.example.test",
+    "hostname_confidence": 98,
+    "os_match": "Linux",
+    "os_confidence": 81,
+    "next_phase": "validation",
+    "technologies": [
+      {
+        "name": "nginx",
+        "version": "1.25",
+        "cpe": "cpe:/a:nginx:nginx:1.25",
+        "evidence": "server header",
+        "source_kind": "observed"
+      },
+      {
+        "name": "WordPress",
+        "version": "6.5",
+        "evidence": "generator meta tag",
+        "source_kind": "observed"
+      }
+    ],
+    "findings": [
+      {
+        "title": "WordPress admin portal exposed",
+        "severity": "medium",
+        "cvss": 5.3,
+        "evidence": "/wp-admin",
+        "source_kind": "observed"
+      }
+    ],
+    "manual_tests": [
+      {
+        "why": "validate authentication hardening",
+        "command": "curl -k https://portal.example.test/wp-login.php",
+        "scope_note": "read-only",
+        "source_kind": "ai_suggested"
+      }
+    ],
+    "service_inventory": [
+      {
+        "port": "80",
+        "protocol": "tcp",
+        "state": "open",
+        "service": "http",
+        "service_product": "nginx",
+        "service_version": "1.25"
+      },
+      {
+        "port": "443",
+        "protocol": "tcp",
+        "state": "open",
+        "service": "https",
+        "service_product": "nginx",
+        "service_version": "1.25"
+      }
+    ],
+    "urls": [
+      {
+        "url": "https://portal.example.test/wp-admin",
+        "port": "443",
+        "protocol": "tcp",
+        "service": "https"
+      }
+    ],
+    "attempted_actions": [
+      {
+        "tool_id": "nuclei-web",
+        "label": "Run nuclei web scan",
+        "status": "executed",
+        "attempted_at": "2026-03-17T12:00:00Z",
+        "port": "443",
+        "protocol": "tcp",
+        "service": "https",
+        "pack_ids": ["external_surface", "web_app_api", "vuln_validation"],
+        "artifact_refs": [
+          "/tmp/corpus-portal-nuclei.txt",
+          "/tmp/corpus-portal-443.png"
+        ]
+      }
+    ],
+    "screenshots": [
+      {
+        "artifact_ref": "/tmp/corpus-portal-443.png",
+        "filename": "corpus-portal-443.png",
+        "port": "443",
+        "protocol": "tcp"
+      }
+    ],
+    "artifacts": [
+      {
+        "ref": "/tmp/corpus-portal-nuclei.txt",
+        "kind": "artifact",
+        "tool_id": "nuclei-web",
+        "port": "443",
+        "protocol": "tcp"
+      }
+    ],
+    "coverage_gaps": [
+      {
+        "gap_id": "missing_wordpress_auth_validation",
+        "description": "WordPress authentication flow has not been validated",
+        "recommended_tool_ids": ["nuclei-web", "wpscan"],
+        "source_kind": "inferred"
+      }
+    ]
+  },
+  "cves": [
+    {
+      "name": "CVE-2025-1234",
+      "url": "https://example.test/CVE-2025-1234",
+      "product": "nginx",
+      "severity": "high",
+      "source": "nmap",
+      "version": "1.25",
+      "exploitId": 7,
+      "exploit": "ExploitDB #7",
+      "exploitUrl": "https://exploit-db.test/exploits/7"
+    }
+  ],
+  "execution_record": {
+    "tool_id": "nuclei-web",
+    "label": "Run nuclei web scan",
+    "command_template": "nuclei -u https://[IP]:[PORT] -silent",
+    "protocol": "tcp",
+    "family_id": "nuclei-web",
+    "target_ref": {
+      "host_ip": "198.51.100.25",
+      "port": "443",
+      "service": "https",
+      "protocol": "tcp"
+    },
+    "stdout_ref": "process_output:corpus-nuclei",
+    "artifact_refs": [
+      "/tmp/corpus-portal-nuclei.txt",
+      "/tmp/corpus-portal-443.png"
+    ]
+  },
+  "expectations": {
+    "required_node_types": ["host", "service", "url", "technology", "cve", "finding", "artifact", "screenshot", "action"],
+    "required_report_sections": ["validated_findings", "attack_paths", "evidence_references", "recommended_next_steps"]
+  }
+}
