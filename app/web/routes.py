@@ -1528,6 +1528,7 @@ def scheduler_execution_trace(execution_id):
 @web_bp.get("/api/graph")
 def evidence_graph():
     runtime = current_app.extensions["legion_runtime"]
+    host_filter = _normalized_host_filter(request.args.get("host_filter", request.args.get("filter", "hide_down")))
     try:
         min_confidence = float(request.args.get("min_confidence", 0.0) or 0.0)
     except (TypeError, ValueError):
@@ -1557,6 +1558,7 @@ def evidence_graph():
             "search": str(request.args.get("q", "") or ""),
             "include_ai_suggested": include_ai_suggested,
             "hide_nmap_xml_artifacts": hide_nmap_xml_artifacts,
+            "host_filter": host_filter,
             "host_id": host_id or None,
             "limit_nodes": max(1, min(limit_nodes, 10000)),
             "limit_edges": max(1, min(limit_edges, 30000)),

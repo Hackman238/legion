@@ -1179,6 +1179,7 @@ class DummyRuntime:
         search = str(filters.get("search", "") or "").strip().lower()
         include_ai = bool(filters.get("include_ai_suggested", True))
         hide_nmap_xml_artifacts = bool(filters.get("hide_nmap_xml_artifacts", False))
+        host_filter = str(filters.get("host_filter", filters.get("filter", "hide_down")) or "").strip().lower()
         host_id = int(filters.get("host_id", 0) or 0)
 
         def _artifact_hidden(item):
@@ -1190,6 +1191,17 @@ class DummyRuntime:
             return hide_nmap_xml_artifacts and filename.endswith(".xml") and "nmap" in filename
 
         nodes = [item for item in nodes if not _artifact_hidden(item)]
+
+        if host_filter != "show_all":
+            down_host_ids = {
+                int(item.get("id", 0) or 0)
+                for item in list(self.workspace_hosts or [])
+                if str(item.get("status", "") or "").strip().lower() == "down"
+            }
+            nodes = [
+                item for item in nodes
+                if int(item.get("properties", {}).get("host_id", 0) or 0) not in down_host_ids
+            ]
 
         if not include_ai:
             nodes = [item for item in nodes if str(item.get("source_kind", "")).strip().lower() != "ai_suggested"]
@@ -1230,7 +1242,10 @@ class DummyRuntime:
                 "total_edges": len(self.graph_snapshot.get("edges", [])),
                 "returned_nodes": len(nodes),
                 "returned_edges": len(filtered_edges),
-                "filters": filters,
+                "filters": {
+                    **filters,
+                    "hide_down_hosts": host_filter != "show_all",
+                },
             },
         }
 
@@ -1699,6 +1714,30 @@ class WebAppTest(unittest.TestCase):
         hidden_ids = {item["node_id"] for item in hide_xml.json["nodes"]}
         self.assertNotIn("graph-node-artifact-xml", hidden_ids)
         self.assertTrue(hide_xml.json["meta"]["filters"]["hide_nmap_xml_artifacts"])
+
+    def test_graph_api_mirrors_hosts_filter_for_down_hosts(self):
+        self.runtime.graph_snapshot["nodes"].append({
+            "node_id": "graph-node-down-host",
+            "type": "host",
+            "label": "10.0.0.6",
+            "confidence": 95.0,
+            "source_kind": "observed",
+            "source_ref": "host:10.0.0.6",
+            "properties": {"host_id": 12, "ip": "10.0.0.6"},
+            "evidence_refs": ["host:10.0.0.6"],
+        })
+
+        hidden = self.client.get("/api/graph?filter=hide_down")
+        self.assertEqual(200, hidden.status_code)
+        hidden_ids = {item["node_id"] for item in hidden.json["nodes"]}
+        self.assertNotIn("graph-node-down-host", hidden_ids)
+        self.assertTrue(hidden.json["meta"]["filters"]["hide_down_hosts"])
+
+        shown = self.client.get("/api/graph?filter=show_all")
+        self.assertEqual(200, shown.status_code)
+        shown_ids = {item["node_id"] for item in shown.json["nodes"]}
+        self.assertIn("graph-node-down-host", shown_ids)
+        self.assertFalse(shown.json["meta"]["filters"]["hide_down_hosts"])
 
     def test_graph_api_validation(self):
         missing_layout = self.client.post("/api/graph/layouts", json={"layout": {}})

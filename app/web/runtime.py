@@ -922,6 +922,7 @@ class WebRuntime:
                 search=str(resolved.get("search", "") or ""),
                 include_ai_suggested=bool(resolved.get("include_ai_suggested", True)),
                 hide_nmap_xml_artifacts=bool(resolved.get("hide_nmap_xml_artifacts", False)),
+                hide_down_hosts=str(resolved.get("host_filter", "hide_down") or "").strip().lower() != "show_all",
                 host_id=int(resolved.get("host_id", 0) or 0) or None,
                 limit_nodes=int(resolved.get("limit_nodes", 600) or 600),
                 limit_edges=int(resolved.get("limit_edges", 1200) or 1200),

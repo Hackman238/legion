@@ -1745,6 +1745,7 @@ async function setHostFilterAction(filter) {
     syncHostFilterControls();
     closeRibbonMenus();
     await loadWorkspaceHosts();
+    await graphLoadSnapshot({background: false}).catch(() => {});
 }
 
 function exportProjectAiReportAction(format = "json") {
@@ -3622,6 +3623,9 @@ function graphCollectServerQuery() {
         renderMode: graphWorkspaceState.renderMode,
         focusDepth: graphWorkspaceState.focusDepth,
         hostId: Number.isFinite(hostId) && hostId > 0 ? hostId : 0,
+        hostFilter: String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
+            ? "show_all"
+            : "hide_down",
         nodeType: String(getValue("graph-node-type-filter") || "").trim().toLowerCase(),
         edgeType: String(getValue("graph-edge-type-filter") || "").trim().toLowerCase(),
         sourceKind: String(getValue("graph-source-kind-filter") || "").trim().toLowerCase(),
@@ -5654,6 +5658,7 @@ async function graphLoadSnapshot({background = false, forceMetadata = false} = {
         }
         const filters = graphCollectServerQuery();
         const params = new URLSearchParams();
+        params.set("filter", String(filters.hostFilter || "hide_down"));
         if (filters.hostId > 0) {
             params.set("host_id", String(filters.hostId));
         }

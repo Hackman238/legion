@@ -2059,6 +2059,7 @@ def query_evidence_graph(
         search: str = "",
         include_ai_suggested: bool = True,
         hide_nmap_xml_artifacts: bool = False,
+        hide_down_hosts: bool = False,
         host_id: Optional[int] = None,
         limit_nodes: int = 600,
         limit_edges: int = 1200,
@@ -2072,6 +2073,7 @@ def query_evidence_graph(
     min_conf = _safe_float(min_confidence, default=0.0, minimum=0.0, maximum=100.0)
     max_nodes = max(1, min(int(limit_nodes or 600), 10000))
     max_edges = max(1, min(int(limit_edges or 1200), 30000))
+    down_host_ids = _list_down_host_ids(database) if hide_down_hosts else set()
 
     nodes = []
     for item in list(snapshot.get("nodes", []) or []):
@@ -2085,6 +2087,9 @@ def query_evidence_graph(
         if requested_source_kinds and source_kind not in requested_source_kinds:
             continue
         if float(item.get("confidence", 0.0) or 0.0) < min_conf:
+            continue
+        item_host_id = int((item.get("properties", {}) or {}).get("host_id", 0) or 0) if isinstance(item.get("properties", {}), dict) else 0
+        if down_host_ids and item_host_id in down_host_ids:
             continue
         if _graph_should_hide_artifact_node(item, hide_nmap_xml_artifacts=bool(hide_nmap_xml_artifacts)):
             continue
@@ -2154,12 +2159,32 @@ def query_evidence_graph(
                 "search": resolved_search,
                 "include_ai_suggested": bool(include_ai_suggested),
                 "hide_nmap_xml_artifacts": bool(hide_nmap_xml_artifacts),
+                "hide_down_hosts": bool(hide_down_hosts),
                 "host_id": int(resolved_host_id or 0) or None,
                 "limit_nodes": max_nodes,
                 "limit_edges": max_edges,
             },
         },
     }
+
+
+def _list_down_host_ids(database) -> set:
+    session = database.session()
+    try:
+        rows = session.execute(text(
+            "SELECT id FROM hostObj WHERE LOWER(TRIM(COALESCE(status, ''))) = 'down'"
+        )).fetchall()
+        host_ids = set()
+        for row in rows:
+            try:
+                host_id = int(row[0] or 0)
+            except (TypeError, ValueError, IndexError):
+                host_id = 0
+            if host_id > 0:
+                host_ids.add(host_id)
+        return host_ids
+    finally:
+        session.close()
 
 
 def _list_evidence_refs(session) -> Dict[str, List[str]]:

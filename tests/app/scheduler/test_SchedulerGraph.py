@@ -220,6 +220,54 @@ class SchedulerEvidenceGraphTest(unittest.TestCase):
         finally:
             project_manager.closeProject(project)
 
+    def test_query_evidence_graph_hides_down_hosts_when_requested(self):
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            up_host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="up.local", osMatch="Linux", status="up")
+            down_host = hostObj(ip="10.0.0.6", ipv4="10.0.0.6", hostname="down.local", osMatch="Linux", status="down")
+            session.add(up_host)
+            session.add(down_host)
+            session.commit()
+            up_host_id = int(up_host.id)
+            down_host_id = int(down_host.id)
+            session.close()
+
+            upsert_target_state(project.database, up_host_id, {
+                "host_ip": "10.0.0.5",
+                "hostname": "up.local",
+                "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https"}],
+                "urls": [{"url": "https://up.local", "port": "443", "protocol": "tcp", "service": "https"}],
+            })
+            upsert_target_state(project.database, down_host_id, {
+                "host_ip": "10.0.0.6",
+                "hostname": "down.local",
+                "service_inventory": [{"port": "80", "protocol": "tcp", "state": "open", "service": "http"}],
+                "urls": [{"url": "http://down.local", "port": "80", "protocol": "tcp", "service": "http"}],
+            })
+
+            hidden = query_evidence_graph(project.database, hide_down_hosts=True, limit_nodes=200, limit_edges=200)
+            hidden_host_ids = {
+                int(item.get("properties", {}).get("host_id", 0) or 0)
+                for item in hidden["nodes"]
+                if isinstance(item.get("properties", {}), dict)
+            }
+            self.assertIn(up_host_id, hidden_host_ids)
+            self.assertNotIn(down_host_id, hidden_host_ids)
+            self.assertTrue(hidden["meta"]["filters"]["hide_down_hosts"])
+
+            shown = query_evidence_graph(project.database, hide_down_hosts=False, limit_nodes=200, limit_edges=200)
+            shown_host_ids = {
+                int(item.get("properties", {}).get("host_id", 0) or 0)
+                for item in shown["nodes"]
+                if isinstance(item.get("properties", {}), dict)
+            }
+            self.assertIn(down_host_id, shown_host_ids)
+            self.assertFalse(shown["meta"]["filters"]["hide_down_hosts"])
+        finally:
+            project_manager.closeProject(project)
+
     def test_target_state_sync_removes_stale_url_nodes_after_normalization(self):
         project_manager, project = self._create_project()
         try:
