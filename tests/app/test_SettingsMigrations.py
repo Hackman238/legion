@@ -291,7 +291,18 @@ class SettingsMigrationTest(unittest.TestCase):
         command = "nmap -Pn -sV [IP] -p [PORT]"
         normalized = AppSettings._ensure_nmap_stats_every(command)
         self.assertIn("--stats-every 15s", normalized)
+        self.assertIn("-vv", normalized)
         self.assertEqual(1, normalized.count("--stats-every"))
+
+    def test_nmap_stats_normalization_adds_verbose_when_stats_already_present(self):
+        from app.settings import AppSettings
+
+        command = "nmap -Pn -sV [IP] -p [PORT] --stats-every 15s"
+        normalized = AppSettings._ensure_nmap_stats_every(command)
+        self.assertIn("--stats-every 15s", normalized)
+        self.assertIn("-vv", normalized)
+        self.assertEqual(1, normalized.count("--stats-every"))
+        self.assertEqual(1, normalized.count("-vv"))
 
     def test_banner_normalization_replaces_broken_bash_wrapper(self):
         from app.settings import AppSettings

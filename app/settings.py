@@ -600,18 +600,24 @@ class AppSettings():
         updated_parts = []
         nmap_prefix = re.compile(r"(?i)^(?:(?:sudo|doas|env|timeout|nice|ionice)\b[^\n;|&()]*?\s+)*nmap\b")
         has_stats = re.compile(r"(?i)(?:^|\s)--stats-every(?:=|\s)")
+        has_verbose = re.compile(r"(?i)(?:^|\s)(?:-v{1,3}|--verbose)(?:\s|$)")
 
         for part in parts:
             if part in separators:
                 updated_parts.append(part)
                 continue
             stripped = part.strip()
-            if not stripped or not nmap_prefix.match(stripped) or has_stats.search(stripped):
+            if not stripped or not nmap_prefix.match(stripped):
                 updated_parts.append(part)
                 continue
             leading = part[:len(part) - len(part.lstrip())]
             trailing = part[len(part.rstrip()):]
-            updated_parts.append(f"{leading}{stripped} --stats-every {stats_interval}{trailing}")
+            normalized = stripped
+            if not has_stats.search(normalized):
+                normalized = f"{normalized} --stats-every {stats_interval}"
+            if has_stats.search(normalized) and not has_verbose.search(normalized):
+                normalized = f"{normalized} -vv"
+            updated_parts.append(f"{leading}{normalized}{trailing}")
 
         return "".join(updated_parts)
 

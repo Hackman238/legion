@@ -213,7 +213,9 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
         self.assertEqual(
             command,
             AppSettings._ensure_nmap_output_argument(
-                template.replace("[IP]", "192.168.3.1").replace("[PORT]", "443"),
+                AppSettings._ensure_nmap_stats_every(
+                    template.replace("[IP]", "192.168.3.1").replace("[PORT]", "443")
+                ),
                 outputfile,
             ),
         )
@@ -236,6 +238,7 @@ class WebRuntimeNucleiBuildCommandTest(unittest.TestCase):
         )
 
         self.assertIn("--stats-every 15s", command)
+        self.assertIn("-vv", command)
         self.assertEqual(1, command.count("--stats-every"))
 
     def test_build_command_normalizes_banner_template(self):

@@ -6945,6 +6945,10 @@ function updateNmapCommandPreview() {
         const value = String(token || "").trim().toLowerCase();
         return value === "--stats-every" || value.startsWith("--stats-every=");
     });
+    const hasVerbose = extraTokens.some((token) => {
+        const value = String(token || "").trim().toLowerCase();
+        return value === "-v" || value === "-vv" || value === "-vvv" || value === "--verbose";
+    });
     const targetTokens = targets.length ? targets : ["<targets>"];
     const cmd = [nmapPath];
 
@@ -6990,7 +6994,10 @@ function updateNmapCommandPreview() {
             cmd.push("--script", "vuln");
         }
     }
-    const finalExtraTokens = hasStatsEvery ? extraTokens : [...extraTokens, "--stats-every", "15s"];
+    let finalExtraTokens = hasStatsEvery ? extraTokens : [...extraTokens, "--stats-every", "15s"];
+    if (!hasVerbose) {
+        finalExtraTokens = [...finalExtraTokens, "-vv"];
+    }
     cmd.push(...finalExtraTokens, ...targetTokens, "-oA", "<output_prefix>");
 
     previewNode.textContent = `Command Preview: ${joinShellTokens(cmd)}`;

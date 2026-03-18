@@ -65,10 +65,13 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
 
         args = ["-Pn", "--stats-every", "10s"]
         updated = WebRuntime._append_nmap_stats_every(args, interval="15s")
-        self.assertEqual(args, updated)
+        self.assertEqual(["-Pn", "--stats-every", "10s", "-vv"], updated)
 
         updated_new = WebRuntime._append_nmap_stats_every(["-Pn"], interval="15s")
-        self.assertEqual(["-Pn", "--stats-every", "15s"], updated_new)
+        self.assertEqual(["-Pn", "--stats-every", "15s", "-vv"], updated_new)
+
+        updated_existing_verbose = WebRuntime._append_nmap_stats_every(["-Pn", "--stats-every", "15s", "-vv"], interval="15s")
+        self.assertEqual(["-Pn", "--stats-every", "15s", "-vv"], updated_existing_verbose)
 
     def test_build_single_scan_plan_honors_force_pn_option(self):
         from app.web.runtime import WebRuntime

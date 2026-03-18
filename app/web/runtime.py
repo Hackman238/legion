@@ -8950,11 +8950,21 @@ class WebRuntime:
         return False
 
     @staticmethod
+    def _contains_nmap_verbose(args: List[str]) -> bool:
+        for token in args:
+            value = str(token or "").strip().lower()
+            if value in {"-v", "-vv", "-vvv", "--verbose"}:
+                return True
+        return False
+
+    @staticmethod
     def _append_nmap_stats_every(args: List[str], interval: str = "15s") -> List[str]:
         values = [str(item) for item in list(args or [])]
-        if WebRuntime._contains_nmap_stats_every(values):
-            return values
-        return values + ["--stats-every", str(interval or "15s")]
+        if not WebRuntime._contains_nmap_stats_every(values):
+            values = values + ["--stats-every", str(interval or "15s")]
+        if WebRuntime._contains_nmap_stats_every(values) and not WebRuntime._contains_nmap_verbose(values):
+            values = values + ["-vv"]
+        return values
 
     @staticmethod
     def _nmap_output_prefix_for_command(output_prefix: str, nmap_path: str) -> str:
