@@ -188,6 +188,23 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertEqual("deep_analysis", coverage["stage"])
         self.assertEqual([], coverage["missing"])
 
+    def test_build_scheduler_coverage_summary_flags_missing_internal_safe_enum(self):
+        from app.web.runtime import WebRuntime
+
+        coverage = WebRuntime._build_scheduler_coverage_summary(
+            service_name="smb",
+            signals={"web_service": False, "rdp_service": False, "vnc_service": False},
+            observed_tool_ids={"banner", "smb-security-mode"},
+            host_cves=[],
+            inferred_technologies=[],
+            analysis_mode="standard",
+        )
+
+        self.assertIn("missing_internal_safe_enum", coverage["missing"])
+        self.assertIn("enum4linux-ng", coverage["recommended_tool_ids"])
+        self.assertIn("smbmap", coverage["recommended_tool_ids"])
+        self.assertIn("rpcclient-enum", coverage["recommended_tool_ids"])
+
     def test_infer_technologies_from_service_product_adds_jetty_cpe(self):
         from app.web.runtime import WebRuntime
 

@@ -135,6 +135,7 @@
                     <div id="ribbon-export-menu" class="ribbon-submenu" role="menu" aria-label="Export options">
                         <button id="ribbon-export-json-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as JSON">Export JSON</button>
                         <button id="ribbon-export-csv-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as CSV">Export CSV</button>
+                        <button id="ribbon-export-hosts-csv-action-button" class="ribbon-submenu-item" type="button" title="Export hosts only as CSV">Export Hosts CSV</button>
                         <button id="ribbon-export-project-report-json-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as JSON">Export Project Report JSON</button>
                         <button id="ribbon-export-project-report-md-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as Markdown">Export Project Report Markdown</button>
                         <button id="ribbon-export-project-report-push-action-button" class="ribbon-submenu-item" type="button" title="Push full project report to configured delivery endpoint">Push Project Report</button>
@@ -265,6 +266,15 @@
                 </select>
             </label>
             <label>
+                Density Mode
+                <select id="graph-render-mode-select">
+                    <option value="auto" selected>auto</option>
+                    <option value="graph">full graph</option>
+                    <option value="summary">summary graph</option>
+                    <option value="matrix">matrix</option>
+                </select>
+            </label>
+            <label>
                 Time Window
                 <select id="graph-time-window-filter">
                     <option value="all">all time</option>
@@ -285,7 +295,7 @@
             </label>
             <label class="graph-confidence-label">
                 Zoom
-                <input id="graph-zoom-slider" type="range" min="50" max="200" step="10" value="70">
+                <input id="graph-zoom-slider" type="range" min="10" max="200" step="10" value="70">
                 <span id="graph-zoom-value">70%</span>
             </label>
             <label class="checkbox graph-checkbox">
@@ -303,6 +313,8 @@
                 <button id="graph-rebuild-button" type="button">Rebuild Graph</button>
                 <button id="graph-export-json-button" type="button">Export JSON</button>
                 <button id="graph-export-graphml-button" type="button">Export GraphML</button>
+                <button id="graph-export-svg-button" type="button">Export SVG</button>
+                <button id="graph-export-png-button" type="button">Export PNG</button>
             </div>
             <div class="graph-action-group">
                 <label>
@@ -319,6 +331,20 @@
                 <button id="graph-layout-save-button" type="button">Save Layout</button>
                 <button id="graph-layout-reset-button" type="button">Reset Layout</button>
             </div>
+            <div class="graph-action-group">
+                <label>
+                    Focus Depth
+                    <select id="graph-focus-depth-select">
+                        <option value="1" selected>1 hop</option>
+                        <option value="2">2 hop</option>
+                        <option value="3">3 hop</option>
+                    </select>
+                </label>
+                <button id="graph-focus-selection-button" type="button">Focus Selected</button>
+                <button id="graph-clear-focus-button" type="button">Clear Focus</button>
+                <button id="graph-expand-selection-button" type="button">Expand Selected</button>
+                <button id="graph-collapse-expanded-button" type="button">Collapse Expanded</button>
+            </div>
         </div>
         <div class="graph-legend">
             <span class="graph-legend-chip graph-legend-observed">observed</span>
@@ -331,6 +357,7 @@
             <div class="graph-canvas-panel">
                 <div id="graph-workspace-empty" class="graph-empty-state" hidden>No graph data matches the current filters.</div>
                 <div class="graph-canvas-scroll">
+                    <div id="graph-matrix-view" class="graph-matrix-view" hidden></div>
                     <svg
                         id="graph-workspace-canvas"
                         class="graph-canvas"
@@ -635,6 +662,30 @@
                 </tr>
                 </thead>
                 <tbody id="jobs-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel panel-full">
+        <div class="panel-header">
+            <h2>Submitted Scans</h2>
+            <p id="scan-history-count">{{ snapshot.scan_history | length }}</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Kind</th>
+                    <th>Status</th>
+                    <th>Targets</th>
+                    <th>Scope</th>
+                    <th>Mode</th>
+                    <th>Created</th>
+                    <th>Result</th>
+                </tr>
+                </thead>
+                <tbody id="scan-history-body"></tbody>
             </table>
         </div>
     </section>

@@ -141,7 +141,41 @@ class AppSettings():
         "wapiti -u https://[IP]:[PORT] -n 10 -b folder -v 1 -f txt -o [OUTPUT]) || "
         "echo wapiti not found"
     )
+    WHATWEB_COMMAND = (
+        "(command -v whatweb >/dev/null 2>&1 && "
+        "whatweb [WEB_URL] --color=never --log-brief=[OUTPUT].txt) || "
+        "echo whatweb not found"
+    )
+    DIRSEARCH_COMMAND = (
+        "(command -v dirsearch >/dev/null 2>&1 && "
+        "dirsearch -u [WEB_URL]/ --quiet-mode --format=json --output=[OUTPUT].json) || "
+        "echo dirsearch not found"
+    )
+    FFUF_COMMAND = (
+        "(command -v ffuf >/dev/null 2>&1 && "
+        "ffuf -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt "
+        "-json -noninteractive -s > [OUTPUT].jsonl) || "
+        "echo ffuf not found"
+    )
+    ENUM4LINUX_NG_COMMAND = (
+        "(command -v enum4linux-ng >/dev/null 2>&1 && "
+        "enum4linux-ng -A -oJ [OUTPUT] [IP]) || "
+        "echo enum4linux-ng not found"
+    )
+    SMBMAP_COMMAND = (
+        "(command -v smbmap >/dev/null 2>&1 && "
+        "smbmap -H [IP] -P [PORT] --no-banner --no-color --csv [OUTPUT].csv) || "
+        "echo smbmap not found"
+    )
+    RPCCLIENT_ENUM_COMMAND = (
+        "(command -v rpcclient >/dev/null 2>&1 && "
+        "rpcclient [IP] -p [PORT] -U% -c 'srvinfo;enumdomusers;netshareenumall' > [OUTPUT].txt) || "
+        "echo rpcclient not found"
+    )
     BASELINE_WEB_PORT_ACTIONS = {
+        "whatweb": ("Run whatweb", WHATWEB_COMMAND, WEB_SERVICE_SCOPE),
+        "whatweb-http": ("Run whatweb (http)", WHATWEB_COMMAND, "http,soap,http-proxy,http-alt"),
+        "whatweb-https": ("Run whatweb (https)", WHATWEB_COMMAND, "https,ssl,https-alt"),
         "nikto": ("Run nikto", NIKTO_COMMAND, WEB_SERVICE_SCOPE),
         "wafw00f": ("Run wafw00f", WAFW00F_COMMAND, "https,ssl,https-alt"),
         "sslscan": ("Run sslscan", SSLSCAN_COMMAND, "https,ssl,https-alt"),
@@ -155,6 +189,13 @@ class AppSettings():
         "wpscan": ("Run wpscan", WPSCAN_COMMAND, "http,https,ssl,https-alt"),
         "http-wapiti": ("Run wapiti (http)", WAPITI_HTTP_COMMAND, "http"),
         "https-wapiti": ("Run wapiti (https)", WAPITI_HTTPS_COMMAND, "https"),
+        "dirsearch": ("Run dirsearch", DIRSEARCH_COMMAND, WEB_SERVICE_SCOPE),
+        "ffuf": ("Run ffuf", FFUF_COMMAND, WEB_SERVICE_SCOPE),
+    }
+    BASELINE_INTERNAL_PORT_ACTIONS = {
+        "enum4linux-ng": ("Run enum4linux-ng", ENUM4LINUX_NG_COMMAND, "netbios-ssn,microsoft-ds,smb"),
+        "smbmap": ("Run smbmap", SMBMAP_COMMAND, "netbios-ssn,microsoft-ds,smb"),
+        "rpcclient-enum": ("Run rpcclient SMB enumeration", RPCCLIENT_ENUM_COMMAND, "netbios-ssn,microsoft-ds,smb"),
     }
 
     def __init__(self):
@@ -326,7 +367,7 @@ class AppSettings():
                     self.actions.setValue(wapiti_key, [label, updated_command, scope])
                     changed = True
 
-            for key, value in self.BASELINE_WEB_PORT_ACTIONS.items():
+            for key, value in {**self.BASELINE_WEB_PORT_ACTIONS, **self.BASELINE_INTERNAL_PORT_ACTIONS}.items():
                 if self.actions.value(key) is None:
                     self.actions.setValue(key, [value[0], value[1], value[2]])
                     changed = True
@@ -359,6 +400,18 @@ class AppSettings():
             normalized = cls._ensure_nuclei_command(normalized, automatic_scan=False)
         if normalized_tool == "web-content-discovery":
             normalized = cls._ensure_web_content_discovery_command(normalized)
+        if normalized_tool in {"whatweb", "whatweb-http", "whatweb-https"}:
+            normalized = cls._ensure_whatweb_command(normalized)
+        if normalized_tool == "dirsearch":
+            normalized = cls._ensure_dirsearch_command(normalized)
+        if normalized_tool == "ffuf":
+            normalized = cls._ensure_ffuf_command(normalized)
+        if normalized_tool == "enum4linux-ng":
+            normalized = cls._ensure_enum4linux_ng_command(normalized)
+        if normalized_tool == "smbmap":
+            normalized = cls._ensure_smbmap_command(normalized)
+        if normalized_tool == "rpcclient-enum":
+            normalized = cls._ensure_rpcclient_enum_command(normalized)
         if "wapiti" in normalized.lower():
             scheme = "https" if "https" in normalized_tool else "http"
             normalized = cls._ensure_wapiti_command(normalized, scheme=scheme)
@@ -390,6 +443,33 @@ class AppSettings():
             if self.actions.value('nuclei-web') is None:
                 self.actions.setValue('nuclei-web', [self.WEB_SERVICE_SCOPE, 'tcp'])
                 changed = True
+
+            for tool_id, scope in (
+                    ("whatweb", self.WEB_SERVICE_SCOPE),
+                    ("whatweb-http", "http,soap,http-proxy,http-alt"),
+                    ("whatweb-https", "https,ssl,https-alt"),
+                    ("nikto", self.WEB_SERVICE_SCOPE),
+                    ("wafw00f", "https,ssl,https-alt"),
+                    ("sslscan", "https,ssl,https-alt"),
+                    ("sslyze", "https,ssl,ms-wbt-server,imap,pop3,smtp,https-alt"),
+                    ("nuclei-cves", self.WEB_SERVICE_SCOPE),
+                    ("nuclei-exposures", self.WEB_SERVICE_SCOPE),
+                    ("nuclei-wordpress", self.WEB_SERVICE_SCOPE),
+                    ("curl-headers", self.WEB_SERVICE_SCOPE),
+                    ("curl-options", self.WEB_SERVICE_SCOPE),
+                    ("curl-robots", self.WEB_SERVICE_SCOPE),
+                    ("wpscan", "http,https,ssl,https-alt"),
+                    ("http-wapiti", "http"),
+                    ("https-wapiti", "https"),
+                    ("dirsearch", self.WEB_SERVICE_SCOPE),
+                    ("ffuf", self.WEB_SERVICE_SCOPE),
+                    ("enum4linux-ng", "netbios-ssn,microsoft-ds,smb"),
+                    ("smbmap", "netbios-ssn,microsoft-ds,smb"),
+                    ("rpcclient-enum", "netbios-ssn,microsoft-ds,smb"),
+            ):
+                if self.actions.value(tool_id) is None:
+                    self.actions.setValue(tool_id, [scope, 'tcp'])
+                    changed = True
 
             if self.actions.value('screenshooter') is None:
                 self.actions.setValue('screenshooter', [self.SCREENSHOT_SERVICE_SCOPE, 'tcp'])
@@ -679,6 +759,106 @@ class AppSettings():
         if legacy_gobuster_block in raw:
             return raw.replace(legacy_gobuster_block, cls.WEB_CONTENT_GOBUSTER_COMMAND)
         return raw
+
+    @classmethod
+    def _ensure_whatweb_command(cls, command: str) -> str:
+        raw = str(command or "")
+        if "whatweb" not in raw.lower():
+            return raw
+        normalized = cls._canonicalize_web_target_placeholders(raw)
+        normalized = re.sub(r"(?i)\s+--color(?:=|\s+)always\b", " --color=never", normalized)
+        if "--color=never" not in normalized.lower():
+            normalized = re.sub(r"(?i)\bwhatweb\b", "whatweb --color=never", normalized, count=1)
+        if not re.search(r"(?i)--log-brief(?:=|\s)", normalized):
+            normalized = re.sub(r"(?i)\bwhatweb\b", "whatweb --log-brief=[OUTPUT].txt", normalized, count=1)
+            normalized = re.sub(
+                r"(?i)\bwhatweb\s+--log-brief=\[OUTPUT\]\.txt\b",
+                "whatweb --color=never --log-brief=[OUTPUT].txt",
+                normalized,
+                count=1,
+            )
+        return re.sub(r"\s{2,}", " ", normalized).strip()
+
+    @classmethod
+    def _ensure_dirsearch_command(cls, command: str) -> str:
+        raw = cls._canonicalize_web_target_placeholders(str(command or ""))
+        if "dirsearch" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_DIRSEARCH_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+dirsearch", f"command -v {probe_marker}", raw)
+        normalized = re.sub(r"\[WEB_URL\](?!/)", "[WEB_URL]/", normalized)
+        if "--quiet-mode" not in normalized.lower():
+            normalized = re.sub(r"(?i)\bdirsearch\b", "dirsearch --quiet-mode", normalized, count=1)
+        if "--format=json" not in normalized.lower():
+            normalized += " --format=json"
+        if not re.search(r"(?i)--output(?:=|\s)", normalized):
+            normalized += " --output=[OUTPUT].json"
+        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "dirsearch")
+
+    @classmethod
+    def _ensure_ffuf_command(cls, command: str) -> str:
+        raw = cls._canonicalize_web_target_placeholders(str(command or ""))
+        if "ffuf" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_FFUF_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+ffuf", f"command -v {probe_marker}", raw)
+        normalized = re.sub(r"\[WEB_URL\](?!/)", "[WEB_URL]/FUZZ", normalized)
+        if "-json" not in normalized.lower():
+            normalized = re.sub(r"(?i)\bffuf\b", "ffuf -json", normalized, count=1)
+        if "-noninteractive" not in normalized.lower():
+            normalized = re.sub(r"(?i)\bffuf\b", "ffuf -noninteractive", normalized, count=1)
+        if not re.search(r"(?i)(?:^|\s)-s(?:\s|$)", normalized):
+            normalized = re.sub(r"(?i)\bffuf\b", "ffuf -s", normalized, count=1)
+        if "[OUTPUT]" not in normalized:
+            normalized += " > [OUTPUT].jsonl"
+        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "ffuf")
+
+    @staticmethod
+    def _ensure_enum4linux_ng_command(command: str) -> str:
+        raw = str(command or "")
+        if "enum4linux-ng" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_ENUM4LINUX_NG_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+enum4linux-ng", f"command -v {probe_marker}", raw)
+        if not re.search(r"(?i)\s-A(?:\s|$)", normalized):
+            normalized = re.sub(r"(?i)\benum4linux-ng\b", "enum4linux-ng -A", normalized, count=1)
+        if not re.search(r"(?i)-oJ(?:=|\s)", normalized):
+            normalized = re.sub(r"(?i)\benum4linux-ng\b", "enum4linux-ng -oJ [OUTPUT]", normalized, count=1)
+        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "enum4linux-ng")
+
+    @staticmethod
+    def _ensure_smbmap_command(command: str) -> str:
+        raw = str(command or "")
+        if "smbmap" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_SMBMAP_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+smbmap", f"command -v {probe_marker}", raw)
+        for token in ("--no-banner", "--no-color"):
+            if token.lower() not in normalized.lower():
+                normalized = re.sub(r"(?i)\bsmbmap\b", f"smbmap {token}", normalized, count=1)
+        if not re.search(r"(?i)--csv(?:=|\s)", normalized):
+            normalized = re.sub(r"(?i)\bsmbmap\b", "smbmap --csv [OUTPUT].csv", normalized, count=1)
+        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "smbmap")
+
+    @staticmethod
+    def _ensure_rpcclient_enum_command(command: str) -> str:
+        raw = str(command or "")
+        if "rpcclient" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_RPCCLIENT_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+rpcclient", f"command -v {probe_marker}", raw)
+        if not re.search(r"(?i)(?:^|\s)-U%(?=\s|$)", normalized):
+            normalized = re.sub(r"(?i)\brpcclient\b", "rpcclient -U%", normalized, count=1)
+        if not re.search(r"(?i)(?:^|\s)-c\s+", normalized):
+            normalized = re.sub(
+                r"(?i)\brpcclient\b",
+                "rpcclient -c 'srvinfo;enumdomusers;netshareenumall'",
+                normalized,
+                count=1,
+            )
+        if "[OUTPUT]" not in normalized:
+            normalized += " > [OUTPUT].txt"
+        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "rpcclient")
 
     @staticmethod
     def _canonicalize_web_target_placeholders(command: str) -> str:

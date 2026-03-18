@@ -799,6 +799,58 @@ button:hover {
     touch-action: none;
 }
 
+.graph-matrix-view {
+    min-width: 1180px;
+    min-height: 620px;
+    padding: 0.4rem 0.2rem 0.2rem;
+}
+
+.graph-matrix-note {
+    margin: 0 0 0.55rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.graph-matrix-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.74rem;
+}
+
+.graph-matrix-table th,
+.graph-matrix-table td {
+    min-width: 44px;
+    max-width: 140px;
+    padding: 0.35rem 0.4rem;
+    text-align: center;
+    border: 1px solid rgba(173, 181, 227, 0.1);
+}
+
+.graph-matrix-table thead th,
+.graph-matrix-table tbody th {
+    position: sticky;
+    background: rgba(10, 13, 27, 0.96);
+    color: var(--text-muted);
+    z-index: 2;
+}
+
+.graph-matrix-table thead th {
+    top: 0;
+}
+
+.graph-matrix-table tbody th {
+    left: 0;
+    text-align: left;
+    z-index: 1;
+}
+
+.graph-matrix-cell {
+    color: rgba(7, 10, 20, 0.92);
+    font-weight: 700;
+}
+
 .graph-empty-state {
     margin-bottom: 0.65rem;
     border: 1px dashed rgba(192, 132, 252, 0.28);
@@ -852,6 +904,10 @@ button:hover {
 .graph-edge.is-selected,
 .graph-node.is-selected rect {
     filter: drop-shadow(0 0 12px rgba(238, 241, 255, 0.18));
+}
+
+.graph-node.is-summary rect {
+    stroke-dasharray: 7 5;
 }
 
 .graph-sidebar {

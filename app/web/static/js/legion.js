@@ -11,6 +11,7 @@ const workspaceState = {
 const graphWorkspaceState = {
     viewId: "attack_surface",
     groupBy: "finding",
+    renderMode: "auto",
     zoomPercent: 70,
     data: {
         nodes: [],
@@ -28,6 +29,10 @@ const graphWorkspaceState = {
     loading: false,
     needsRefresh: false,
     refreshTimer: null,
+    focusDepth: 1,
+    focusSeedNodeIds: [],
+    focusSeedLabel: "",
+    expandedSummaryIds: {},
     metadataLoaded: false,
     layouts: [],
     activeLayoutId: "",
@@ -161,6 +166,12 @@ const GRAPH_SEVERITY_ORDER = {
     info: 4,
     informational: 4,
 };
+
+const GRAPH_LARGE_NODE_THRESHOLD = 1000;
+const GRAPH_LARGE_EDGE_THRESHOLD = 3000;
+const GRAPH_MATRIX_NODE_THRESHOLD = 1600;
+const GRAPH_MATRIX_EDGE_THRESHOLD = 4500;
+const GRAPH_MATRIX_GROUP_LIMIT = 24;
 
 const processOutputState = {
     processId: null,
@@ -1633,6 +1644,11 @@ function exportWorkspaceCsvAction() {
     window.location.assign(`/api/export/csv?t=${Date.now()}`);
 }
 
+function exportHostsCsvAction() {
+    closeRibbonMenus();
+    window.location.assign(`/api/export/hosts-csv?t=${Date.now()}`);
+}
+
 function exportProjectAiReportAction(format = "json") {
     closeRibbonMenus();
     const normalized = String(format || "json").toLowerCase() === "md" ? "md" : "json";
@@ -2505,6 +2521,27 @@ function renderJobs(jobs) {
     setText("job-count", (jobs || []).length);
 }
 
+function renderScanHistory(scans) {
+    const body = document.getElementById("scan-history-body");
+    if (!body) {
+        return;
+    }
+    body.innerHTML = "";
+    (scans || []).forEach((scan) => {
+        const tr = document.createElement("tr");
+        tr.appendChild(makeCell(scan.id || ""));
+        tr.appendChild(makeCell(scan.submission_kind || ""));
+        tr.appendChild(makeCell(scan.status || ""));
+        tr.appendChild(makeCell(scan.target_summary || ""));
+        tr.appendChild(makeCell(scan.scope_summary || ""));
+        tr.appendChild(makeCell(scan.scan_mode || ""));
+        tr.appendChild(makeCell(scan.created_at || ""));
+        tr.appendChild(makeCell(scan.result_summary || ""));
+        body.appendChild(tr);
+    });
+    setText("scan-history-count", (scans || []).length);
+}
+
 function renderHostDetail(payload) {
     workspaceState.hostDetail = payload || null;
     const host = payload?.host || {};
@@ -3131,6 +3168,41 @@ function graphSubnetForIp(ip) {
     return `${match[1]}.${match[2]}.${match[3]}.0/24`;
 }
 
+function graphHashToken(value) {
+    const input = String(value || "");
+    let hash = 5381;
+    for (let index = 0; index < input.length; index += 1) {
+        hash = ((hash << 5) + hash) + input.charCodeAt(index);
+        hash &= 0x7fffffff;
+    }
+    return Math.abs(hash).toString(36);
+}
+
+function graphHostnameSuffix(hostname) {
+    const parts = String(hostname || "").trim().toLowerCase().split(".").filter(Boolean);
+    if (parts.length <= 2) {
+        return parts.join(".") || "";
+    }
+    const tld = parts.slice(-2).join(".");
+    if (["co.uk", "com.au", "co.jp"].includes(tld) && parts.length >= 3) {
+        return parts.slice(-3).join(".");
+    }
+    return parts.slice(-2).join(".");
+}
+
+function graphUrlHost(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    try {
+        return new URL(raw).host || "";
+    } catch (err) {
+        const match = raw.match(/^[a-z]+:\/\/([^/?#]+)/i);
+        return match ? String(match[1] || "").trim() : "";
+    }
+}
+
 function graphPropertyValue(entity, key) {
     if (!entity || typeof entity !== "object") {
         return "";
@@ -3212,7 +3284,7 @@ function graphUpdateConfidenceLabel() {
 }
 
 function graphUpdateZoomLabel() {
-    const value = Math.max(50, Math.min(200, parseInt(getValue("graph-zoom-slider"), 10) || graphWorkspaceState.zoomPercent || 70));
+    const value = Math.max(10, Math.min(200, parseInt(getValue("graph-zoom-slider"), 10) || graphWorkspaceState.zoomPercent || 70));
     graphWorkspaceState.zoomPercent = value;
     setText("graph-zoom-value", `${value}%`);
 }
@@ -3327,11 +3399,15 @@ function graphPopulateDynamicFilters() {
 function graphCollectServerQuery() {
     graphWorkspaceState.viewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim();
     graphWorkspaceState.groupBy = String(getValue("graph-group-select") || graphWorkspaceState.groupBy || graphCurrentViewConfig().defaultGroup || "subnet").trim();
+    graphWorkspaceState.renderMode = String(getValue("graph-render-mode-select") || graphWorkspaceState.renderMode || "auto").trim().toLowerCase();
+    graphWorkspaceState.focusDepth = Math.max(1, Math.min(3, parseInt(getValue("graph-focus-depth-select"), 10) || graphWorkspaceState.focusDepth || 1));
     const hostId = parseInt(getValue("graph-host-filter"), 10);
     const minConfidence = Math.max(0, Math.min(100, parseInt(getValue("graph-min-confidence"), 10) || 0));
     return {
         viewId: graphWorkspaceState.viewId,
         groupBy: graphWorkspaceState.groupBy,
+        renderMode: graphWorkspaceState.renderMode,
+        focusDepth: graphWorkspaceState.focusDepth,
         hostId: Number.isFinite(hostId) && hostId > 0 ? hostId : 0,
         nodeType: String(getValue("graph-node-type-filter") || "").trim().toLowerCase(),
         edgeType: String(getValue("graph-edge-type-filter") || "").trim().toLowerCase(),
@@ -3378,6 +3454,10 @@ function graphBuildHostMaps(nodes) {
 }
 
 function graphGroupKeyForNode(node, groupBy, hostMaps) {
+    const summaryGroupKey = String(graphPropertyValue(node, "summary_group_key") || "").trim();
+    if (summaryGroupKey) {
+        return summaryGroupKey;
+    }
     const type = String(node?.type || "").trim().toLowerCase();
     const hostId = parseInt(graphPropertyValue(node, "host_id"), 10);
     const hostname = String(graphPropertyValue(node, "hostname") || "").trim();
@@ -3540,6 +3620,921 @@ function graphSortGroups(groupsMap, groupBy) {
     });
 }
 
+function graphBuildNeighborMaps(edges) {
+    const neighborMap = new Map();
+    const degreeMap = new Map();
+    (edges || []).forEach((edge) => {
+        const fromId = String(edge?.from_node_id || "");
+        const toId = String(edge?.to_node_id || "");
+        if (!fromId || !toId) {
+            return;
+        }
+        if (!neighborMap.has(fromId)) {
+            neighborMap.set(fromId, new Set());
+        }
+        if (!neighborMap.has(toId)) {
+            neighborMap.set(toId, new Set());
+        }
+        neighborMap.get(fromId).add(toId);
+        neighborMap.get(toId).add(fromId);
+    });
+    neighborMap.forEach((neighbors, nodeId) => {
+        degreeMap.set(String(nodeId || ""), neighbors.size);
+    });
+    return {neighborMap, degreeMap};
+}
+
+function graphEstimateGroupGrid(nodeCount, totalNodes) {
+    const count = Math.max(1, Number(nodeCount || 0));
+    if (count <= 4) {
+        return {columns: 1, rows: count};
+    }
+    const denseGraph = totalNodes >= 5000;
+    const veryLargeGroup = count >= 240;
+    const denseFactor = denseGraph ? 0.62 : totalNodes >= 2500 ? 0.56 : 0.48;
+    const maxRows = denseGraph ? 24 : totalNodes >= 2500 ? 20 : veryLargeGroup ? 18 : 14;
+    const minRows = count >= 80 ? 7 : count >= 20 ? 4 : 2;
+    let columns = Math.max(1, Math.ceil(Math.sqrt(count * denseFactor)));
+    let rows = Math.max(1, Math.ceil(count / columns));
+    if (rows > maxRows) {
+        rows = maxRows;
+        columns = Math.max(1, Math.ceil(count / rows));
+    } else if (rows < minRows && count > minRows) {
+        rows = minRows;
+        columns = Math.max(1, Math.ceil(count / rows));
+    }
+    return {columns, rows};
+}
+
+function graphViewLanePriority(nodeType, viewId, groupBy) {
+    const type = String(nodeType || "").trim().toLowerCase();
+    const view = String(viewId || graphWorkspaceState.viewId || "attack_surface").trim().toLowerCase();
+    if (view === "attack_surface") {
+        if (type === "scope" || type === "subnet") {
+            return 0;
+        }
+        if (type === "host" || type === "fqdn") {
+            return 1;
+        }
+        if (type === "port" || type === "service") {
+            return 2;
+        }
+        if (type === "url" || type === "screenshot") {
+            return 3;
+        }
+        if (type === "technology" || type === "cpe") {
+            return 4;
+        }
+        if (type === "finding" || type === "cve" || type === "exploit_reference") {
+            return 5;
+        }
+        if (["credential", "identity", "session", "action", "artifact", "evidence_record"].includes(type)) {
+            return 6;
+        }
+        return 7;
+    }
+    if (view === "host_service_topology") {
+        if (type === "host" || type === "fqdn" || type === "subnet") {
+            return 0;
+        }
+        if (type === "port" || type === "service") {
+            return 1;
+        }
+        if (type === "url" || type === "screenshot") {
+            return 2;
+        }
+        if (type === "technology" || type === "cpe") {
+            return 3;
+        }
+        if (type === "finding" || type === "cve" || type === "exploit_reference") {
+            return 4;
+        }
+        return 5;
+    }
+    if (view === "web_application_map") {
+        if (type === "host" || type === "fqdn" || type === "service") {
+            return 0;
+        }
+        if (type === "url" || type === "screenshot") {
+            return 1;
+        }
+        if (type === "technology" || type === "cpe") {
+            return 2;
+        }
+        if (type === "finding" || type === "cve" || type === "exploit_reference") {
+            return 3;
+        }
+        return 4;
+    }
+    if (view === "credential_identity_session") {
+        if (type === "host") {
+            return 0;
+        }
+        if (type === "credential" || type === "identity" || type === "session") {
+            return 1;
+        }
+        if (type === "action" || type === "artifact" || type === "evidence_record") {
+            return 2;
+        }
+        return 3;
+    }
+    if (view === "exploitation_chain") {
+        if (type === "host") {
+            return 0;
+        }
+        if (type === "finding" || type === "cve" || type === "exploit_reference") {
+            return 1;
+        }
+        if (type === "credential" || type === "identity" || type === "session") {
+            return 2;
+        }
+        if (type === "action" || type === "artifact" || type === "screenshot" || type === "evidence_record") {
+            return 3;
+        }
+        return 4;
+    }
+    return graphGroupTypePriority(type, groupBy);
+}
+
+function graphEstimateLayoutTargetHeight(totalArea, totalNodes, laneCount) {
+    const base = Math.sqrt(Math.max(totalArea, 1)) * (totalNodes >= 5000 ? 1.08 : 1.16);
+    return Math.max(1100, Math.min(totalNodes >= 5000 ? 5600 : 4200, Math.round(base + (laneCount * 120))));
+}
+
+function graphPackGroupsIntoLanes(groupInfos, targetHeight, groupGapX, groupGapY, outerPad) {
+    const lanes = new Map();
+    groupInfos.forEach((group) => {
+        const laneKey = Number(group?.lane ?? 0);
+        if (!lanes.has(laneKey)) {
+            lanes.set(laneKey, []);
+        }
+        lanes.get(laneKey).push(group);
+    });
+
+    const orderedLanes = Array.from(lanes.entries()).sort((left, right) => Number(left[0]) - Number(right[0]));
+    let globalX = outerPad;
+    let maxHeight = 0;
+
+    orderedLanes.forEach(([, laneGroups]) => {
+        let localX = 0;
+        let localY = outerPad;
+        let currentColumnWidth = 0;
+        let laneWidth = 0;
+        let laneHeight = 0;
+        laneGroups.forEach((group) => {
+            if (localY > outerPad && (localY + group.height) > targetHeight) {
+                localX += currentColumnWidth + groupGapX;
+                localY = outerPad;
+                currentColumnWidth = 0;
+            }
+            group.x = globalX + localX;
+            group.y = localY;
+            localY += group.height + groupGapY;
+            currentColumnWidth = Math.max(currentColumnWidth, group.width);
+            laneWidth = Math.max(laneWidth, localX + currentColumnWidth);
+            laneHeight = Math.max(laneHeight, group.y + group.height);
+        });
+        globalX += laneWidth + (groupGapX * 2);
+        maxHeight = Math.max(maxHeight, laneHeight + outerPad);
+    });
+
+    return {
+        width: globalX,
+        height: Math.max(maxHeight, 760),
+    };
+}
+
+function graphComputeCompactLayout(nodes, edges, groupsMap, groupBy, persistedPositions = {}) {
+    const totalNodes = Array.isArray(nodes) ? nodes.length : 0;
+    const nodeGapX = totalNodes >= 5000 ? 10 : totalNodes >= 2500 ? 12 : 16;
+    const nodeGapY = totalNodes >= 5000 ? 8 : totalNodes >= 2500 ? 10 : 14;
+    const groupGapX = totalNodes >= 5000 ? 20 : 26;
+    const groupGapY = totalNodes >= 5000 ? 20 : 28;
+    const groupPadX = totalNodes >= 5000 ? 14 : 18;
+    const groupTopPad = 42;
+    const groupBottomPad = totalNodes >= 5000 ? 12 : 18;
+    const groupHeaderPad = 16;
+    const outerPad = 20;
+    const viewId = String(graphWorkspaceState.viewId || "attack_surface").trim();
+
+    const nodeById = new Map((nodes || []).map((node) => [String(node?.node_id || ""), node]));
+    const {neighborMap, degreeMap} = graphBuildNeighborMaps(edges);
+    const groupEntries = graphSortGroups(groupsMap, groupBy);
+    const nodeToGroup = new Map();
+    groupEntries.forEach(([groupKey, groupNodes]) => {
+        (groupNodes || []).forEach((node) => {
+            nodeToGroup.set(String(node?.node_id || ""), String(groupKey || ""));
+        });
+    });
+
+    const groupAdjacency = new Map();
+    const groupDegree = new Map();
+    (edges || []).forEach((edge) => {
+        const fromId = String(edge?.from_node_id || "");
+        const toId = String(edge?.to_node_id || "");
+        const fromGroup = nodeToGroup.get(fromId);
+        const toGroup = nodeToGroup.get(toId);
+        if (!fromGroup || !toGroup || fromGroup === toGroup) {
+            return;
+        }
+        const forwardKey = `${fromGroup}::${toGroup}`;
+        const reverseKey = `${toGroup}::${fromGroup}`;
+        groupAdjacency.set(forwardKey, Number(groupAdjacency.get(forwardKey) || 0) + 1);
+        groupAdjacency.set(reverseKey, Number(groupAdjacency.get(reverseKey) || 0) + 1);
+        groupDegree.set(fromGroup, Number(groupDegree.get(fromGroup) || 0) + 1);
+        groupDegree.set(toGroup, Number(groupDegree.get(toGroup) || 0) + 1);
+    });
+
+    const groupInfos = groupEntries.map(([groupKey, groupNodes]) => {
+        const key = String(groupKey || "");
+        const orderedNodes = (groupNodes || []).slice().sort((left, right) => {
+            const typeDelta = graphGroupTypePriority(left?.type, groupBy) - graphGroupTypePriority(right?.type, groupBy);
+            if (typeDelta !== 0) {
+                return typeDelta;
+            }
+            const severityDelta = graphSeverityRank(left) - graphSeverityRank(right);
+            if (severityDelta !== 0) {
+                return severityDelta;
+            }
+            const degreeDelta = Number(degreeMap.get(String(right?.node_id || "")) || 0) - Number(degreeMap.get(String(left?.node_id || "")) || 0);
+            if (degreeDelta !== 0) {
+                return degreeDelta;
+            }
+            const neighborDelta = Number((neighborMap.get(String(right?.node_id || "")) || new Set()).size) - Number((neighborMap.get(String(left?.node_id || "")) || new Set()).size);
+            if (neighborDelta !== 0) {
+                return neighborDelta;
+            }
+            return graphNaturalCompare(left?.label || "", right?.label || "");
+        });
+        const priority = Math.min(...orderedNodes.map((item) => graphGroupTypePriority(item?.type, groupBy)), 9);
+        const severity = Math.min(...orderedNodes.map((item) => graphSeverityRank(item)), 99);
+        const findings = orderedNodes.filter((item) => ["finding", "cve", "exploit_reference"].includes(String(item?.type || "").trim().toLowerCase())).length;
+        const {columns, rows} = graphEstimateGroupGrid(orderedNodes.length, totalNodes);
+        const width = Math.max(
+            220,
+            Math.round((groupPadX * 2) + (columns * GRAPH_NODE_SIZE.width) + (Math.max(0, columns - 1) * nodeGapX)),
+        );
+        const height = Math.max(
+            132,
+            Math.round(groupHeaderPad + groupTopPad + (rows * GRAPH_NODE_SIZE.height) + (Math.max(0, rows - 1) * nodeGapY) + groupBottomPad),
+        );
+        return {
+            key,
+            label: key,
+            nodes: orderedNodes,
+            nodeIds: orderedNodes.map((item) => String(item?.node_id || "")).filter(Boolean),
+            priority,
+            severity,
+            findings,
+            degree: Number(groupDegree.get(key) || 0),
+            lane: Math.min(...orderedNodes.map((item) => graphViewLanePriority(item?.type, viewId, groupBy)), 99),
+            columns,
+            rows,
+            width,
+            height,
+            area: width * height,
+            x: outerPad,
+            y: outerPad,
+        };
+    });
+
+    groupInfos.sort((left, right) => {
+        if (left.lane !== right.lane) {
+            return left.lane - right.lane;
+        }
+        if (left.priority !== right.priority) {
+            return left.priority - right.priority;
+        }
+        if (left.severity !== right.severity) {
+            return left.severity - right.severity;
+        }
+        if (left.findings !== right.findings) {
+            return right.findings - left.findings;
+        }
+        if (left.degree !== right.degree) {
+            return right.degree - left.degree;
+        }
+        if (left.area !== right.area) {
+            return right.area - left.area;
+        }
+        return graphNaturalCompare(left.key, right.key);
+    });
+
+    const totalArea = groupInfos.reduce((sum, item) => sum + Number(item.area || 0), 0);
+    const laneCount = new Set(groupInfos.map((item) => Number(item?.lane ?? 0))).size || 1;
+    const targetHeight = graphEstimateLayoutTargetHeight(totalArea, totalNodes, laneCount);
+    const packedGroups = graphPackGroupsIntoLanes(
+        groupInfos,
+        targetHeight,
+        groupGapX,
+        groupGapY,
+        outerPad,
+    );
+
+    const positions = {};
+    groupInfos.forEach((group) => {
+        const rows = Math.max(1, Number(group.rows || 1));
+        (group.nodes || []).forEach((node, index) => {
+            const nodeId = String(node?.node_id || "");
+            const column = Math.floor(index / rows);
+            const row = index % rows;
+            positions[nodeId] = {
+                x: Math.round(group.x + groupPadX + (column * (GRAPH_NODE_SIZE.width + nodeGapX))),
+                y: Math.round(group.y + groupTopPad + (row * (GRAPH_NODE_SIZE.height + nodeGapY))),
+            };
+        });
+    });
+
+    const livePositions = persistedPositions && typeof persistedPositions === "object" ? persistedPositions : {};
+    Object.keys(livePositions).forEach((nodeId) => {
+        if (!nodeById.has(String(nodeId || ""))) {
+            return;
+        }
+        positions[nodeId] = {
+            x: Math.max(outerPad, Math.round(Number(livePositions[nodeId]?.x) || 0)),
+            y: Math.max(outerPad, Math.round(Number(livePositions[nodeId]?.y) || 0)),
+        };
+    });
+
+    const renderedGroups = groupInfos.map((group) => {
+        const groupNodeIds = Array.isArray(group.nodeIds) ? group.nodeIds : [];
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxX = 0;
+        let maxY = 0;
+        groupNodeIds.forEach((nodeId) => {
+            const point = positions[String(nodeId || "")];
+            if (!point) {
+                return;
+            }
+            minX = Math.min(minX, Number(point.x) || 0);
+            minY = Math.min(minY, Number(point.y) || 0);
+            maxX = Math.max(maxX, (Number(point.x) || 0) + GRAPH_NODE_SIZE.width);
+            maxY = Math.max(maxY, (Number(point.y) || 0) + GRAPH_NODE_SIZE.height);
+        });
+        if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+            return {
+                key: group.key,
+                label: group.label,
+                x: group.x,
+                y: group.y,
+                width: group.width,
+                height: group.height,
+                nodeIds: groupNodeIds,
+            };
+        }
+        return {
+            key: group.key,
+            label: group.label,
+            x: Math.max(12, Math.round(minX - groupPadX)),
+            y: Math.max(12, Math.round(minY - groupTopPad + 12)),
+            width: Math.max(220, Math.round((maxX - minX) + (groupPadX * 2))),
+            height: Math.max(132, Math.round((maxY - minY) + groupTopPad + groupBottomPad + 12)),
+            nodeIds: groupNodeIds,
+        };
+    });
+
+    let width = Math.max(Math.round(packedGroups.width || 1200), 1200);
+    let height = Math.max(Math.round(packedGroups.height || 760), 760);
+    Object.values(positions).forEach((point) => {
+        width = Math.max(width, (Number(point?.x) || 0) + GRAPH_NODE_SIZE.width + 80);
+        height = Math.max(height, (Number(point?.y) || 0) + GRAPH_NODE_SIZE.height + 120);
+    });
+    renderedGroups.forEach((group) => {
+        width = Math.max(width, (Number(group?.x) || 0) + (Number(group?.width) || 0) + 48);
+        height = Math.max(height, (Number(group?.y) || 0) + (Number(group?.height) || 0) + 48);
+    });
+
+    return {
+        positions,
+        groups: renderedGroups,
+        width: Math.round(width),
+        height: Math.round(height),
+    };
+}
+
+function graphEntityUnderlyingNodeIds(entity) {
+    if (!entity || typeof entity !== "object") {
+        return [];
+    }
+    const memberNodeIds = Array.isArray(graphPropertyValue(entity, "member_node_ids"))
+        ? graphPropertyValue(entity, "member_node_ids")
+        : [];
+    if (memberNodeIds.length) {
+        return memberNodeIds.map((item) => String(item || "")).filter(Boolean);
+    }
+    const nodeId = String(entity.node_id || "");
+    return nodeId ? [nodeId] : [];
+}
+
+function graphSelectedUnderlyingNodeIds() {
+    if (graphWorkspaceState.selectedKind !== "node" || !graphWorkspaceState.selectedRef) {
+        return [];
+    }
+    return graphEntityUnderlyingNodeIds(graphFindEntity("node", graphWorkspaceState.selectedRef));
+}
+
+function graphShouldUseSummaryMode(nodeCount, edgeCount, renderMode) {
+    const mode = String(renderMode || graphWorkspaceState.renderMode || "auto").trim().toLowerCase();
+    if (mode === "graph") {
+        return false;
+    }
+    if (mode === "summary") {
+        return true;
+    }
+    if (mode === "matrix") {
+        return true;
+    }
+    return nodeCount >= GRAPH_LARGE_NODE_THRESHOLD || edgeCount >= GRAPH_LARGE_EDGE_THRESHOLD;
+}
+
+function graphShouldUseMatrixMode(nodeCount, edgeCount, renderMode) {
+    const mode = String(renderMode || graphWorkspaceState.renderMode || "auto").trim().toLowerCase();
+    if (mode === "matrix") {
+        return true;
+    }
+    if (mode === "graph" || mode === "summary") {
+        return false;
+    }
+    return nodeCount >= GRAPH_MATRIX_NODE_THRESHOLD || edgeCount >= GRAPH_MATRIX_EDGE_THRESHOLD;
+}
+
+function graphDominantSourceKind(items) {
+    const scores = new Map();
+    const priority = {
+        observed: 4,
+        user_entered: 3,
+        inferred: 2,
+        ai_suggested: 1,
+    };
+    (items || []).forEach((item) => {
+        const key = String(item?.source_kind || "observed").trim().toLowerCase() || "observed";
+        const base = Number(scores.get(key) || 0);
+        scores.set(key, base + 10 + Number(priority[key] || 0));
+    });
+    return Array.from(scores.entries()).sort((left, right) => right[1] - left[1])[0]?.[0] || "observed";
+}
+
+function graphRepresentativeSeverity(items) {
+    let best = "";
+    let bestRank = Number.POSITIVE_INFINITY;
+    (items || []).forEach((item) => {
+        const severity = String(graphPropertyValue(item, "severity") || "").trim().toLowerCase();
+        if (!severity) {
+            return;
+        }
+        const rank = Object.prototype.hasOwnProperty.call(GRAPH_SEVERITY_ORDER, severity)
+            ? GRAPH_SEVERITY_ORDER[severity]
+            : 80;
+        if (rank < bestRank) {
+            bestRank = rank;
+            best = severity;
+        }
+    });
+    return best;
+}
+
+function graphLargeClusterCollapseThreshold(nodeType, totalNodes) {
+    const type = String(nodeType || "").trim().toLowerCase();
+    if (type === "scope" || type === "subnet") {
+        return Number.POSITIVE_INFINITY;
+    }
+    if (type === "finding" || type === "cve" || type === "exploit_reference") {
+        return totalNodes >= 5000 ? 5 : 7;
+    }
+    if (type === "host" || type === "fqdn") {
+        return totalNodes >= 5000 ? 3 : 5;
+    }
+    if (type === "service" || type === "port" || type === "url" || type === "screenshot") {
+        return totalNodes >= 5000 ? 2 : 4;
+    }
+    if (type === "technology" || type === "cpe") {
+        return totalNodes >= 5000 ? 2 : 3;
+    }
+    return totalNodes >= 5000 ? 2 : 4;
+}
+
+function graphLargeClusterDescriptor(node, hostMaps) {
+    const type = String(node?.type || "").trim().toLowerCase();
+    const label = String(node?.label || "").trim();
+    const hostId = parseInt(graphPropertyValue(node, "host_id"), 10);
+    const hostname = String(graphPropertyValue(node, "hostname") || "").trim();
+    const ip = String(graphPropertyValue(node, "ip") || "").trim();
+    const serviceName = String(graphPropertyValue(node, "service") || graphPropertyValue(node, "name") || label || "").trim().toLowerCase();
+    const urlHost = graphUrlHost(label).toLowerCase();
+    if (type === "host") {
+        return {
+            type,
+            bucket: graphSubnetForIp(ip) || hostMaps.subnetByHostId.get(hostId) || graphHostnameSuffix(hostname) || "hosts",
+        };
+    }
+    if (type === "fqdn") {
+        return {
+            type,
+            bucket: graphHostnameSuffix(label || hostname) || hostMaps.domainByHostId.get(hostId) || "domains",
+        };
+    }
+    if (type === "port") {
+        return {
+            type,
+            bucket: `${graphPropertyValue(node, "port") || label}/${graphPropertyValue(node, "protocol") || "tcp"}`.replace(/\/$/, ""),
+        };
+    }
+    if (type === "service") {
+        return {
+            type,
+            bucket: serviceName || "service",
+        };
+    }
+    if (type === "url") {
+        return {
+            type,
+            bucket: urlHost || graphHostnameSuffix(hostname) || "urls",
+        };
+    }
+    if (type === "technology" || type === "cpe" || type === "credential" || type === "identity" || type === "session") {
+        return {
+            type,
+            bucket: String(label || graphPropertyValue(node, "name") || type).trim().toLowerCase() || type,
+        };
+    }
+    if (type === "screenshot" || type === "artifact" || type === "action" || type === "evidence_record") {
+        return {
+            type,
+            bucket: hostname || hostMaps.hostLabelById.get(hostId) || graphSubnetForIp(ip) || type,
+        };
+    }
+    if (type === "finding" || type === "cve" || type === "exploit_reference") {
+        return {
+            type,
+            bucket: String(label || graphPropertyValue(node, "title") || graphPropertyValue(node, "cve") || graphPropertyValue(node, "severity") || type)
+                .trim()
+                .toLowerCase() || type,
+        };
+    }
+    return {
+        type,
+        bucket: String(label || type).trim().toLowerCase() || type,
+    };
+}
+
+function graphLargeClusterLabel(type, bucket, memberNodes) {
+    const count = Array.isArray(memberNodes) ? memberNodes.length : 0;
+    const cleanedBucket = graphFriendlyLabel(String(bucket || "").replace(/^.+?:/, "")) || graphFriendlyLabel(type) || "summary";
+    const plural = count === 1 ? "" : "s";
+    if (type === "host") {
+        return `${cleanedBucket} ${count} host${plural}`;
+    }
+    if (type === "fqdn") {
+        return `${cleanedBucket} ${count} fqdn${plural}`;
+    }
+    if (type === "service" || type === "port" || type === "technology" || type === "cpe") {
+        return `${cleanedBucket} ${count}`;
+    }
+    if (type === "url") {
+        return `${cleanedBucket} ${count} url${plural}`;
+    }
+    if (type === "screenshot") {
+        return `${cleanedBucket} ${count} screenshot${plural}`;
+    }
+    return `${cleanedBucket} ${count}`;
+}
+
+function graphCreateSummaryNode(summaryId, groupKey, descriptor, memberNodes) {
+    const severity = graphRepresentativeSeverity(memberNodes);
+    const sampleLabels = (memberNodes || []).map((item) => String(item?.label || "").trim()).filter(Boolean).slice(0, 3);
+    return {
+        node_id: summaryId,
+        type: descriptor.type,
+        label: graphLargeClusterLabel(descriptor.type, descriptor.bucket, memberNodes),
+        confidence: Math.max(...(memberNodes || []).map((item) => Number(item?.confidence || 0) || 0), 0),
+        source_kind: graphDominantSourceKind(memberNodes),
+        properties: {
+            summary_kind: true,
+            summary_group_key: groupKey,
+            member_count: memberNodes.length,
+            member_node_ids: memberNodes.map((item) => String(item?.node_id || "")).filter(Boolean),
+            member_types: Array.from(new Set(memberNodes.map((item) => String(item?.type || "").trim().toLowerCase()).filter(Boolean))),
+            sample_labels: sampleLabels,
+            collapsed_type: descriptor.type,
+            severity,
+        },
+        evidence_refs: [],
+    };
+}
+
+function graphLimitAggregateEdges(edges, summaryNodeIds, selectedVisibleId, focusActive) {
+    const sorted = (edges || []).slice().sort((left, right) => {
+        const leftCount = Number(graphPropertyValue(left, "aggregate_count") || 1);
+        const rightCount = Number(graphPropertyValue(right, "aggregate_count") || 1);
+        if (leftCount !== rightCount) {
+            return rightCount - leftCount;
+        }
+        return graphNaturalCompare(left?.edge_id || "", right?.edge_id || "");
+    });
+    if (focusActive) {
+        return sorted;
+    }
+    const perNode = new Map();
+    const kept = [];
+    sorted.forEach((edge) => {
+        const fromId = String(edge?.from_node_id || "");
+        const toId = String(edge?.to_node_id || "");
+        const count = Number(graphPropertyValue(edge, "aggregate_count") || 1);
+        const fromSummary = summaryNodeIds.has(fromId);
+        const toSummary = summaryNodeIds.has(toId);
+        if (selectedVisibleId && (fromId === selectedVisibleId || toId === selectedVisibleId)) {
+            kept.push(edge);
+            return;
+        }
+        if (fromSummary || toSummary || count >= 3) {
+            kept.push(edge);
+            return;
+        }
+        const fromSeen = Number(perNode.get(fromId) || 0);
+        const toSeen = Number(perNode.get(toId) || 0);
+        if (fromSeen >= 6 && toSeen >= 6) {
+            return;
+        }
+        perNode.set(fromId, fromSeen + 1);
+        perNode.set(toId, toSeen + 1);
+        kept.push(edge);
+    });
+    return kept;
+}
+
+function graphBuildLargeGraphProjection(nodes, edges, hostMaps, groupBy) {
+    const totalNodes = Array.isArray(nodes) ? nodes.length : 0;
+    const groupsMap = new Map();
+    (nodes || []).forEach((node) => {
+        const groupKey = graphGroupKeyForNode(node, groupBy, hostMaps) || "other";
+        if (!groupsMap.has(groupKey)) {
+            groupsMap.set(groupKey, []);
+        }
+        groupsMap.get(groupKey).push(node);
+    });
+
+    const visibleNodes = [];
+    const visibleNodeIdsByGroup = new Map();
+    const memberToVisible = new Map();
+    const summaryNodeIds = new Set();
+    const visibleNodeMap = new Map();
+
+    groupsMap.forEach((groupNodes, groupKey) => {
+        const clusters = new Map();
+        (groupNodes || []).forEach((node) => {
+            const descriptor = graphLargeClusterDescriptor(node, hostMaps);
+            const clusterKey = `${descriptor.type}|${descriptor.bucket}`;
+            if (!clusters.has(clusterKey)) {
+                clusters.set(clusterKey, {
+                    descriptor,
+                    nodes: [],
+                });
+            }
+            clusters.get(clusterKey).nodes.push(node);
+        });
+        visibleNodeIdsByGroup.set(groupKey, new Set());
+        clusters.forEach((cluster, clusterKey) => {
+            const type = String(cluster.descriptor?.type || "").trim().toLowerCase();
+            const threshold = graphLargeClusterCollapseThreshold(type, totalNodes);
+            const summaryId = `graph-summary-${graphHashToken(`${groupKey}|${clusterKey}`)}`;
+            const expanded = Boolean(graphWorkspaceState.expandedSummaryIds[summaryId]);
+            const shouldCollapse = cluster.nodes.length > threshold && !expanded;
+            if (shouldCollapse) {
+                const summaryNode = graphCreateSummaryNode(summaryId, groupKey, cluster.descriptor, cluster.nodes);
+                visibleNodes.push(summaryNode);
+                visibleNodeMap.set(summaryId, summaryNode);
+                visibleNodeIdsByGroup.get(groupKey).add(summaryId);
+                summaryNodeIds.add(summaryId);
+                cluster.nodes.forEach((node) => {
+                    memberToVisible.set(String(node?.node_id || ""), summaryId);
+                });
+                return;
+            }
+            cluster.nodes.forEach((node) => {
+                const nodeId = String(node?.node_id || "");
+                visibleNodes.push(node);
+                visibleNodeMap.set(nodeId, node);
+                visibleNodeIdsByGroup.get(groupKey).add(nodeId);
+                memberToVisible.set(nodeId, nodeId);
+            });
+        });
+    });
+
+    const edgeMap = new Map();
+    (edges || []).forEach((edge) => {
+        const fromVisibleId = memberToVisible.get(String(edge?.from_node_id || ""));
+        const toVisibleId = memberToVisible.get(String(edge?.to_node_id || ""));
+        if (!fromVisibleId || !toVisibleId || fromVisibleId === toVisibleId) {
+            return;
+        }
+        const edgeType = String(edge?.type || "").trim().toLowerCase() || "related";
+        const key = `${fromVisibleId}|${toVisibleId}|${edgeType}`;
+        if (!edgeMap.has(key)) {
+            edgeMap.set(key, {
+                edge_id: `graph-edge-summary-${graphHashToken(key)}`,
+                type: edgeType,
+                from_node_id: fromVisibleId,
+                to_node_id: toVisibleId,
+                source_kind: "observed",
+                confidence: 0,
+                members: [],
+                properties: {
+                    aggregate_kind: true,
+                    aggregate_count: 0,
+                    edge_types: [],
+                },
+            });
+        }
+        const record = edgeMap.get(key);
+        record.members.push(edge);
+        record.properties.aggregate_count += Number(graphPropertyValue(edge, "aggregate_count") || 1);
+        record.properties.edge_types.push(edgeType);
+        record.confidence = Math.max(Number(record.confidence || 0), Number(edge?.confidence || 0) || 0);
+        record.source_kind = graphDominantSourceKind(record.members);
+    });
+
+    const selectedVisibleId = String(graphWorkspaceState.selectedRef || "");
+    const focusActive = Array.isArray(graphWorkspaceState.focusSeedNodeIds) && graphWorkspaceState.focusSeedNodeIds.length > 0;
+    const projectedEdges = graphLimitAggregateEdges(
+        Array.from(edgeMap.values()).map((edge) => ({
+            edge_id: edge.edge_id,
+            type: edge.type,
+            from_node_id: edge.from_node_id,
+            to_node_id: edge.to_node_id,
+            source_kind: edge.source_kind,
+            confidence: edge.confidence,
+            properties: {
+                ...edge.properties,
+                edge_types: Array.from(new Set(edge.properties.edge_types)),
+            },
+        })),
+        summaryNodeIds,
+        selectedVisibleId,
+        focusActive,
+    );
+
+    const projectedGroups = new Map();
+    visibleNodeIdsByGroup.forEach((nodeIdSet, groupKey) => {
+        const visibleGroupNodes = Array.from(nodeIdSet)
+            .map((nodeId) => visibleNodeMap.get(String(nodeId || "")))
+            .filter(Boolean);
+        if (visibleGroupNodes.length) {
+            projectedGroups.set(groupKey, visibleGroupNodes);
+        }
+    });
+
+    return {
+        nodes: visibleNodes,
+        edges: projectedEdges,
+        groupsMap: projectedGroups,
+        usedSummary: summaryNodeIds.size > 0,
+        summaryNodeIds,
+    };
+}
+
+function graphComputeFocusedSubgraph(nodes, edges, seedNodeIds, depth) {
+    const requestedSeeds = Array.isArray(seedNodeIds) ? seedNodeIds.map((item) => String(item || "")).filter(Boolean) : [];
+    if (!requestedSeeds.length) {
+        return {
+            nodes,
+            edges,
+            active: false,
+        };
+    }
+    const nodeById = new Map((nodes || []).map((node) => [String(node?.node_id || ""), node]));
+    const seeds = requestedSeeds.filter((nodeId) => nodeById.has(nodeId));
+    if (!seeds.length) {
+        return {
+            nodes,
+            edges,
+            active: false,
+        };
+    }
+    const neighborMap = new Map();
+    (edges || []).forEach((edge) => {
+        const fromId = String(edge?.from_node_id || "");
+        const toId = String(edge?.to_node_id || "");
+        if (!fromId || !toId) {
+            return;
+        }
+        if (!neighborMap.has(fromId)) {
+            neighborMap.set(fromId, new Set());
+        }
+        if (!neighborMap.has(toId)) {
+            neighborMap.set(toId, new Set());
+        }
+        neighborMap.get(fromId).add(toId);
+        neighborMap.get(toId).add(fromId);
+    });
+
+    const visited = new Set(seeds);
+    let frontier = seeds.slice();
+    const maxDepth = Math.max(1, Math.min(3, Number(depth || 1)));
+    for (let step = 0; step < maxDepth; step += 1) {
+        const next = [];
+        frontier.forEach((nodeId) => {
+            const neighbors = Array.from(neighborMap.get(nodeId) || []);
+            neighbors.forEach((neighborId) => {
+                if (visited.has(neighborId)) {
+                    return;
+                }
+                visited.add(neighborId);
+                next.push(neighborId);
+            });
+        });
+        frontier = next;
+        if (!frontier.length) {
+            break;
+        }
+    }
+    return {
+        nodes: (nodes || []).filter((node) => visited.has(String(node?.node_id || ""))),
+        edges: (edges || []).filter((edge) => visited.has(String(edge?.from_node_id || "")) && visited.has(String(edge?.to_node_id || ""))),
+        active: true,
+    };
+}
+
+function graphComputeMatrixView(nodes, edges, groups) {
+    const nodeToGroup = new Map();
+    (groups || []).forEach((group) => {
+        (group.nodeIds || []).forEach((nodeId) => {
+            nodeToGroup.set(String(nodeId || ""), String(group.key || ""));
+        });
+    });
+
+    const activity = new Map();
+    (edges || []).forEach((edge) => {
+        const fromKey = nodeToGroup.get(String(edge?.from_node_id || ""));
+        const toKey = nodeToGroup.get(String(edge?.to_node_id || ""));
+        if (!fromKey || !toKey) {
+            return;
+        }
+        const count = Number(graphPropertyValue(edge, "aggregate_count") || 1);
+        activity.set(fromKey, Number(activity.get(fromKey) || 0) + count);
+        activity.set(toKey, Number(activity.get(toKey) || 0) + count);
+    });
+
+    const orderedGroups = (groups || []).map((group) => ({
+        key: String(group?.key || ""),
+        label: String(group?.label || group?.key || ""),
+        nodeCount: Array.isArray(group?.nodeIds) ? group.nodeIds.length : 0,
+        activity: Number(activity.get(String(group?.key || "")) || 0),
+    })).sort((left, right) => {
+        if (left.activity !== right.activity) {
+            return right.activity - left.activity;
+        }
+        if (left.nodeCount !== right.nodeCount) {
+            return right.nodeCount - left.nodeCount;
+        }
+        return graphNaturalCompare(left.label, right.label);
+    });
+
+    const keptGroups = orderedGroups.slice(0, GRAPH_MATRIX_GROUP_LIMIT);
+    const keptKeys = new Set(keptGroups.map((group) => group.key));
+    const otherNeeded = orderedGroups.length > keptGroups.length;
+    const indexByKey = new Map(keptGroups.map((group, index) => [group.key, index]));
+    if (otherNeeded) {
+        keptGroups.push({
+            key: "__other__",
+            label: "other",
+            nodeCount: orderedGroups.slice(GRAPH_MATRIX_GROUP_LIMIT).reduce((sum, group) => sum + group.nodeCount, 0),
+            activity: orderedGroups.slice(GRAPH_MATRIX_GROUP_LIMIT).reduce((sum, group) => sum + group.activity, 0),
+        });
+    }
+
+    const size = keptGroups.length;
+    const values = Array.from({length: size}, () => Array.from({length: size}, () => 0));
+    let maxValue = 0;
+    (edges || []).forEach((edge) => {
+        let fromKey = nodeToGroup.get(String(edge?.from_node_id || ""));
+        let toKey = nodeToGroup.get(String(edge?.to_node_id || ""));
+        if (!fromKey || !toKey) {
+            return;
+        }
+        if (!keptKeys.has(fromKey)) {
+            fromKey = "__other__";
+        }
+        if (!keptKeys.has(toKey)) {
+            toKey = "__other__";
+        }
+        const rowIndex = keptGroups.findIndex((group) => group.key === fromKey);
+        const columnIndex = keptGroups.findIndex((group) => group.key === toKey);
+        if (rowIndex < 0 || columnIndex < 0) {
+            return;
+        }
+        const count = Number(graphPropertyValue(edge, "aggregate_count") || 1);
+        values[rowIndex][columnIndex] += count;
+        maxValue = Math.max(maxValue, values[rowIndex][columnIndex]);
+    });
+
+    return {
+        groups: keptGroups,
+        values,
+        maxValue,
+    };
+}
+
 function graphApplyLocalFilters(snapshot) {
     const viewConfig = graphCurrentViewConfig();
     const filters = graphCollectServerQuery();
@@ -3602,117 +4597,73 @@ function graphApplyLocalFilters(snapshot) {
     nodeIds = new Set(nodes.map((item) => String(item?.node_id || "")));
     edges = keptEdges.filter((item) => nodeIds.has(String(item?.from_node_id || "")) && nodeIds.has(String(item?.to_node_id || "")));
 
+    const baseNodeCount = nodes.length;
+    const baseEdgeCount = edges.length;
+    const focused = graphComputeFocusedSubgraph(nodes, edges, graphWorkspaceState.focusSeedNodeIds, filters.focusDepth);
+    nodes = focused.nodes;
+    edges = focused.edges;
+
     const hostMaps = graphBuildHostMaps(nodes);
-    const groupsMap = new Map();
-    nodes.sort(graphSortNodes).forEach((item) => {
-        const key = graphGroupKeyForNode(item, filters.groupBy || viewConfig.defaultGroup || "subnet", hostMaps) || "other";
-        if (!groupsMap.has(key)) {
-            groupsMap.set(key, []);
-        }
-        groupsMap.get(key).push(item);
-    });
+    let groupsMap = new Map();
+    let largeGraphMode = graphShouldUseSummaryMode(nodes.length, edges.length, filters.renderMode);
+    let summaryUsed = false;
+    let summaryNodeIds = new Set();
 
-    const positions = {};
-    const groups = [];
-    const groupWidth = 240;
-    const groupGap = 32;
-    const leftPad = 36;
-    const topPad = 72;
-    let maxRows = 0;
-    graphSortGroups(groupsMap, filters.groupBy || viewConfig.defaultGroup || "subnet").forEach(([groupKey, groupNodes], index) => {
-        maxRows = Math.max(maxRows, groupNodes.length);
-        const groupX = leftPad + (index * (groupWidth + groupGap));
-        const groupHeight = Math.max(150, 94 + (groupNodes.length * 84));
-        groups.push({
-            key: groupKey,
-            label: groupKey,
-            x: groupX,
-            y: 20,
-            width: groupWidth,
-            height: groupHeight,
-            nodeIds: groupNodes.map((item) => String(item?.node_id || "")).filter(Boolean),
-        });
-        groupNodes.forEach((item, rowIndex) => {
-            const nodeId = String(item?.node_id || "");
-            if (graphWorkspaceState.pinnedNodeIds[nodeId] && graphWorkspaceState.positions[nodeId]) {
-                positions[nodeId] = {
-                    x: Number(graphWorkspaceState.positions[nodeId].x) || (groupX + 24),
-                    y: Number(graphWorkspaceState.positions[nodeId].y) || (topPad + (rowIndex * 84)),
-                };
-                return;
+    if (largeGraphMode) {
+        const projection = graphBuildLargeGraphProjection(
+            nodes,
+            edges,
+            hostMaps,
+            filters.groupBy || viewConfig.defaultGroup || "subnet",
+        );
+        nodes = projection.nodes;
+        edges = projection.edges;
+        groupsMap = projection.groupsMap;
+        summaryUsed = Boolean(projection.usedSummary);
+        summaryNodeIds = projection.summaryNodeIds || new Set();
+    } else {
+        nodes.sort(graphSortNodes).forEach((item) => {
+            const key = graphGroupKeyForNode(item, filters.groupBy || viewConfig.defaultGroup || "subnet", hostMaps) || "other";
+            if (!groupsMap.has(key)) {
+                groupsMap.set(key, []);
             }
-            positions[nodeId] = {
-                x: groupX + 24,
-                y: topPad + (rowIndex * 84),
-            };
-        });
-    });
-
-    const savedLayout = (graphWorkspaceState.layouts || []).find((item) => String(item?.layout_id || "") === String(graphWorkspaceState.activeLayoutId || ""));
-    if (savedLayout && savedLayout.layout && typeof savedLayout.layout === "object") {
-        const savedPositions = savedLayout.layout.positions && typeof savedLayout.layout.positions === "object"
-            ? savedLayout.layout.positions
-            : {};
-        Object.keys(savedPositions).forEach((nodeId) => {
-            if (!keptNodeIds.has(String(nodeId || ""))) {
-                return;
-            }
-            positions[nodeId] = {
-                x: Number(savedPositions[nodeId]?.x) || positions[nodeId]?.x || 40,
-                y: Number(savedPositions[nodeId]?.y) || positions[nodeId]?.y || 80,
-            };
+            groupsMap.get(key).push(item);
         });
     }
 
-    const renderedGroups = groups.map((group) => {
-        const nodeIdsForGroup = Array.isArray(group.nodeIds) ? group.nodeIds : [];
-        if (!nodeIdsForGroup.length) {
-            return group;
-        }
-        let minX = Number.POSITIVE_INFINITY;
-        let minY = Number.POSITIVE_INFINITY;
-        let maxX = 0;
-        let maxY = 0;
-        nodeIdsForGroup.forEach((nodeId) => {
-            const point = positions[String(nodeId || "")];
-            if (!point) {
-                return;
-            }
-            minX = Math.min(minX, Number(point.x) || 0);
-            minY = Math.min(minY, Number(point.y) || 0);
-            maxX = Math.max(maxX, (Number(point.x) || 0) + GRAPH_NODE_SIZE.width);
-            maxY = Math.max(maxY, (Number(point.y) || 0) + GRAPH_NODE_SIZE.height);
-        });
-        if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
-            return group;
-        }
-        return {
-            ...group,
-            x: Math.max(12, Math.round(minX - 18)),
-            y: Math.max(12, Math.round(minY - 42)),
-            width: Math.max(group.width, Math.round((maxX - minX) + 36)),
-            height: Math.max(132, Math.round((maxY - minY) + 62)),
-        };
-    });
+    const layout = graphComputeCompactLayout(
+        nodes,
+        edges,
+        groupsMap,
+        filters.groupBy || viewConfig.defaultGroup || "subnet",
+        graphWorkspaceState.positions,
+    );
 
-    let width = Math.max(1200, leftPad + (Math.max(groups.length, 1) * (groupWidth + groupGap)) + 48);
-    let height = Math.max(760, topPad + (maxRows * 84) + 140);
-    Object.values(positions).forEach((point) => {
-        width = Math.max(width, (Number(point?.x) || 0) + GRAPH_NODE_SIZE.width + 80);
-        height = Math.max(height, (Number(point?.y) || 0) + GRAPH_NODE_SIZE.height + 120);
-    });
-    renderedGroups.forEach((group) => {
-        width = Math.max(width, (Number(group?.x) || 0) + (Number(group?.width) || 0) + 48);
-        height = Math.max(height, (Number(group?.y) || 0) + (Number(group?.height) || 0) + 48);
-    });
+    const renderKind = graphShouldUseMatrixMode(nodes.length, edges.length, filters.renderMode) && (layout.groups || []).length > 2
+        ? "matrix"
+        : "graph";
+    const matrix = renderKind === "matrix"
+        ? graphComputeMatrixView(nodes, edges, layout.groups || [])
+        : null;
 
     return {
         nodes,
         edges,
-        groups: renderedGroups,
-        positions,
-        width,
-        height,
+        groups: layout.groups,
+        positions: layout.positions,
+        width: layout.width,
+        height: layout.height,
+        renderKind,
+        matrix,
+        meta: {
+            largeGraphMode,
+            summaryUsed,
+            focusActive: focused.active,
+            focusDepth: filters.focusDepth,
+            baseNodeCount,
+            baseEdgeCount,
+            summaryNodeCount: summaryNodeIds.size,
+        },
     };
 }
 
@@ -3815,11 +4766,19 @@ function graphRenderSelectionDetail() {
         return;
     }
 
+    const isSummaryNode = kind === "node" && Boolean(graphPropertyValue(entity, "summary_kind"));
+    const isAggregateEdge = kind === "edge" && Boolean(graphPropertyValue(entity, "aggregate_kind"));
     const fields = [];
     if (kind === "node") {
         detailCaption.textContent = `${graphFriendlyLabel(entity.type)}: ${entity.label || entity.node_id || ""}`;
         fields.push(["Node ID", entity.node_id || ""]);
         fields.push(["Type", graphFriendlyLabel(entity.type || "")]);
+        if (isSummaryNode) {
+            fields.push(["Summary", "collapsed cluster"]);
+            fields.push(["Members", graphPropertyValue(entity, "member_count") || ""]);
+            fields.push(["Examples", (graphPropertyValue(entity, "sample_labels") || []).join(", ")]);
+            fields.push(["Expanded", graphWorkspaceState.expandedSummaryIds[String(entity.node_id || "")] ? "yes" : "no"]);
+        }
     } else {
         const fromNode = graphFindEntity("node", entity.from_node_id);
         const toNode = graphFindEntity("node", entity.to_node_id);
@@ -3828,6 +4787,10 @@ function graphRenderSelectionDetail() {
         fields.push(["Type", graphFriendlyLabel(entity.type || "")]);
         fields.push(["From", fromNode?.label || entity.from_node_id || ""]);
         fields.push(["To", toNode?.label || entity.to_node_id || ""]);
+        if (isAggregateEdge) {
+            fields.push(["Aggregate Count", graphPropertyValue(entity, "aggregate_count") || ""]);
+            fields.push(["Edge Types", (graphPropertyValue(entity, "edge_types") || []).join(", ")]);
+        }
     }
     fields.push(["Confidence", entity.confidence ?? ""]);
     fields.push(["Provenance", GRAPH_SOURCE_KIND_LABELS[String(entity.source_kind || "").trim().toLowerCase()] || graphFriendlyLabel(entity.source_kind || "")]);
@@ -3863,6 +4826,18 @@ function graphRenderSelectionDetail() {
         badge.textContent = "pinned";
         badgesNode.appendChild(badge);
     }
+    if (isSummaryNode) {
+        const badge = document.createElement("span");
+        badge.className = "graph-badge";
+        badge.textContent = "summary";
+        badgesNode.appendChild(badge);
+    }
+    if (isAggregateEdge) {
+        const badge = document.createElement("span");
+        badge.className = "graph-badge";
+        badge.textContent = `${graphPropertyValue(entity, "aggregate_count") || 0} merged edges`;
+        badgesNode.appendChild(badge);
+    }
 
     const evidence = Array.isArray(entity.evidence_refs) ? entity.evidence_refs : [];
     if (!evidence.length) {
@@ -3877,7 +4852,13 @@ function graphRenderSelectionDetail() {
         });
     }
 
-    propertiesNode.textContent = JSON.stringify(entity.properties || {}, null, 2);
+    const displayProperties = entity.properties && typeof entity.properties === "object"
+        ? JSON.parse(JSON.stringify(entity.properties))
+        : {};
+    if (Array.isArray(displayProperties.member_node_ids) && displayProperties.member_node_ids.length > 24) {
+        displayProperties.member_node_ids = [`${displayProperties.member_node_ids.length} members hidden from inline view`];
+    }
+    propertiesNode.textContent = JSON.stringify(displayProperties, null, 2);
 
     const annotations = (graphWorkspaceState.annotations || []).filter((item) => {
         return String(item?.target_kind || "") === kind && String(item?.target_ref || "") === ref;
@@ -3903,9 +4884,13 @@ function graphRenderSelectionDetail() {
         });
     }
 
-    pinButton.disabled = kind !== "node";
+    pinButton.disabled = kind !== "node" || isSummaryNode;
     pinButton.textContent = kind === "node" && graphWorkspaceState.pinnedNodeIds[String(entity.node_id || "")] ? "Unpin Node" : "Pin Node";
-    graphRenderRelatedContent();
+    if (isSummaryNode) {
+        graphRenderRelatedContent("Summary nodes do not have direct related content. Expand or focus the cluster to inspect individual artifacts.");
+    } else {
+        graphRenderRelatedContent();
+    }
 }
 
 function graphRenderRelatedContent(statusMessage = "") {
@@ -4026,9 +5011,15 @@ function graphRenderRelatedContent(statusMessage = "") {
 async function graphFetchRelatedContent() {
     const kind = String(graphWorkspaceState.selectedKind || "");
     const ref = String(graphWorkspaceState.selectedRef || "");
+    const entity = kind === "node" ? graphFindEntity("node", ref) : null;
     if (!kind || !ref || kind !== "node") {
         graphWorkspaceState.relatedContent = [];
         graphRenderRelatedContent("No related artifacts or screenshots.");
+        return;
+    }
+    if (graphPropertyValue(entity, "summary_kind")) {
+        graphWorkspaceState.relatedContent = [];
+        graphRenderRelatedContent("Summary nodes do not have direct related content. Expand or focus the cluster to inspect individual artifacts.");
         return;
     }
     const requestId = Number(graphWorkspaceState.contentRequestId || 0) + 1;
@@ -4051,10 +5042,75 @@ async function graphFetchRelatedContent() {
     }
 }
 
+function graphRenderMatrixView(filtered) {
+    const container = document.getElementById("graph-matrix-view");
+    if (!container) {
+        return;
+    }
+    const matrix = filtered?.matrix || {};
+    const groups = Array.isArray(matrix.groups) ? matrix.groups : [];
+    const values = Array.isArray(matrix.values) ? matrix.values : [];
+    const maxValue = Math.max(1, Number(matrix.maxValue || 0));
+    container.innerHTML = "";
+    if (!groups.length || !values.length) {
+        const empty = document.createElement("p");
+        empty.className = "text-muted";
+        empty.textContent = "No dense matrix data is available for the current filters.";
+        container.appendChild(empty);
+        return;
+    }
+
+    const note = document.createElement("p");
+    note.className = "graph-matrix-note";
+    note.textContent = "Dense matrix fallback: group-to-group relationship intensity";
+    container.appendChild(note);
+
+    const table = document.createElement("table");
+    table.className = "graph-matrix-table";
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    const corner = document.createElement("th");
+    corner.textContent = "Source";
+    headRow.appendChild(corner);
+    groups.forEach((group) => {
+        const th = document.createElement("th");
+        th.textContent = group.label || group.key || "";
+        th.title = `${group.label || group.key || ""} (${group.nodeCount || 0} nodes)`;
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    groups.forEach((rowGroup, rowIndex) => {
+        const row = document.createElement("tr");
+        const rowLabel = document.createElement("th");
+        rowLabel.textContent = rowGroup.label || rowGroup.key || "";
+        rowLabel.title = `${rowGroup.label || rowGroup.key || ""} (${rowGroup.nodeCount || 0} nodes)`;
+        row.appendChild(rowLabel);
+        groups.forEach((columnGroup, columnIndex) => {
+            const count = Number(values?.[rowIndex]?.[columnIndex] || 0);
+            const intensity = count > 0 ? Math.max(0.08, Math.min(1, count / maxValue)) : 0;
+            const cell = document.createElement("td");
+            cell.className = "graph-matrix-cell";
+            cell.title = `${rowGroup.label || rowGroup.key || ""} -> ${columnGroup.label || columnGroup.key || ""}: ${count}`;
+            cell.style.background = count > 0
+                ? `rgba(126, 227, 203, ${Math.max(0.12, intensity * 0.88)})`
+                : "rgba(255, 255, 255, 0.03)";
+            cell.textContent = count > 0 ? String(count) : "";
+            row.appendChild(cell);
+        });
+        tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    container.appendChild(table);
+}
+
 function graphRenderWorkspace({preserveDetail = false} = {}) {
     const svg = document.getElementById("graph-workspace-canvas");
     const emptyNode = document.getElementById("graph-workspace-empty");
-    if (!svg || !emptyNode) {
+    const matrixNode = document.getElementById("graph-matrix-view");
+    if (!svg || !emptyNode || !matrixNode) {
         return;
     }
     const filtered = graphApplyLocalFilters(graphWorkspaceState.data);
@@ -4074,23 +5130,41 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
 
     setText(
         "graph-workspace-summary",
-        `${nodes.length} nodes shown | ${edges.length} edges shown | ${Number(graphWorkspaceState.data?.meta?.total_nodes || nodes.length)} total nodes`,
+        `${nodes.length} visible nodes | ${edges.length} visible edges | ${Number(filtered?.meta?.baseNodeCount || graphWorkspaceState.data?.meta?.total_nodes || nodes.length)} filtered nodes`
+        + `${filtered?.meta?.summaryUsed ? " | summary mode" : ""}`
+        + `${filtered?.renderKind === "matrix" ? " | matrix fallback" : ""}`
+        + `${filtered?.meta?.focusActive ? ` | focus ${filtered.meta.focusDepth} hop` : ""}`,
     );
 
     if (!nodes.length) {
+        matrixNode.hidden = true;
         svg.innerHTML = "";
         svg.setAttribute("viewBox", "0 0 1600 900");
         svg.style.width = "1180px";
         svg.style.height = "620px";
+        svg.hidden = false;
         emptyNode.hidden = false;
         graphRenderSelectionDetail();
         return;
     }
 
     emptyNode.hidden = true;
+    if (filtered.renderKind === "matrix") {
+        svg.hidden = true;
+        matrixNode.hidden = false;
+        graphRenderMatrixView(filtered);
+        if (!preserveDetail || selectionCleared || !graphWorkspaceState.selectedKind) {
+            graphRenderSelectionDetail();
+        }
+        return;
+    }
+
+    matrixNode.hidden = true;
+    matrixNode.innerHTML = "";
+    svg.hidden = false;
     svg.innerHTML = "";
     svg.setAttribute("viewBox", `0 0 ${filtered.width} ${filtered.height}`);
-    const zoomScale = Math.max(50, Math.min(200, Number(graphWorkspaceState.zoomPercent || 70))) / 100;
+    const zoomScale = Math.max(10, Math.min(200, Number(graphWorkspaceState.zoomPercent || 70))) / 100;
     svg.style.width = `${Math.max(1180, Math.round(filtered.width * zoomScale))}px`;
     svg.style.height = `${Math.max(620, Math.round(filtered.height * zoomScale))}px`;
 
@@ -4155,6 +5229,9 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         ].join(" ");
         const isSelected = graphWorkspaceState.selectedKind === "edge" && String(graphWorkspaceState.selectedRef || "") === String(edge?.edge_id || "");
         const style = graphSourceStyle(edge);
+        const aggregateCount = Math.max(1, Number(graphPropertyValue(edge, "aggregate_count") || 1));
+        const strokeWidth = isSelected ? 3.6 : Math.min(6.4, 1.4 + Math.log2(aggregateCount + 1));
+        const opacity = isSelected ? 1 : Math.max(0.42, Math.min(0.9, 0.4 + (Math.log2(aggregateCount + 1) * 0.12)));
         svg.appendChild(graphCreateSvgNode("path", {
             d: pathData,
             stroke: "transparent",
@@ -4167,10 +5244,10 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
             d: pathData,
             stroke: style.stroke,
             fill: "none",
-            "stroke-width": isSelected ? 3.4 : 2.1,
+            "stroke-width": strokeWidth,
             "stroke-dasharray": style.dash,
             "marker-end": "url(#graph-arrow)",
-            opacity: isSelected ? 1 : 0.86,
+            opacity,
             "data-graph-edge-id": edge.edge_id || "",
             "class": `graph-edge${isSelected ? " is-selected" : ""}`,
         }));
@@ -4185,10 +5262,11 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         const style = graphSourceStyle(node);
         const color = graphNodeColor(node);
         const isSelected = graphWorkspaceState.selectedKind === "node" && String(graphWorkspaceState.selectedRef || "") === nodeId;
+        const isSummaryNode = Boolean(graphPropertyValue(node, "summary_kind"));
         const groupNode = graphCreateSvgNode("g", {
             transform: `translate(${point.x}, ${point.y})`,
             "data-graph-node-id": nodeId,
-            "class": `graph-node${isSelected ? " is-selected" : ""}`,
+            "class": `graph-node${isSelected ? " is-selected" : ""}${isSummaryNode ? " is-summary" : ""}`,
         });
         groupNode.appendChild(graphCreateSvgNode("rect", {
             width: GRAPH_NODE_SIZE.width,
@@ -4237,6 +5315,16 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
                 r: 5,
                 fill: "#eef1ff",
                 opacity: 0.9,
+                "data-graph-node-id": nodeId,
+            }));
+        }
+        if (isSummaryNode) {
+            groupNode.appendChild(graphCreateSvgNode("circle", {
+                cx: GRAPH_NODE_SIZE.width - 16,
+                cy: GRAPH_NODE_SIZE.height - 14,
+                r: 7,
+                fill: color,
+                opacity: 0.95,
                 "data-graph-node-id": nodeId,
             }));
         }
@@ -4329,8 +5417,8 @@ async function graphLoadSnapshot({background = false, forceMetadata = false} = {
         if (filters.hideNmapXmlArtifacts) {
             params.set("hide_nmap_xml_artifacts", "true");
         }
-        params.set("limit_nodes", "2000");
-        params.set("limit_edges", "4000");
+        params.set("limit_nodes", "8000");
+        params.set("limit_edges", "24000");
         const body = await fetchJson(`/api/graph?${params.toString()}`);
         graphWorkspaceState.data = {
             nodes: Array.isArray(body?.nodes) ? body.nodes : [],
@@ -4401,6 +5489,108 @@ function graphExportAction(format) {
     window.location.assign(`/api/graph/export/json?t=${Date.now()}`);
 }
 
+function graphDownloadBlob(blob, filename) {
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = String(filename || "graph-export").replace(/[^a-zA-Z0-9._-]+/g, "-");
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
+function graphExportFilename(extension) {
+    const viewId = String(getValue("graph-view-select") || graphWorkspaceState.viewId || "attack_surface").trim() || "attack_surface";
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return `legion-graph-${viewId}-${stamp}.${String(extension || "txt").replace(/^\./, "")}`;
+}
+
+function graphBuildExportSvgString() {
+    if (graphWorkspaceState.filtered?.renderKind === "matrix") {
+        throw new Error("Switch Density Mode to graph or summary before exporting SVG or PNG.");
+    }
+    const svg = document.getElementById("graph-workspace-canvas");
+    if (!svg) {
+        throw new Error("Graph canvas is unavailable.");
+    }
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+    const viewBox = clone.getAttribute("viewBox") || `0 0 ${graphWorkspaceState.filtered.width || 1600} ${graphWorkspaceState.filtered.height || 900}`;
+    const parts = viewBox.split(/\s+/).map((value) => Number(value || 0));
+    const width = Math.max(1, Math.round(parts[2] || graphWorkspaceState.filtered.width || 1600));
+    const height = Math.max(1, Math.round(parts[3] || graphWorkspaceState.filtered.height || 900));
+    clone.setAttribute("width", String(width));
+    clone.setAttribute("height", String(height));
+
+    const background = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    background.setAttribute("x", "0");
+    background.setAttribute("y", "0");
+    background.setAttribute("width", String(width));
+    background.setAttribute("height", String(height));
+    background.setAttribute("fill", "#090014");
+    clone.insertBefore(background, clone.firstChild);
+
+    const styleNode = document.createElementNS("http://www.w3.org/2000/svg", "style");
+    styleNode.textContent = [
+        ".graph-group-label{fill:rgba(180,187,221,0.84);font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-family:system-ui,sans-serif;}",
+        ".graph-node-type{fill:rgba(180,187,221,0.92);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-family:system-ui,sans-serif;}",
+        ".graph-node-label{fill:#eef1ff;font-size:12px;font-weight:600;font-family:system-ui,sans-serif;}",
+    ].join("");
+    clone.insertBefore(styleNode, clone.firstChild);
+    return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}`;
+}
+
+function graphExportSvgAction() {
+    try {
+        const svgString = graphBuildExportSvgString();
+        graphDownloadBlob(new Blob([svgString], {type: "image/svg+xml;charset=utf-8"}), graphExportFilename("svg"));
+        setGraphStatus("Workspace SVG exported");
+    } catch (err) {
+        setGraphStatus(`SVG export failed: ${err.message}`, true);
+    }
+}
+
+async function graphExportPngAction() {
+    try {
+        const svgString = graphBuildExportSvgString();
+        const svgBlob = new Blob([svgString], {type: "image/svg+xml;charset=utf-8"});
+        const svgUrl = URL.createObjectURL(svgBlob);
+        const image = new Image();
+        image.decoding = "async";
+        const loadPromise = new Promise((resolve, reject) => {
+            image.onload = resolve;
+            image.onerror = () => reject(new Error("Unable to rasterize graph SVG."));
+        });
+        image.src = svgUrl;
+        await loadPromise;
+        const width = Math.max(1, Number(graphWorkspaceState.filtered.width || 1600));
+        const height = Math.max(1, Number(graphWorkspaceState.filtered.height || 900));
+        const scale = Math.min(1, 12000 / Math.max(width, height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        const context = canvas.getContext("2d");
+        if (!context) {
+            throw new Error("Canvas export is unavailable.");
+        }
+        context.fillStyle = "#090014";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.setTransform(scale, 0, 0, scale, 0, 0);
+        context.drawImage(image, 0, 0);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        window.setTimeout(() => URL.revokeObjectURL(svgUrl), 1000);
+        if (!blob) {
+            throw new Error("PNG export failed.");
+        }
+        graphDownloadBlob(blob, graphExportFilename("png"));
+        setGraphStatus("Workspace PNG exported");
+    } catch (err) {
+        setGraphStatus(`PNG export failed: ${err.message}`, true);
+    }
+}
+
 function graphApplyLayoutById(layoutId) {
     const selected = (graphWorkspaceState.layouts || []).find((item) => String(item?.layout_id || "") === String(layoutId || ""));
     graphWorkspaceState.activeLayoutId = String(selected?.layout_id || "");
@@ -4421,107 +5611,102 @@ function graphApplyLayoutById(layoutId) {
 }
 
 function graphTidyLayoutAction() {
-    const filtered = graphApplyLocalFilters(graphWorkspaceState.data);
-    const groups = Array.isArray(filtered?.groups) ? filtered.groups : [];
-    if (!Array.isArray(filtered?.nodes) || !filtered.nodes.length || !groups.length) {
+    const current = graphApplyLocalFilters(graphWorkspaceState.data);
+    const groupsMap = new Map();
+    (current.nodes || []).forEach((item) => {
+        const key = graphGroupKeyForNode(item, graphWorkspaceState.groupBy || graphCurrentViewConfig().defaultGroup || "subnet", graphBuildHostMaps(current.nodes)) || "other";
+        if (!groupsMap.has(key)) {
+            groupsMap.set(key, []);
+        }
+        groupsMap.get(key).push(item);
+    });
+    if (!Array.isArray(current?.nodes) || !current.nodes.length || !groupsMap.size) {
         setGraphStatus("No graph nodes are available to tidy.", true);
         return;
     }
-
-    const workingPositions = {};
-    Object.entries(filtered.positions || {}).forEach(([nodeId, point]) => {
-        workingPositions[nodeId] = {
-            x: Number(point?.x) || 0,
-            y: Number(point?.y) || 0,
-        };
-    });
-
-    const neighborMap = new Map();
-    (filtered.edges || []).forEach((edge) => {
-        const fromId = String(edge?.from_node_id || "");
-        const toId = String(edge?.to_node_id || "");
-        if (!fromId || !toId) {
-            return;
-        }
-        if (!neighborMap.has(fromId)) {
-            neighborMap.set(fromId, []);
-        }
-        if (!neighborMap.has(toId)) {
-            neighborMap.set(toId, []);
-        }
-        neighborMap.get(fromId).push(toId);
-        neighborMap.get(toId).push(fromId);
-    });
-
-    const nodeById = new Map((filtered.nodes || []).map((node) => [String(node?.node_id || ""), node]));
-    const groupIndexByNodeId = new Map();
-    groups.forEach((group, index) => {
-        (group.nodeIds || []).forEach((nodeId) => {
-            groupIndexByNodeId.set(String(nodeId || ""), index);
-        });
-    });
-
-    const tidyGroup = (group) => {
-        const nodeIds = (group.nodeIds || []).filter((nodeId) => workingPositions[String(nodeId || "")]);
-        if (!nodeIds.length) {
-            return;
-        }
-        const baseX = Math.max(20, Math.round((Number(group?.x) || 0) + 24));
-        const spacing = GRAPH_NODE_SIZE.height + 16;
-        const startY = Math.max(28, Math.round((Number(group?.y) || 0) + 48));
-        const rows = nodeIds.map((nodeId) => {
-            const current = workingPositions[String(nodeId || "")] || {x: baseX, y: startY};
-            const neighbors = neighborMap.get(String(nodeId || "")) || [];
-            const neighborCenters = neighbors
-                .filter((otherNodeId) => groupIndexByNodeId.get(String(otherNodeId || "")) !== groupIndexByNodeId.get(String(nodeId || "")))
-                .map((otherNodeId) => {
-                    const point = workingPositions[String(otherNodeId || "")];
-                    return point ? (Number(point.y) || 0) + (GRAPH_NODE_SIZE.height / 2) : NaN;
-                })
-                .filter((value) => Number.isFinite(value));
-            const desiredY = neighborCenters.length
-                ? (neighborCenters.reduce((sum, value) => sum + value, 0) / neighborCenters.length) - (GRAPH_NODE_SIZE.height / 2)
-                : Number(current.y) || startY;
-            return {
-                nodeId: String(nodeId || ""),
-                label: String(nodeById.get(String(nodeId || ""))?.label || ""),
-                desiredY,
-            };
-        });
-
-        rows.sort((left, right) => {
-            if (left.desiredY !== right.desiredY) {
-                return left.desiredY - right.desiredY;
-            }
-            return graphNaturalCompare(left.label, right.label);
-        });
-
-        let cursorY = startY;
-        rows.forEach((row) => {
-            const nextY = Math.max(cursorY, Math.round(row.desiredY));
-            workingPositions[row.nodeId] = {
-                x: baseX,
-                y: nextY,
-            };
-            cursorY = nextY + spacing;
-        });
-    };
-
-    for (let iteration = 0; iteration < 2; iteration += 1) {
-        groups.forEach((group) => tidyGroup(group));
-        groups.slice().reverse().forEach((group) => tidyGroup(group));
-    }
-
-    Object.entries(workingPositions).forEach(([nodeId, point]) => {
+    const tidied = graphComputeCompactLayout(
+        current.nodes,
+        current.edges,
+        groupsMap,
+        graphWorkspaceState.groupBy || graphCurrentViewConfig().defaultGroup || "subnet",
+        {},
+    );
+    Object.entries(tidied.positions || {}).forEach(([nodeId, point]) => {
         graphWorkspaceState.positions[nodeId] = {
             x: Number(point?.x) || 0,
             y: Number(point?.y) || 0,
         };
-        graphWorkspaceState.pinnedNodeIds[nodeId] = true;
     });
-    graphWorkspaceState.activeLayoutId = "";
     graphRenderWorkspace({preserveDetail: true});
-    setGraphStatus("Layout tidied to reduce overlap");
+    setGraphStatus(`Layout tidied for ${current.nodes.length} nodes across ${(tidied.groups || []).length} groups`);
+}
+
+function graphFocusSelectionAction() {
+    if (graphWorkspaceState.selectedKind !== "node" || !graphWorkspaceState.selectedRef) {
+        setGraphStatus("Select a node or summary before focusing the neighborhood.", true);
+        return;
+    }
+    const entity = graphFindEntity("node", graphWorkspaceState.selectedRef);
+    const seedNodeIds = graphEntityUnderlyingNodeIds(entity);
+    if (!seedNodeIds.length) {
+        setGraphStatus("The selected graph node cannot be focused.", true);
+        return;
+    }
+    graphWorkspaceState.focusSeedNodeIds = seedNodeIds;
+    graphWorkspaceState.focusSeedLabel = String(entity?.label || entity?.node_id || "selection");
+    graphWorkspaceState.focusDepth = Math.max(1, Math.min(3, parseInt(getValue("graph-focus-depth-select"), 10) || graphWorkspaceState.focusDepth || 1));
+    if (graphPropertyValue(entity, "summary_kind")) {
+        graphWorkspaceState.selectedKind = "node";
+        graphWorkspaceState.selectedRef = seedNodeIds[0];
+    }
+    graphRenderWorkspace();
+    setGraphStatus(`Focused ${graphWorkspaceState.focusDepth}-hop neighborhood around ${graphWorkspaceState.focusSeedLabel}`);
+}
+
+function graphClearFocusAction() {
+    if (!graphWorkspaceState.focusSeedNodeIds.length) {
+        setGraphStatus("No graph focus is active.", true);
+        return;
+    }
+    graphWorkspaceState.focusSeedNodeIds = [];
+    graphWorkspaceState.focusSeedLabel = "";
+    graphRenderWorkspace();
+    setGraphStatus("Graph focus cleared");
+}
+
+function graphToggleExpandSelectionAction() {
+    if (graphWorkspaceState.selectedKind !== "node" || !graphWorkspaceState.selectedRef) {
+        setGraphStatus("Select a summary node before expanding it.", true);
+        return;
+    }
+    const entity = graphFindEntity("node", graphWorkspaceState.selectedRef);
+    if (!graphPropertyValue(entity, "summary_kind")) {
+        setGraphStatus("Selected node is already expanded.", true);
+        return;
+    }
+    const nodeId = String(entity?.node_id || "");
+    if (graphWorkspaceState.expandedSummaryIds[nodeId]) {
+        delete graphWorkspaceState.expandedSummaryIds[nodeId];
+        graphWorkspaceState.selectedKind = "node";
+        graphWorkspaceState.selectedRef = nodeId;
+        setGraphStatus(`Collapsed ${entity.label || nodeId}`);
+    } else {
+        graphWorkspaceState.expandedSummaryIds[nodeId] = true;
+        const memberNodeIds = graphEntityUnderlyingNodeIds(entity);
+        if (memberNodeIds.length) {
+            graphWorkspaceState.selectedKind = "node";
+            graphWorkspaceState.selectedRef = memberNodeIds[0];
+        }
+        setGraphStatus(`Expanded ${entity.label || nodeId}`);
+    }
+    graphRenderWorkspace();
+}
+
+function graphCollapseExpandedAction() {
+    const expandedCount = Object.keys(graphWorkspaceState.expandedSummaryIds || {}).length;
+    graphWorkspaceState.expandedSummaryIds = {};
+    graphRenderWorkspace();
+    setGraphStatus(expandedCount ? `Collapsed ${expandedCount} expanded cluster${expandedCount === 1 ? "" : "s"}` : "No expanded clusters to collapse.");
 }
 
 async function graphSaveLayoutAction() {
@@ -4529,7 +5714,9 @@ async function graphSaveLayoutAction() {
     const name = String(getValue("graph-layout-name") || "default").trim() || "default";
     const layoutId = String(graphWorkspaceState.activeLayoutId || "");
     const layout = {
-        positions: graphWorkspaceState.positions,
+        positions: graphWorkspaceState.filtered?.positions && typeof graphWorkspaceState.filtered.positions === "object"
+            ? graphWorkspaceState.filtered.positions
+            : graphWorkspaceState.positions,
         pinned_node_ids: graphWorkspaceState.pinnedNodeIds,
         group_by: String(getValue("graph-group-select") || graphWorkspaceState.groupBy || graphCurrentViewConfig().defaultGroup || "subnet").trim(),
         filters: {
@@ -4655,7 +5842,6 @@ function graphHandlePointerMove(event) {
             x: Math.max(20, Math.round((Number(origin?.x) || 0) + offsetX)),
             y: Math.max(28, Math.round((Number(origin?.y) || 0) + offsetY)),
         };
-        graphWorkspaceState.pinnedNodeIds[nodeId] = true;
     });
     graphRenderWorkspace({preserveDetail: true});
 }
@@ -4680,6 +5866,7 @@ function bindGraphWorkspaceEvents() {
     const refreshIds = [
         "graph-view-select",
         "graph-group-select",
+        "graph-render-mode-select",
         "graph-host-filter",
         "graph-node-type-filter",
         "graph-edge-type-filter",
@@ -4703,7 +5890,7 @@ function bindGraphWorkspaceEvents() {
                 graphWorkspaceState.pinnedNodeIds = {};
                 graphRenderLayoutOptions();
             }
-            if (["graph-group-select", "graph-severity-filter", "graph-pack-filter", "graph-time-window-filter"].includes(id)) {
+            if (["graph-group-select", "graph-render-mode-select", "graph-severity-filter", "graph-pack-filter", "graph-time-window-filter"].includes(id)) {
                 graphRenderWorkspace();
                 return;
             }
@@ -4737,6 +5924,16 @@ function bindGraphWorkspaceEvents() {
         zoomNode.addEventListener("input", () => {
             graphUpdateZoomLabel();
             graphRenderWorkspace();
+        });
+    }
+
+    const focusDepthNode = document.getElementById("graph-focus-depth-select");
+    if (focusDepthNode) {
+        focusDepthNode.addEventListener("change", () => {
+            graphWorkspaceState.focusDepth = Math.max(1, Math.min(3, parseInt(focusDepthNode.value, 10) || 1));
+            if (graphWorkspaceState.focusSeedNodeIds.length) {
+                graphRenderWorkspace();
+            }
         });
     }
 
@@ -4787,6 +5984,19 @@ function bindGraphWorkspaceEvents() {
             graphWorkspaceState.selectedRef = "";
             graphWorkspaceState.relatedContent = [];
             graphRenderWorkspace();
+        });
+        svg.addEventListener("dblclick", (event) => {
+            const nodeTarget = event.target.closest("[data-graph-node-id]");
+            if (!nodeTarget) {
+                return;
+            }
+            const nodeId = String(nodeTarget.getAttribute("data-graph-node-id") || "");
+            graphWorkspaceState.selectedKind = "node";
+            graphWorkspaceState.selectedRef = nodeId;
+            const entity = graphFindEntity("node", nodeId);
+            if (graphPropertyValue(entity, "summary_kind")) {
+                graphToggleExpandSelectionAction();
+            }
         });
         svg.addEventListener("pointerdown", (event) => {
             const nodeTarget = event.target.closest("[data-graph-node-id]");
@@ -5190,6 +6400,9 @@ function renderSnapshot(snapshot) {
     }
     if (Array.isArray(snapshot.jobs)) {
         renderJobs(snapshot.jobs);
+    }
+    if (Array.isArray(snapshot.scan_history)) {
+        renderScanHistory(snapshot.scan_history);
     }
 
     if (workspaceState.selectedHostId && !workspaceState.hostDetail) {
@@ -5907,6 +7120,7 @@ function bindActionButtons() {
     bind("ribbon-import-targets-action-button", importTargetsFromRibbonAction);
     bind("ribbon-export-json-action-button", exportWorkspaceJsonAction);
     bind("ribbon-export-csv-action-button", exportWorkspaceCsvAction);
+    bind("ribbon-export-hosts-csv-action-button", exportHostsCsvAction);
     bind("ribbon-export-project-report-json-action-button", () => exportProjectAiReportAction("json"));
     bind("ribbon-export-project-report-md-action-button", () => exportProjectAiReportAction("md"));
     bind("ribbon-export-project-report-push-action-button", pushProjectAiReportAction);
@@ -5932,6 +7146,12 @@ function bindActionButtons() {
     bind("graph-rebuild-button", graphRebuildAction);
     bind("graph-export-json-button", () => graphExportAction("json"));
     bind("graph-export-graphml-button", () => graphExportAction("graphml"));
+    bind("graph-export-svg-button", graphExportSvgAction);
+    bind("graph-export-png-button", graphExportPngAction);
+    bind("graph-focus-selection-button", graphFocusSelectionAction);
+    bind("graph-clear-focus-button", graphClearFocusAction);
+    bind("graph-expand-selection-button", graphToggleExpandSelectionAction);
+    bind("graph-collapse-expanded-button", graphCollapseExpandedAction);
     bind("graph-layout-save-button", graphSaveLayoutAction);
     bind("graph-layout-reset-button", graphResetLayoutAction);
     bind("graph-annotation-save-button", graphSaveAnnotationAction);

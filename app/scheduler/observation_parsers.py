@@ -1,8 +1,12 @@
+import csv
+import io
 import json
+import os
 import re
-from typing import Any, Dict, List, Tuple
-from urllib.parse import urlparse
+from typing import Any, Dict, Iterable, List, Tuple
+from urllib.parse import urljoin, urlparse
 
+from app.hostsfile import normalize_hostname_alias
 from app.url_normalization import normalize_discovered_url
 
 
@@ -33,6 +37,24 @@ _LEGACY_TLS_FINDINGS = {
     "tlsv1.1": ("TLSv1.1 supported", "medium"),
 }
 _IGNORED_DISCOVERY_URL_HOSTS = {"nmap.org", "www.nmap.org"}
+_SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
+    "whatweb",
+    "httpx",
+    "nuclei",
+    "sslscan",
+    "sslyze",
+    "web-content-discovery",
+    "dirsearch",
+    "ffuf",
+    "enum4linux-ng",
+    "smbmap",
+    "rpcclient-enum",
+)
+_DISCOVERY_PATH_RE = re.compile(r"(?i)(?:\"path\"|path|location|redirectlocation)\s*[:=]\s*['\"]?(/[^\"'\s,|]+)")
+_SMB_USER_RE = re.compile(r"(?i)(?:user(?:name)?|account)\s*[:=\[]\s*['\"]?([A-Za-z0-9_. $-]{1,96})")
+_SMB_RPC_USER_RE = re.compile(r"(?i)\buser:\[([^\]]{1,96})\]")
+_SMB_SHARE_RE = re.compile(r"(?i)(?:share(?:name)?|netname)\s*[:=\[]\s*['\"]?([A-Za-z0-9_. $-]{1,128})")
+_SMB_DOMAIN_RE = re.compile(r"(?i)(?:domain(?:\s+name)?|workgroup)\s*[:=]\s*['\"]?([A-Za-z0-9_.-]{1,96})")
 
 
 def _clean_text(value: Any, limit: int = 320) -> str:
@@ -53,6 +75,83 @@ def _clean_url(value: Any) -> str:
     except Exception:
         return ""
     return text[:320]
+
+
+def _artifact_reader_supported(tool_id: str) -> bool:
+    token = str(tool_id or "").strip().lower()
+    return any(token.startswith(prefix) for prefix in _SUPPORTED_ARTIFACT_PARSE_PREFIXES)
+
+
+def _load_artifact_texts(artifact_refs: Iterable[Any], *, max_files: int = 6, max_chars: int = 160000) -> List[str]:
+    texts: List[str] = []
+    allowed_exts = {".txt", ".json", ".jsonl", ".log", ".csv", ".xml", ".html", ".md"}
+    for ref in list(artifact_refs or [])[:int(max_files)]:
+        path = str(ref or "").strip()
+        if not path or not os.path.exists(path):
+            continue
+        ext = os.path.splitext(path)[1].strip().lower()
+        if ext and ext not in allowed_exts:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                content = handle.read(int(max_chars))
+        except Exception:
+            continue
+        if str(content or "").strip():
+            texts.append(str(content))
+    return texts
+
+
+def _merge_results(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "technologies": list(left.get("technologies", []) or []) + list(right.get("technologies", []) or []),
+        "findings": list(left.get("findings", []) or []) + list(right.get("findings", []) or []),
+        "urls": list(left.get("urls", []) or []) + list(right.get("urls", []) or []),
+    }
+
+
+def _iter_json_payloads(text: str) -> List[Any]:
+    payloads: List[Any] = []
+    stripped = str(text or "").strip()
+    if not stripped:
+        return payloads
+    if stripped[:1] in {"{", "["}:
+        try:
+            payloads.append(json.loads(stripped))
+        except Exception:
+            pass
+    for raw_line in stripped.splitlines():
+        line = raw_line.strip()
+        if not line or line[:1] not in {"{", "["}:
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        payloads.append(payload)
+    return payloads
+
+
+def _iter_discovery_records(payload: Any) -> Iterable[Dict[str, Any]]:
+    if isinstance(payload, dict):
+        if any(key in payload for key in ("url", "path", "redirect", "redirectlocation", "status", "status_code")):
+            yield payload
+        for value in payload.values():
+            yield from _iter_discovery_records(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _iter_discovery_records(item)
+
+
+def _build_base_web_url(*, host_ip: Any = "", hostname: Any = "", port: Any = "", service: Any = "") -> str:
+    resolved_host = normalize_hostname_alias(hostname) or str(host_ip or "").strip()
+    if not resolved_host:
+        return ""
+    service_token = str(service or "").strip().rstrip("?").lower()
+    scheme = "https" if (service_token.startswith("https") or "ssl" in service_token or "tls" in service_token) else "http"
+    if str(port or "").strip():
+        return _clean_url(f"{scheme}://{resolved_host}:{str(port).strip()}")
+    return _clean_url(f"{scheme}://{resolved_host}")
 
 
 def _severity_token(value: Any, default: str = "info") -> str:
@@ -324,6 +423,131 @@ def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     }
 
 
+def _parse_content_discovery_output(
+        tool_id: str,
+        output_text: str,
+        *,
+        base_url: str = "",
+        port: str = "",
+        protocol: str = "tcp",
+        service: str = "",
+) -> Dict[str, Any]:
+    findings: List[Dict[str, Any]] = []
+    urls: List[Dict[str, Any]] = []
+    interesting_paths = []
+
+    for payload in _iter_json_payloads(output_text):
+        for item in _iter_discovery_records(payload):
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url") or item.get("input") or item.get("host") or ""
+            path = item.get("path") or item.get("location") or ""
+            if not url and path and base_url:
+                url = urljoin(f"{base_url.rstrip('/')}/", str(path).lstrip("/"))
+            _append_url(urls, url, port=port, protocol=protocol, service=service, label=f"{tool_id} discovered content")
+            redirect_target = item.get("redirect") or item.get("redirectlocation") or item.get("redirect_url") or ""
+            if redirect_target:
+                _append_url(urls, redirect_target, port=port, protocol=protocol, service=service, label=f"{tool_id} redirect")
+            status = str(item.get("status") or item.get("status_code") or "").strip()
+            candidate_path = str(path or urlparse(str(url or "")).path or "").strip()
+            if (
+                    candidate_path
+                    and status in {"200", "204", "301", "302", "307", "308", "401", "403"}
+                    and any(token in candidate_path.lower() for token in ("admin", "login", "portal", "api", "graphql", "swagger", "actuator"))
+            ):
+                interesting_paths.append(f"{candidate_path} ({status})")
+
+    for raw_line in str(output_text or "").splitlines():
+        line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
+        if not line:
+            continue
+        for url in _URL_RE.findall(line):
+            _append_url(urls, url, port=port, protocol=protocol, service=service, label=f"{tool_id} discovered url")
+        if base_url:
+            for path in _DISCOVERY_PATH_RE.findall(line):
+                joined = urljoin(f"{base_url.rstrip('/')}/", str(path).lstrip("/"))
+                _append_url(urls, joined, port=port, protocol=protocol, service=service, label=f"{tool_id} discovered path")
+
+    if interesting_paths:
+        _append_finding(
+            findings,
+            f"Interesting web paths discovered ({len(set(interesting_paths))})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(set(interesting_paths))[:8])}",
+        )
+    return {
+        "technologies": [],
+        "findings": _dedupe_rows(findings, ("title", "evidence"), limit=16),
+        "urls": _dedupe_rows(urls, ("url",), limit=96),
+    }
+
+
+def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
+    technologies: List[Dict[str, Any]] = []
+    findings: List[Dict[str, Any]] = []
+    lowered = str(output_text or "").lower()
+
+    if "windows" in lowered:
+        _append_technology(technologies, "Windows", evidence=f"{tool_id} smb enumeration")
+    if "samba" in lowered:
+        _append_technology(technologies, "Samba", evidence=f"{tool_id} smb enumeration")
+    if "active directory" in lowered:
+        _append_technology(technologies, "Active Directory", evidence=f"{tool_id} smb enumeration")
+
+    domains = {
+        _clean_text(match, 96)
+        for match in _SMB_DOMAIN_RE.findall(str(output_text or ""))
+        if _clean_text(match, 96) and _clean_text(match, 96).upper() not in {"WORKGROUP", "UNKNOWN"}
+    }
+    for domain in sorted(domains)[:4]:
+        _append_technology(technologies, "Active Directory", evidence=f"{tool_id} domain {domain}")
+        _append_finding(findings, f"SMB domain identified: {domain}", severity="info", evidence=f"{tool_id}: {domain}")
+
+    share_names = {
+        _clean_text(match, 96)
+        for match in _SMB_SHARE_RE.findall(str(output_text or ""))
+        if _clean_text(match, 96)
+    }
+    try:
+        if "," in str(output_text or "") and "\n" in str(output_text or ""):
+            reader = csv.DictReader(io.StringIO(str(output_text or "")))
+            for row in list(reader or [])[:64]:
+                if not isinstance(row, dict):
+                    continue
+                for key in ("share", "share name", "netname", "name"):
+                    value = _clean_text(row.get(key, "") or row.get(key.title(), ""), 96)
+                    if value:
+                        share_names.add(value)
+    except Exception:
+        pass
+
+    user_names = {
+        _clean_text(match, 96)
+        for match in list(_SMB_RPC_USER_RE.findall(str(output_text or ""))) + list(_SMB_USER_RE.findall(str(output_text or "")))
+        if _clean_text(match, 96) and _clean_text(match, 96).lower() not in {"user", "username", "account"}
+    }
+
+    if share_names:
+        _append_finding(
+            findings,
+            f"SMB shares enumerated ({len(share_names)})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(share_names)[:8])}",
+        )
+    if user_names:
+        _append_finding(
+            findings,
+            f"SMB users enumerated ({len(user_names)})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(user_names)[:8])}",
+        )
+    return {
+        "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=24),
+        "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
+        "urls": [],
+    }
+
+
 def extract_tool_observations(
         tool_id: Any,
         output_text: Any,
@@ -331,26 +555,69 @@ def extract_tool_observations(
         port: Any = "",
         protocol: Any = "tcp",
         service: Any = "",
+        artifact_refs: Any = None,
+        host_ip: Any = "",
+        hostname: Any = "",
 ) -> Dict[str, Any]:
     normalized_tool = str(tool_id or "").strip().lower()
     text = str(output_text or "")
-    if not normalized_tool or not text.strip():
+    if not normalized_tool or (not text.strip() and not list(artifact_refs or [])):
         return {"technologies": [], "findings": [], "urls": []}
 
+    base_url = _build_base_web_url(
+        host_ip=host_ip,
+        hostname=hostname,
+        port=port,
+        service=service,
+    )
+    sources = [text]
+    if _artifact_reader_supported(normalized_tool):
+        sources.extend(_load_artifact_texts(artifact_refs or []))
+
     result = {"technologies": [], "findings": [], "urls": []}
-    if normalized_tool.startswith("whatweb"):
-        result = _parse_whatweb_output(normalized_tool, text)
-    elif normalized_tool.startswith("httpx"):
-        result = _parse_httpx_output(normalized_tool, text)
-    elif "nuclei" in normalized_tool:
-        result = _parse_nuclei_output(normalized_tool, text, port=str(port or ""), protocol=str(protocol or "tcp"), service=str(service or ""))
-    elif normalized_tool in {"sslscan", "sslyze"}:
-        result = _parse_tls_output(normalized_tool, text)
+    for source_text in sources:
+        source = str(source_text or "")
+        if not source.strip():
+            continue
+        current = {"technologies": [], "findings": [], "urls": []}
+        if normalized_tool.startswith("whatweb"):
+            current = _parse_whatweb_output(normalized_tool, source)
+        elif normalized_tool.startswith("httpx"):
+            current = _parse_httpx_output(normalized_tool, source)
+        elif "nuclei" in normalized_tool:
+            current = _parse_nuclei_output(normalized_tool, source, port=str(port or ""), protocol=str(protocol or "tcp"), service=str(service or ""))
+        elif normalized_tool in {"sslscan", "sslyze"}:
+            current = _parse_tls_output(normalized_tool, source)
+        elif normalized_tool in {"web-content-discovery", "dirsearch", "ffuf"}:
+            current = _parse_content_discovery_output(
+                normalized_tool,
+                source,
+                base_url=base_url,
+                port=str(port or ""),
+                protocol=str(protocol or "tcp"),
+                service=str(service or ""),
+            )
+        elif normalized_tool in {"enum4linux-ng", "smbmap", "rpcclient-enum"} or normalized_tool.startswith("rpcclient"):
+            current = _parse_smb_enum_output(normalized_tool, source)
+        result = _merge_results(result, current)
 
     # Generic URL harvesting helps the graph even when the tool-specific parser
     # does not expose structured URLs.
     extra_urls = list(result.get("urls", []))
-    for url in _URL_RE.findall(text):
-        _append_url(extra_urls, url, port=str(port or ""), protocol=str(protocol or "tcp"), service=str(service or ""), label=normalized_tool)
+    for source_text in sources:
+        for url in _URL_RE.findall(str(source_text or "")):
+            _append_url(extra_urls, url, port=str(port or ""), protocol=str(protocol or "tcp"), service=str(service or ""), label=normalized_tool)
+        if base_url and normalized_tool in {"web-content-discovery", "dirsearch", "ffuf"}:
+            for path in _DISCOVERY_PATH_RE.findall(str(source_text or "")):
+                _append_url(
+                    extra_urls,
+                    urljoin(f"{base_url.rstrip('/')}/", str(path).lstrip("/")),
+                    port=str(port or ""),
+                    protocol=str(protocol or "tcp"),
+                    service=str(service or ""),
+                    label=f"{normalized_tool} path",
+                )
+    result["technologies"] = _dedupe_rows(list(result.get("technologies", []) or []), ("name", "version", "cpe", "evidence"), limit=64)
+    result["findings"] = _dedupe_rows(list(result.get("findings", []) or []), ("title", "cve", "evidence"), limit=64)
     result["urls"] = _dedupe_rows(extra_urls, ("url",), limit=96)
     return result

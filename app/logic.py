@@ -353,20 +353,23 @@ class Logic:
                         ]
                         if str(part or "").strip()
                     )
+                    artifact_refs = [
+                        path for path in sorted(set(glob.glob(f"{outputfile}*")))
+                        if os.path.exists(path)
+                    ]
                     observations = extract_tool_observations(
                         str(request.tool_id or ""),
                         combined_output,
                         port=str(request.port or ""),
                         protocol=str(request.protocol or "tcp"),
                         service=str(request.service_name or ""),
+                        artifact_refs=artifact_refs,
+                        host_ip=str(request.host_ip or ""),
+                        hostname=str(request.hostname or ""),
                     )
                     print(f"[{request.tool_id} STDOUT]\n{result.stdout}")
                     if result.stderr:
                         print(f"[{request.tool_id} STDERR]\n{result.stderr}")
-                    artifact_refs = [
-                        path for path in sorted(set(glob.glob(f"{outputfile}*")))
-                        if os.path.exists(path)
-                    ]
                     return RunnerExecutionResult(
                         executed=True,
                         reason=(

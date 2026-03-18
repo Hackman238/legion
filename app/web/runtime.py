@@ -1,5 +1,6 @@
 import datetime
 import glob
+import ipaddress
 import json
 import mimetypes
 import os
@@ -8,6 +9,7 @@ import re
 import shlex
 import signal
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -90,6 +92,12 @@ from app.scheduler.state import (
     get_target_state,
     load_observed_service_inventory,
     upsert_target_state,
+)
+from app.scheduler.scan_history import (
+    ensure_scan_submission_table,
+    list_scan_submissions,
+    record_scan_submission,
+    update_scan_submission,
 )
 from app.scheduler.config import SchedulerConfigManager
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
@@ -280,7 +288,7 @@ class WebRuntime:
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "project": self._project_metadata(),
                 "summary": self._summary(),
-                "hosts": self._hosts(limit=100),
+                "hosts": self._hosts(),
                 "processes": self._processes(limit=75),
                 "services": self.get_workspace_services(limit=40),
                 "tools": tools_page.get("tools", []),
@@ -295,6 +303,7 @@ class WebRuntime:
                 "scheduler_decisions": self.get_scheduler_decisions(limit=80),
                 "scheduler_approvals": self.get_scheduler_approvals(limit=40, status="pending"),
                 "scheduler_executions": self.get_scheduler_execution_records(limit=40),
+                "scan_history": self.get_scan_history(limit=40),
                 "jobs": self.jobs.list_jobs(limit=20),
             }
 
@@ -496,6 +505,12 @@ class WebRuntime:
             project = self._require_active_project()
             ensure_scheduler_execution_table(project.database)
             return list_execution_records(project.database, limit=limit)
+
+    def get_scan_history(self, limit: int = 200) -> List[Dict[str, Any]]:
+        with self._lock:
+            project = self._require_active_project()
+            ensure_scan_submission_table(project.database)
+            return list_scan_submissions(project.database, limit=limit)
 
     @staticmethod
     def _project_listing_row(path: str, *, source: str, current_path: str = "") -> Dict[str, Any]:
@@ -1576,11 +1591,19 @@ class WebRuntime:
                 destination_dir=running_folder,
             )
 
+        self._rebase_restored_project_paths(
+            project_path=project_path,
+            manifest=manifest,
+            output_folder=output_folder,
+            running_folder=running_folder,
+        )
+
         with self._lock:
             if self._save_in_progress:
                 raise RuntimeError("Project save is in progress. Try again when it finishes.")
             self._close_active_project()
             self.logic.openExistingProject(project_path, projectType="legion")
+            self._attach_restored_running_folder_locked(running_folder)
             self._ensure_scheduler_table()
             self._ensure_scheduler_approval_store()
             self._ensure_process_tables()
@@ -1790,11 +1813,19 @@ class WebRuntime:
 
     def start_nmap_xml_import_job(self, path: str, run_actions: bool = False) -> Dict[str, Any]:
         xml_path = self._normalize_existing_file(path)
-        return self._start_job(
+        job = self._start_job(
             "import-nmap-xml",
-            lambda _job_id: self._import_nmap_xml(xml_path, bool(run_actions)),
+            lambda job_id: self._import_nmap_xml(xml_path, bool(run_actions), job_id=int(job_id or 0)),
             payload={"path": xml_path, "run_actions": bool(run_actions)},
         )
+        self._record_scan_submission(
+            submission_kind="import_nmap_xml",
+            job_id=int(job.get("id", 0) or 0),
+            source_path=xml_path,
+            run_actions=bool(run_actions),
+            result_summary=f"queued import from {os.path.basename(xml_path)}",
+        )
+        return job
 
     def start_nmap_scan_job(
             self,
@@ -1822,7 +1853,7 @@ class WebRuntime:
             "scan_mode": resolved_scan_mode,
             "scan_options": resolved_scan_options,
         }
-        return self._start_job(
+        job = self._start_job(
             "nmap-scan",
             lambda job_id: self._run_nmap_scan_and_import(
                 normalized_targets,
@@ -1837,6 +1868,20 @@ class WebRuntime:
             ),
             payload=payload,
         )
+        self._record_scan_submission(
+            submission_kind="nmap_scan",
+            job_id=int(job.get("id", 0) or 0),
+            targets=normalized_targets,
+            discovery=bool(discovery),
+            staged=bool(staged),
+            run_actions=bool(run_actions),
+            nmap_path=resolved_nmap_path,
+            nmap_args=resolved_nmap_args,
+            scan_mode=resolved_scan_mode,
+            scan_options=resolved_scan_options,
+            result_summary=f"queued nmap for {self._compact_targets(normalized_targets)}",
+        )
+        return job
 
     def start_scheduler_run_job(self) -> Dict[str, Any]:
         return self._start_job(
@@ -2009,13 +2054,20 @@ class WebRuntime:
             payload=payload,
         )
 
-    def get_workspace_hosts(self, limit: int = 400) -> List[Dict[str, Any]]:
+    def get_workspace_hosts(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         with self._lock:
             project = self._require_active_project()
             repo_container = project.repositoryContainer
             host_repo = repo_container.hostRepository
             port_repo = repo_container.portRepository
-            hosts = host_repo.getAllHostObjs()[:max(1, min(int(limit), 2000))]
+            hosts = list(host_repo.getAllHostObjs())
+            if limit is not None:
+                try:
+                    normalized_limit = int(limit)
+                except (TypeError, ValueError):
+                    normalized_limit = 0
+                if normalized_limit > 0:
+                    hosts = hosts[:normalized_limit]
             rows = []
             for host in hosts:
                 ports = port_repo.getPortsByHostId(host.id)
@@ -3486,33 +3538,56 @@ class WebRuntime:
                 "added": int(added or 0),
             }
 
-    def _import_nmap_xml(self, xml_path: str, run_actions: bool = False) -> Dict[str, Any]:
-        with self._lock:
-            project = self._require_active_project()
-            import_nmap_xml_into_project(
-                project=project,
-                xml_path=xml_path,
-                output="",
-                update_progress_observable=None,
+    def _import_nmap_xml(self, xml_path: str, run_actions: bool = False, job_id: int = 0) -> Dict[str, Any]:
+        resolved_job_id = int(job_id or 0)
+        if resolved_job_id > 0:
+            self._update_scan_submission_status(
+                job_id=resolved_job_id,
+                status="running",
+                result_summary=f"importing {os.path.basename(str(xml_path or ''))}",
             )
+        try:
+            with self._lock:
+                project = self._require_active_project()
+                import_nmap_xml_into_project(
+                    project=project,
+                    xml_path=xml_path,
+                    output="",
+                    update_progress_observable=None,
+                )
 
-            try:
-                self.logic.copyNmapXMLToOutputFolder(xml_path)
-            except Exception:
-                pass
+                try:
+                    self.logic.copyNmapXMLToOutputFolder(xml_path)
+                except Exception:
+                    pass
 
-            self._ensure_scheduler_table()
-            self._ensure_scheduler_approval_store()
+                self._ensure_scheduler_table()
+                self._ensure_scheduler_approval_store()
 
-        scheduler_result = None
-        if run_actions:
-            scheduler_result = self._run_scheduler_actions_web()
+            scheduler_result = None
+            if run_actions:
+                scheduler_result = self._run_scheduler_actions_web()
 
-        return {
-            "xml_path": xml_path,
-            "run_actions": bool(run_actions),
-            "scheduler_result": scheduler_result,
-        }
+            result = {
+                "xml_path": xml_path,
+                "run_actions": bool(run_actions),
+                "scheduler_result": scheduler_result,
+            }
+            if resolved_job_id > 0:
+                self._update_scan_submission_status(
+                    job_id=resolved_job_id,
+                    status="completed",
+                    result_summary=f"imported {os.path.basename(str(xml_path or ''))}",
+                )
+            return result
+        except Exception as exc:
+            if resolved_job_id > 0:
+                self._update_scan_submission_status(
+                    job_id=resolved_job_id,
+                    status="failed",
+                    result_summary=str(exc),
+                )
+            raise
 
     def _run_nmap_scan_and_import(
             self,
@@ -3526,6 +3601,13 @@ class WebRuntime:
             scan_options: Optional[Dict[str, Any]] = None,
             job_id: int = 0,
     ) -> Dict[str, Any]:
+        resolved_job_id = int(job_id or 0)
+        if resolved_job_id > 0:
+            self._update_scan_submission_status(
+                job_id=resolved_job_id,
+                status="running",
+                result_summary=f"running nmap against {self._compact_targets(targets)}",
+            )
         with self._lock:
             project = self._require_active_project()
             running_folder = project.properties.runningFolder
@@ -3535,86 +3617,103 @@ class WebRuntime:
                 f"web-nmap-{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
             )
 
-        scan_plan = self._build_nmap_scan_plan(
-            targets=targets,
-            discovery=bool(discovery),
-            staged=bool(staged),
-            nmap_path=nmap_path,
-            nmap_args=nmap_args,
-            output_prefix=output_prefix,
-            scan_mode=scan_mode,
-            scan_options=dict(scan_options or {}),
-        )
-
-        target_label = self._compact_targets(targets)
-        stage_results: List[Dict[str, Any]] = []
-        for stage in scan_plan["stages"]:
-            if int(job_id or 0) > 0 and self.jobs.is_cancel_requested(int(job_id)):
-                raise RuntimeError("cancelled")
-            executed, reason, process_id = self._run_command_with_tracking(
-                tool_name=stage["tool_name"],
-                tab_title=stage["tab_title"],
-                host_ip=target_label,
-                port="",
-                protocol="",
-                command=stage["command"],
-                outputfile=stage["output_prefix"],
-                timeout=int(stage.get("timeout", 3600)),
-                job_id=int(job_id or 0),
+        try:
+            scan_plan = self._build_nmap_scan_plan(
+                targets=targets,
+                discovery=bool(discovery),
+                staged=bool(staged),
+                nmap_path=nmap_path,
+                nmap_args=nmap_args,
+                output_prefix=output_prefix,
+                scan_mode=scan_mode,
+                scan_options=dict(scan_options or {}),
             )
-            stage_results.append({
-                "name": stage["tool_name"],
-                "command": stage["command"],
-                "executed": bool(executed),
-                "reason": reason,
-                "process_id": int(process_id or 0),
-                "output_prefix": stage["output_prefix"],
-                "xml_path": stage["xml_path"],
-            })
-            if not executed:
-                raise RuntimeError(
-                    f"Nmap stage '{stage['tool_name']}' failed ({reason}). "
-                    f"Command: {stage['command']}"
-                )
 
-        xml_path = scan_plan["xml_path"]
-        if not xml_path or not os.path.isfile(xml_path):
-            raise RuntimeError(f"Nmap scan completed but XML output was not found: {xml_path}")
-
-        import_result = self._import_nmap_xml(xml_path, run_actions=run_actions)
-        with self._lock:
-            project = self._require_active_project()
-            host_count_after = len(project.repositoryContainer.hostRepository.getAllHostObjs())
-        imported_hosts = max(0, int(host_count_after) - int(host_count_before))
-        warnings: List[str] = []
-        if imported_hosts == 0:
-            if bool(discovery):
-                warnings.append(
-                    "Nmap completed but no hosts were imported. "
-                    "The target may be dropping discovery probes; try disabling host discovery (-Pn)."
+            target_label = self._compact_targets(targets)
+            stage_results: List[Dict[str, Any]] = []
+            for stage in scan_plan["stages"]:
+                if resolved_job_id > 0 and self.jobs.is_cancel_requested(resolved_job_id):
+                    raise RuntimeError("cancelled")
+                executed, reason, process_id = self._run_command_with_tracking(
+                    tool_name=stage["tool_name"],
+                    tab_title=stage["tab_title"],
+                    host_ip=target_label,
+                    port="",
+                    protocol="",
+                    command=stage["command"],
+                    outputfile=stage["output_prefix"],
+                    timeout=int(stage.get("timeout", 3600)),
+                    job_id=resolved_job_id,
                 )
-            else:
-                warnings.append(
-                    "Nmap completed but no hosts were imported. "
-                    "Verify target reachability and scan privileges."
-                )
+                stage_results.append({
+                    "name": stage["tool_name"],
+                    "command": stage["command"],
+                    "executed": bool(executed),
+                    "reason": reason,
+                    "process_id": int(process_id or 0),
+                    "output_prefix": stage["output_prefix"],
+                    "xml_path": stage["xml_path"],
+                })
+                if not executed:
+                    raise RuntimeError(
+                        f"Nmap stage '{stage['tool_name']}' failed ({reason}). "
+                        f"Command: {stage['command']}"
+                    )
 
-        return {
-            "targets": targets,
-            "discovery": bool(discovery),
-            "staged": bool(staged),
-            "run_actions": bool(run_actions),
-            "nmap_path": nmap_path,
-            "nmap_args": str(nmap_args or ""),
-            "scan_mode": str(scan_mode or "legacy"),
-            "scan_options": dict(scan_options or {}),
-            "commands": [stage["command"] for stage in scan_plan["stages"]],
-            "stages": stage_results,
-            "xml_path": xml_path,
-            "imported_hosts": imported_hosts,
-            "warnings": warnings,
-            **import_result,
-        }
+            xml_path = scan_plan["xml_path"]
+            if not xml_path or not os.path.isfile(xml_path):
+                raise RuntimeError(f"Nmap scan completed but XML output was not found: {xml_path}")
+
+            import_result = self._import_nmap_xml(xml_path, run_actions=run_actions)
+            with self._lock:
+                project = self._require_active_project()
+                host_count_after = len(project.repositoryContainer.hostRepository.getAllHostObjs())
+            imported_hosts = max(0, int(host_count_after) - int(host_count_before))
+            warnings: List[str] = []
+            if imported_hosts == 0:
+                if bool(discovery):
+                    warnings.append(
+                        "Nmap completed but no hosts were imported. "
+                        "The target may be dropping discovery probes; try disabling host discovery (-Pn)."
+                    )
+                else:
+                    warnings.append(
+                        "Nmap completed but no hosts were imported. "
+                        "Verify target reachability and scan privileges."
+                    )
+
+            result = {
+                "targets": targets,
+                "discovery": bool(discovery),
+                "staged": bool(staged),
+                "run_actions": bool(run_actions),
+                "nmap_path": nmap_path,
+                "nmap_args": str(nmap_args or ""),
+                "scan_mode": str(scan_mode or "legacy"),
+                "scan_options": dict(scan_options or {}),
+                "commands": [stage["command"] for stage in scan_plan["stages"]],
+                "stages": stage_results,
+                "xml_path": xml_path,
+                "imported_hosts": imported_hosts,
+                "warnings": warnings,
+                **import_result,
+            }
+            if resolved_job_id > 0:
+                warning_note = f" ({len(warnings)} warning{'s' if len(warnings) != 1 else ''})" if warnings else ""
+                self._update_scan_submission_status(
+                    job_id=resolved_job_id,
+                    status="completed",
+                    result_summary=f"imported {imported_hosts} host{'s' if imported_hosts != 1 else ''}{warning_note}",
+                )
+            return result
+        except Exception as exc:
+            if resolved_job_id > 0:
+                self._update_scan_submission_status(
+                    job_id=resolved_job_id,
+                    status="failed",
+                    result_summary=str(exc),
+                )
+            raise
 
     def _run_manual_tool(
             self,
@@ -3869,6 +3968,9 @@ class WebRuntime:
                         port=str(target.port or ""),
                         protocol=str(target.protocol or "tcp"),
                         service=str(target.service_name or ""),
+                        artifact_refs=artifact_refs,
+                        host_ip=str(target.host_ip or ""),
+                        hostname=str(getattr(target, "hostname", "") or ""),
                     )
             self._persist_shared_target_state(
                 host_id=int(target.host_id or 0),
@@ -4713,9 +4815,10 @@ class WebRuntime:
         has_targeted_nuclei = _has_any("nuclei-cves", "nuclei-exposures", "nuclei-wordpress")
         has_whatweb = _has_any("whatweb", "whatweb-http", "whatweb-https")
         has_nikto = _has_any("nikto")
-        has_web_content = _has_any("web-content-discovery")
+        has_web_content = _has_any("web-content-discovery", "dirsearch", "ffuf")
         has_http_followup = _has_any("curl-headers", "curl-options", "curl-robots")
         has_smb_signing_checks = _has_any("smb-security-mode", "smb2-security-mode")
+        has_internal_safe_enum = _has_any("enum4linux-ng", "smbmap", "rpcclient-enum", "smb-enum-users.nse")
         confident_cpe_count = 0
         for item in inferred_technologies[:120]:
             if not isinstance(item, dict):
@@ -4769,7 +4872,7 @@ class WebRuntime:
                 if not has_nikto:
                     _add_gap("missing_nikto", "nikto")
                 if not has_web_content:
-                    _add_gap("missing_web_content_discovery", "web-content-discovery")
+                    _add_gap("missing_web_content_discovery", "web-content-discovery", "dirsearch", "ffuf")
                 if not has_http_followup:
                     _add_gap("missing_http_followup", "curl-headers", "curl-options", "curl-robots")
         else:
@@ -4779,6 +4882,8 @@ class WebRuntime:
                 _add_gap("missing_banner", "banner")
             if is_smb and not has_smb_signing_checks:
                 _add_gap("missing_smb_signing_checks", "smb-security-mode", "smb2-security-mode")
+            if is_smb and not has_internal_safe_enum:
+                _add_gap("missing_internal_safe_enum", "enum4linux-ng", "smbmap", "rpcclient-enum")
 
         if int(len(host_cves or [])) > 0:
             if is_web and not (has_whatweb and has_nikto and has_web_content and (has_targeted_nuclei or has_http_followup)):
@@ -4787,6 +4892,8 @@ class WebRuntime:
                     "whatweb",
                     "nikto",
                     "web-content-discovery",
+                    "dirsearch",
+                    "ffuf",
                     "nuclei-cves",
                     "nuclei-exposures",
                     "curl-headers",
@@ -4795,6 +4902,8 @@ class WebRuntime:
                 )
             if is_smb and not has_smb_signing_checks:
                 _add_gap("missing_smb_followup_after_vuln", "smb-security-mode", "smb2-security-mode")
+            if is_smb and not has_internal_safe_enum:
+                _add_gap("missing_internal_safe_enum", "enum4linux-ng", "smbmap", "rpcclient-enum")
 
         if str(analysis_mode or "").strip().lower() == "dig_deeper" and not missing:
             if is_web and not _has_any("wafw00f", "sslscan", "sslyze"):
@@ -4821,6 +4930,7 @@ class WebRuntime:
                 "nikto": bool(has_nikto),
                 "web_content_discovery": bool(has_web_content),
                 "smb_signing_checks": bool(has_smb_signing_checks),
+                "internal_safe_enum": bool(has_internal_safe_enum),
                 "confident_cpe_count": int(confident_cpe_count),
             },
             "host_cve_count": int(len(host_cves or [])),
@@ -5375,6 +5485,9 @@ class WebRuntime:
                 port=str(record.get("port", "") or ""),
                 protocol=str(record.get("protocol", "tcp") or "tcp"),
                 service=str(record.get("service", "") or ""),
+                artifact_refs=list(record.get("artifact_refs", []) or []),
+                host_ip=str(record.get("host_ip", "") or ""),
+                hostname=str(record.get("hostname", "") or ""),
             )
             for item in list(parsed.get("technologies", []) or [])[:24]:
                 if not isinstance(item, dict):
@@ -5655,6 +5768,9 @@ class WebRuntime:
                 port=str(record.get("port", "") or ""),
                 protocol=str(record.get("protocol", "tcp") or "tcp"),
                 service=str(record.get("service", "") or ""),
+                artifact_refs=list(record.get("artifact_refs", []) or []),
+                host_ip=str(record.get("host_ip", "") or ""),
+                hostname=str(record.get("hostname", "") or ""),
             )
             for item in list(parsed.get("findings", []) or [])[:32]:
                 if not isinstance(item, dict):
@@ -5769,6 +5885,9 @@ class WebRuntime:
                 port=str(record.get("port", "") or ""),
                 protocol=str(record.get("protocol", "tcp") or "tcp"),
                 service=str(record.get("service", "") or ""),
+                artifact_refs=list(record.get("artifact_refs", []) or []),
+                host_ip=str(record.get("host_ip", "") or ""),
+                hostname=str(record.get("hostname", "") or ""),
             )
             for item in list(parsed.get("urls", []) or [])[:32]:
                 if not isinstance(item, dict):
@@ -7446,6 +7565,443 @@ class WebRuntime:
             },
         }
 
+    @staticmethod
+    def _normalize_restore_compare_path(path: str) -> str:
+        token = str(path or "").strip()
+        if not token:
+            return ""
+        normalized = os.path.normpath(token.replace("\\", "/"))
+        if normalized == ".":
+            return ""
+        return normalized.rstrip("/")
+
+    @classmethod
+    def _looks_like_absolute_path(cls, value: str) -> bool:
+        token = cls._normalize_restore_compare_path(value)
+        if not token:
+            return False
+        return bool(token.startswith("/") or re.match(r"^[A-Za-z]:/", token))
+
+    @classmethod
+    def _path_tail(cls, path: str, depth: int = 2) -> str:
+        token = cls._normalize_restore_compare_path(path)
+        if not token:
+            return ""
+        parts = [part for part in token.split("/") if part]
+        return "/".join(parts[-max(1, int(depth or 2)):])
+
+    @classmethod
+    def _build_restore_root_mappings(
+            cls,
+            *,
+            manifest: Dict[str, Any],
+            project_path: str,
+            output_folder: str,
+            running_folder: str,
+    ) -> List[Tuple[str, str]]:
+        candidates: List[Tuple[str, str]] = []
+        old_output_folder = str(manifest.get("output_folder", "") or "").strip()
+        old_running_folder = str(manifest.get("running_folder", "") or "").strip()
+        for old_root, new_root in (
+                (old_output_folder, output_folder),
+                (old_running_folder, running_folder),
+        ):
+            old_norm = cls._normalize_restore_compare_path(old_root)
+            new_norm = cls._normalize_restore_compare_path(os.path.abspath(str(new_root or "").strip()))
+            if not old_norm or not new_norm:
+                continue
+            candidates.append((old_norm, new_norm))
+
+        deduped: List[Tuple[str, str]] = []
+        seen = set()
+        for old_root, new_root in sorted(candidates, key=lambda item: len(item[0]), reverse=True):
+            key = (old_root, new_root)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((old_root, new_root))
+        return deduped
+
+    @classmethod
+    def _build_restore_text_replacements(cls, root_mappings: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        replacements: List[Tuple[str, str]] = []
+        seen = set()
+        for old_root, new_root in list(root_mappings or []):
+            paired_variants = [
+                (str(old_root or "").strip(), str(new_root or "").strip()),
+                (
+                    str(old_root or "").strip().replace("/", "\\"),
+                    str(new_root or "").strip().replace("/", "\\"),
+                ),
+            ]
+            for old_variant, new_variant in paired_variants:
+                pair = (old_variant, new_variant)
+                if not old_variant or pair in seen:
+                    continue
+                seen.add(pair)
+                replacements.append(pair)
+        replacements.sort(key=lambda item: len(item[0]), reverse=True)
+        return replacements
+
+    @classmethod
+    def _replace_restore_roots_in_text(cls, value: str, text_replacements: List[Tuple[str, str]]) -> str:
+        result = str(value or "")
+        for old_root, new_root in list(text_replacements or []):
+            if old_root and old_root in result:
+                result = result.replace(old_root, new_root)
+        return result
+
+    @classmethod
+    def _build_restore_basename_index(cls, roots: List[str]) -> Dict[str, List[str]]:
+        index: Dict[str, List[str]] = {}
+        for root in list(roots or []):
+            normalized_root = os.path.abspath(str(root or "").strip())
+            if not normalized_root or not os.path.isdir(normalized_root):
+                continue
+            for base, _dirs, files in os.walk(normalized_root):
+                for file_name in files:
+                    full_path = os.path.normpath(os.path.join(base, file_name)).replace("\\", "/")
+                    key = str(file_name or "").strip().lower()
+                    if not key:
+                        continue
+                    index.setdefault(key, [])
+                    if full_path not in index[key]:
+                        index[key].append(full_path)
+        return index
+
+    @classmethod
+    def _match_rebased_candidate(cls, raw_value: str, candidates: List[str]) -> str:
+        if not candidates:
+            return str(raw_value or "")
+        if len(candidates) == 1:
+            return str(candidates[0])
+        for depth in (3, 2):
+            tail = cls._path_tail(raw_value, depth=depth)
+            if not tail:
+                continue
+            matches = [candidate for candidate in list(candidates) if cls._path_tail(candidate, depth=depth) == tail]
+            if len(matches) == 1:
+                return str(matches[0])
+        return str(raw_value or "")
+
+    @classmethod
+    def _rebase_restored_file_reference(
+            cls,
+            value: str,
+            *,
+            root_mappings: List[Tuple[str, str]],
+            text_replacements: List[Tuple[str, str]],
+            basename_index: Dict[str, List[str]],
+    ) -> str:
+        raw_value = str(value or "").strip()
+        if not raw_value or raw_value.startswith("process_output:"):
+            return raw_value
+        if raw_value.startswith(("http://", "https://", "data:")):
+            return raw_value
+
+        replaced = cls._replace_restore_roots_in_text(raw_value, text_replacements)
+        replaced_norm = cls._normalize_restore_compare_path(replaced)
+        if replaced_norm and replaced != raw_value and cls._looks_like_absolute_path(replaced_norm):
+            return replaced_norm
+
+        normalized_raw = cls._normalize_restore_compare_path(raw_value)
+        if not cls._looks_like_absolute_path(normalized_raw):
+            return replaced if replaced != raw_value else raw_value
+
+        basename = os.path.basename(normalized_raw)
+        if not basename:
+            return replaced if replaced != raw_value else raw_value
+
+        candidates = basename_index.get(str(basename or "").strip().lower(), [])
+        matched = cls._match_rebased_candidate(normalized_raw, candidates)
+        return matched if matched != normalized_raw else (replaced if replaced != raw_value else raw_value)
+
+    @classmethod
+    def _rewrite_restored_json_value(
+            cls,
+            value: Any,
+            *,
+            root_mappings: List[Tuple[str, str]],
+            text_replacements: List[Tuple[str, str]],
+            basename_index: Dict[str, List[str]],
+            key_name: str = "",
+    ) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: cls._rewrite_restored_json_value(
+                    item,
+                    root_mappings=root_mappings,
+                    text_replacements=text_replacements,
+                    basename_index=basename_index,
+                    key_name=str(key or ""),
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                cls._rewrite_restored_json_value(
+                    item,
+                    root_mappings=root_mappings,
+                    text_replacements=text_replacements,
+                    basename_index=basename_index,
+                    key_name=str(key_name or ""),
+                )
+                for item in value
+            ]
+        if not isinstance(value, str):
+            return value
+
+        key_token = str(key_name or "").strip().lower()
+        if key_token in {
+            "artifact_ref",
+            "ref",
+            "stdout_ref",
+            "stderr_ref",
+            "source_ref",
+            "outputfile",
+            "path",
+            "screenshot_path",
+        }:
+            return cls._rebase_restored_file_reference(
+                value,
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+        if key_token in {"command", "command_template", "evidence_refs"}:
+            return cls._replace_restore_roots_in_text(value, text_replacements)
+
+        replaced = cls._replace_restore_roots_in_text(value, text_replacements)
+        if replaced != value:
+            replaced_norm = cls._normalize_restore_compare_path(replaced)
+            if replaced_norm and cls._looks_like_absolute_path(replaced_norm):
+                return replaced_norm
+            return replaced
+        if cls._looks_like_absolute_path(value):
+            return cls._rebase_restored_file_reference(
+                value,
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+        return value
+
+    @staticmethod
+    def _sqlite_table_columns(connection: sqlite3.Connection, table_name: str) -> List[str]:
+        try:
+            rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        except Exception:
+            return []
+        return [str(row[1]) for row in rows if len(row) > 1]
+
+    @classmethod
+    def _rewrite_restored_json_text(
+            cls,
+            raw_json: Any,
+            *,
+            root_mappings: List[Tuple[str, str]],
+            text_replacements: List[Tuple[str, str]],
+            basename_index: Dict[str, List[str]],
+    ) -> Any:
+        token = str(raw_json or "").strip()
+        if not token:
+            return str(raw_json or "")
+        try:
+            parsed = json.loads(token)
+        except Exception:
+            return cls._replace_restore_roots_in_text(token, text_replacements)
+        rewritten = cls._rewrite_restored_json_value(
+            parsed,
+            root_mappings=root_mappings,
+            text_replacements=text_replacements,
+            basename_index=basename_index,
+        )
+        try:
+            return json.dumps(rewritten, ensure_ascii=False)
+        except Exception:
+            return token
+
+    @classmethod
+    def _rewrite_sqlite_table_rows(
+            cls,
+            connection: sqlite3.Connection,
+            table_name: str,
+            column_modes: Dict[str, str],
+            *,
+            root_mappings: List[Tuple[str, str]],
+            text_replacements: List[Tuple[str, str]],
+            basename_index: Dict[str, List[str]],
+    ) -> None:
+        available_columns = set(cls._sqlite_table_columns(connection, table_name))
+        target_columns = [column for column in list(column_modes or {}) if column in available_columns]
+        if not target_columns:
+            return
+        quoted_columns = ", ".join(f'"{column}"' for column in target_columns)
+        try:
+            rows = connection.execute(f'SELECT rowid, {quoted_columns} FROM "{table_name}"').fetchall()
+        except Exception:
+            return
+
+        for row in rows:
+            rowid = row[0]
+            updates: Dict[str, Any] = {}
+            for index, column_name in enumerate(target_columns, start=1):
+                original = row[index]
+                mode = str(column_modes.get(column_name, "text") or "text").strip().lower()
+                if mode == "json":
+                    rewritten = cls._rewrite_restored_json_text(
+                        original,
+                        root_mappings=root_mappings,
+                        text_replacements=text_replacements,
+                        basename_index=basename_index,
+                    )
+                elif mode == "path":
+                    rewritten = cls._rebase_restored_file_reference(
+                        str(original or ""),
+                        root_mappings=root_mappings,
+                        text_replacements=text_replacements,
+                        basename_index=basename_index,
+                    )
+                else:
+                    rewritten = cls._replace_restore_roots_in_text(str(original or ""), text_replacements)
+                if rewritten != original:
+                    updates[column_name] = rewritten
+            if not updates:
+                continue
+            assignments = ", ".join(f'"{column}" = ?' for column in updates)
+            params = list(updates.values()) + [rowid]
+            connection.execute(f'UPDATE "{table_name}" SET {assignments} WHERE rowid = ?', params)
+
+    @classmethod
+    def _rebase_restored_project_paths(
+            cls,
+            *,
+            project_path: str,
+            manifest: Dict[str, Any],
+            output_folder: str,
+            running_folder: str,
+    ) -> None:
+        root_mappings = cls._build_restore_root_mappings(
+            manifest=manifest,
+            project_path=project_path,
+            output_folder=output_folder,
+            running_folder=running_folder,
+        )
+        if not root_mappings:
+            return
+        text_replacements = cls._build_restore_text_replacements(root_mappings)
+        basename_index = cls._build_restore_basename_index([output_folder, running_folder])
+        connection = sqlite3.connect(str(project_path))
+        try:
+            cls._rewrite_sqlite_table_rows(
+                connection,
+                "process",
+                {"outputfile": "path", "command": "text"},
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+            cls._rewrite_sqlite_table_rows(
+                connection,
+                "scheduler_pending_approval",
+                {"command_template": "text", "evidence_refs": "text"},
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+            cls._rewrite_sqlite_table_rows(
+                connection,
+                "scheduler_execution_record",
+                {
+                    "stdout_ref": "path",
+                    "stderr_ref": "path",
+                    "artifact_refs_json": "json",
+                    "observations_created_json": "json",
+                    "graph_mutations_json": "json",
+                },
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+            cls._rewrite_sqlite_table_rows(
+                connection,
+                "scheduler_target_state",
+                {
+                    "technologies_json": "json",
+                    "findings_json": "json",
+                    "manual_tests_json": "json",
+                    "service_inventory_json": "json",
+                    "urls_json": "json",
+                    "coverage_gaps_json": "json",
+                    "attempted_actions_json": "json",
+                    "credentials_json": "json",
+                    "sessions_json": "json",
+                    "screenshots_json": "json",
+                    "artifacts_json": "json",
+                    "raw_json": "json",
+                },
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+            cls._rewrite_sqlite_table_rows(
+                connection,
+                "scheduler_host_ai_state",
+                {
+                    "technologies_json": "json",
+                    "findings_json": "json",
+                    "manual_tests_json": "json",
+                    "raw_json": "json",
+                },
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+            cls._rewrite_sqlite_table_rows(
+                connection,
+                "graph_node",
+                {"source_ref": "path", "properties_json": "json"},
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+            cls._rewrite_sqlite_table_rows(
+                connection,
+                "graph_edge",
+                {"source_ref": "path", "properties_json": "json"},
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+            cls._rewrite_sqlite_table_rows(
+                connection,
+                "graph_evidence_ref",
+                {"evidence_ref": "text"},
+                root_mappings=root_mappings,
+                text_replacements=text_replacements,
+                basename_index=basename_index,
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _attach_restored_running_folder_locked(self, running_folder: str) -> None:
+        project = getattr(self.logic, "activeProject", None)
+        if project is None:
+            return
+        restored_running_folder = os.path.abspath(str(running_folder or "").strip())
+        if not restored_running_folder:
+            return
+        os.makedirs(restored_running_folder, exist_ok=True)
+        current_running_folder = str(getattr(project.properties, "runningFolder", "") or "").strip()
+        if current_running_folder and os.path.abspath(current_running_folder) != restored_running_folder:
+            try:
+                shutil.rmtree(current_running_folder, ignore_errors=True)
+            except Exception:
+                pass
+        if hasattr(project.properties, "_replace"):
+            project.properties = project.properties._replace(runningFolder=restored_running_folder)
+
     def _summary(self) -> Dict[str, int]:
         project = getattr(self.logic, "activeProject", None)
         if not project:
@@ -7669,7 +8225,7 @@ class WebRuntime:
             except Exception:
                 continue
 
-    def _hosts(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def _hosts(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         project = getattr(self.logic, "activeProject", None)
         if not project:
             return []
@@ -7679,8 +8235,15 @@ class WebRuntime:
         port_repo = repo_container.portRepository
         results = []
 
-        hosts = host_repo.getAllHostObjs()
-        for host in hosts[:limit]:
+        hosts = list(host_repo.getAllHostObjs())
+        if limit is not None:
+            try:
+                normalized_limit = int(limit)
+            except (TypeError, ValueError):
+                normalized_limit = 0
+            if normalized_limit > 0:
+                hosts = hosts[:normalized_limit]
+        for host in hosts:
             host_ports = port_repo.getPortsByHostId(host.id)
             open_port_count = sum(
                 1 for p in host_ports if str(getattr(p, "state", "")) in {"open", "open|filtered"}
@@ -7788,6 +8351,7 @@ class WebRuntime:
         ensure_scheduler_audit_table(project.database)
         ensure_scheduler_ai_state_table(project.database)
         ensure_scheduler_engagement_policy_table(project.database)
+        ensure_scan_submission_table(project.database)
 
     def _ensure_scheduler_approval_store(self):
         project = getattr(self.logic, "activeProject", None)
@@ -8414,6 +8978,111 @@ class WebRuntime:
         if len(targets) <= 3:
             return ",".join(str(item) for item in targets)
         return ",".join(str(item) for item in targets[:3]) + ",..."
+
+    @staticmethod
+    def _summarize_scan_scope(targets: List[str]) -> str:
+        subnets: List[str] = []
+        hosts: List[str] = []
+        ranges: List[str] = []
+        domains: List[str] = []
+        for item in list(targets or []):
+            token = str(item or "").strip()
+            if not token:
+                continue
+            if "/" in token:
+                try:
+                    subnet = str(ipaddress.ip_network(token, strict=False))
+                except ValueError:
+                    subnet = ""
+                if subnet and subnet not in subnets:
+                    subnets.append(subnet)
+                    continue
+            if "-" in token and token not in ranges:
+                ranges.append(token)
+                continue
+            try:
+                host_value = str(ipaddress.ip_address(token))
+            except ValueError:
+                host_value = ""
+            if host_value:
+                if host_value not in hosts:
+                    hosts.append(host_value)
+                continue
+            if token not in domains:
+                domains.append(token)
+
+        parts: List[str] = []
+        if subnets:
+            parts.append(f"subnets: {', '.join(subnets[:4])}" + (" ..." if len(subnets) > 4 else ""))
+        if ranges:
+            parts.append(f"ranges: {', '.join(ranges[:3])}" + (" ..." if len(ranges) > 3 else ""))
+        if hosts:
+            host_summary = ", ".join(hosts[:4])
+            if len(hosts) > 4:
+                host_summary = f"{host_summary} ... ({len(hosts)} hosts)"
+            parts.append(f"hosts: {host_summary}")
+        if domains:
+            parts.append(f"domains: {', '.join(domains[:4])}" + (" ..." if len(domains) > 4 else ""))
+        return " | ".join(parts[:4])
+
+    def _record_scan_submission(
+            self,
+            *,
+            submission_kind: str,
+            job_id: int,
+            targets: Optional[List[str]] = None,
+            source_path: str = "",
+            discovery: bool = False,
+            staged: bool = False,
+            run_actions: bool = False,
+            nmap_path: str = "",
+            nmap_args: str = "",
+            scan_mode: str = "",
+            scan_options: Optional[Dict[str, Any]] = None,
+            result_summary: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            project = getattr(self.logic, "activeProject", None)
+            if project is None:
+                return None
+            ensure_scan_submission_table(project.database)
+            normalized_targets = [str(item or "").strip() for item in list(targets or []) if str(item or "").strip()]
+            return record_scan_submission(project.database, {
+                "job_id": str(int(job_id or 0) or ""),
+                "submission_kind": str(submission_kind or ""),
+                "status": "submitted",
+                "target_summary": self._compact_targets(normalized_targets),
+                "scope_summary": self._summarize_scan_scope(normalized_targets),
+                "targets": normalized_targets,
+                "source_path": str(source_path or ""),
+                "scan_mode": str(scan_mode or ""),
+                "discovery": bool(discovery),
+                "staged": bool(staged),
+                "run_actions": bool(run_actions),
+                "nmap_path": str(nmap_path or ""),
+                "nmap_args": str(nmap_args or ""),
+                "scan_options": dict(scan_options or {}),
+                "result_summary": str(result_summary or ""),
+            })
+
+    def _update_scan_submission_status(
+            self,
+            *,
+            job_id: int,
+            status: str,
+            result_summary: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            project = getattr(self.logic, "activeProject", None)
+            if project is None:
+                return None
+            ensure_scan_submission_table(project.database)
+            return update_scan_submission(
+                project.database,
+                job_id=int(job_id or 0),
+                status=str(status or ""),
+                result_summary=str(result_summary or ""),
+            )
 
     @staticmethod
     def _split_csv(raw: str) -> List[str]:

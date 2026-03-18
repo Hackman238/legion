@@ -64,6 +64,17 @@ This creates:
 - launcher `~/.local/bin/legion-web-dev`
 
 `legion-web-dev` sets `LEGION_HOME=~/.local/share/legion-web-dev` automatically, so config/autosave/scheduler data stays separated from native Legion defaults.
+Re-running the installer replaces the previous side-by-side source tree with a fresh clone of the latest branch before rebuilding the venv.
+
+Recommended way to launch the side-by-side install:
+
+```shell
+cd ~/.local/opt/legion-web-dev
+source ~/.local/opt/legion-web-dev/.venv/bin/activate
+python3 legion.py --web
+```
+
+The convenience launcher still works, but the venv activation flow above is the preferred path when you want to run the side-by-side copy explicitly.
 
 ##
 [![Known Vulnerabilities](https://snyk.io/test/github/Hackman238/legion/badge.svg?targetFile=requirements.txt)](https://snyk.io/test/github/Hackman238/legion?targetFile=requirements.txt)

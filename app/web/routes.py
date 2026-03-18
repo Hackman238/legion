@@ -111,7 +111,29 @@ def _build_csv_export(snapshot):
         snapshot.get("jobs", []),
         ["id", "type", "status", "created_at", "started_at", "finished_at", "error"],
     )
+    write_table_section(
+        "Submitted Scans",
+        snapshot.get("scan_history", []),
+        ["id", "submission_kind", "status", "target_summary", "scope_summary", "scan_mode", "created_at", "result_summary"],
+    )
 
+    return output.getvalue()
+
+
+def _build_hosts_csv_export(rows):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "ip", "hostname", "status", "os", "open_ports", "total_ports"])
+    for row in rows or []:
+        writer.writerow([
+            str(row.get("id", "")),
+            str(row.get("ip", "")),
+            str(row.get("hostname", "")),
+            str(row.get("status", "")),
+            str(row.get("os", "")),
+            str(row.get("open_ports", "")),
+            str(row.get("total_ports", "")),
+        ])
     return output.getvalue()
 
 
@@ -263,6 +285,17 @@ def export_csv():
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
     response = current_app.response_class(csv_text, mimetype="text/csv")
     response.headers["Content-Disposition"] = f'attachment; filename="legion-export-{timestamp}.csv"'
+    return response
+
+
+@web_bp.get("/api/export/hosts-csv")
+def export_hosts_csv():
+    runtime = current_app.extensions["legion_runtime"]
+    rows = runtime.get_workspace_hosts(limit=50000)
+    csv_text = _build_hosts_csv_export(rows)
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    response = current_app.response_class(csv_text, mimetype="text/csv")
+    response.headers["Content-Disposition"] = f'attachment; filename="legion-hosts-{timestamp}.csv"'
     return response
 
 
@@ -578,15 +611,30 @@ def job_stop(job_id):
         return _json_error(str(exc), 500)
 
 
+@web_bp.get("/api/scans/history")
+def scan_history():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        limit = int(request.args.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 1000))
+    return jsonify({"scans": runtime.get_scan_history(limit=limit)})
+
+
 @web_bp.get("/api/workspace/hosts")
 def workspace_hosts():
     runtime = current_app.extensions["legion_runtime"]
     try:
-        limit = int(request.args.get("limit", 400))
-    except (TypeError, ValueError):
-        limit = 400
-    limit = max(1, min(limit, 2000))
-    try:
+        limit_arg = request.args.get("limit")
+        if limit_arg in {None, ""}:
+            return jsonify({"hosts": runtime.get_workspace_hosts()})
+        try:
+            limit = int(limit_arg)
+        except (TypeError, ValueError):
+            limit = None
+        if limit is not None and limit <= 0:
+            limit = None
         return jsonify({"hosts": runtime.get_workspace_hosts(limit=limit)})
     except Exception as exc:
         return _json_error(str(exc), 500)
@@ -1467,8 +1515,8 @@ def evidence_graph():
             "include_ai_suggested": include_ai_suggested,
             "hide_nmap_xml_artifacts": hide_nmap_xml_artifacts,
             "host_id": host_id or None,
-            "limit_nodes": max(1, min(limit_nodes, 5000)),
-            "limit_edges": max(1, min(limit_edges, 10000)),
+            "limit_nodes": max(1, min(limit_nodes, 10000)),
+            "limit_edges": max(1, min(limit_edges, 30000)),
         })
         return jsonify(payload)
     except Exception as exc:

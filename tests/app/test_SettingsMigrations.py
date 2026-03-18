@@ -83,6 +83,14 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("sslscan", port_action_ids)
                 self.assertIn("sslyze", port_action_ids)
                 self.assertIn("wpscan", port_action_ids)
+                self.assertIn("whatweb", port_action_ids)
+                self.assertIn("whatweb-http", port_action_ids)
+                self.assertIn("whatweb-https", port_action_ids)
+                self.assertIn("dirsearch", port_action_ids)
+                self.assertIn("ffuf", port_action_ids)
+                self.assertIn("enum4linux-ng", port_action_ids)
+                self.assertIn("smbmap", port_action_ids)
+                self.assertIn("rpcclient-enum", port_action_ids)
 
                 port_actions = {row[1]: row for row in app_settings.getPortActions()}
                 nuclei_cmd = str(port_actions["nuclei-web"][2])
@@ -101,6 +109,12 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("nmap-vuln.nse", scheduler_ids)
                 self.assertIn("nuclei-web", scheduler_ids)
                 self.assertIn("screenshooter", scheduler_ids)
+                self.assertIn("whatweb", scheduler_ids)
+                self.assertIn("dirsearch", scheduler_ids)
+                self.assertIn("ffuf", scheduler_ids)
+                self.assertIn("enum4linux-ng", scheduler_ids)
+                self.assertIn("smbmap", scheduler_ids)
+                self.assertIn("rpcclient-enum", scheduler_ids)
 
     def test_nuclei_normalization_does_not_mutate_probe_or_output_tokens(self):
         from app.settings import AppSettings

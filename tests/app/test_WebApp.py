@@ -99,8 +99,22 @@ class DummyRuntime:
                 "error": "",
             }
         ]
+        self.scan_history = [
+            {
+                "id": 1,
+                "submission_kind": "nmap_scan",
+                "status": "completed",
+                "target_summary": "10.0.0.0/24",
+                "scope_summary": "subnets: 10.0.0.0/24",
+                "scan_mode": "easy",
+                "created_at": "2026-02-17T00:00:00Z",
+                "result_summary": "imported 4 hosts",
+            }
+        ]
         self.workspace_hosts = [
             {"id": 11, "ip": "10.0.0.5", "hostname": "dc01.local", "status": "up", "os": "windows", "open_ports": 2},
+            {"id": 12, "ip": "10.0.0.6", "hostname": "filesrv.local", "status": "up", "os": "windows", "open_ports": 3},
+            {"id": 13, "ip": "10.0.0.7", "hostname": "web01.local", "status": "up", "os": "linux", "open_ports": 4},
         ]
         self.workspace_services = [
             {"service": "smb", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
@@ -366,6 +380,7 @@ class DummyRuntime:
             "scheduler": self.get_scheduler_preferences(),
             "scheduler_decisions": self.get_scheduler_decisions(),
             "scheduler_approvals": list(self.scheduler_approvals),
+            "scan_history": list(self.scan_history),
             "jobs": list(self.jobs),
         }
 
@@ -646,8 +661,13 @@ class DummyRuntime:
             }
         ][:limit]
 
-    def get_workspace_hosts(self, limit=400):
+    def get_workspace_hosts(self, limit=None):
+        if limit is None:
+            return list(self.workspace_hosts)
         return self.workspace_hosts[:limit]
+
+    def get_scan_history(self, limit=200):
+        return self.scan_history[:limit]
 
     def get_workspace_services(self, limit=300):
         return self.workspace_services[:limit]
@@ -1352,12 +1372,22 @@ class WebAppTest(unittest.TestCase):
         self.assertNotIn("Web Console", body)
         self.assertIn("Graph Workspace", body)
         self.assertIn("graph-workspace-canvas", body)
+        self.assertIn("graph-matrix-view", body)
         self.assertIn("graph-zoom-slider", body)
         self.assertIn("graph-hide-nmap-xml-artifacts", body)
         self.assertIn("graph-detail-content-list", body)
         self.assertIn("graph-layout-tidy-button", body)
         self.assertIn("graph-layout-save-button", body)
+        self.assertIn("graph-export-svg-button", body)
+        self.assertIn("graph-export-png-button", body)
+        self.assertIn("graph-render-mode-select", body)
+        self.assertIn("graph-focus-depth-select", body)
+        self.assertIn("graph-focus-selection-button", body)
+        self.assertIn("graph-clear-focus-button", body)
+        self.assertIn("graph-expand-selection-button", body)
+        self.assertIn("graph-collapse-expanded-button", body)
         self.assertIn("graph-annotation-save-button", body)
+        self.assertIn('id="graph-zoom-slider" type="range" min="10"', body)
         self.assertIn("drag nodes or groups to reposition them", body)
         self.assertNotIn("<h2>Tools</h2>", body)
         self.assertLess(body.index('id="stat-hosts"'), body.index("<h2>Project</h2>"))
@@ -1434,6 +1464,15 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(202, response.status_code)
         self.assertEqual("accepted", response.json.get("status"))
         self.assertEqual("project-restore-zip", response.json["job"]["type"])
+
+    def test_export_hosts_csv_endpoint(self):
+        response = self.client.get("/api/export/hosts-csv")
+        self.assertEqual(200, response.status_code)
+        self.assertIn("attachment; filename=", response.headers.get("Content-Disposition", ""))
+        csv_text = response.get_data(as_text=True)
+        self.assertIn("id,ip,hostname,status,os,open_ports,total_ports", csv_text)
+        self.assertIn("10.0.0.5", csv_text)
+        self.assertNotIn("scheduler_mode", csv_text)
 
     def test_scheduler_preferences_endpoint(self):
         response = self.client.get("/api/scheduler/preferences")
@@ -1549,6 +1588,13 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, detail.status_code)
         self.assertEqual("smb-enum-users.nse", detail.json["tool_id"])
         self.assertEqual("sample trace", detail.json["stdout_excerpt"])
+
+    def test_scan_history_endpoint(self):
+        response = self.client.get("/api/scans/history?limit=10")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(1, len(response.json["scans"]))
+        self.assertEqual("nmap_scan", response.json["scans"][0]["submission_kind"])
+        self.assertEqual("10.0.0.0/24", response.json["scans"][0]["target_summary"])
 
     def test_graph_api_endpoints(self):
         graph = self.client.get("/api/graph?node_type=technology&hide_ai_suggested=true&host_id=11")
@@ -1678,7 +1724,11 @@ class WebAppTest(unittest.TestCase):
     def test_workspace_endpoints(self):
         hosts = self.client.get("/api/workspace/hosts")
         self.assertEqual(200, hosts.status_code)
-        self.assertEqual(1, len(hosts.json["hosts"]))
+        self.assertEqual(3, len(hosts.json["hosts"]))
+
+        limited_hosts = self.client.get("/api/workspace/hosts?limit=2")
+        self.assertEqual(200, limited_hosts.status_code)
+        self.assertEqual(2, len(limited_hosts.json["hosts"]))
 
         services = self.client.get("/api/workspace/services")
         self.assertEqual(200, services.status_code)

@@ -671,6 +671,87 @@ class SchedulerPlannerTest(unittest.TestCase):
             self.assertIn("nikto", tool_ids)
             self.assertTrue({"whatweb", "web-content-discovery", "curl-headers"} & tool_ids)
 
+    def test_ai_mode_dig_deeper_promotes_dirsearch_and_ffuf_for_missing_web_content_gap(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-dir-content.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "engagement_policy": {"preset": "external_pentest"},
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[["screenshooter", "http", "tcp"]],
+                portActions=[
+                    ["Run nuclei web scan", "nuclei-web", "nuclei -u [WEB_URL] -silent", "http"],
+                    ["WhatWeb", "whatweb", "whatweb [WEB_URL]", "http"],
+                    ["Run dirsearch", "dirsearch", "dirsearch -u [WEB_URL]/ --format=json --output=[OUTPUT].json", "http"],
+                    ["Run ffuf", "ffuf", "ffuf -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt -json > [OUTPUT].jsonl", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True, "vuln_hits": 1},
+                    "coverage": {
+                        "analysis_mode": "dig_deeper",
+                        "missing": ["missing_web_content_discovery", "missing_followup_after_vuln"],
+                    },
+                },
+            )
+
+            tool_ids = {item.tool_id for item in actions}
+            self.assertTrue({"dirsearch", "ffuf"} & tool_ids)
+
+    def test_ai_mode_internal_safe_enum_gap_prioritizes_enum4linux_smbmap_or_rpcclient(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-internal-gap.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "engagement_policy": {"preset": "internal_recon"},
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[
+                    ["enum4linux-ng", "smb", "tcp"],
+                    ["smbmap", "smb", "tcp"],
+                    ["rpcclient-enum", "smb", "tcp"],
+                ],
+                portActions=[
+                    ["Run enum4linux-ng", "enum4linux-ng", "enum4linux-ng -A -oJ [OUTPUT] [IP]", "smb"],
+                    ["Run smbmap", "smbmap", "smbmap -H [IP] -P [PORT] --csv [OUTPUT].csv", "smb"],
+                    ["Run rpcclient enum", "rpcclient-enum", "rpcclient [IP] -p [PORT] -U% -c 'srvinfo;enumdomusers' > [OUTPUT].txt", "smb"],
+                    ["Banner", "banner", "echo | nc -v [IP] [PORT]", "smb"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "smb",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"smb_signing_disabled": True},
+                    "coverage": {
+                        "analysis_mode": "standard",
+                        "missing": ["missing_internal_safe_enum"],
+                    },
+                },
+                limit=3,
+            )
+
+            tool_ids = {item.tool_id for item in actions}
+            self.assertTrue({"enum4linux-ng", "smbmap", "rpcclient-enum"} & tool_ids)
+
     def test_deterministic_mode_uses_strategy_packs_to_close_explicit_gap_when_context_exists(self):
         from app.scheduler.config import SchedulerConfigManager
         from app.scheduler.planner import SchedulerPlanner

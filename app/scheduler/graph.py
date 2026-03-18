@@ -2070,8 +2070,8 @@ def query_evidence_graph(
     resolved_host_id = int(host_id or 0)
     resolved_search = str(search or "").strip().lower()
     min_conf = _safe_float(min_confidence, default=0.0, minimum=0.0, maximum=100.0)
-    max_nodes = max(1, min(int(limit_nodes or 600), 5000))
-    max_edges = max(1, min(int(limit_edges or 1200), 10000))
+    max_nodes = max(1, min(int(limit_nodes or 600), 10000))
+    max_edges = max(1, min(int(limit_edges or 1200), 30000))
 
     nodes = []
     for item in list(snapshot.get("nodes", []) or []):

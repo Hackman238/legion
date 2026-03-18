@@ -20,7 +20,7 @@ ScheduledAction = PlanStep
 class SchedulerPlanner:
     WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
     WEB_AI_BASELINE_TOOL_IDS = ("nuclei-web", "nmap-vuln.nse", "screenshooter")
-    WEB_AI_DEEP_WEB_TOOL_IDS = ("whatweb", "whatweb-http", "whatweb-https", "nikto", "web-content-discovery")
+    WEB_AI_DEEP_WEB_TOOL_IDS = ("whatweb", "whatweb-http", "whatweb-https", "nikto", "web-content-discovery", "dirsearch", "ffuf")
     WEB_AI_TARGETED_NUCLEI_TOOL_IDS = ("nuclei-cves", "nuclei-exposures", "nuclei-wordpress")
     WEB_AI_GENERIC_HTTP_FOLLOWUP_TOOL_IDS = ("curl-headers", "curl-options", "curl-robots")
     GENERIC_WEB_TOOL_TOKENS = {
@@ -573,6 +573,8 @@ class SchedulerPlanner:
             "whatweb-https",
             "nikto",
             "web-content-discovery",
+            "dirsearch",
+            "ffuf",
             "nuclei-cves",
             "nuclei-exposures",
             "curl-headers",
@@ -595,13 +597,15 @@ class SchedulerPlanner:
             value += 24.0
         if "missing_nikto" in coverage_missing and cls._matches_any_token(text, ("nikto",)):
             value += 24.0
-        if "missing_web_content_discovery" in coverage_missing and cls._matches_any_token(text, ("feroxbuster", "gobuster", "web-content-discovery")):
+        if "missing_web_content_discovery" in coverage_missing and cls._matches_any_token(text, ("feroxbuster", "gobuster", "web-content-discovery", "dirsearch", "ffuf")):
             value += 24.0
         if "missing_smb_signing_checks" in coverage_missing and cls._matches_any_token(text, ("smb-security-mode", "smb2-security-mode")):
             value += 26.0
+        if "missing_internal_safe_enum" in coverage_missing and cls._matches_any_token(text, ("enum4linux", "smbmap", "rpcclient", "smb-enum-users")):
+            value += 28.0
         if analysis_mode == "dig_deeper" and "missing_followup_after_vuln" in coverage_missing and cls._matches_any_token(
                 text,
-                ("nikto", "whatweb", "web-content-discovery", "sslscan", "sslyze", "wafw00f"),
+                ("nikto", "whatweb", "web-content-discovery", "dirsearch", "ffuf", "sslscan", "sslyze", "wafw00f"),
         ):
             value += 18.0
         if analysis_mode == "dig_deeper" and tool_norm in {
@@ -623,7 +627,7 @@ class SchedulerPlanner:
             value += 6.0
         if bool(signals.get("tls_detected")) and any(token in text for token in ["https", "ssl", "tls", "sslyze", "sslscan", "nuclei"]):
             value += 8.0
-        if bool(signals.get("directory_listing")) and any(token in text for token in ["feroxbuster", "gobuster", "dirsearch", "web-content"]):
+        if bool(signals.get("directory_listing")) and any(token in text for token in ["feroxbuster", "gobuster", "dirsearch", "ffuf", "web-content"]):
             value += 8.0
         if bool(signals.get("smb_signing_disabled")) and any(token in text for token in ["smb", "crackmapexec", "enum", "rpc"]):
             value += 10.0
@@ -649,6 +653,8 @@ class SchedulerPlanner:
             "whatweb-https",
             "nikto",
             "web-content-discovery",
+            "dirsearch",
+            "ffuf",
         }:
             value += 18.0
 
@@ -717,6 +723,8 @@ class SchedulerPlanner:
                         "whatweb-https",
                         "nikto",
                         "web-content-discovery",
+                        "dirsearch",
+                        "ffuf",
                         "banner",
                         "nmap",
                     }:
@@ -741,6 +749,16 @@ class SchedulerPlanner:
                     label=label,
                     command_template=command_template,
                 )
+                if "missing_web_content_discovery" in coverage_missing and cls._matches_any_token(
+                        tool_text,
+                        ("feroxbuster", "gobuster", "web-content-discovery", "dirsearch", "ffuf"),
+                ):
+                    specific_tokens = set()
+                if "missing_internal_safe_enum" in coverage_missing and cls._matches_any_token(
+                        tool_text,
+                        ("enum4linux", "smbmap", "rpcclient", "smb-enum-users"),
+                ):
+                    specific_tokens = set()
                 if specific_tokens and not (specific_tokens & observed_tokens):
                     blocked = True
 

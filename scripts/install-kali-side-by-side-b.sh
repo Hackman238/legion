@@ -48,17 +48,25 @@ EOF
   chmod +x "$LAUNCHER_PATH"
 }
 
-install_or_update_repo() {
-  if [[ -d "$INSTALL_DIR/.git" ]]; then
-    log "Updating existing install at $INSTALL_DIR"
-    git -C "$INSTALL_DIR" fetch --depth=1 origin "$BRANCH"
-    git -C "$INSTALL_DIR" checkout -f "$BRANCH"
-    git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
-  else
-    log "Cloning $REPO_URL into $INSTALL_DIR"
-    mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+install_latest_repo() {
+  local install_parent backup_dir stage_dir
+  install_parent="$(dirname "$INSTALL_DIR")"
+  backup_dir="${INSTALL_DIR}.previous"
+
+  mkdir -p "$install_parent"
+  stage_dir="$(mktemp -d "${install_parent}/.legion-web-dev-stage-XXXXXX")"
+
+  log "Cloning $REPO_URL ($BRANCH) into temporary staging dir"
+  git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$stage_dir"
+
+  rm -rf "$backup_dir"
+  if [[ -e "$INSTALL_DIR" ]]; then
+    log "Removing previous side-by-side install at $INSTALL_DIR"
+    mv "$INSTALL_DIR" "$backup_dir"
   fi
+
+  mv "$stage_dir" "$INSTALL_DIR"
+  rm -rf "$backup_dir"
 }
 
 setup_python_env() {
@@ -79,7 +87,7 @@ main() {
   need_cmd git
   need_cmd "$PYTHON_BIN"
 
-  install_or_update_repo
+  install_latest_repo
   setup_python_env
   prepare_data_dir
   write_launcher
@@ -90,11 +98,18 @@ main() {
   log "Install dir: $INSTALL_DIR"
   log "Data dir (LEGION_HOME): $DATA_DIR"
   log ""
-  log "Run:"
-  log "  legion-web-dev                   # starts local web UI on 127.0.0.1:5000"
-  log "  legion-web-dev --web --web-port 5000 --web-bind-all"
-  log "  legion-web-dev --web --web-port 5001"
-  log "  legion-web-dev --headless --input-file targets.txt --discovery"
+  log "Recommended run flow:"
+  log "  cd \"$INSTALL_DIR\""
+  log "  source \"$VENV_DIR/bin/activate\""
+  log "  python3 legion.py --web"
+  log ""
+  log "Optional:"
+  log "  python3 legion.py --web --web-port 5000 --web-bind-all"
+  log "  python3 legion.py --web --web-port 5001"
+  log "  python3 legion.py --headless --input-file targets.txt --discovery"
+  log ""
+  log "Convenience launcher still available:"
+  log "  legion-web-dev"
 
   if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     log ""
