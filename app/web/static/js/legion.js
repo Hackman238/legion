@@ -1,5 +1,6 @@
 const workspaceState = {
     hosts: [],
+    hostFilter: "hide_down",
     services: [],
     tools: [],
     toolsHydrated: false,
@@ -47,6 +48,12 @@ const graphWorkspaceState = {
     drag: null,
     suppressClickUntil: 0,
 };
+
+const GRAPH_WORKSPACE_HEIGHT_STORAGE_KEY = "legion.graphWorkspaceHeightPx";
+const GRAPH_WORKSPACE_DEFAULT_HEIGHT = 680;
+const GRAPH_WORKSPACE_MIN_HEIGHT = 520;
+const GRAPH_WORKSPACE_MAX_HEIGHT = 1600;
+let graphWorkspaceResizeState = null;
 
 const GRAPH_VIEW_PRESETS = {
     attack_surface: {
@@ -709,6 +716,63 @@ function renderHostSelector(hosts) {
     select.value = String(workspaceState.selectedHostId);
 }
 
+function renderHostSelectionState({syncGraph = false, preserveGraphDetail = true} = {}) {
+    const selectedHostId = String(workspaceState.selectedHostId || "");
+    const select = document.getElementById("workspace-host-select");
+    if (select) {
+        const hasSelectedOption = Array.from(select.options || []).some((option) => {
+            return String(option.value || "") === selectedHostId;
+        });
+        if (hasSelectedOption) {
+            select.value = selectedHostId;
+        } else {
+            select.value = "";
+        }
+    }
+
+    const body = document.getElementById("hosts-body");
+    if (body) {
+        Array.from(body.querySelectorAll("tr[data-host-id]")).forEach((row) => {
+            const isSelected = selectedHostId && String(row.dataset.hostId || "") === selectedHostId;
+            row.classList.toggle("is-selected", Boolean(isSelected));
+            row.setAttribute("aria-selected", isSelected ? "true" : "false");
+        });
+    }
+
+    if (syncGraph) {
+        graphRenderWorkspace({preserveDetail: preserveGraphDetail});
+    }
+}
+
+async function selectHost(hostId, {loadDetail = true, syncGraph = true, preserveGraphDetail = true} = {}) {
+    const normalizedHostId = parseInt(hostId, 10);
+    if (!Number.isFinite(normalizedHostId) || normalizedHostId <= 0) {
+        workspaceState.selectedHostId = null;
+        workspaceState.hostDetail = null;
+        clearHostDetailView({resetForms: true});
+        renderHostSelectionState({syncGraph, preserveGraphDetail});
+        return;
+    }
+
+    const hostChanged = String(workspaceState.selectedHostId || "") !== String(normalizedHostId);
+    workspaceState.selectedHostId = normalizedHostId;
+    renderHostSelectionState({syncGraph, preserveGraphDetail});
+
+    if (!loadDetail) {
+        return;
+    }
+    if (!hostChanged && workspaceState.hostDetail) {
+        return;
+    }
+
+    workspaceState.hostDetail = null;
+    try {
+        await loadHostDetail(normalizedHostId);
+    } catch (err) {
+        setWorkspaceStatus(`Load host detail failed: ${err.message}`, true);
+    }
+}
+
 function renderHosts(hosts) {
     workspaceState.hosts = Array.isArray(hosts) ? hosts : [];
     const body = document.getElementById("hosts-body");
@@ -783,6 +847,7 @@ function renderHosts(hosts) {
     });
     setText("host-count", workspaceState.hosts.length);
     renderHostSelector(workspaceState.hosts);
+    renderHostSelectionState();
     graphUpdateHostFilterOptions();
 }
 
@@ -1644,9 +1709,42 @@ function exportWorkspaceCsvAction() {
     window.location.assign(`/api/export/csv?t=${Date.now()}`);
 }
 
+function currentHostFilterQuery() {
+    const filter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
+        ? "show_all"
+        : "hide_down";
+    return `filter=${encodeURIComponent(filter)}`;
+}
+
+function exportHostsJsonAction() {
+    closeRibbonMenus();
+    window.location.assign(`/api/export/hosts-json?${currentHostFilterQuery()}&t=${Date.now()}`);
+}
+
 function exportHostsCsvAction() {
     closeRibbonMenus();
-    window.location.assign(`/api/export/hosts-csv?t=${Date.now()}`);
+    window.location.assign(`/api/export/hosts-csv?${currentHostFilterQuery()}&t=${Date.now()}`);
+}
+
+function syncHostFilterControls() {
+    const showAll = document.getElementById("hosts-filter-show-all-button");
+    const hideDown = document.getElementById("hosts-filter-hide-down-button");
+    const filter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase();
+    if (showAll) {
+        showAll.classList.toggle("is-active", filter === "show_all");
+    }
+    if (hideDown) {
+        hideDown.classList.toggle("is-active", filter !== "show_all");
+    }
+}
+
+async function setHostFilterAction(filter) {
+    workspaceState.hostFilter = String(filter || "hide_down").trim().toLowerCase() === "show_all"
+        ? "show_all"
+        : "hide_down";
+    syncHostFilterControls();
+    closeRibbonMenus();
+    await loadWorkspaceHosts();
 }
 
 function exportProjectAiReportAction(format = "json") {
@@ -3141,6 +3239,121 @@ async function fetchJson(url) {
 
 function graphWorkspaceEnabled() {
     return Boolean(document.getElementById("graph-workspace-canvas"));
+}
+
+function getGraphWorkspacePanel() {
+    const canvas = document.getElementById("graph-workspace-canvas");
+    return canvas ? canvas.closest(".graph-panel") : null;
+}
+
+function normalizeGraphWorkspaceHeight(value) {
+    const parsed = Number.parseInt(String(value || ""), 10);
+    if (!Number.isFinite(parsed)) {
+        return GRAPH_WORKSPACE_DEFAULT_HEIGHT;
+    }
+    return Math.max(GRAPH_WORKSPACE_MIN_HEIGHT, Math.min(GRAPH_WORKSPACE_MAX_HEIGHT, parsed));
+}
+
+function applyGraphWorkspaceHeight(height, {persist = true} = {}) {
+    const panel = getGraphWorkspacePanel();
+    if (!panel) {
+        return;
+    }
+    const normalized = normalizeGraphWorkspaceHeight(height);
+    panel.style.setProperty("--graph-workspace-height", `${normalized}px`);
+    if (persist) {
+        try {
+            window.localStorage.setItem(GRAPH_WORKSPACE_HEIGHT_STORAGE_KEY, String(normalized));
+        } catch (_err) {
+            // ignore storage failures
+        }
+    }
+}
+
+function restoreGraphWorkspaceHeight() {
+    try {
+        const stored = window.localStorage.getItem(GRAPH_WORKSPACE_HEIGHT_STORAGE_KEY);
+        if (stored) {
+            applyGraphWorkspaceHeight(stored, {persist: false});
+            return;
+        }
+    } catch (_err) {
+        // ignore storage failures
+    }
+    applyGraphWorkspaceHeight(GRAPH_WORKSPACE_DEFAULT_HEIGHT, {persist: false});
+}
+
+function stopGraphWorkspaceResize() {
+    if (!graphWorkspaceResizeState) {
+        return;
+    }
+    const handle = graphWorkspaceResizeState.handle;
+    const pointerId = graphWorkspaceResizeState.pointerId;
+    document.body.classList.remove("graph-workspace-resizing");
+    window.removeEventListener("pointermove", handleGraphWorkspaceResizeMove);
+    window.removeEventListener("pointerup", stopGraphWorkspaceResize);
+    window.removeEventListener("pointercancel", stopGraphWorkspaceResize);
+    window.removeEventListener("blur", stopGraphWorkspaceResize);
+    if (handle && typeof handle.releasePointerCapture === "function" && pointerId !== null && pointerId !== undefined) {
+        try {
+            if (handle.hasPointerCapture && handle.hasPointerCapture(pointerId)) {
+                handle.releasePointerCapture(pointerId);
+            }
+        } catch (_err) {
+            // ignore release failures
+        }
+    }
+    applyGraphWorkspaceHeight(graphWorkspaceResizeState.currentHeight || graphWorkspaceResizeState.startHeight);
+    graphWorkspaceResizeState = null;
+}
+
+function handleGraphWorkspaceResizeMove(event) {
+    if (!graphWorkspaceResizeState) {
+        return;
+    }
+    const delta = Number(event.clientY || 0) - graphWorkspaceResizeState.startY;
+    const nextHeight = graphWorkspaceResizeState.startHeight + delta;
+    graphWorkspaceResizeState.currentHeight = normalizeGraphWorkspaceHeight(nextHeight);
+    applyGraphWorkspaceHeight(graphWorkspaceResizeState.currentHeight, {persist: false});
+}
+
+function startGraphWorkspaceResize(event) {
+    if (!graphWorkspaceEnabled()) {
+        return;
+    }
+    const scrollNode = document.querySelector(".graph-canvas-scroll");
+    if (!scrollNode) {
+        return;
+    }
+    event.preventDefault();
+    const handle = event.currentTarget || document.getElementById("graph-resize-handle");
+    const pointerId = event.pointerId;
+    graphWorkspaceResizeState = {
+        startY: Number(event.clientY || 0),
+        startHeight: Math.max(
+            GRAPH_WORKSPACE_MIN_HEIGHT,
+            Math.round(scrollNode.getBoundingClientRect().height || GRAPH_WORKSPACE_DEFAULT_HEIGHT),
+        ),
+        currentHeight: 0,
+        handle,
+        pointerId,
+    };
+    if (handle && typeof handle.setPointerCapture === "function" && pointerId !== null && pointerId !== undefined) {
+        try {
+            handle.setPointerCapture(pointerId);
+        } catch (_err) {
+            // ignore capture failures
+        }
+    }
+    document.body.classList.add("graph-workspace-resizing");
+    window.addEventListener("pointermove", handleGraphWorkspaceResizeMove);
+    window.addEventListener("pointerup", stopGraphWorkspaceResize);
+    window.addEventListener("pointercancel", stopGraphWorkspaceResize);
+    window.addEventListener("blur", stopGraphWorkspaceResize);
+}
+
+function resetGraphWorkspaceHeight() {
+    applyGraphWorkspaceHeight(GRAPH_WORKSPACE_DEFAULT_HEIGHT);
 }
 
 function setGraphStatus(text, isError = false) {
@@ -4735,6 +4948,40 @@ function graphFindGroup(groupKey) {
     return (graphWorkspaceState.filtered.groups || []).find((item) => String(item?.key || "") === String(groupKey || "")) || null;
 }
 
+function graphEntityHostId(entity) {
+    if (!entity || graphPropertyValue(entity, "summary_kind")) {
+        return 0;
+    }
+    const directHostId = parseInt(graphPropertyValue(entity, "host_id"), 10);
+    if (Number.isFinite(directHostId) && directHostId > 0) {
+        return directHostId;
+    }
+
+    const label = String(entity?.label || "").trim().toLowerCase();
+    const hostname = String(graphPropertyValue(entity, "hostname") || "").trim().toLowerCase();
+    const ip = String(graphPropertyValue(entity, "ip") || "").trim();
+    const matchedHost = (workspaceState.hosts || []).find((host) => {
+        return (
+            (label && String(host?.hostname || "").trim().toLowerCase() === label)
+            || (hostname && String(host?.hostname || "").trim().toLowerCase() === hostname)
+            || (ip && String(host?.ip || "").trim() === ip)
+        );
+    });
+    const matchedHostId = parseInt(matchedHost?.id, 10);
+    return Number.isFinite(matchedHostId) && matchedHostId > 0 ? matchedHostId : 0;
+}
+
+function graphNodeMatchesSelectedHost(node) {
+    const selectedHostId = parseInt(workspaceState.selectedHostId, 10);
+    if (!Number.isFinite(selectedHostId) || selectedHostId <= 0) {
+        return false;
+    }
+    if (String(node?.type || "").trim().toLowerCase() !== "host") {
+        return false;
+    }
+    return graphEntityHostId(node) === selectedHostId;
+}
+
 function graphRenderSelectionDetail() {
     const detailCaption = document.getElementById("graph-detail-caption");
     const badgesNode = document.getElementById("graph-selection-badges");
@@ -5262,11 +5509,12 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         const style = graphSourceStyle(node);
         const color = graphNodeColor(node);
         const isSelected = graphWorkspaceState.selectedKind === "node" && String(graphWorkspaceState.selectedRef || "") === nodeId;
+        const isHostSelected = graphNodeMatchesSelectedHost(node);
         const isSummaryNode = Boolean(graphPropertyValue(node, "summary_kind"));
         const groupNode = graphCreateSvgNode("g", {
             transform: `translate(${point.x}, ${point.y})`,
             "data-graph-node-id": nodeId,
-            "class": `graph-node${isSelected ? " is-selected" : ""}${isSummaryNode ? " is-summary" : ""}`,
+            "class": `graph-node${isSelected ? " is-selected" : ""}${isHostSelected ? " is-host-selected" : ""}${isSummaryNode ? " is-summary" : ""}`,
         });
         groupNode.appendChild(graphCreateSvgNode("rect", {
             width: GRAPH_NODE_SIZE.width,
@@ -5337,6 +5585,19 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
 }
 
 function graphSelectEntity(kind, ref) {
+    const entity = kind === "node" ? graphFindEntity("node", ref) : graphFindEntity("edge", ref);
+    const relatedHostId = kind === "node" ? graphEntityHostId(entity) : 0;
+    if (relatedHostId > 0) {
+        const hostChanged = String(workspaceState.selectedHostId || "") !== String(relatedHostId);
+        workspaceState.selectedHostId = relatedHostId;
+        renderHostSelectionState({syncGraph: false});
+        if (hostChanged || !workspaceState.hostDetail) {
+            workspaceState.hostDetail = null;
+            loadHostDetail(relatedHostId).catch((err) => {
+                setWorkspaceStatus(`Load host detail failed: ${err.message}`, true);
+            });
+        }
+    }
     graphWorkspaceState.selectedKind = String(kind || "");
     graphWorkspaceState.selectedRef = String(ref || "");
     graphWorkspaceState.relatedContent = [];
@@ -6106,7 +6367,13 @@ async function waitForJobCompletion(jobId, timeoutMs = 120000, pollIntervalMs = 
 }
 
 async function loadWorkspaceHosts() {
-    const body = await fetchJson("/api/workspace/hosts");
+    const body = await fetchJson(`/api/workspace/hosts?${currentHostFilterQuery()}`);
+    if (body && body.filter) {
+        workspaceState.hostFilter = String(body.filter || "hide_down").trim().toLowerCase() === "show_all"
+            ? "show_all"
+            : "hide_down";
+    }
+    syncHostFilterControls();
     renderHosts(body.hosts || []);
 }
 
@@ -6365,6 +6632,12 @@ function renderSnapshot(snapshot) {
     }
     if (snapshot.summary) {
         renderSummary(snapshot.summary);
+    }
+    if (snapshot.host_filter) {
+        workspaceState.hostFilter = String(snapshot.host_filter || "hide_down").trim().toLowerCase() === "show_all"
+            ? "show_all"
+            : "hide_down";
+        syncHostFilterControls();
     }
     if (Array.isArray(snapshot.hosts)) {
         renderHosts(snapshot.hosts);
@@ -7128,6 +7401,10 @@ function bindActionButtons() {
     bind("ribbon-export-json-action-button", exportWorkspaceJsonAction);
     bind("ribbon-export-csv-action-button", exportWorkspaceCsvAction);
     bind("ribbon-export-hosts-csv-action-button", exportHostsCsvAction);
+    bind("hosts-export-json-button", exportHostsJsonAction);
+    bind("hosts-export-csv-button", exportHostsCsvAction);
+    bind("hosts-filter-show-all-button", () => setHostFilterAction("show_all"));
+    bind("hosts-filter-hide-down-button", () => setHostFilterAction("hide_down"));
     bind("ribbon-export-project-report-json-action-button", () => exportProjectAiReportAction("json"));
     bind("ribbon-export-project-report-md-action-button", () => exportProjectAiReportAction("md"));
     bind("ribbon-export-project-report-push-action-button", pushProjectAiReportAction);
@@ -7167,13 +7444,7 @@ function bindActionButtons() {
     const hostSelect = document.getElementById("workspace-host-select");
     if (hostSelect) {
         hostSelect.addEventListener("change", async (event) => {
-            workspaceState.selectedHostId = parseInt(event.target.value, 10);
-            workspaceState.hostDetail = null;
-            try {
-                await loadHostDetail(workspaceState.selectedHostId);
-            } catch (err) {
-                setWorkspaceStatus(`Load host detail failed: ${err.message}`, true);
-            }
+            await selectHost(event.target.value, {syncGraph: true, preserveGraphDetail: true});
         });
     }
 
@@ -7213,14 +7484,7 @@ function bindActionButtons() {
             if (!hostId) {
                 return;
             }
-            workspaceState.selectedHostId = hostId;
-            setValue("workspace-host-select", hostId);
-            workspaceState.hostDetail = null;
-            try {
-                await loadHostDetail(hostId);
-            } catch (err) {
-                setWorkspaceStatus(`Load host detail failed: ${err.message}`, true);
-            }
+            await selectHost(hostId, {syncGraph: true, preserveGraphDetail: true});
         });
     }
 
@@ -7407,6 +7671,17 @@ function bindActionButtons() {
             closeRibbonMenus();
         }
     });
+
+    const graphResizeHandle = document.getElementById("graph-resize-handle");
+    if (graphResizeHandle) {
+        graphResizeHandle.addEventListener("pointerdown", startGraphWorkspaceResize);
+        graphResizeHandle.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            resetGraphWorkspaceHeight();
+        });
+    }
+
+    restoreGraphWorkspaceHeight();
 
     const processOutputModal = document.getElementById("process-output-modal");
     if (processOutputModal) {

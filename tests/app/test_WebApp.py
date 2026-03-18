@@ -112,9 +112,9 @@ class DummyRuntime:
             }
         ]
         self.workspace_hosts = [
-            {"id": 11, "ip": "10.0.0.5", "hostname": "dc01.local", "status": "up", "os": "windows", "open_ports": 2},
-            {"id": 12, "ip": "10.0.0.6", "hostname": "filesrv.local", "status": "up", "os": "windows", "open_ports": 3},
-            {"id": 13, "ip": "10.0.0.7", "hostname": "web01.local", "status": "up", "os": "linux", "open_ports": 4},
+            {"id": 11, "ip": "10.0.0.5", "hostname": "dc01.local", "status": "up", "os": "windows", "open_ports": 2, "total_ports": 2, "services": ["kerberos", "smb"]},
+            {"id": 12, "ip": "10.0.0.6", "hostname": "filesrv.local", "status": "down", "os": "windows", "open_ports": 0, "total_ports": 1, "services": []},
+            {"id": 13, "ip": "10.0.0.7", "hostname": "web01.local", "status": "up", "os": "linux", "open_ports": 4, "total_ports": 5, "services": ["http", "https", "ssh"]},
         ]
         self.workspace_services = [
             {"service": "smb", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
@@ -373,7 +373,8 @@ class DummyRuntime:
                 "running_processes": 0,
                 "finished_processes": 0,
             },
-            "hosts": [],
+            "host_filter": "hide_down",
+            "hosts": self.get_workspace_hosts(),
             "services": list(self.workspace_services),
             "tools": list(self.workspace_tools),
             "processes": [],
@@ -661,10 +662,13 @@ class DummyRuntime:
             }
         ][:limit]
 
-    def get_workspace_hosts(self, limit=None):
+    def get_workspace_hosts(self, limit=None, include_down=False):
+        rows = list(self.workspace_hosts)
+        if not include_down:
+            rows = [row for row in rows if str(row.get("status", "")).strip().lower() != "down"]
         if limit is None:
-            return list(self.workspace_hosts)
-        return self.workspace_hosts[:limit]
+            return rows
+        return rows[:limit]
 
     def get_scan_history(self, limit=200):
         return self.scan_history[:limit]
@@ -1388,10 +1392,11 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("graph-collapse-expanded-button", body)
         self.assertIn("graph-annotation-save-button", body)
         self.assertIn('id="graph-zoom-slider" type="range" min="10"', body)
+        self.assertIn('id="graph-resize-handle"', body)
         self.assertIn("drag nodes or groups to reposition them", body)
         self.assertNotIn("<h2>Tools</h2>", body)
-        self.assertLess(body.index('id="stat-hosts"'), body.index("<h2>Project</h2>"))
-        self.assertLess(body.index("<h2>Project</h2>"), body.index('id="ribbon-launch-wizard-button"'))
+        self.assertLess(body.index("<h2>Project</h2>"), body.index('id="stat-hosts"'))
+        self.assertLess(body.index('id="stat-hosts"'), body.index('id="ribbon-launch-wizard-button"'))
         self.assertLess(body.index('id="ribbon-launch-wizard-button"'), body.index("<h2>Graph Workspace</h2>"))
         self.assertLess(body.index("<h2>Graph Workspace</h2>"), body.index('<h2>Hosts</h2>'))
 
@@ -1415,6 +1420,14 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("Graph Workspace", body)
         self.assertIn("Disabled by rollout flag.", body)
         self.assertNotIn("graph-workspace-canvas", body)
+
+    def test_index_renders_hosts_panel_menu(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn("hosts-panel-menu-button", body)
+        self.assertIn("hosts-export-json-button", body)
+        self.assertIn("hosts-filter-hide-down-button", body)
 
     def test_snapshot_endpoint(self):
         response = self.client.get("/api/snapshot")
@@ -1470,9 +1483,27 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertIn("attachment; filename=", response.headers.get("Content-Disposition", ""))
         csv_text = response.get_data(as_text=True)
-        self.assertIn("id,ip,hostname,status,os,open_ports,total_ports", csv_text)
+        self.assertIn("id,ip,hostname,status,os,open_ports,total_ports,services", csv_text)
         self.assertIn("10.0.0.5", csv_text)
+        self.assertIn("kerberos; smb", csv_text)
+        self.assertNotIn("10.0.0.6", csv_text)
         self.assertNotIn("scheduler_mode", csv_text)
+
+    def test_export_hosts_csv_endpoint_show_all_includes_down_hosts(self):
+        response = self.client.get("/api/export/hosts-csv?filter=show_all")
+        self.assertEqual(200, response.status_code)
+        csv_text = response.get_data(as_text=True)
+        self.assertIn("10.0.0.6", csv_text)
+
+    def test_export_hosts_json_endpoint(self):
+        response = self.client.get("/api/export/hosts-json")
+        self.assertEqual(200, response.status_code)
+        self.assertIn("attachment; filename=", response.headers.get("Content-Disposition", ""))
+        payload = response.get_json()
+        self.assertEqual("hide_down", payload["filter"])
+        self.assertEqual(2, payload["host_count"])
+        self.assertEqual(["kerberos", "smb"], payload["hosts"][0]["services"])
+        self.assertFalse(any(item["ip"] == "10.0.0.6" for item in payload["hosts"]))
 
     def test_scheduler_preferences_endpoint(self):
         response = self.client.get("/api/scheduler/preferences")
@@ -1724,11 +1755,19 @@ class WebAppTest(unittest.TestCase):
     def test_workspace_endpoints(self):
         hosts = self.client.get("/api/workspace/hosts")
         self.assertEqual(200, hosts.status_code)
-        self.assertEqual(3, len(hosts.json["hosts"]))
+        self.assertEqual("hide_down", hosts.json["filter"])
+        self.assertEqual(2, len(hosts.json["hosts"]))
+        self.assertFalse(any(item["ip"] == "10.0.0.6" for item in hosts.json["hosts"]))
 
         limited_hosts = self.client.get("/api/workspace/hosts?limit=2")
         self.assertEqual(200, limited_hosts.status_code)
         self.assertEqual(2, len(limited_hosts.json["hosts"]))
+
+        all_hosts = self.client.get("/api/workspace/hosts?filter=show_all")
+        self.assertEqual(200, all_hosts.status_code)
+        self.assertEqual("show_all", all_hosts.json["filter"])
+        self.assertEqual(3, len(all_hosts.json["hosts"]))
+        self.assertTrue(any(item["ip"] == "10.0.0.6" for item in all_hosts.json["hosts"]))
 
         services = self.client.get("/api/workspace/services")
         self.assertEqual(200, services.status_code)

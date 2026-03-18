@@ -101,6 +101,8 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
         )
         command = str(plan["stages"][0]["command"])
         self.assertIn(" -Pn ", f" {command} ")
+        self.assertIn("--stats-every 15s", command)
+        self.assertIn(" -vv ", f" {command} ")
 
     def test_build_single_scan_plan_ignores_force_pn_for_discovery_only_mode(self):
         from app.web.runtime import WebRuntime
@@ -131,6 +133,8 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
         command = str(plan["stages"][0]["command"])
         self.assertIn(" -sn ", f" {command} ")
         self.assertNotIn(" -Pn ", f" {command} ")
+        self.assertIn("--stats-every 15s", command)
+        self.assertIn(" -vv ", f" {command} ")
 
 
 if __name__ == "__main__":

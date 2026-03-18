@@ -288,7 +288,8 @@ class WebRuntime:
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "project": self._project_metadata(),
                 "summary": self._summary(),
-                "hosts": self._hosts(),
+                "host_filter": "hide_down",
+                "hosts": self._hosts(include_down=False),
                 "processes": self._processes(limit=75),
                 "services": self.get_workspace_services(limit=40),
                 "tools": tools_page.get("tools", []),
@@ -2054,13 +2055,56 @@ class WebRuntime:
             payload=payload,
         )
 
-    def get_workspace_hosts(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _host_is_down(status: Any) -> bool:
+        return str(status or "").strip().lower() == "down"
+
+    @staticmethod
+    def _workspace_host_services(port_rows: List[Any], service_repo: Any) -> List[str]:
+        services = []
+        for port in list(port_rows or []):
+            if str(getattr(port, "state", "") or "") not in {"open", "open|filtered"}:
+                continue
+            service_name = ""
+            service_id = getattr(port, "serviceId", None)
+            if service_id and service_repo is not None:
+                try:
+                    service_obj = service_repo.getServiceById(service_id)
+                except Exception:
+                    service_obj = None
+                service_name = str(getattr(service_obj, "name", "") or "")
+            if not service_name:
+                service_name = str(getattr(port, "serviceName", "") or "")
+            service_name = service_name.strip()
+            if service_name:
+                services.append(service_name)
+        return sorted({item for item in services if item})
+
+    def _build_workspace_host_row(self, host: Any, port_repo: Any, service_repo: Any) -> Dict[str, Any]:
+        ports = list(port_repo.getPortsByHostId(host.id) or [])
+        open_ports = [p for p in ports if str(getattr(p, "state", "")) in {"open", "open|filtered"}]
+        services = self._workspace_host_services(ports, service_repo)
+        return {
+            "id": int(host.id),
+            "ip": str(getattr(host, "ip", "") or ""),
+            "hostname": str(getattr(host, "hostname", "") or ""),
+            "status": str(getattr(host, "status", "") or ""),
+            "os": str(getattr(host, "osMatch", "") or ""),
+            "open_ports": len(open_ports),
+            "total_ports": len(ports),
+            "services": services,
+        }
+
+    def get_workspace_hosts(self, limit: Optional[int] = None, include_down: bool = False) -> List[Dict[str, Any]]:
         with self._lock:
             project = self._require_active_project()
             repo_container = project.repositoryContainer
             host_repo = repo_container.hostRepository
             port_repo = repo_container.portRepository
+            service_repo = getattr(repo_container, "serviceRepository", None)
             hosts = list(host_repo.getAllHostObjs())
+            if not bool(include_down):
+                hosts = [host for host in hosts if not self._host_is_down(getattr(host, "status", ""))]
             if limit is not None:
                 try:
                     normalized_limit = int(limit)
@@ -2068,20 +2112,7 @@ class WebRuntime:
                     normalized_limit = 0
                 if normalized_limit > 0:
                     hosts = hosts[:normalized_limit]
-            rows = []
-            for host in hosts:
-                ports = port_repo.getPortsByHostId(host.id)
-                open_ports = [p for p in ports if str(getattr(p, "state", "")) in {"open", "open|filtered"}]
-                rows.append({
-                    "id": int(host.id),
-                    "ip": str(getattr(host, "ip", "") or ""),
-                    "hostname": str(getattr(host, "hostname", "") or ""),
-                    "status": str(getattr(host, "status", "") or ""),
-                    "os": str(getattr(host, "osMatch", "") or ""),
-                    "open_ports": len(open_ports),
-                    "total_ports": len(ports),
-                })
-            return rows
+            return [self._build_workspace_host_row(host, port_repo, service_repo) for host in hosts]
 
     def get_workspace_services(self, limit: int = 300) -> List[Dict[str, Any]]:
         with self._lock:
@@ -3241,6 +3272,8 @@ class WebRuntime:
                     f"{getTimestamp()}-{tool_name}-{host_ip}-{port}",
                 )
                 outputfile = os.path.normpath(outputfile).replace("\\", "/")
+            if self._is_nmap_command(tool_name, command):
+                command = AppSettings._ensure_nmap_stats_every(command)
 
         executed, reason, new_process_id = self._run_command_with_tracking(
             tool_name=tool_name,
@@ -8225,7 +8258,7 @@ class WebRuntime:
             except Exception:
                 continue
 
-    def _hosts(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def _hosts(self, limit: Optional[int] = None, include_down: bool = False) -> List[Dict[str, Any]]:
         project = getattr(self.logic, "activeProject", None)
         if not project:
             return []
@@ -8233,9 +8266,11 @@ class WebRuntime:
         repo_container = project.repositoryContainer
         host_repo = repo_container.hostRepository
         port_repo = repo_container.portRepository
-        results = []
+        service_repo = getattr(repo_container, "serviceRepository", None)
 
         hosts = list(host_repo.getAllHostObjs())
+        if not bool(include_down):
+            hosts = [host for host in hosts if not self._host_is_down(getattr(host, "status", ""))]
         if limit is not None:
             try:
                 normalized_limit = int(limit)
@@ -8243,21 +8278,7 @@ class WebRuntime:
                 normalized_limit = 0
             if normalized_limit > 0:
                 hosts = hosts[:normalized_limit]
-        for host in hosts:
-            host_ports = port_repo.getPortsByHostId(host.id)
-            open_port_count = sum(
-                1 for p in host_ports if str(getattr(p, "state", "")) in {"open", "open|filtered"}
-            )
-            results.append({
-                "id": int(getattr(host, "id", 0) or 0),
-                "ip": str(getattr(host, "ip", "") or ""),
-                "hostname": str(getattr(host, "hostname", "") or ""),
-                "status": str(getattr(host, "status", "") or ""),
-                "os": str(getattr(host, "osMatch", "") or ""),
-                "open_ports": open_port_count,
-            })
-
-        return results
+        return [self._build_workspace_host_row(host, port_repo, service_repo) for host in hosts]
 
     def _processes(self, limit: int = 75) -> List[Dict[str, Any]]:
         project = getattr(self.logic, "activeProject", None)
