@@ -1,6 +1,7 @@
 const workspaceState = {
     hosts: [],
     hostFilter: "hide_down",
+    hostServiceFilter: "",
     services: [],
     tools: [],
     toolsHydrated: false,
@@ -1218,6 +1219,15 @@ function renderHosts(hosts) {
     graphUpdateHostFilterOptions();
 }
 
+function hostMatchesServiceFilter(host, serviceFilter) {
+    const normalized = String(serviceFilter || "").trim().toLowerCase();
+    if (!normalized) {
+        return true;
+    }
+    return Array.isArray(host?.services)
+        && host.services.some((item) => String(item || "").trim().toLowerCase() === normalized);
+}
+
 function renderServices(services) {
     workspaceState.services = Array.isArray(services) ? services : [];
     const body = document.getElementById("services-body");
@@ -1227,6 +1237,22 @@ function renderServices(services) {
     body.innerHTML = "";
     workspaceState.services.forEach((service) => {
         const tr = document.createElement("tr");
+        const filterCell = document.createElement("td");
+        const filterButton = document.createElement("button");
+        filterButton.type = "button";
+        filterButton.className = "icon-btn";
+        filterButton.title = `Show hosts for ${service.service || "service"}`;
+        filterButton.setAttribute("aria-label", `Show hosts for ${service.service || "service"}`);
+        filterButton.innerHTML = '<i class="fa-solid fa-filter" aria-hidden="true"></i>';
+        if (String(workspaceState.hostServiceFilter || "").trim().toLowerCase() === String(service.service || "").trim().toLowerCase()) {
+            filterButton.classList.add("is-active");
+        }
+        filterButton.addEventListener("click", async () => {
+            await setHostServiceFilterAction(service.service || "");
+        });
+        filterCell.className = "service-filter-cell";
+        filterCell.appendChild(filterButton);
+        tr.appendChild(filterCell);
         tr.appendChild(makeCell(service.service || ""));
         tr.appendChild(makeCell(service.host_count || 0));
         tr.appendChild(makeCell(service.port_count || 0));
@@ -2258,10 +2284,16 @@ function exportWorkspaceCsvAction() {
 }
 
 function currentHostFilterQuery() {
+    const params = new URLSearchParams();
     const filter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
         ? "show_all"
         : "hide_down";
-    return `filter=${encodeURIComponent(filter)}`;
+    params.set("filter", filter);
+    const service = String(workspaceState.hostServiceFilter || "").trim();
+    if (service) {
+        params.set("service", service);
+    }
+    return params.toString();
 }
 
 function exportHostsJsonAction() {
@@ -2277,12 +2309,24 @@ function exportHostsCsvAction() {
 function syncHostFilterControls() {
     const showAll = document.getElementById("hosts-filter-show-all-button");
     const hideDown = document.getElementById("hosts-filter-hide-down-button");
+    const resetButton = document.getElementById("hosts-reset-filter-button");
     const filter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase();
+    const service = String(workspaceState.hostServiceFilter || "").trim();
     if (showAll) {
         showAll.classList.toggle("is-active", filter === "show_all");
     }
     if (hideDown) {
         hideDown.classList.toggle("is-active", filter !== "show_all");
+    }
+    if (resetButton) {
+        const atDefault = filter === "hide_down" && !service;
+        resetButton.disabled = atDefault;
+        resetButton.classList.toggle("is-active", !atDefault);
+        const label = service
+            ? `Reset host filters (show only up hosts, clear service filter: ${service})`
+            : "Reset host filters (show only up hosts)";
+        resetButton.setAttribute("title", label);
+        resetButton.setAttribute("aria-label", label);
     }
 }
 
@@ -2291,6 +2335,23 @@ async function setHostFilterAction(filter) {
         ? "show_all"
         : "hide_down";
     syncHostFilterControls();
+    closeRibbonMenus();
+    await loadWorkspaceHosts();
+    await graphLoadSnapshot({background: false}).catch(() => {});
+}
+
+async function setHostServiceFilterAction(service) {
+    workspaceState.hostServiceFilter = String(service || "").trim();
+    syncHostFilterControls();
+    renderServices(workspaceState.services);
+    await loadWorkspaceHosts();
+}
+
+async function resetHostFiltersAction() {
+    workspaceState.hostFilter = "hide_down";
+    workspaceState.hostServiceFilter = "";
+    syncHostFilterControls();
+    renderServices(workspaceState.services);
     closeRibbonMenus();
     await loadWorkspaceHosts();
     await graphLoadSnapshot({background: false}).catch(() => {});
@@ -7502,7 +7563,9 @@ async function loadWorkspaceHosts() {
             ? "show_all"
             : "hide_down";
     }
+    workspaceState.hostServiceFilter = String(body?.service || "").trim();
     syncHostFilterControls();
+    renderServices(workspaceState.services);
     renderHosts(body.hosts || []);
 }
 
@@ -7762,14 +7825,18 @@ function renderSnapshot(snapshot) {
     if (snapshot.summary) {
         renderSummary(snapshot.summary);
     }
-    if (snapshot.host_filter) {
-        workspaceState.hostFilter = String(snapshot.host_filter || "hide_down").trim().toLowerCase() === "show_all"
+    syncHostFilterControls();
+    if (Array.isArray(snapshot.hosts)) {
+        const hostFilter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
             ? "show_all"
             : "hide_down";
-        syncHostFilterControls();
-    }
-    if (Array.isArray(snapshot.hosts)) {
-        renderHosts(snapshot.hosts);
+        const serviceFilter = String(workspaceState.hostServiceFilter || "").trim();
+        if (hostFilter !== "show_all") {
+            const filteredHosts = serviceFilter
+                ? snapshot.hosts.filter((host) => hostMatchesServiceFilter(host, serviceFilter))
+                : snapshot.hosts;
+            renderHosts(filteredHosts);
+        }
     }
     if (Array.isArray(snapshot.services)) {
         renderServices(snapshot.services);
@@ -8532,6 +8599,7 @@ function bindActionButtons() {
     bind("ribbon-export-hosts-csv-action-button", exportHostsCsvAction);
     bind("hosts-export-json-button", exportHostsJsonAction);
     bind("hosts-export-csv-button", exportHostsCsvAction);
+    bind("hosts-reset-filter-button", resetHostFiltersAction);
     bind("hosts-filter-show-all-button", () => setHostFilterAction("show_all"));
     bind("hosts-filter-hide-down-button", () => setHostFilterAction("hide_down"));
     bind("services-panel-toggle-button", toggleServicesPanelAction);

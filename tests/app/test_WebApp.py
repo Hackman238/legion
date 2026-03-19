@@ -735,10 +735,16 @@ class DummyRuntime:
             }
         ][:limit]
 
-    def get_workspace_hosts(self, limit=None, include_down=False):
+    def get_workspace_hosts(self, limit=None, include_down=False, service=""):
         rows = list(self.workspace_hosts)
         if not include_down:
             rows = [row for row in rows if str(row.get("status", "")).strip().lower() != "down"]
+        service_filter = str(service or "").strip().lower()
+        if service_filter:
+            rows = [
+                row for row in rows
+                if any(str(item or "").strip().lower() == service_filter for item in list(row.get("services", []) or []))
+            ]
         if limit is None:
             return rows
         return rows[:limit]
@@ -1597,9 +1603,11 @@ class WebAppTest(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
+        self.assertIn("hosts-reset-filter-button", body)
         self.assertIn("hosts-panel-menu-button", body)
         self.assertIn("hosts-export-json-button", body)
         self.assertIn("hosts-filter-hide-down-button", body)
+        self.assertIn("fa-filter-circle-xmark", body)
 
     def test_snapshot_endpoint(self):
         response = self.client.get("/api/snapshot")
@@ -1667,15 +1675,32 @@ class WebAppTest(unittest.TestCase):
         csv_text = response.get_data(as_text=True)
         self.assertIn("10.0.0.6", csv_text)
 
+    def test_export_hosts_csv_endpoint_service_filter(self):
+        response = self.client.get("/api/export/hosts-csv?service=http")
+        self.assertEqual(200, response.status_code)
+        csv_text = response.get_data(as_text=True)
+        self.assertIn("10.0.0.7", csv_text)
+        self.assertNotIn("10.0.0.5", csv_text)
+
     def test_export_hosts_json_endpoint(self):
         response = self.client.get("/api/export/hosts-json")
         self.assertEqual(200, response.status_code)
         self.assertIn("attachment; filename=", response.headers.get("Content-Disposition", ""))
         payload = response.get_json()
         self.assertEqual("hide_down", payload["filter"])
+        self.assertEqual("", payload["service"])
         self.assertEqual(2, payload["host_count"])
         self.assertEqual(["kerberos", "smb"], payload["hosts"][0]["services"])
         self.assertFalse(any(item["ip"] == "10.0.0.6" for item in payload["hosts"]))
+
+    def test_workspace_hosts_endpoint_service_filter(self):
+        response = self.client.get("/api/workspace/hosts?service=http")
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual("hide_down", payload["filter"])
+        self.assertEqual("http", payload["service"])
+        self.assertEqual(1, len(payload["hosts"]))
+        self.assertEqual("10.0.0.7", payload["hosts"][0]["ip"])
 
     def test_scheduler_preferences_endpoint(self):
         response = self.client.get("/api/scheduler/preferences")

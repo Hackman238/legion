@@ -2604,7 +2604,7 @@ class WebRuntime:
             "services": services,
         }
 
-    def get_workspace_hosts(self, limit: Optional[int] = None, include_down: bool = False) -> List[Dict[str, Any]]:
+    def get_workspace_hosts(self, limit: Optional[int] = None, include_down: bool = False, service: str = "") -> List[Dict[str, Any]]:
         with self._lock:
             project = self._require_active_project()
             repo_container = project.repositoryContainer
@@ -2614,14 +2614,21 @@ class WebRuntime:
             hosts = list(host_repo.getAllHostObjs())
             if not bool(include_down):
                 hosts = [host for host in hosts if not self._host_is_down(getattr(host, "status", ""))]
+            service_filter = str(service or "").strip().lower()
+            rows = [self._build_workspace_host_row(host, port_repo, service_repo) for host in hosts]
+            if service_filter:
+                rows = [
+                    row for row in rows
+                    if any(str(item or "").strip().lower() == service_filter for item in list(row.get("services", []) or []))
+                ]
             if limit is not None:
                 try:
                     normalized_limit = int(limit)
                 except (TypeError, ValueError):
                     normalized_limit = 0
                 if normalized_limit > 0:
-                    hosts = hosts[:normalized_limit]
-            return [self._build_workspace_host_row(host, port_repo, service_repo) for host in hosts]
+                    rows = rows[:normalized_limit]
+            return rows
 
     def get_workspace_services(self, limit: int = 300) -> List[Dict[str, Any]]:
         with self._lock:

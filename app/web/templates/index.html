@@ -599,6 +599,16 @@
             <h2>Hosts</h2>
             <div class="panel-header-actions">
                 <p id="host-count">{{ snapshot.hosts | length }}</p>
+                <button
+                    id="hosts-reset-filter-button"
+                    class="icon-btn"
+                    type="button"
+                    title="Reset host filters (show only up hosts)"
+                    aria-label="Reset host filters (show only up hosts)"
+                >
+                    <i class="fa-solid fa-filter-circle-xmark" aria-hidden="true"></i>
+                    <span class="sr-only">Reset host filters</span>
+                </button>
                 <div class="ribbon-menu panel-menu" data-ribbon-menu="hosts-panel">
                     <button
                         id="hosts-panel-menu-button"
@@ -666,6 +676,7 @@
             <table>
                 <thead>
                 <tr>
+                    <th></th>
                     <th>Service</th>
                     <th>Hosts</th>
                     <th>Ports</th>

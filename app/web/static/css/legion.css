@@ -519,6 +519,10 @@ body.opaque-ui .ribbon-submenu-item {
     gap: 0.65rem;
 }
 
+.panel-header-actions .icon-btn {
+    margin-right: 0;
+}
+
 .panel-menu {
     position: relative;
 }
@@ -1744,6 +1748,11 @@ td button {
     margin-right: 0.28rem;
 }
 
+.icon-btn.is-active {
+    border-color: rgba(126, 227, 203, 0.55);
+    box-shadow: 0 0 0 1px rgba(126, 227, 203, 0.18) inset;
+}
+
 .icon-btn i {
     pointer-events: none;
 }
@@ -1751,6 +1760,15 @@ td button {
 .icon-btn-danger {
     border-color: rgba(245, 119, 141, 0.58);
     background: rgba(245, 119, 141, 0.2);
+}
+
+.service-filter-cell {
+    width: 2.4rem;
+    text-align: center;
+}
+
+.service-filter-cell .icon-btn {
+    margin-right: 0;
 }
 
 .process-spinner {
