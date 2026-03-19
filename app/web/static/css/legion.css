@@ -211,9 +211,16 @@ body.opaque-ui .ribbon-submenu-item {
     align-self: stretch;
 }
 
-.ribbon-summary-column {
-    flex: 0 1 380px;
-    min-width: min(100%, 360px);
+.ribbon-main-column {
+    flex: 1 1 980px;
+    min-width: min(100%, 760px);
+}
+
+.ribbon-lower-row {
+    display: flex;
+    gap: 0.75rem;
+    align-items: stretch;
+    min-height: 0;
 }
 
 .ribbon-group {
@@ -226,7 +233,12 @@ body.opaque-ui .ribbon-submenu-item {
     flex-wrap: wrap;
 }
 
+.ribbon-menu-group {
+    align-items: stretch;
+}
+
 .ribbon-project-group {
+    flex: 1 1 540px;
     flex-direction: column;
     align-items: stretch;
     gap: 0.55rem;
@@ -278,7 +290,7 @@ body.opaque-ui .ribbon-submenu-item {
 }
 
 .ribbon-process-group {
-    flex: 1 1 640px;
+    flex: 0 1 620px;
     min-width: min(100%, 520px);
     flex-direction: column;
     align-self: stretch;
@@ -354,7 +366,9 @@ body.opaque-ui .ribbon-submenu-item {
     grid-template-columns: repeat(3, minmax(88px, 1fr));
     gap: 0.42rem;
     align-content: start;
-    min-width: min(100%, 380px);
+    min-width: min(100%, 340px);
+    max-width: 340px;
+    flex: 0 0 340px;
 }
 
 .ribbon-stat-card {
@@ -2288,8 +2302,14 @@ td button {
         min-height: 68px;
     }
 
+    .ribbon-lower-row {
+        flex-direction: column;
+    }
+
     .ribbon-summary-group {
         grid-template-columns: repeat(2, minmax(88px, 1fr));
+        max-width: none;
+        flex: 1 1 auto;
     }
 
     .ribbon-process-header {

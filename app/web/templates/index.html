@@ -14,52 +14,8 @@
 
     <section class="panel panel-full ribbon-panel">
         <div class="ribbon">
-            <div class="ribbon-column ribbon-summary-column">
-                <div class="ribbon-group ribbon-summary-group" aria-label="Workspace summary">
-                    <div class="ribbon-stat-card">
-                        <span class="ribbon-stat-label">Hosts</span>
-                        <strong id="stat-hosts" class="ribbon-stat-value">{{ snapshot.summary.hosts }}</strong>
-                    </div>
-                    <div class="ribbon-stat-card">
-                        <span class="ribbon-stat-label">Open Ports</span>
-                        <strong id="stat-open-ports" class="ribbon-stat-value">{{ snapshot.summary.open_ports }}</strong>
-                    </div>
-                    <div class="ribbon-stat-card">
-                        <span class="ribbon-stat-label">Services</span>
-                        <strong id="stat-services" class="ribbon-stat-value">{{ snapshot.summary.services }}</strong>
-                    </div>
-                    <div class="ribbon-stat-card">
-                        <span class="ribbon-stat-label">Running Jobs</span>
-                        <strong id="stat-running" class="ribbon-stat-value">{{ snapshot.summary.running_processes }}</strong>
-                    </div>
-                    <div class="ribbon-stat-card">
-                        <span class="ribbon-stat-label">Finished Jobs</span>
-                        <strong id="stat-finished" class="ribbon-stat-value">{{ snapshot.summary.finished_processes }}</strong>
-                    </div>
-                </div>
-                <div class="ribbon-group ribbon-project-group" aria-label="Project summary">
-                    <div class="ribbon-project-header">
-                        <h2>Project</h2>
-                        <p id="project-name">{{ snapshot.project.name }}</p>
-                    </div>
-                    <div class="ribbon-project-body">
-                        <div class="scheduler-meta ribbon-project-meta">
-                            <span class="chip">Type: <strong id="project-kind">{{ "temporary" if snapshot.project.is_temporary else "saved" }}</strong></span>
-                            <span class="chip">Scheduler: <strong id="scheduler-mode">{{ snapshot.scheduler.mode }}</strong></span>
-                            <span class="chip">Engagement: <strong id="scheduler-goal">{{ snapshot.scheduler.engagement_policy.preset_label if snapshot.scheduler.engagement_policy else snapshot.scheduler.goal_profile }}</strong></span>
-                            <span class="chip">Preapproved Families: <strong id="scheduler-families">{{ snapshot.scheduler.preapproved_families_count }}</strong></span>
-                        </div>
-                        <div class="ribbon-project-lines">
-                            <p class="meta-note" id="project-output-folder">{{ snapshot.project.output_folder }}</p>
-                            <p class="meta-note" id="project-running-folder">{{ snapshot.project.running_folder }}</p>
-                            <p class="meta-note">{{ snapshot.scheduler.cloud_notice }}</p>
-                            <p class="meta-note">Action status: <span id="action-status">Idle</span></p>
-                            <p class="meta-note">Workspace status: <span id="workspace-status">Idle</span></p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="ribbon-group">
+            <div class="ribbon-column ribbon-main-column">
+                <div class="ribbon-group ribbon-menu-group">
                 <div class="ribbon-menu" data-ribbon-menu="workspace">
                     <button
                         id="ribbon-workspace-menu-button"
@@ -204,6 +160,52 @@
                         <button id="ribbon-scheduler-settings-button" class="ribbon-submenu-item" type="button" title="Open scheduler settings">Scheduler</button>
                         <button id="ribbon-report-provider-settings-button" class="ribbon-submenu-item" type="button" title="Open project report provider settings">Report Provider</button>
                         <button id="ribbon-app-settings-button" class="ribbon-submenu-item" type="button" title="Open and edit legion.conf settings">App Settings</button>
+                    </div>
+                </div>
+                </div>
+                <div class="ribbon-lower-row">
+                    <div class="ribbon-group ribbon-project-group" aria-label="Project summary">
+                        <div class="ribbon-project-header">
+                            <h2>Project</h2>
+                            <p id="project-name">{{ snapshot.project.name }}</p>
+                        </div>
+                        <div class="ribbon-project-body">
+                            <div class="scheduler-meta ribbon-project-meta">
+                                <span class="chip">Type: <strong id="project-kind">{{ "temporary" if snapshot.project.is_temporary else "saved" }}</strong></span>
+                                <span class="chip">Scheduler: <strong id="scheduler-mode">{{ snapshot.scheduler.mode }}</strong></span>
+                                <span class="chip">Engagement: <strong id="scheduler-goal">{{ snapshot.scheduler.engagement_policy.preset_label if snapshot.scheduler.engagement_policy else snapshot.scheduler.goal_profile }}</strong></span>
+                                <span class="chip">Preapproved Families: <strong id="scheduler-families">{{ snapshot.scheduler.preapproved_families_count }}</strong></span>
+                            </div>
+                            <div class="ribbon-project-lines">
+                                <p class="meta-note" id="project-output-folder">{{ snapshot.project.output_folder }}</p>
+                                <p class="meta-note" id="project-running-folder">{{ snapshot.project.running_folder }}</p>
+                                <p class="meta-note">{{ snapshot.scheduler.cloud_notice }}</p>
+                                <p class="meta-note">Action status: <span id="action-status">Idle</span></p>
+                                <p class="meta-note">Workspace status: <span id="workspace-status">Idle</span></p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="ribbon-group ribbon-summary-group" aria-label="Workspace summary">
+                        <div class="ribbon-stat-card">
+                            <span class="ribbon-stat-label">Hosts</span>
+                            <strong id="stat-hosts" class="ribbon-stat-value">{{ snapshot.summary.hosts }}</strong>
+                        </div>
+                        <div class="ribbon-stat-card">
+                            <span class="ribbon-stat-label">Open Ports</span>
+                            <strong id="stat-open-ports" class="ribbon-stat-value">{{ snapshot.summary.open_ports }}</strong>
+                        </div>
+                        <div class="ribbon-stat-card">
+                            <span class="ribbon-stat-label">Services</span>
+                            <strong id="stat-services" class="ribbon-stat-value">{{ snapshot.summary.services }}</strong>
+                        </div>
+                        <div class="ribbon-stat-card">
+                            <span class="ribbon-stat-label">Running Jobs</span>
+                            <strong id="stat-running" class="ribbon-stat-value">{{ snapshot.summary.running_processes }}</strong>
+                        </div>
+                        <div class="ribbon-stat-card">
+                            <span class="ribbon-stat-label">Finished Jobs</span>
+                            <strong id="stat-finished" class="ribbon-stat-value">{{ snapshot.summary.finished_processes }}</strong>
+                        </div>
                     </div>
                 </div>
             </div>
