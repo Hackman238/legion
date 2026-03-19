@@ -60,24 +60,6 @@
                 </div>
             </div>
             <div class="ribbon-group">
-                <button id="ribbon-launch-wizard-button" class="ribbon-btn" type="button" title="Run the workspace startup wizard">
-                    <i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i>
-                    <span>Workspace Wizard</span>
-                </button>
-                <button id="ribbon-scheduler-settings-button" class="ribbon-btn" type="button" title="Open scheduler settings">
-                    <i class="fa-solid fa-sliders" aria-hidden="true"></i>
-                    <span>Scheduler</span>
-                </button>
-                <button id="ribbon-report-provider-settings-button" class="ribbon-btn" type="button" title="Open project report provider settings">
-                    <i class="fa-solid fa-upload" aria-hidden="true"></i>
-                    <span>Report Provider</span>
-                </button>
-                <button id="ribbon-app-settings-button" class="ribbon-btn" type="button" title="Open and edit legion.conf settings">
-                    <i class="fa-solid fa-gear" aria-hidden="true"></i>
-                    <span>App Settings</span>
-                </button>
-            </div>
-            <div class="ribbon-group">
                 <div class="ribbon-menu" data-ribbon-menu="workspace">
                     <button
                         id="ribbon-workspace-menu-button"
@@ -93,6 +75,7 @@
                         <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
                     </button>
                     <div id="ribbon-workspace-menu" class="ribbon-submenu" role="menu" aria-label="Workspace options">
+                        <button id="ribbon-launch-wizard-button" class="ribbon-submenu-item" type="button" title="Run the workspace startup wizard">Workspace Wizard</button>
                         <button id="ribbon-workspace-new-action-button" class="ribbon-submenu-item" type="button" title="Create a new temporary workspace">New Workspace</button>
                         <button id="ribbon-workspace-open-action-button" class="ribbon-submenu-item" type="button" title="Open an existing .legion workspace">Open Workspace</button>
                         <button id="ribbon-workspace-save-action-button" class="ribbon-submenu-item" type="button" title="Save using the current workspace path">Save</button>
@@ -197,7 +180,30 @@
                         <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
                     </button>
                     <div id="ribbon-logging-menu" class="ribbon-submenu" role="menu" aria-label="Logging options">
+                        <button id="ribbon-logging-jobs-button" class="ribbon-submenu-item" type="button" title="View background jobs">Jobs</button>
+                        <button id="ribbon-logging-submitted-scans-button" class="ribbon-submenu-item" type="button" title="View submitted scan history">Submitted Scans</button>
+                        <button id="ribbon-logging-scheduler-decisions-button" class="ribbon-submenu-item" type="button" title="View scheduler decisions">Scheduler Decisions</button>
                         <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View provider request and response logs">Provider Logs</button>
+                    </div>
+                </div>
+                <div class="ribbon-menu" data-ribbon-menu="settings">
+                    <button
+                        id="ribbon-settings-menu-button"
+                        class="ribbon-btn ribbon-btn-menu"
+                        type="button"
+                        title="Application and scheduler settings"
+                        data-ribbon-menu-toggle="settings"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <i class="fa-solid fa-gear" aria-hidden="true"></i>
+                        <span>Settings</span>
+                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                    </button>
+                    <div id="ribbon-settings-menu" class="ribbon-submenu" role="menu" aria-label="Settings options">
+                        <button id="ribbon-scheduler-settings-button" class="ribbon-submenu-item" type="button" title="Open scheduler settings">Scheduler</button>
+                        <button id="ribbon-report-provider-settings-button" class="ribbon-submenu-item" type="button" title="Open project report provider settings">Report Provider</button>
+                        <button id="ribbon-app-settings-button" class="ribbon-submenu-item" type="button" title="Open and edit legion.conf settings">App Settings</button>
                     </div>
                 </div>
             </div>
@@ -731,30 +737,6 @@
         <div id="host-detail-screenshots" class="screenshot-list"></div>
     </section>
 
-    <section class="panel panel-full">
-        <div class="panel-header">
-            <h2>Scheduler Decisions</h2>
-            <p id="decision-count">{{ snapshot.scheduler_decisions | length }}</p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Target</th>
-                    <th>Tool</th>
-                    <th>Mode</th>
-                    <th>Approved</th>
-                    <th>Executed</th>
-                    <th>Reason</th>
-                    <th>Family</th>
-                </tr>
-                </thead>
-                <tbody id="decisions-body"></tbody>
-            </table>
-        </div>
-    </section>
-
     <section class="panel">
         <div class="panel-header">
             <h2>Services</h2>
@@ -797,53 +779,6 @@
         </div>
     </section>
 
-    <section class="panel panel-full">
-        <div class="panel-header">
-            <h2>Jobs</h2>
-            <p id="job-count">{{ snapshot.jobs | length }}</p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Started</th>
-                    <th>Finished</th>
-                    <th>Error</th>
-                    <th>Actions</th>
-                </tr>
-                </thead>
-                <tbody id="jobs-body"></tbody>
-            </table>
-        </div>
-    </section>
-
-    <section class="panel panel-full">
-        <div class="panel-header">
-            <h2>Submitted Scans</h2>
-            <p id="scan-history-count">{{ snapshot.scan_history | length }}</p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Kind</th>
-                    <th>Status</th>
-                    <th>Targets</th>
-                    <th>Scope</th>
-                    <th>Mode</th>
-                    <th>Created</th>
-                    <th>Result</th>
-                </tr>
-                </thead>
-                <tbody id="scan-history-body"></tbody>
-            </table>
-        </div>
-    </section>
 </main>
 
 <div id="process-output-modal" class="legion-modal-overlay" aria-hidden="true">
@@ -1565,6 +1500,93 @@
             Log Output
             <div id="provider-logs-text" class="ansi-output-view" role="textbox" aria-readonly="true"></div>
         </label>
+    </div>
+</div>
+
+<div id="jobs-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="jobs-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="jobs-modal-title">Jobs</h2>
+            <p><span id="job-count">{{ snapshot.jobs | length }}</span> total</p>
+            <button id="jobs-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Started</th>
+                    <th>Finished</th>
+                    <th>Error</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="jobs-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="submitted-scans-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="submitted-scans-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="submitted-scans-modal-title">Submitted Scans</h2>
+            <p><span id="scan-history-count">{{ snapshot.scan_history | length }}</span> total</p>
+            <button id="submitted-scans-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Kind</th>
+                    <th>Status</th>
+                    <th>Targets</th>
+                    <th>Scope</th>
+                    <th>Mode</th>
+                    <th>Created</th>
+                    <th>Result</th>
+                </tr>
+                </thead>
+                <tbody id="scan-history-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="scheduler-decisions-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-decisions-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="scheduler-decisions-modal-title">Scheduler Decisions</h2>
+            <p><span id="decision-count">{{ snapshot.scheduler_decisions | length }}</span> total</p>
+            <button id="scheduler-decisions-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Target</th>
+                    <th>Tool</th>
+                    <th>Mode</th>
+                    <th>Approved</th>
+                    <th>Executed</th>
+                    <th>Reason</th>
+                    <th>Family</th>
+                </tr>
+                </thead>
+                <tbody id="decisions-body"></tbody>
+            </table>
+        </div>
     </div>
 </div>
 

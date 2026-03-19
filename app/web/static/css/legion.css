@@ -1797,6 +1797,10 @@ td button {
     width: min(1220px, 98vw);
 }
 
+.modal-table-modal {
+    width: min(1440px, 98vw);
+}
+
 .host-remove-modal {
     width: min(560px, 94vw);
 }
@@ -1927,6 +1931,11 @@ td button {
 
 .modal-toolbar-actions .icon-btn {
     margin-right: 0;
+}
+
+.modal-table-wrap {
+    margin-top: 0;
+    max-height: min(60vh, 720px);
 }
 
 .legion-modal #process-output-text,

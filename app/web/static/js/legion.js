@@ -263,6 +263,9 @@ const uiModalState = {
     hostSelectionOpen: false,
     scriptCveOpen: false,
     providerLogsOpen: false,
+    jobsOpen: false,
+    submittedScansOpen: false,
+    schedulerDecisionsOpen: false,
     hostRemoveOpen: false,
     graphNoteOpen: false,
 };
@@ -287,6 +290,9 @@ function updateBodyModalState() {
         || uiModalState.hostSelectionOpen
         || uiModalState.scriptCveOpen
         || uiModalState.providerLogsOpen
+        || uiModalState.jobsOpen
+        || uiModalState.submittedScansOpen
+        || uiModalState.schedulerDecisionsOpen
         || uiModalState.hostRemoveOpen
         || uiModalState.graphNoteOpen
     );
@@ -1759,6 +1765,39 @@ function setProviderLogsModalOpen(open) {
     updateBodyModalState();
 }
 
+function setJobsModalOpen(open) {
+    const overlay = document.getElementById("jobs-modal");
+    if (!overlay) {
+        return;
+    }
+    uiModalState.jobsOpen = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    updateBodyModalState();
+}
+
+function setSubmittedScansModalOpen(open) {
+    const overlay = document.getElementById("submitted-scans-modal");
+    if (!overlay) {
+        return;
+    }
+    uiModalState.submittedScansOpen = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    updateBodyModalState();
+}
+
+function setSchedulerDecisionsModalOpen(open) {
+    const overlay = document.getElementById("scheduler-decisions-modal");
+    if (!overlay) {
+        return;
+    }
+    uiModalState.schedulerDecisionsOpen = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    updateBodyModalState();
+}
+
 function setHostRemoveModalOpen(open) {
     const overlay = document.getElementById("host-remove-modal");
     if (!overlay) {
@@ -1809,6 +1848,18 @@ function closeScriptCveModalAction() {
 
 function closeProviderLogsModalAction() {
     setProviderLogsModalOpen(false);
+}
+
+function closeJobsModalAction() {
+    setJobsModalOpen(false);
+}
+
+function closeSubmittedScansModalAction() {
+    setSubmittedScansModalOpen(false);
+}
+
+function closeSchedulerDecisionsModalAction() {
+    setSchedulerDecisionsModalOpen(false);
 }
 
 function closeHostRemoveModalAction(clearSelection = true) {
@@ -1865,6 +1916,24 @@ async function openProviderLogsAction() {
     closeRibbonMenus();
     setProviderLogsModalOpen(true);
     await loadProviderLogsAction();
+}
+
+async function openJobsAction() {
+    closeRibbonMenus();
+    setJobsModalOpen(true);
+    await pollSnapshot();
+}
+
+async function openSubmittedScansAction() {
+    closeRibbonMenus();
+    setSubmittedScansModalOpen(true);
+    await pollSnapshot();
+}
+
+async function openSchedulerDecisionsAction() {
+    closeRibbonMenus();
+    setSchedulerDecisionsModalOpen(true);
+    await pollSnapshot();
 }
 
 function requestHostRemoveAction(hostId) {
@@ -8277,6 +8346,9 @@ function bindActionButtons() {
     bind("ribbon-scan-manual-action-button", openManualScanAction);
     bind("ribbon-misc-host-selection-action-button", openHostSelectionAction);
     bind("ribbon-misc-script-cve-action-button", openScriptCveAction);
+    bind("ribbon-logging-jobs-button", openJobsAction);
+    bind("ribbon-logging-submitted-scans-button", openSubmittedScansAction);
+    bind("ribbon-logging-scheduler-decisions-button", openSchedulerDecisionsAction);
     bind("ribbon-logging-ai-provider-button", openProviderLogsAction);
     bind("ribbon-scheduler-settings-button", openSchedulerSettingsAction);
     bind("ribbon-report-provider-settings-button", openReportProviderAction);
@@ -8497,6 +8569,9 @@ function bindActionButtons() {
     bind("host-selection-modal-close", closeHostSelectionModalAction);
     bind("script-cve-modal-close", closeScriptCveModalAction);
     bind("provider-logs-modal-close", closeProviderLogsModalAction);
+    bind("jobs-modal-close", closeJobsModalAction);
+    bind("submitted-scans-modal-close", closeSubmittedScansModalAction);
+    bind("scheduler-decisions-modal-close", closeSchedulerDecisionsModalAction);
     bind("provider-logs-refresh-button", loadProviderLogsAction);
     bind("provider-logs-copy-button", copyProviderLogsAction);
     bind("provider-logs-download-button", downloadProviderLogsAction);
@@ -8622,6 +8697,33 @@ function bindActionButtons() {
         });
     }
 
+    const jobsModal = document.getElementById("jobs-modal");
+    if (jobsModal) {
+        jobsModal.addEventListener("click", (event) => {
+            if (event.target === jobsModal) {
+                closeJobsModalAction();
+            }
+        });
+    }
+
+    const submittedScansModal = document.getElementById("submitted-scans-modal");
+    if (submittedScansModal) {
+        submittedScansModal.addEventListener("click", (event) => {
+            if (event.target === submittedScansModal) {
+                closeSubmittedScansModalAction();
+            }
+        });
+    }
+
+    const schedulerDecisionsModal = document.getElementById("scheduler-decisions-modal");
+    if (schedulerDecisionsModal) {
+        schedulerDecisionsModal.addEventListener("click", (event) => {
+            if (event.target === schedulerDecisionsModal) {
+                closeSchedulerDecisionsModalAction();
+            }
+        });
+    }
+
     const hostRemoveModal = document.getElementById("host-remove-modal");
     if (hostRemoveModal) {
         hostRemoveModal.addEventListener("click", (event) => {
@@ -8707,6 +8809,18 @@ function bindActionButtons() {
             closeProviderLogsModalAction();
             return;
         }
+        if (uiModalState.jobsOpen) {
+            closeJobsModalAction();
+            return;
+        }
+        if (uiModalState.submittedScansOpen) {
+            closeSubmittedScansModalAction();
+            return;
+        }
+        if (uiModalState.schedulerDecisionsOpen) {
+            closeSchedulerDecisionsModalAction();
+            return;
+        }
         if (uiModalState.hostRemoveOpen) {
             closeHostRemoveModalAction(true);
             return;
@@ -8750,6 +8864,9 @@ function bindActionButtons() {
             || uiModalState.hostSelectionOpen
             || uiModalState.scriptCveOpen
             || uiModalState.providerLogsOpen
+            || uiModalState.jobsOpen
+            || uiModalState.submittedScansOpen
+            || uiModalState.schedulerDecisionsOpen
             || uiModalState.hostRemoveOpen
             || uiModalState.graphNoteOpen
             || uiModalState.settingsOpen
