@@ -1552,6 +1552,7 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('id="graph-panel-body"', body)
         self.assertIn('id="graph-zoom-slider" type="range" min="10"', body)
         self.assertIn('id="graph-resize-handle"', body)
+        self.assertIn('id="startup-wizard-overlay" class="startup-wizard-overlay" aria-hidden="true"', body)
         self.assertIn("graph-footer-separator", body)
         self.assertNotIn("graph-legend-footer", body)
         self.assertNotIn("drag nodes or groups to reposition them", body)

@@ -51,6 +51,7 @@ const graphWorkspaceState = {
     annotations: [],
     drag: null,
     suppressClickUntil: 0,
+    viewport: null,
 };
 
 const workspaceInvalidateState = {
@@ -200,6 +201,9 @@ const GRAPH_LARGE_EDGE_THRESHOLD = 3000;
 const GRAPH_MATRIX_NODE_THRESHOLD = 1600;
 const GRAPH_MATRIX_EDGE_THRESHOLD = 4500;
 const GRAPH_MATRIX_GROUP_LIMIT = 24;
+const GRAPH_GROUP_LABEL_MIN_ZOOM = 55;
+const GRAPH_NODE_LABEL_MIN_ZOOM = 60;
+const GRAPH_NODE_TYPE_MIN_ZOOM = 78;
 
 const processOutputState = {
     processId: null,
@@ -1780,11 +1784,7 @@ function initializeStartupWizard() {
     };
     setStartupWizardStatus("", false);
     setStartupWizardStep(1);
-    if (shouldShowStartupWizard()) {
-        setStartupWizardOpen(true);
-    } else {
-        setStartupWizardOpen(false);
-    }
+    setStartupWizardOpen(false);
 }
 
 function setNmapScanModalOpen(open) {
@@ -4120,6 +4120,7 @@ function handleGraphWorkspaceResizeMove(event) {
     const nextHeight = graphWorkspaceResizeState.startHeight + delta;
     graphWorkspaceResizeState.currentHeight = normalizeGraphWorkspaceHeight(nextHeight);
     applyGraphWorkspaceHeight(graphWorkspaceResizeState.currentHeight, {persist: false});
+    graphRenderWorkspace({preserveDetail: true});
 }
 
 function startGraphWorkspaceResize(event) {
@@ -5804,6 +5805,115 @@ function graphNodeMatchesSelectedHost(node) {
     return graphEntityHostId(node) === selectedHostId;
 }
 
+function graphCurrentZoomPercent() {
+    return Math.max(10, Math.min(200, Number(graphWorkspaceState.zoomPercent || 70)));
+}
+
+function graphComputeViewportBase(boundsWidth, boundsHeight, containerWidth, containerHeight) {
+    const safeBoundsWidth = Math.max(1, Number(boundsWidth || 1));
+    const safeBoundsHeight = Math.max(1, Number(boundsHeight || 1));
+    const safeContainerWidth = Math.max(1, Number(containerWidth || 1));
+    const safeContainerHeight = Math.max(1, Number(containerHeight || 1));
+    const containerAspect = safeContainerWidth / safeContainerHeight;
+    const boundsAspect = safeBoundsWidth / safeBoundsHeight;
+    if (boundsAspect >= containerAspect) {
+        return {
+            width: safeBoundsWidth,
+            height: safeBoundsWidth / containerAspect,
+        };
+    }
+    return {
+        width: safeBoundsHeight * containerAspect,
+        height: safeBoundsHeight,
+    };
+}
+
+function graphClampViewportCenter(centerX, centerY, boundsWidth, boundsHeight, viewWidth, viewHeight) {
+    const safeBoundsWidth = Math.max(1, Number(boundsWidth || 1));
+    const safeBoundsHeight = Math.max(1, Number(boundsHeight || 1));
+    const safeViewWidth = Math.max(1, Number(viewWidth || 1));
+    const safeViewHeight = Math.max(1, Number(viewHeight || 1));
+
+    let nextCenterX = Number(centerX || 0);
+    let nextCenterY = Number(centerY || 0);
+
+    if (safeViewWidth >= safeBoundsWidth) {
+        nextCenterX = safeBoundsWidth / 2;
+    } else {
+        nextCenterX = Math.max(safeViewWidth / 2, Math.min(safeBoundsWidth - (safeViewWidth / 2), nextCenterX));
+    }
+
+    if (safeViewHeight >= safeBoundsHeight) {
+        nextCenterY = safeBoundsHeight / 2;
+    } else {
+        nextCenterY = Math.max(safeViewHeight / 2, Math.min(safeBoundsHeight - (safeViewHeight / 2), nextCenterY));
+    }
+
+    return {x: nextCenterX, y: nextCenterY};
+}
+
+function graphUpdateViewport(boundsWidth, boundsHeight) {
+    const svg = document.getElementById("graph-workspace-canvas");
+    const scrollNode = getGraphCanvasScrollNode();
+    if (!svg || !scrollNode) {
+        graphWorkspaceState.viewport = null;
+        return null;
+    }
+    const containerWidth = Math.max(1, Number(scrollNode.clientWidth || scrollNode.getBoundingClientRect().width || 1));
+    const containerHeight = Math.max(1, Number(scrollNode.clientHeight || scrollNode.getBoundingClientRect().height || 1));
+    const base = graphComputeViewportBase(boundsWidth, boundsHeight, containerWidth, containerHeight);
+    const zoomScale = graphCurrentZoomPercent() / 100;
+    const viewWidth = Math.max(1, base.width / zoomScale);
+    const viewHeight = Math.max(1, base.height / zoomScale);
+    const current = graphWorkspaceState.viewport || {};
+    const defaultCenterX = Math.max(1, Number(boundsWidth || 1)) / 2;
+    const defaultCenterY = Math.max(1, Number(boundsHeight || 1)) / 2;
+    const clampedCenter = graphClampViewportCenter(
+        Number.isFinite(Number(current.centerX)) ? Number(current.centerX) : defaultCenterX,
+        Number.isFinite(Number(current.centerY)) ? Number(current.centerY) : defaultCenterY,
+        boundsWidth,
+        boundsHeight,
+        viewWidth,
+        viewHeight,
+    );
+    const viewX = clampedCenter.x - (viewWidth / 2);
+    const viewY = clampedCenter.y - (viewHeight / 2);
+    graphWorkspaceState.viewport = {
+        x: viewX,
+        y: viewY,
+        width: viewWidth,
+        height: viewHeight,
+        centerX: clampedCenter.x,
+        centerY: clampedCenter.y,
+        boundsWidth: Math.max(1, Number(boundsWidth || 1)),
+        boundsHeight: Math.max(1, Number(boundsHeight || 1)),
+        containerWidth,
+        containerHeight,
+    };
+    svg.setAttribute("viewBox", `${viewX} ${viewY} ${viewWidth} ${viewHeight}`);
+    svg.style.width = "100%";
+    svg.style.height = `${Math.max(120, Math.round(containerHeight))}px`;
+    return graphWorkspaceState.viewport;
+}
+
+function graphShouldShowGroupLabels() {
+    return graphCurrentZoomPercent() >= GRAPH_GROUP_LABEL_MIN_ZOOM;
+}
+
+function graphShouldShowNodeLabel(options = {}) {
+    if (options.isSelected || options.isHostSelected || options.isSummaryNode) {
+        return true;
+    }
+    return graphCurrentZoomPercent() >= GRAPH_NODE_LABEL_MIN_ZOOM;
+}
+
+function graphShouldShowNodeTypeLabel(options = {}) {
+    if (options.isSelected || options.isHostSelected || options.isSummaryNode) {
+        return true;
+    }
+    return graphCurrentZoomPercent() >= GRAPH_NODE_TYPE_MIN_ZOOM;
+}
+
 function graphDismissSelection() {
     closeGraphNoteModalAction(false);
     graphWorkspaceState.selectedKind = "";
@@ -5878,8 +5988,8 @@ function graphSelectionAnchorPoint() {
     }
 
     return {
-        x: (svgRect.left - panelRect.left) + ((anchorX / Number(viewBox.width || 1)) * svgRect.width),
-        y: (svgRect.top - panelRect.top) + ((anchorY / Number(viewBox.height || 1)) * svgRect.height),
+        x: (svgRect.left - panelRect.left) + (((anchorX - Number(viewBox.x || 0)) / Number(viewBox.width || 1)) * svgRect.width),
+        y: (svgRect.top - panelRect.top) + (((anchorY - Number(viewBox.y || 0)) / Number(viewBox.height || 1)) * svgRect.height),
     };
 }
 
@@ -6569,8 +6679,9 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         matrixNode.hidden = true;
         svg.innerHTML = "";
         svg.setAttribute("viewBox", "0 0 1600 900");
-        svg.style.width = "1180px";
-        svg.style.height = "620px";
+        svg.style.width = "100%";
+        svg.style.height = `${Math.max(520, Number(getGraphCanvasScrollNode()?.clientHeight || GRAPH_WORKSPACE_DEFAULT_HEIGHT))}px`;
+        graphWorkspaceState.viewport = null;
         svg.hidden = false;
         emptyNode.hidden = false;
         graphRenderSelectionDetail();
@@ -6594,10 +6705,7 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
     matrixNode.innerHTML = "";
     svg.hidden = false;
     svg.innerHTML = "";
-    svg.setAttribute("viewBox", `0 0 ${filtered.width} ${filtered.height}`);
-    const zoomScale = Math.max(10, Math.min(200, Number(graphWorkspaceState.zoomPercent || 70))) / 100;
-    svg.style.width = `${Math.max(1180, Math.round(filtered.width * zoomScale))}px`;
-    svg.style.height = `${Math.max(620, Math.round(filtered.height * zoomScale))}px`;
+    const showGroupLabels = graphShouldShowGroupLabels();
 
     const defs = graphCreateSvgNode("defs");
     defs.appendChild(graphCreateSvgNode("marker", {
@@ -6645,12 +6753,14 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
             stroke: "rgba(147, 159, 229, 0.16)",
             "data-graph-group-key": group.key || "",
         }));
-        groupNode.appendChild(graphCreateSvgNode("text", {
-            x: group.x + 16,
-            y: group.y + 28,
-            "class": "graph-group-label",
-            "data-graph-group-key": group.key || "",
-        }, group.label));
+        if (showGroupLabels) {
+            groupNode.appendChild(graphCreateSvgNode("text", {
+                x: group.x + 16,
+                y: group.y + 28,
+                "class": "graph-group-label",
+                "data-graph-group-key": group.key || "",
+            }, group.label));
+        }
         svg.appendChild(groupNode);
     });
 
@@ -6742,6 +6852,8 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         const isSelected = graphWorkspaceState.selectedKind === "node" && String(graphWorkspaceState.selectedRef || "") === nodeId;
         const isHostSelected = graphNodeMatchesSelectedHost(node);
         const isSummaryNode = Boolean(graphPropertyValue(node, "summary_kind"));
+        const showNodeTypeLabel = graphShouldShowNodeTypeLabel({isSelected, isHostSelected, isSummaryNode});
+        const showNodeLabel = graphShouldShowNodeLabel({isSelected, isHostSelected, isSummaryNode});
         const groupNode = graphCreateSvgNode("g", {
             transform: `translate(${point.x}, ${point.y})`,
             "data-graph-node-id": nodeId,
@@ -6766,27 +6878,31 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
             opacity: 0.9,
             "data-graph-node-id": nodeId,
         }));
-        groupNode.appendChild(graphCreateSvgNode("text", {
-            x: 28,
-            y: 18,
-            "class": "graph-node-type",
-            "data-graph-node-id": nodeId,
-        }, graphFriendlyLabel(node.type || "")));
-        const labelNode = graphCreateSvgNode("text", {
-            x: 28,
-            y: 34,
-            "class": "graph-node-label",
-            "data-graph-node-id": nodeId,
-        });
-        graphSplitLabel(node.label || nodeId).forEach((line, index) => {
-            const tspan = graphCreateSvgNode("tspan", {
+        if (showNodeTypeLabel) {
+            groupNode.appendChild(graphCreateSvgNode("text", {
                 x: 28,
-                dy: index === 0 ? 0 : 14,
+                y: 18,
+                "class": "graph-node-type",
                 "data-graph-node-id": nodeId,
-            }, line);
-            labelNode.appendChild(tspan);
-        });
-        groupNode.appendChild(labelNode);
+            }, graphFriendlyLabel(node.type || "")));
+        }
+        if (showNodeLabel) {
+            const labelNode = graphCreateSvgNode("text", {
+                x: 28,
+                y: showNodeTypeLabel ? 34 : 30,
+                "class": "graph-node-label",
+                "data-graph-node-id": nodeId,
+            });
+            graphSplitLabel(node.label || nodeId).forEach((line, index) => {
+                const tspan = graphCreateSvgNode("tspan", {
+                    x: 28,
+                    dy: index === 0 ? 0 : 14,
+                    "data-graph-node-id": nodeId,
+                }, line);
+                labelNode.appendChild(tspan);
+            });
+            groupNode.appendChild(labelNode);
+        }
         if (graphWorkspaceState.pinnedNodeIds[nodeId]) {
             groupNode.appendChild(graphCreateSvgNode("circle", {
                 cx: GRAPH_NODE_SIZE.width - 16,
@@ -6809,6 +6925,8 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         }
         svg.appendChild(groupNode);
     });
+
+    graphUpdateViewport(filtered.width, filtered.height);
 
     if (!preserveDetail || selectionCleared || !graphWorkspaceState.selectedKind) {
         graphRenderSelectionDetail();
@@ -7012,10 +7130,13 @@ function graphBuildExportSvgString() {
     const clone = svg.cloneNode(true);
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
     clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
-    const viewBox = clone.getAttribute("viewBox") || `0 0 ${graphWorkspaceState.filtered.width || 1600} ${graphWorkspaceState.filtered.height || 900}`;
+    const fullWidth = Math.max(1, Number(graphWorkspaceState.filtered.width || 1600));
+    const fullHeight = Math.max(1, Number(graphWorkspaceState.filtered.height || 900));
+    clone.setAttribute("viewBox", `0 0 ${fullWidth} ${fullHeight}`);
+    const viewBox = clone.getAttribute("viewBox") || `0 0 ${fullWidth} ${fullHeight}`;
     const parts = viewBox.split(/\s+/).map((value) => Number(value || 0));
-    const width = Math.max(1, Math.round(parts[2] || graphWorkspaceState.filtered.width || 1600));
-    const height = Math.max(1, Math.round(parts[3] || graphWorkspaceState.filtered.height || 900));
+    const width = Math.max(1, Math.round(parts[2] || fullWidth));
+    const height = Math.max(1, Math.round(parts[3] || fullHeight));
     clone.setAttribute("width", String(width));
     clone.setAttribute("height", String(height));
 
@@ -7349,10 +7470,6 @@ function graphHandlePointerMove(event) {
     if (!graphWorkspaceState.drag) {
         return;
     }
-    const svg = document.getElementById("graph-workspace-canvas");
-    if (!svg) {
-        return;
-    }
     event.preventDefault();
     const deltaX = Number(event.clientX || 0) - Number(graphWorkspaceState.drag.startClientX || 0);
     const deltaY = Number(event.clientY || 0) - Number(graphWorkspaceState.drag.startClientY || 0);
@@ -7360,6 +7477,46 @@ function graphHandlePointerMove(event) {
         return;
     }
     graphWorkspaceState.drag.active = true;
+    if (graphWorkspaceState.drag.kind === "pan") {
+        const svg = document.getElementById("graph-workspace-canvas");
+        const viewport = graphWorkspaceState.drag.viewport || graphWorkspaceState.viewport;
+        if (!svg || !viewport) {
+            return;
+        }
+        const rect = svg.getBoundingClientRect();
+        if (!rect.width || !rect.height) {
+            return;
+        }
+        const unitsPerPixelX = Number(viewport.width || 1) / Math.max(1, rect.width);
+        const unitsPerPixelY = Number(viewport.height || 1) / Math.max(1, rect.height);
+        const nextCenter = graphClampViewportCenter(
+            Number(graphWorkspaceState.drag.startCenterX || viewport.centerX || 0) - (deltaX * unitsPerPixelX),
+            Number(graphWorkspaceState.drag.startCenterY || viewport.centerY || 0) - (deltaY * unitsPerPixelY),
+            viewport.boundsWidth,
+            viewport.boundsHeight,
+            viewport.width,
+            viewport.height,
+        );
+        const viewX = nextCenter.x - (Number(viewport.width || 1) / 2);
+        const viewY = nextCenter.y - (Number(viewport.height || 1) / 2);
+        graphWorkspaceState.viewport = {
+            ...viewport,
+            x: viewX,
+            y: viewY,
+            centerX: nextCenter.x,
+            centerY: nextCenter.y,
+        };
+        document.body.classList.add("graph-workspace-panning");
+        svg.setAttribute("viewBox", `${viewX} ${viewY} ${viewport.width} ${viewport.height}`);
+        if (graphWorkspaceState.detailMode === "floating" && graphHasActiveSelection()) {
+            graphSyncDetailPresentation();
+        }
+        return;
+    }
+    const svg = document.getElementById("graph-workspace-canvas");
+    if (!svg) {
+        return;
+    }
     const point = graphSvgPoint(svg, event);
     const offsetX = Number(point.x || 0) - Number(graphWorkspaceState.drag.startPointX || 0);
     const offsetY = Number(point.y || 0) - Number(graphWorkspaceState.drag.startPointY || 0);
@@ -7377,6 +7534,7 @@ function graphHandlePointerUp() {
         return;
     }
     const wasActive = Boolean(graphWorkspaceState.drag.active);
+    document.body.classList.remove("graph-workspace-panning");
     window.removeEventListener("pointermove", graphHandlePointerMove);
     window.removeEventListener("pointerup", graphHandlePointerUp);
     graphWorkspaceState.drag = null;
@@ -7586,6 +7744,31 @@ function bindGraphWorkspaceEvents() {
                 startPointY: Number(point.y || 0),
                 startClientX: Number(event.clientX || 0),
                 startClientY: Number(event.clientY || 0),
+                active: false,
+            };
+            window.addEventListener("pointermove", graphHandlePointerMove);
+            window.addEventListener("pointerup", graphHandlePointerUp);
+            event.preventDefault();
+        });
+        svg.addEventListener("pointerdown", (event) => {
+            const hitTarget = event.target.closest("[data-graph-node-id], [data-graph-edge-id], [data-graph-group-key]");
+            if (hitTarget) {
+                return;
+            }
+            const viewport = graphWorkspaceState.viewport || graphUpdateViewport(
+                graphWorkspaceState.filtered.width || 1600,
+                graphWorkspaceState.filtered.height || 900,
+            );
+            if (!viewport) {
+                return;
+            }
+            graphWorkspaceState.drag = {
+                kind: "pan",
+                startClientX: Number(event.clientX || 0),
+                startClientY: Number(event.clientY || 0),
+                startCenterX: Number(viewport.centerX || 0),
+                startCenterY: Number(viewport.centerY || 0),
+                viewport: {...viewport},
                 active: false,
             };
             window.addEventListener("pointermove", graphHandlePointerMove);
@@ -8875,7 +9058,7 @@ function bindActionButtons() {
     }
     window.addEventListener("resize", () => {
         if (graphWorkspaceEnabled()) {
-            graphSyncDetailPresentation();
+            graphRenderWorkspace({preserveDetail: true});
         }
     });
 
