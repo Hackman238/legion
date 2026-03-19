@@ -3874,6 +3874,11 @@ function getGraphWorkspaceShell() {
     return document.getElementById("graph-workspace-shell");
 }
 
+function getGraphWorkspaceSection() {
+    const shell = getGraphWorkspaceShell();
+    return shell ? shell.closest(".graph-panel") : null;
+}
+
 function getGraphCanvasPanel() {
     return document.querySelector(".graph-canvas-panel");
 }
@@ -3884,6 +3889,32 @@ function getGraphCanvasScrollNode() {
 
 function graphHasActiveSelection() {
     return Boolean(graphWorkspaceState.selectedKind && graphWorkspaceState.selectedRef);
+}
+
+function graphSelectedNodeEntity({allowRetainedSummary = true} = {}) {
+    if (graphWorkspaceState.selectedKind !== "node" || !graphWorkspaceState.selectedRef) {
+        return null;
+    }
+    const liveEntity = graphFindEntity("node", graphWorkspaceState.selectedRef);
+    if (liveEntity) {
+        return liveEntity;
+    }
+    if (!allowRetainedSummary) {
+        return null;
+    }
+    const retained = graphWorkspaceState.selectedPayload;
+    const selectedRef = String(graphWorkspaceState.selectedRef || "");
+    const retainedId = String(retained?.node_id || "");
+    if (!retained || retainedId !== selectedRef) {
+        return null;
+    }
+    if (!graphPropertyValue(retained, "summary_kind")) {
+        return null;
+    }
+    if (!graphWorkspaceState.expandedSummaryIds[retainedId]) {
+        return null;
+    }
+    return retained;
 }
 
 function normalizeGraphWorkspaceHeight(value) {
@@ -5798,6 +5829,53 @@ function graphToggleDetailModeAction() {
     graphSetDetailMode(graphWorkspaceState.detailMode === "docked" ? "floating" : "docked");
 }
 
+function graphRefreshSelectionActionButtons() {
+    const focusButton = document.getElementById("graph-focus-selection-button");
+    const clearFocusButton = document.getElementById("graph-clear-focus-button");
+    const expandButton = document.getElementById("graph-expand-selection-button");
+    const collapseButton = document.getElementById("graph-collapse-expanded-button");
+    const selectedNode = graphSelectedNodeEntity();
+    const selectedSummaryNode = selectedNode && graphPropertyValue(selectedNode, "summary_kind")
+        ? selectedNode
+        : null;
+    const selectedSummaryId = String(selectedSummaryNode?.node_id || "");
+    const selectedSummaryExpanded = Boolean(selectedSummaryId && graphWorkspaceState.expandedSummaryIds[selectedSummaryId]);
+
+    if (focusButton) {
+        const canFocus = Boolean(selectedNode);
+        focusButton.disabled = !canFocus;
+        const focusLabel = canFocus ? "Focus Selected" : "Select a node or summary to focus";
+        focusButton.setAttribute("title", focusLabel);
+        focusButton.setAttribute("aria-label", focusLabel);
+    }
+
+    if (clearFocusButton) {
+        const hasFocus = Array.isArray(graphWorkspaceState.focusSeedNodeIds) && graphWorkspaceState.focusSeedNodeIds.length > 0;
+        clearFocusButton.disabled = !hasFocus;
+        const clearLabel = hasFocus ? "Clear Focus" : "No graph focus is active";
+        clearFocusButton.setAttribute("title", clearLabel);
+        clearFocusButton.setAttribute("aria-label", clearLabel);
+    }
+
+    if (expandButton) {
+        const canExpand = Boolean(selectedSummaryNode) && !selectedSummaryExpanded;
+        expandButton.hidden = !canExpand;
+        expandButton.disabled = !canExpand;
+        const expandLabel = canExpand ? "Expand Cluster" : "Select a collapsed summary cluster to expand";
+        expandButton.setAttribute("title", expandLabel);
+        expandButton.setAttribute("aria-label", expandLabel);
+    }
+
+    if (collapseButton) {
+        const canCollapse = Boolean(selectedSummaryNode) && selectedSummaryExpanded;
+        collapseButton.hidden = !canCollapse;
+        collapseButton.disabled = !canCollapse;
+        const collapseLabel = canCollapse ? "Collapse Cluster" : "Select an expanded summary cluster to collapse";
+        collapseButton.setAttribute("title", collapseLabel);
+        collapseButton.setAttribute("aria-label", collapseLabel);
+    }
+}
+
 function graphRenderSelectionDetail() {
     const detailCaption = document.getElementById("graph-detail-caption");
     const badgesNode = document.getElementById("graph-selection-badges");
@@ -5815,15 +5893,20 @@ function graphRenderSelectionDetail() {
     const evidenceNode = document.getElementById("graph-detail-evidence");
     const propertiesNode = document.getElementById("graph-detail-properties");
     const annotationsNode = document.getElementById("graph-annotations-list");
+    const focusButton = document.getElementById("graph-focus-selection-button");
+    const expandButton = document.getElementById("graph-expand-selection-button");
+    const collapseButton = document.getElementById("graph-collapse-expanded-button");
     const pinButton = document.getElementById("graph-pin-toggle-button");
     const noteButton = document.getElementById("graph-note-open-button");
-    if (!detailCaption || !badgesNode || !fieldsNode || !hostActionsBlock || !hostActionsNode || !portActionsBlock || !portActionsNode || !serviceActionsBlock || !serviceActionsNode || !subnetActionsBlock || !subnetActionsNode || !screenshotActionsBlock || !screenshotActionsNode || !evidenceNode || !propertiesNode || !annotationsNode || !pinButton || !noteButton) {
+    if (!detailCaption || !badgesNode || !fieldsNode || !hostActionsBlock || !hostActionsNode || !portActionsBlock || !portActionsNode || !serviceActionsBlock || !serviceActionsNode || !subnetActionsBlock || !subnetActionsNode || !screenshotActionsBlock || !screenshotActionsNode || !evidenceNode || !propertiesNode || !annotationsNode || !focusButton || !expandButton || !collapseButton || !pinButton || !noteButton) {
         return;
     }
 
     const kind = String(graphWorkspaceState.selectedKind || "");
     const ref = String(graphWorkspaceState.selectedRef || "");
-    const entity = graphFindEntity(kind, ref);
+    const entity = kind === "node"
+        ? graphSelectedNodeEntity()
+        : graphFindEntity(kind, ref);
     graphWorkspaceState.selectedPayload = entity;
 
     badgesNode.innerHTML = "";
@@ -5844,6 +5927,9 @@ function graphRenderSelectionDetail() {
     if (!entity) {
         detailCaption.textContent = "Select a node or edge";
         propertiesNode.textContent = "No graph selection";
+        focusButton.disabled = true;
+        focusButton.setAttribute("title", "Select a node or summary to focus");
+        focusButton.setAttribute("aria-label", "Select a node or summary to focus");
         noteButton.disabled = true;
         noteButton.setAttribute("title", "Select a node or edge to add a note");
         noteButton.setAttribute("aria-label", "Select a node or edge to add a note");
@@ -5852,6 +5938,7 @@ function graphRenderSelectionDetail() {
         pinButton.setAttribute("title", "Select a node to pin");
         pinButton.setAttribute("aria-label", "Select a node to pin");
         graphRenderRelatedContent("No related artifacts or screenshots.");
+        graphRefreshSelectionActionButtons();
         graphSyncDetailPresentation();
         return;
     }
@@ -6076,6 +6163,7 @@ function graphRenderSelectionDetail() {
     } else {
         graphRenderRelatedContent();
     }
+    graphRefreshSelectionActionButtons();
     graphSyncDetailPresentation();
 }
 
@@ -6211,8 +6299,13 @@ function graphRenderRelatedContent(statusMessage = "") {
 async function graphFetchRelatedContent() {
     const kind = String(graphWorkspaceState.selectedKind || "");
     const ref = String(graphWorkspaceState.selectedRef || "");
-    const entity = kind === "node" ? graphFindEntity("node", ref) : null;
+    const entity = kind === "node" ? graphSelectedNodeEntity() : null;
     if (!kind || !ref || kind !== "node") {
+        graphWorkspaceState.relatedContent = [];
+        graphRenderRelatedContent("No related artifacts or screenshots.");
+        return;
+    }
+    if (!entity) {
         graphWorkspaceState.relatedContent = [];
         graphRenderRelatedContent("No related artifacts or screenshots.");
         return;
@@ -6320,7 +6413,10 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
     const positions = filtered.positions || {};
 
     let selectionCleared = false;
-    if (graphWorkspaceState.selectedKind && !graphFindEntity(graphWorkspaceState.selectedKind, graphWorkspaceState.selectedRef)) {
+    const selectedEntity = graphWorkspaceState.selectedKind === "node"
+        ? graphSelectedNodeEntity()
+        : graphFindEntity(graphWorkspaceState.selectedKind, graphWorkspaceState.selectedRef);
+    if (graphWorkspaceState.selectedKind && !selectedEntity) {
         graphWorkspaceState.selectedKind = "";
         graphWorkspaceState.selectedRef = "";
         graphWorkspaceState.selectedPayload = null;
@@ -6603,6 +6699,7 @@ function graphSelectEntity(kind, ref) {
     }
     graphWorkspaceState.selectedKind = String(kind || "");
     graphWorkspaceState.selectedRef = String(ref || "");
+    graphWorkspaceState.selectedPayload = null;
     graphWorkspaceState.relatedContent = [];
     graphRenderWorkspace();
     graphFetchRelatedContent().catch(() => {});
@@ -6909,12 +7006,14 @@ function graphTidyLayoutAction() {
 function graphFocusSelectionAction() {
     if (graphWorkspaceState.selectedKind !== "node" || !graphWorkspaceState.selectedRef) {
         setGraphStatus("Select a node or summary before focusing the neighborhood.", true);
+        graphRefreshSelectionActionButtons();
         return;
     }
-    const entity = graphFindEntity("node", graphWorkspaceState.selectedRef);
+    const entity = graphSelectedNodeEntity();
     const seedNodeIds = graphEntityUnderlyingNodeIds(entity);
     if (!seedNodeIds.length) {
         setGraphStatus("The selected graph node cannot be focused.", true);
+        graphRefreshSelectionActionButtons();
         return;
     }
     graphWorkspaceState.focusSeedNodeIds = seedNodeIds;
@@ -6925,28 +7024,33 @@ function graphFocusSelectionAction() {
         graphWorkspaceState.selectedRef = seedNodeIds[0];
     }
     graphRenderWorkspace();
+    graphRefreshSelectionActionButtons();
     setGraphStatus(`Focused ${graphWorkspaceState.focusDepth}-hop neighborhood around ${graphWorkspaceState.focusSeedLabel}`);
 }
 
 function graphClearFocusAction() {
     if (!graphWorkspaceState.focusSeedNodeIds.length) {
         setGraphStatus("No graph focus is active.", true);
+        graphRefreshSelectionActionButtons();
         return;
     }
     graphWorkspaceState.focusSeedNodeIds = [];
     graphWorkspaceState.focusSeedLabel = "";
     graphRenderWorkspace();
+    graphRefreshSelectionActionButtons();
     setGraphStatus("Graph focus cleared");
 }
 
 function graphToggleExpandSelectionAction() {
     if (graphWorkspaceState.selectedKind !== "node" || !graphWorkspaceState.selectedRef) {
         setGraphStatus("Select a summary node before expanding it.", true);
+        graphRefreshSelectionActionButtons();
         return;
     }
-    const entity = graphFindEntity("node", graphWorkspaceState.selectedRef);
+    const entity = graphSelectedNodeEntity();
     if (!graphPropertyValue(entity, "summary_kind")) {
         setGraphStatus("Selected node is already expanded.", true);
+        graphRefreshSelectionActionButtons();
         return;
     }
     const nodeId = String(entity?.node_id || "");
@@ -6954,24 +7058,34 @@ function graphToggleExpandSelectionAction() {
         delete graphWorkspaceState.expandedSummaryIds[nodeId];
         graphWorkspaceState.selectedKind = "node";
         graphWorkspaceState.selectedRef = nodeId;
+        graphWorkspaceState.selectedPayload = null;
         setGraphStatus(`Collapsed ${entity.label || nodeId}`);
     } else {
         graphWorkspaceState.expandedSummaryIds[nodeId] = true;
-        const memberNodeIds = graphEntityUnderlyingNodeIds(entity);
-        if (memberNodeIds.length) {
-            graphWorkspaceState.selectedKind = "node";
-            graphWorkspaceState.selectedRef = memberNodeIds[0];
-        }
+        graphWorkspaceState.selectedKind = "node";
+        graphWorkspaceState.selectedRef = nodeId;
+        graphWorkspaceState.selectedPayload = entity;
         setGraphStatus(`Expanded ${entity.label || nodeId}`);
     }
     graphRenderWorkspace();
+    graphRefreshSelectionActionButtons();
 }
 
 function graphCollapseExpandedAction() {
-    const expandedCount = Object.keys(graphWorkspaceState.expandedSummaryIds || {}).length;
-    graphWorkspaceState.expandedSummaryIds = {};
+    const entity = graphSelectedNodeEntity();
+    const summaryId = String(entity?.node_id || "");
+    if (!graphPropertyValue(entity, "summary_kind") || !summaryId || !graphWorkspaceState.expandedSummaryIds[summaryId]) {
+        setGraphStatus("Select an expanded summary cluster to collapse.", true);
+        graphRefreshSelectionActionButtons();
+        return;
+    }
+    delete graphWorkspaceState.expandedSummaryIds[summaryId];
+    graphWorkspaceState.selectedKind = "node";
+    graphWorkspaceState.selectedRef = summaryId;
+    graphWorkspaceState.selectedPayload = null;
     graphRenderWorkspace();
-    setGraphStatus(expandedCount ? `Collapsed ${expandedCount} expanded cluster${expandedCount === 1 ? "" : "s"}` : "No expanded clusters to collapse.");
+    graphRefreshSelectionActionButtons();
+    setGraphStatus(`Collapsed ${entity.label || summaryId}`);
 }
 
 async function graphSaveLayoutAction() {
@@ -8971,7 +9085,8 @@ function bindActionButtons() {
         if (target.closest("[data-graph-node-id], [data-graph-edge-id]")) {
             return;
         }
-        if (target.closest("#graph-workspace-shell")) {
+        const graphSection = getGraphWorkspaceSection();
+        if (graphSection && graphSection.contains(target)) {
             return;
         }
         graphDismissSelection();

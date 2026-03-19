@@ -405,6 +405,44 @@
                             </div>
                             <div class="scheduler-actions graph-detail-shell-actions">
                                 <button
+                                    id="graph-expand-selection-button"
+                                    class="graph-icon-button"
+                                    type="button"
+                                    title="Expand Selected"
+                                    aria-label="Expand Selected"
+                                    hidden
+                                >
+                                    <i class="fa-solid fa-expand" aria-hidden="true"></i>
+                                </button>
+                                <button
+                                    id="graph-collapse-expanded-button"
+                                    class="graph-icon-button"
+                                    type="button"
+                                    title="Collapse Expanded"
+                                    aria-label="Collapse Expanded"
+                                    hidden
+                                >
+                                    <i class="fa-solid fa-compress" aria-hidden="true"></i>
+                                </button>
+                                <button
+                                    id="graph-focus-selection-button"
+                                    class="graph-icon-button"
+                                    type="button"
+                                    title="Focus Selected"
+                                    aria-label="Focus Selected"
+                                >
+                                    <i class="fa-solid fa-crosshairs" aria-hidden="true"></i>
+                                </button>
+                                <button
+                                    id="graph-pin-toggle-button"
+                                    class="graph-icon-button"
+                                    type="button"
+                                    title="Pin Node"
+                                    aria-label="Pin Node"
+                                >
+                                    <i class="fa-solid fa-thumbtack" aria-hidden="true"></i>
+                                </button>
+                                <button
                                     id="graph-detail-dock-toggle-button"
                                     class="graph-icon-button"
                                     type="button"
@@ -473,15 +511,6 @@
                                 >
                                     <i class="fa-solid fa-note-sticky" aria-hidden="true"></i>
                                 </button>
-                                <button
-                                    id="graph-pin-toggle-button"
-                                    class="graph-icon-button"
-                                    type="button"
-                                    title="Pin Node"
-                                    aria-label="Pin Node"
-                                >
-                                    <i class="fa-solid fa-thumbtack" aria-hidden="true"></i>
-                                </button>
                             </div>
                         </div>
                     </section>
@@ -541,17 +570,8 @@
                         <option value="3">3 hop</option>
                     </select>
                 </label>
-                <button id="graph-focus-selection-button" class="graph-icon-button" type="button" title="Focus Selected" aria-label="Focus Selected">
-                    <i class="fa-solid fa-crosshairs" aria-hidden="true"></i>
-                </button>
                 <button id="graph-clear-focus-button" class="graph-icon-button" type="button" title="Clear Focus" aria-label="Clear Focus">
                     <i class="fa-solid fa-circle-xmark" aria-hidden="true"></i>
-                </button>
-                <button id="graph-expand-selection-button" class="graph-icon-button" type="button" title="Expand Selected" aria-label="Expand Selected">
-                    <i class="fa-solid fa-expand" aria-hidden="true"></i>
-                </button>
-                <button id="graph-collapse-expanded-button" class="graph-icon-button" type="button" title="Collapse Expanded" aria-label="Collapse Expanded">
-                    <i class="fa-solid fa-compress" aria-hidden="true"></i>
                 </button>
             </div>
         </div>
