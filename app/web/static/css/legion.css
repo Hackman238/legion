@@ -531,20 +531,28 @@ body.opaque-ui .ribbon-submenu-item {
     z-index: 45;
 }
 
+.panel-menu-button,
+.graph-icon-button,
+.icon-btn {
+    border: 1px solid rgba(192, 132, 252, 0.26);
+    border-radius: 9px;
+    background: linear-gradient(135deg, rgba(45, 27, 105, 0.58) 0%, rgba(139, 26, 58, 0.28) 100%);
+    color: var(--text-main);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
 .panel-menu-button {
     width: 34px;
     height: 34px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid rgba(192, 132, 252, 0.26);
-    border-radius: 9px;
-    background: linear-gradient(135deg, rgba(45, 27, 105, 0.58) 0%, rgba(139, 26, 58, 0.28) 100%);
-    color: var(--text-main);
     cursor: pointer;
 }
 
-.panel-menu-button:hover {
+.panel-menu-button:hover,
+.graph-icon-button:hover,
+.icon-btn:hover {
     filter: brightness(1.12);
 }
 

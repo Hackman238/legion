@@ -277,8 +277,21 @@
                 >
                     <i class="fa-solid fa-sliders" aria-hidden="true"></i>
                 </button>
+                <button
+                    id="graph-panel-toggle-button"
+                    class="panel-menu-button"
+                    type="button"
+                    title="Hide Graph Workspace"
+                    aria-label="Hide Graph Workspace"
+                    aria-expanded="true"
+                    aria-controls="graph-panel-body"
+                >
+                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                    <span class="sr-only">Toggle Graph Workspace</span>
+                </button>
             </div>
         </div>
+        <div id="graph-panel-body">
         <div id="graph-filters-panel" class="graph-filters-panel" hidden>
             <div class="graph-toolbar">
                 <label>
@@ -584,6 +597,7 @@
             title="Drag to resize graph workspace"
         ></div>
         <p class="meta-note graph-status-note">Graph status: <span id="graph-workspace-status">Idle</span></p>
+        </div>
     </section>
     {% else %}
     <section class="panel panel-full graph-panel">

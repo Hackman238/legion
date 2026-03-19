@@ -1292,6 +1292,28 @@ function toggleServicesPanelAction() {
     setServicesPanelCollapsed(!body.hidden);
 }
 
+function setGraphPanelCollapsed(collapsed) {
+    const body = document.getElementById("graph-panel-body");
+    const button = document.getElementById("graph-panel-toggle-button");
+    if (!body || !button) {
+        return;
+    }
+    const nextCollapsed = Boolean(collapsed);
+    body.hidden = nextCollapsed;
+    button.classList.toggle("is-collapsed", nextCollapsed);
+    button.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+    button.title = nextCollapsed ? "Show Graph Workspace" : "Hide Graph Workspace";
+    button.setAttribute("aria-label", nextCollapsed ? "Show Graph Workspace" : "Hide Graph Workspace");
+}
+
+function toggleGraphPanelAction() {
+    const body = document.getElementById("graph-panel-body");
+    if (!body) {
+        return;
+    }
+    setGraphPanelCollapsed(!body.hidden);
+}
+
 function getHostOsIcon(osText) {
     const token = String(osText || "").toLowerCase();
     if (token.includes("windows") || token.includes("microsoft")) {
@@ -8794,6 +8816,7 @@ function bindActionButtons() {
     bind("hosts-filter-show-all-button", () => setHostFilterAction("show_all"));
     bind("hosts-filter-hide-down-button", () => setHostFilterAction("hide_down"));
     bind("services-panel-toggle-button", toggleServicesPanelAction);
+    bind("graph-panel-toggle-button", toggleGraphPanelAction);
     bind("ribbon-export-project-report-json-action-button", () => exportProjectAiReportAction("json"));
     bind("ribbon-export-project-report-md-action-button", () => exportProjectAiReportAction("md"));
     bind("ribbon-export-project-report-push-action-button", pushProjectAiReportAction);
@@ -8840,6 +8863,7 @@ function bindActionButtons() {
     bind("graph-detail-close-button", graphDismissSelection);
     graphSetFiltersExpanded(graphWorkspaceState.filtersExpanded);
     setServicesPanelCollapsed(true);
+    setGraphPanelCollapsed(false);
 
     const graphScrollNode = getGraphCanvasScrollNode();
     if (graphScrollNode) {

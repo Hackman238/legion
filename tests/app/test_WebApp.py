@@ -1548,6 +1548,8 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('aria-label="Hide All Non-Running"', body)
         self.assertIn('id="services-panel-toggle-button"', body)
         self.assertIn('id="services-panel-body" class="table-wrap" hidden', body)
+        self.assertIn('id="graph-panel-toggle-button"', body)
+        self.assertIn('id="graph-panel-body"', body)
         self.assertIn('id="graph-zoom-slider" type="range" min="10"', body)
         self.assertIn('id="graph-resize-handle"', body)
         self.assertIn("graph-footer-separator", body)
