@@ -47,6 +47,8 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
         runtime = WebRuntime.__new__(WebRuntime)
         repo = _DummyProgressRepo()
         state = {"percent": 12.0, "remaining": 99, "updated_at": 0.0}
+        emit_calls = []
+        runtime._emit_ui_invalidation = lambda *channels, **kwargs: emit_calls.append((channels, kwargs))
 
         runtime._update_nmap_process_progress(
             repo,
@@ -59,6 +61,36 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
         self.assertIsNone(state["remaining"])
         self.assertEqual("0.0", repo.calls[-1]["percent"])
         self.assertIsNone(repo.calls[-1]["estimated_remaining"])
+        self.assertEqual([(("processes",), {"throttle_seconds": 5.0})], emit_calls)
+
+    def test_update_nmap_process_progress_emits_only_when_state_changes(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        repo = _DummyProgressRepo()
+        emit_calls = []
+        runtime._emit_ui_invalidation = lambda *channels, **kwargs: emit_calls.append((channels, kwargs))
+        state = {"percent": 0.0, "remaining": None, "updated_at": 0.0}
+
+        runtime._update_nmap_process_progress(
+            repo,
+            process_id=9,
+            text_chunk="NSE Timing: About 0.00% done",
+            state=state,
+        )
+
+        first_update_at = state["updated_at"]
+
+        runtime._update_nmap_process_progress(
+            repo,
+            process_id=9,
+            text_chunk="NSE Timing: About 0.00% done",
+            state=state,
+        )
+
+        self.assertEqual(1, len(repo.calls))
+        self.assertEqual(1, len(emit_calls))
+        self.assertEqual(first_update_at, state["updated_at"])
 
     def test_append_nmap_stats_every_once(self):
         from app.web.runtime import WebRuntime

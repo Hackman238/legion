@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
@@ -262,10 +263,14 @@ class WebRuntime:
         self.scheduler_orchestrator = SchedulerOrchestrator(self.scheduler_config, self.scheduler_planner)
         self.settings_file = AppSettings()
         self.settings = Settings(self.settings_file)
+        self._ui_event_condition = threading.Condition()
+        self._ui_event_seq = 0
+        self._ui_events: List[Dict[str, Any]] = []
+        self._ui_last_emit_monotonic: Dict[str, float] = defaultdict(float)
         scheduler_preferences = self.scheduler_config.load()
         job_workers = self._job_worker_count(scheduler_preferences)
         job_max = self._scheduler_max_jobs(scheduler_preferences)
-        self.jobs = WebJobManager(max_jobs=job_max, worker_count=job_workers)
+        self.jobs = WebJobManager(max_jobs=job_max, worker_count=job_workers, on_change=self._handle_job_change)
         self._lock = threading.RLock()
         self._process_runtime_lock = threading.Lock()
         self._active_processes: Dict[int, subprocess.Popen] = {}
@@ -279,6 +284,77 @@ class WebRuntime:
         self._autosave_last_saved_at = ""
         self._autosave_last_path = ""
         self._autosave_last_error = ""
+
+    def _emit_ui_invalidation(self, *channels: str, throttle_seconds: float = 0.0):
+        normalized = sorted({str(item or "").strip() for item in channels if str(item or "").strip()})
+        if not normalized:
+            return
+        key = ",".join(normalized)
+        with self._ui_event_condition:
+            now = time.monotonic()
+            if float(throttle_seconds or 0.0) > 0.0:
+                last_emitted = float(self._ui_last_emit_monotonic.get(key, 0.0) or 0.0)
+                if (now - last_emitted) < float(throttle_seconds):
+                    return
+            self._ui_last_emit_monotonic[key] = now
+            self._ui_event_seq += 1
+            self._ui_events.append({
+                "type": "invalidate",
+                "seq": int(self._ui_event_seq),
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "channels": normalized,
+            })
+            if len(self._ui_events) > 256:
+                self._ui_events = self._ui_events[-256:]
+            self._ui_event_condition.notify_all()
+
+    def wait_for_ui_event(self, after_seq: int = 0, timeout_seconds: float = 30.0) -> Dict[str, Any]:
+        cursor = max(0, int(after_seq or 0))
+        timeout_value = max(0.0, float(timeout_seconds or 0.0))
+        deadline = time.monotonic() + timeout_value if timeout_value > 0 else None
+        with self._ui_event_condition:
+            while True:
+                pending = [item for item in self._ui_events if int(item.get("seq", 0) or 0) > cursor]
+                if pending:
+                    channels = sorted({
+                        str(channel or "").strip()
+                        for item in pending
+                        for channel in list(item.get("channels", []) or [])
+                        if str(channel or "").strip()
+                    })
+                    return {
+                        "type": "invalidate",
+                        "seq": max(int(item.get("seq", 0) or 0) for item in pending),
+                        "channels": channels,
+                    }
+                if deadline is None:
+                    self._ui_event_condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return {"type": "heartbeat", "seq": cursor, "channels": []}
+                self._ui_event_condition.wait(remaining)
+
+    def _handle_job_change(self, job: Dict[str, Any], event_name: str):
+        channels = {"jobs", "overview"}
+        job_type = str(job.get("type", "") or "").strip().lower()
+        if job_type in {"nmap-scan", "import-nmap-xml", "scheduler-run", "scheduler-approval-execute", "scheduler-dig-deeper", "tool-run", "process-retry"}:
+            channels.add("processes")
+        if job_type in {"nmap-scan", "import-nmap-xml", "project-restore-zip"}:
+            channels.update({"scan_history", "hosts", "services", "graph"})
+        self._emit_ui_invalidation(*sorted(channels))
+
+    def get_workspace_overview(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "project": self._project_metadata(),
+                "summary": self._summary(),
+                "scheduler": self._scheduler_preferences(),
+            }
+
+    def get_workspace_processes(self, limit: int = 75) -> List[Dict[str, Any]]:
+        with self._lock:
+            return self._processes(limit=max(1, min(int(limit or 75), 500)))
 
     def get_snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -419,7 +495,9 @@ class WebRuntime:
             self.jobs.ensure_max_jobs(requested_max_jobs)
         except Exception:
             pass
-        return self.get_scheduler_preferences()
+        prefs = self.get_scheduler_preferences()
+        self._emit_ui_invalidation("overview")
+        return prefs
 
     def test_scheduler_provider(self, updates: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self._lock:
@@ -1322,6 +1400,7 @@ class WebRuntime:
             )
 
         if not run_now:
+            self._emit_ui_invalidation("approvals", "decisions", "overview")
             return {"approval": updated, "job": None}
 
         job = self._start_job(
@@ -1350,6 +1429,7 @@ class WebRuntime:
                 executed=False,
                 reason="approved & queued",
             )
+        self._emit_ui_invalidation("approvals", "decisions", "overview")
         return {"approval": final_state, "job": job}
 
     def reject_scheduler_approval(self, approval_id: int, reason: str = "rejected via web", family_action: str = ""):
@@ -1377,7 +1457,9 @@ class WebRuntime:
                 executed=False,
                 reason=str(reason or "rejected via web"),
             )
-            return updated
+            result = updated
+        self._emit_ui_invalidation("approvals", "decisions", "overview")
+        return result
 
     def get_project_details(self) -> Dict[str, Any]:
         with self._lock:
@@ -3975,18 +4057,22 @@ class WebRuntime:
             process_repo = project.repositoryContainer.processRepository
             process_repo.storeProcessKillStatus(str(process_key))
 
-        return {
+        result = {
             "killed": True,
             "process_id": process_key,
             "had_live_handle": had_live_handle,
         }
+        self._emit_ui_invalidation("processes", "overview", throttle_seconds=0.1)
+        return result
 
     def clear_processes(self, reset_all: bool = False) -> Dict[str, Any]:
         with self._lock:
             project = self._require_active_project()
             process_repo = project.repositoryContainer.processRepository
             process_repo.toggleProcessDisplayStatus(resetAll=bool(reset_all))
-        return {"cleared": True, "reset_all": bool(reset_all)}
+        result = {"cleared": True, "reset_all": bool(reset_all)}
+        self._emit_ui_invalidation("processes", "overview", throttle_seconds=0.1)
+        return result
 
     def close_process(self, process_id: int) -> Dict[str, Any]:
         with self._lock:
@@ -4005,7 +4091,9 @@ class WebRuntime:
                 session.close()
             if status in {"Running", "Waiting"}:
                 process_repo.storeProcessCancelStatus(str(int(process_id)))
-        return {"closed": True, "process_id": int(process_id)}
+        result = {"closed": True, "process_id": int(process_id)}
+        self._emit_ui_invalidation("processes", "overview", throttle_seconds=0.1)
+        return result
 
     def get_process_output(self, process_id: int, offset: int = 0, max_chars: int = 12000) -> Dict[str, Any]:
         offset_value = max(0, int(offset or 0))
@@ -4360,6 +4448,7 @@ class WebRuntime:
                     status="completed",
                     result_summary=f"imported {imported_hosts} host{'s' if imported_hosts != 1 else ''}{warning_note}",
                 )
+            self._emit_ui_invalidation("overview", "hosts", "services", "graph", "scan_history")
             return result
         except Exception as exc:
             if resolved_job_id > 0:
@@ -4368,6 +4457,7 @@ class WebRuntime:
                     status="failed",
                     result_summary=str(exc),
                 )
+            self._emit_ui_invalidation("scan_history")
             raise
 
     def _run_manual_tool(
@@ -7580,6 +7670,8 @@ class WebRuntime:
         except Exception:
             pass
 
+        self._emit_ui_invalidation("graph", "hosts", "services")
+
         return {
             "host_id": resolved_host_id,
             "host_ip": host_ip,
@@ -7638,6 +7730,8 @@ class WebRuntime:
             self.get_host_workspace(resolved_host_id)
         except Exception:
             pass
+
+        self._emit_ui_invalidation("graph", "hosts", "services")
 
         return {
             "host_id": resolved_host_id,
@@ -7893,6 +7987,7 @@ class WebRuntime:
                     "stderr_ref": "",
                     "artifact_refs": self._collect_command_artifacts(outputfile),
                 },)
+        self._emit_ui_invalidation("processes", "overview", throttle_seconds=0.1)
 
         proc: Optional[subprocess.Popen] = None
         output_parts: List[str] = []
@@ -8108,6 +8203,7 @@ class WebRuntime:
                 self._active_processes.pop(int(process_id), None)
                 self._kill_requests.discard(int(process_id))
             self._unregister_job_process(int(process_id))
+            self._emit_ui_invalidation("processes", "overview", throttle_seconds=0.1)
 
     def _write_process_output_partial(self, process_id: int, output_text: str):
         with self._lock:
@@ -8179,7 +8275,7 @@ class WebRuntime:
         with self._lock:
             project = self._require_active_project()
             ensure_scheduler_approval_table(project.database)
-            return queue_pending_approval(project.database, {
+            approval_id = queue_pending_approval(project.database, {
                 "status": "pending",
                 "host_ip": str(host_ip),
                 "port": str(port),
@@ -8204,6 +8300,8 @@ class WebRuntime:
                 "decision_reason": "pending approval",
                 "execution_job_id": "",
             })
+        self._emit_ui_invalidation("approvals", "overview")
+        return approval_id
 
     def _record_scheduler_decision(
             self,
@@ -8248,6 +8346,7 @@ class WebRuntime:
                 "rationale": str(decision.rationale),
                 "approval_id": str(approval_id or ""),
             })
+        self._emit_ui_invalidation("decisions")
 
     def _project_metadata(self) -> Dict[str, Any]:
         project = getattr(self.logic, "activeProject", None)
@@ -9762,7 +9861,7 @@ class WebRuntime:
                 return None
             ensure_scan_submission_table(project.database)
             normalized_targets = [str(item or "").strip() for item in list(targets or []) if str(item or "").strip()]
-            return record_scan_submission(project.database, {
+            record = record_scan_submission(project.database, {
                 "job_id": str(int(job_id or 0) or ""),
                 "submission_kind": str(submission_kind or ""),
                 "status": "submitted",
@@ -9779,6 +9878,8 @@ class WebRuntime:
                 "scan_options": dict(scan_options or {}),
                 "result_summary": str(result_summary or ""),
             })
+        self._emit_ui_invalidation("scan_history")
+        return record
 
     def _update_scan_submission_status(
             self,
@@ -9792,12 +9893,14 @@ class WebRuntime:
             if project is None:
                 return None
             ensure_scan_submission_table(project.database)
-            return update_scan_submission(
+            record = update_scan_submission(
                 project.database,
                 job_id=int(job_id or 0),
                 status=str(status or ""),
                 result_summary=str(result_summary or ""),
             )
+        self._emit_ui_invalidation("scan_history")
+        return record
 
     @staticmethod
     def _record_bool(value: Any, default: bool = False) -> bool:
@@ -9956,6 +10059,7 @@ class WebRuntime:
                 estimated_remaining=remaining_value,
             )
             state["updated_at"] = now
+            self._emit_ui_invalidation("processes", throttle_seconds=5.0)
         except Exception:
             pass
 

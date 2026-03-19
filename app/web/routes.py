@@ -665,6 +665,17 @@ def jobs():
     return jsonify({"jobs": runtime.list_jobs(limit=limit)})
 
 
+@web_bp.get("/api/processes")
+def processes():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        limit = int(request.args.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+    return jsonify({"processes": runtime.get_workspace_processes(limit=limit)})
+
+
 @web_bp.get("/api/jobs/<int:job_id>")
 def job_details(job_id):
     runtime = current_app.extensions["legion_runtime"]
@@ -703,6 +714,15 @@ def workspace_hosts():
     try:
         host_filter, service_filter, rows = _get_filtered_workspace_hosts(runtime)
         return jsonify({"filter": host_filter, "service": service_filter, "hosts": rows})
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/workspace/overview")
+def workspace_overview():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        return jsonify(runtime.get_workspace_overview())
     except Exception as exc:
         return _json_error(str(exc), 500)
 

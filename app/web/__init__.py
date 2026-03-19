@@ -22,7 +22,7 @@ def create_app(runtime: "WebRuntime") -> Flask:
         template_folder="templates",
         static_folder="static",
     )
-    app.config["LEGION_WS_SNAPSHOT_INTERVAL_SECONDS"] = 1.0
+    app.config["LEGION_WS_EVENT_HEARTBEAT_SECONDS"] = 30.0
     app.config["LEGION_AUTH_ENABLED"] = False
     app.config["LEGION_WEB_BIND_HOST"] = "127.0.0.1"
     app.config["LEGION_WEB_BIND_LABEL"] = "Localhost only"

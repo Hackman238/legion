@@ -5,9 +5,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 
 class WebJobManager:
-    def __init__(self, max_jobs: int = 200, worker_count: int = 1):
+    def __init__(self, max_jobs: int = 200, worker_count: int = 1, on_change: Optional[Callable[[Dict[str, Any], str], None]] = None):
         self.max_jobs = max(20, int(max_jobs))
         self.worker_count = max(1, int(worker_count))
+        self._on_change = on_change if callable(on_change) else None
         self._lock = threading.Lock()
         self._queue_cv = threading.Condition(self._lock)
         self._counter = itertools.count(1)
@@ -55,7 +56,9 @@ class WebJobManager:
                 self._pending_job_ids.append(job_id)
             self._trim_locked()
             self._queue_cv.notify_all()
-        return self._copy_job(job)
+        copied = self._copy_job(job)
+        self._notify_change(copied, "queued")
+        return copied
 
     def list_jobs(self, limit: int = 80) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit), self.max_jobs))
@@ -130,7 +133,9 @@ class WebJobManager:
                 self._trim_locked()
 
             self._queue_cv.notify_all()
-            return self._copy_job(job)
+            copied = self._copy_job(job)
+        self._notify_change(copied, "cancelled")
+        return copied
 
     def is_cancel_requested(self, job_id: int) -> bool:
         target_id = int(job_id)
@@ -142,6 +147,7 @@ class WebJobManager:
 
     def _worker_loop(self):
         while True:
+            started_job = None
             with self._queue_cv:
                 selected = None
                 while selected is None:
@@ -154,6 +160,10 @@ class WebJobManager:
                 job = self._jobs_by_id.get(job_id)
                 if not job:
                     continue
+                started_job = self._copy_job(job)
+
+            if started_job is not None:
+                self._notify_change(started_job, "running")
 
             try:
                 result = runner() or {}
@@ -181,15 +191,19 @@ class WebJobManager:
                         job["status"] = "failed"
                         job["error"] = str(exc)
             finally:
+                finished_job = None
                 with self._queue_cv:
                     job = self._jobs_by_id.get(job_id)
                     if job:
                         job["finished_at"] = self._utc_now()
+                        finished_job = self._copy_job(job)
                     self._running_job_count = max(0, int(self._running_job_count) - 1)
                     if int(self._running_exclusive_job_id or 0) == int(job_id):
                         self._running_exclusive_job_id = 0
                     self._trim_locked()
                     self._queue_cv.notify_all()
+                if finished_job is not None:
+                    self._notify_change(finished_job, str(finished_job.get("status", "") or "updated"))
 
     def _dequeue_next_runnable_locked(self):
         while self._pending_job_ids:
@@ -284,3 +298,11 @@ class WebJobManager:
     @staticmethod
     def _utc_now() -> str:
         return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    def _notify_change(self, job: Optional[Dict[str, Any]], event_name: str):
+        if job is None or self._on_change is None:
+            return
+        try:
+            self._on_change(dict(job), str(event_name or "updated"))
+        except Exception:
+            pass

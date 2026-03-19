@@ -53,6 +53,14 @@ const graphWorkspaceState = {
     suppressClickUntil: 0,
 };
 
+const workspaceInvalidateState = {
+    pendingChannels: new Set(),
+    running: false,
+    timer: null,
+};
+
+const workspaceInvalidationWaiters = [];
+
 const GRAPH_WORKSPACE_HEIGHT_STORAGE_KEY = "legion.graphWorkspaceHeightPx";
 const GRAPH_WORKSPACE_DEFAULT_HEIGHT = 680;
 const GRAPH_WORKSPACE_MIN_HEIGHT = 520;
@@ -3167,6 +3175,23 @@ function renderSummary(summary) {
     setText("stat-finished", summary.finished_processes);
 }
 
+function applyWorkspaceOverview(overview) {
+    if (!overview || typeof overview !== "object") {
+        return;
+    }
+    if (overview.project) {
+        renderProject(overview.project);
+    }
+    if (overview.summary) {
+        renderSummary(overview.summary);
+    }
+    if (overview.scheduler) {
+        setText("scheduler-mode", overview.scheduler.mode || "");
+        setText("scheduler-goal", overview.scheduler.goal_profile || "");
+        setText("scheduler-families", overview.scheduler.preapproved_families_count || 0);
+    }
+}
+
 function renderDecisions(decisions) {
     const body = document.getElementById("decisions-body");
     if (!body) {
@@ -3323,6 +3348,31 @@ function renderScanHistory(scans) {
         body.appendChild(tr);
     });
     setText("scan-history-count", (scans || []).length);
+}
+
+async function loadWorkspaceOverview() {
+    const body = await fetchJson("/api/workspace/overview");
+    applyWorkspaceOverview(body || {});
+}
+
+async function loadProcesses() {
+    const body = await fetchJson("/api/processes?limit=100");
+    renderProcesses(body.processes || []);
+}
+
+async function loadDecisionHistory() {
+    const body = await fetchJson("/api/scheduler/decisions?limit=80");
+    renderDecisions(body.decisions || []);
+}
+
+async function loadJobs() {
+    const body = await fetchJson("/api/jobs?limit=100");
+    renderJobs(body.jobs || []);
+}
+
+async function loadScanHistory() {
+    const body = await fetchJson("/api/scans/history?limit=100");
+    renderScanHistory(body.scans || []);
 }
 
 function renderHostDetail(payload) {
@@ -7550,7 +7600,19 @@ async function waitForJobCompletion(jobId, timeoutMs = 120000, pollIntervalMs = 
         if (status === "failed") {
             throw new Error(String(job.error || "Save job failed."));
         }
-        await sleepMs(pollIntervalMs);
+        if (window.LEGION_WS_ENABLED) {
+            const remaining = timeoutMs - (Date.now() - started);
+            if (remaining <= 0) {
+                break;
+            }
+            try {
+                await waitForWorkspaceInvalidation(["jobs"], Math.min(Math.max(remaining, 1), 30000));
+            } catch (_err) {
+                await sleepMs(pollIntervalMs);
+            }
+        } else {
+            await sleepMs(pollIntervalMs);
+        }
     }
 
     throw new Error("Timed out waiting for job completion.");
@@ -7894,13 +7956,142 @@ function setLiveChip(text, isError) {
     chip.style.color = isError ? "#ff9b9b" : "";
 }
 
+function notifyWorkspaceInvalidationWaiters(channels) {
+    const normalized = new Set((channels || []).map((item) => String(item || "").trim()).filter(Boolean));
+    if (!normalized.size || !workspaceInvalidationWaiters.length) {
+        return;
+    }
+    for (let index = workspaceInvalidationWaiters.length - 1; index >= 0; index -= 1) {
+        const waiter = workspaceInvalidationWaiters[index];
+        const matches = Array.from(waiter.channels || []).some((channel) => normalized.has(channel));
+        if (!matches) {
+            continue;
+        }
+        workspaceInvalidationWaiters.splice(index, 1);
+        if (waiter.timeoutId) {
+            window.clearTimeout(waiter.timeoutId);
+        }
+        try {
+            waiter.resolve(Array.from(normalized));
+        } catch (_err) {
+        }
+    }
+}
+
+function waitForWorkspaceInvalidation(channels, timeoutMs = 5000) {
+    const normalized = new Set((channels || []).map((item) => String(item || "").trim()).filter(Boolean));
+    if (!normalized.size) {
+        return Promise.resolve([]);
+    }
+    return new Promise((resolve, reject) => {
+        const waiter = {
+            channels: normalized,
+            resolve,
+            timeoutId: 0,
+        };
+        waiter.timeoutId = window.setTimeout(() => {
+            const index = workspaceInvalidationWaiters.indexOf(waiter);
+            if (index >= 0) {
+                workspaceInvalidationWaiters.splice(index, 1);
+            }
+            reject(new Error("Timed out waiting for workspace update."));
+        }, Math.max(1, Number(timeoutMs) || 1));
+        workspaceInvalidationWaiters.push(waiter);
+    });
+}
+
+async function handleWorkspaceInvalidation(channels) {
+    const requested = new Set((channels || []).map((item) => String(item || "").trim()).filter(Boolean));
+    if (!requested.size) {
+        return;
+    }
+
+    const tasks = [];
+    const needsHostRefresh = requested.has("hosts");
+    const needsServiceRefresh = requested.has("services");
+    const needsHostDetailRefresh = workspaceState.selectedHostId && (needsHostRefresh || needsServiceRefresh || requested.has("graph"));
+
+    if (requested.has("overview")) {
+        tasks.push(loadWorkspaceOverview());
+    }
+    if (needsHostRefresh) {
+        tasks.push(loadWorkspaceHosts());
+    } else if (needsServiceRefresh) {
+        tasks.push(loadWorkspaceServices());
+    }
+    if (requested.has("processes")) {
+        tasks.push(loadProcesses());
+    }
+    if (requested.has("jobs")) {
+        tasks.push(loadJobs());
+    }
+    if (requested.has("approvals")) {
+        tasks.push(loadApprovals());
+    }
+    if (requested.has("decisions")) {
+        tasks.push(loadDecisionHistory());
+    }
+    if (requested.has("scan_history")) {
+        tasks.push(loadScanHistory());
+    }
+    if (requested.has("tools") && workspaceState.toolsHydrated) {
+        tasks.push(loadWorkspaceTools({force: true}));
+    }
+    if (requested.has("graph")) {
+        tasks.push(graphLoadSnapshot({background: true}));
+    }
+    if (needsHostDetailRefresh) {
+        tasks.push(loadHostDetail(workspaceState.selectedHostId));
+    }
+    if (!tasks.length) {
+        return;
+    }
+    await Promise.all(tasks.map((task) => Promise.resolve(task).catch(() => {})));
+}
+
+function queueWorkspaceInvalidation(channels) {
+    (channels || []).forEach((channel) => {
+        const normalized = String(channel || "").trim();
+        if (normalized) {
+            workspaceInvalidateState.pendingChannels.add(normalized);
+        }
+    });
+    if (workspaceInvalidateState.timer || workspaceInvalidateState.running) {
+        return;
+    }
+    workspaceInvalidateState.timer = window.setTimeout(async () => {
+        workspaceInvalidateState.timer = null;
+        if (workspaceInvalidateState.running) {
+            return;
+        }
+        workspaceInvalidateState.running = true;
+        try {
+            while (workspaceInvalidateState.pendingChannels.size) {
+                const batch = Array.from(workspaceInvalidateState.pendingChannels);
+                workspaceInvalidateState.pendingChannels.clear();
+                await handleWorkspaceInvalidation(batch);
+            }
+        } finally {
+            workspaceInvalidateState.running = false;
+        }
+    }, 60);
+}
+
 function connectSnapshotWebSocket() {
     const socket = new WebSocket(wsUrl("/ws/snapshot"));
     socket.onopen = () => setLiveChip("Live", false);
     socket.onmessage = (event) => {
         try {
-            const snapshot = JSON.parse(event.data);
-            renderSnapshot(snapshot);
+            const payload = JSON.parse(event.data);
+            if (payload && payload.type === "invalidate") {
+                notifyWorkspaceInvalidationWaiters(payload.channels || []);
+                queueWorkspaceInvalidation(payload.channels || []);
+                return;
+            }
+            if (payload && payload.type === "heartbeat") {
+                return;
+            }
+            renderSnapshot(payload);
         } catch (_err) {
             setLiveChip("Decode Error", true);
         }

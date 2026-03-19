@@ -1175,7 +1175,7 @@ button:hover {
 
 .graph-detail-panel.is-floating {
     position: absolute;
-    width: min(430px, calc(100% - 1rem));
+    width: min(520px, calc(100% - 1rem));
     max-height: calc(var(--graph-workspace-height) - 18px);
     overflow: auto;
     background: linear-gradient(180deg, rgba(27, 9, 42, 1) 0%, rgba(17, 3, 27, 1) 100%);
@@ -1212,7 +1212,7 @@ button:hover {
     align-items: center;
     flex-wrap: wrap;
     justify-content: flex-end;
-    gap: 0.45rem;
+    gap: 0.35rem;
     margin-left: auto;
 }
 
