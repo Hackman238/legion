@@ -106,11 +106,25 @@ def build_eyewitness_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     env = dict(base_env or os.environ)
     # Force stdlib HTTPS clients to skip certificate validation.
     env["PYTHONHTTPSVERIFY"] = "0"
+    env.setdefault("REQUESTS_CA_BUNDLE", "")
+    env.setdefault("CURL_CA_BUNDLE", "")
+    env.setdefault("WDM_SSL_VERIFY", "0")
     # Browser fallback paths run in headless/offline environments where accessibility
     # and desktop-bus integrations are often unavailable and noisy.
     env.setdefault("NO_AT_BRIDGE", "1")
     env.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=/dev/null")
     return env
+
+
+def _browser_tls_bypass_flags() -> List[str]:
+    return [
+        "--ignore-certificate-errors",
+        "--ignore-ssl-errors=yes",
+        "--allow-insecure-localhost",
+        "--allow-running-insecure-content",
+        "--disable-web-security",
+        "--test-type",
+    ]
 
 
 def find_eyewitness_screenshot(output_dir: str) -> Optional[str]:
@@ -314,12 +328,9 @@ def _run_browser_cli_fallback_capture(
                 "--disable-breakpad",
                 "--disable-component-update",
                 "--disable-dev-shm-usage",
-                "--disable-features=MediaRouter,OptimizationHints,Translate",
+                "--disable-features=HttpsUpgrades,MediaRouter,OptimizationHints,Translate",
                 "--disable-renderer-backgrounding",
                 "--hide-scrollbars",
-                "--ignore-certificate-errors",
-                "--allow-insecure-localhost",
-                "--allow-running-insecure-content",
                 "--metrics-recording-only",
                 "--no-default-browser-check",
                 "--no-first-run",
@@ -331,6 +342,7 @@ def _run_browser_cli_fallback_capture(
                 f"--virtual-time-budget={max(3000, min(effective_timeout * 1000, 15000))}",
                 f"--user-data-dir={profile_dir}",
             ]
+            command.extend(_browser_tls_bypass_flags())
 
             if use_explicit_path:
                 command.append(f"--screenshot={screenshot_path}")
@@ -460,6 +472,23 @@ def _run_selenium_chromium_fallback_capture(
         "delay_s=max(0,int(sys.argv[3]))\n"
         "timeout_s=max(5,int(sys.argv[4]))\n"
         "os.makedirs(os.path.dirname(screenshot), exist_ok=True)\n"
+        "def bypass_tls_warning(driver):\n"
+        "  ids=('details-button','proceed-link','advancedButton','exceptionDialogButton','acceptRiskButton')\n"
+        "  for _ in range(8):\n"
+        "    try:\n"
+        "      clicked=driver.execute_script(\"var ids=arguments[0]; for (var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]); if(el){el.click(); return true;}} return false;\", ids)\n"
+        "    except Exception:\n"
+        "      clicked=False\n"
+        "    try:\n"
+        "      title=(driver.title or '').lower()\n"
+        "      current=(driver.current_url or '').lower()\n"
+        "    except Exception:\n"
+        "      title=''\n"
+        "      current=''\n"
+        "    blocking=('privacy error' in title) or ('warning: potential security risk ahead' in title) or current.startswith('chrome-error://') or current.startswith('about:certerror')\n"
+        "    if not blocking and not clicked:\n"
+        "      return\n"
+        "    time.sleep(0.45)\n"
         "driver=None\n"
         "last_error=None\n"
         "for headless_flag in ('--headless=new', '--headless'):\n"
@@ -468,15 +497,20 @@ def _run_selenium_chromium_fallback_capture(
         "  options.add_argument('--disable-gpu')\n"
         "  options.add_argument('--disable-dev-shm-usage')\n"
         "  options.add_argument('--hide-scrollbars')\n"
-        "  options.add_argument('--ignore-certificate-errors')\n"
-        "  options.add_argument('--allow-insecure-localhost')\n"
-        "  options.add_argument('--allow-running-insecure-content')\n"
+        "  options.add_argument('--disable-features=HttpsUpgrades,MediaRouter,OptimizationHints,Translate')\n"
         "  options.add_argument('--no-default-browser-check')\n"
         "  options.add_argument('--no-first-run')\n"
         "  options.add_argument('--no-sandbox')\n"
         "  options.add_argument('--disable-setuid-sandbox')\n"
         "  options.add_argument('--window-size=1366,768')\n"
+        "  options.add_argument('--disable-web-security')\n"
+        "  options.add_argument('--test-type')\n"
+        "  options.add_argument('--ignore-certificate-errors')\n"
+        "  options.add_argument('--ignore-ssl-errors=yes')\n"
+        "  options.add_argument('--allow-insecure-localhost')\n"
+        "  options.add_argument('--allow-running-insecure-content')\n"
         "  options.set_capability('acceptInsecureCerts', True)\n"
+        "  options.set_capability('acceptSslCerts', True)\n"
         "  try:\n"
         "    try:\n"
         "      service=ChromeService(log_output=os.devnull)\n"
@@ -486,6 +520,7 @@ def _run_selenium_chromium_fallback_capture(
         "    driver.set_page_load_timeout(timeout_s)\n"
         "    driver.set_window_size(1366,768)\n"
         "    driver.get(url)\n"
+        "    bypass_tls_warning(driver)\n"
         "    if delay_s>0:\n"
         "      time.sleep(min(delay_s,30))\n"
         "    saved=bool(driver.save_screenshot(screenshot))\n"
@@ -610,12 +645,33 @@ def _run_selenium_fallback_capture(
         "delay_s=max(0,int(sys.argv[3]))\n"
         "timeout_s=max(5,int(sys.argv[4]))\n"
         "os.makedirs(os.path.dirname(screenshot), exist_ok=True)\n"
+        "def bypass_tls_warning(driver):\n"
+        "  ids=('advancedButton','exceptionDialogButton','proceed-link','details-button','acceptRiskButton')\n"
+        "  for _ in range(8):\n"
+        "    try:\n"
+        "      clicked=driver.execute_script(\"var ids=arguments[0]; for (var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]); if(el){el.click(); return true;}} return false;\", ids)\n"
+        "    except Exception:\n"
+        "      clicked=False\n"
+        "    try:\n"
+        "      title=(driver.title or '').lower()\n"
+        "      current=(driver.current_url or '').lower()\n"
+        "    except Exception:\n"
+        "      title=''\n"
+        "      current=''\n"
+        "    blocking=('warning: potential security risk ahead' in title) or ('secure connection failed' in title) or current.startswith('about:certerror')\n"
+        "    if not blocking and not clicked:\n"
+        "      return\n"
+        "    time.sleep(0.45)\n"
         "options=FirefoxOptions()\n"
         "options.add_argument('--headless')\n"
         "options.accept_insecure_certs=True\n"
         "options.set_preference('security.enterprise_roots.enabled', True)\n"
         "options.set_preference('network.stricttransportsecurity.preloadlist', False)\n"
         "options.set_preference('security.cert_pinning.enforcement_level', 0)\n"
+        "options.set_preference('browser.xul.error_pages.expert_bad_cert', True)\n"
+        "options.set_preference('dom.security.https_only_mode', False)\n"
+        "options.set_preference('security.mixed_content.block_active_content', False)\n"
+        "options.set_preference('security.mixed_content.block_display_content', False)\n"
         "driver=None\n"
         "try:\n"
         "  try:\n"
@@ -626,6 +682,7 @@ def _run_selenium_fallback_capture(
         "  driver.set_page_load_timeout(timeout_s)\n"
         "  driver.set_window_size(1366,768)\n"
         "  driver.get(url)\n"
+        "  bypass_tls_warning(driver)\n"
         "  if delay_s>0:\n"
         "    time.sleep(min(delay_s,30))\n"
         "  saved=bool(driver.save_screenshot(screenshot))\n"

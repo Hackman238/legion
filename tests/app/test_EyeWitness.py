@@ -6,6 +6,26 @@ from unittest.mock import patch
 
 
 class EyeWitnessHelpersTest(unittest.TestCase):
+    def test_build_env_disables_cert_validation_helpers(self):
+        from app.eyewitness import build_eyewitness_env
+
+        env = build_eyewitness_env({})
+        self.assertEqual("0", env.get("PYTHONHTTPSVERIFY"))
+        self.assertEqual("", env.get("REQUESTS_CA_BUNDLE"))
+        self.assertEqual("", env.get("CURL_CA_BUNDLE"))
+        self.assertEqual("0", env.get("WDM_SSL_VERIFY"))
+
+    def test_browser_tls_bypass_flags_cover_common_tls_warnings(self):
+        from app.eyewitness import _browser_tls_bypass_flags
+
+        flags = _browser_tls_bypass_flags()
+        self.assertIn("--ignore-certificate-errors", flags)
+        self.assertIn("--ignore-ssl-errors=yes", flags)
+        self.assertIn("--allow-insecure-localhost", flags)
+        self.assertIn("--allow-running-insecure-content", flags)
+        self.assertIn("--disable-web-security", flags)
+        self.assertIn("--test-type", flags)
+
     def test_build_command_wraps_text_script_without_shebang(self):
         from app.eyewitness import build_eyewitness_command
 
@@ -258,6 +278,99 @@ class EyeWitnessHelpersTest(unittest.TestCase):
         self.assertTrue(mock_chromium_fallback.called)
         self.assertTrue(mock_browser_fallback.called)
         self.assertFalse(mock_selenium_fallback.called)
+
+    @patch("app.eyewitness._resolve_browser_screenshot_executables")
+    @patch("app.eyewitness._resolve_browser_screenshot_path")
+    @patch("app.eyewitness.subprocess.run")
+    def test_browser_cli_fallback_includes_tls_bypass_flags(
+            self,
+            mock_run,
+            mock_resolve_path,
+            mock_resolve_execs,
+    ):
+        from app.eyewitness import _run_browser_cli_fallback_capture
+
+        mock_resolve_execs.return_value = ["/usr/bin/chromium"]
+        mock_resolve_path.return_value = None
+        commands = []
+
+        def _run_side_effect(command, **_kwargs):
+            commands.append(list(command))
+            return SimpleNamespace(returncode=1, stdout="", stderr="privacy error")
+
+        mock_run.side_effect = _run_side_effect
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = _run_browser_cli_fallback_capture(
+                url="https://127.0.0.1:8443",
+                output_parent_dir=temp_dir,
+                timeout=10,
+            )
+
+        self.assertFalse(result.get("ok"))
+        self.assertTrue(commands)
+        first = commands[0]
+        self.assertIn("--ignore-certificate-errors", first)
+        self.assertIn("--ignore-ssl-errors=yes", first)
+        self.assertIn("--allow-running-insecure-content", first)
+        self.assertIn("--disable-web-security", first)
+        self.assertIn("--test-type", first)
+
+    @patch("app.eyewitness.subprocess.run")
+    def test_selenium_chromium_fallback_script_tries_to_bypass_tls_interstitials(self, mock_run):
+        from app.eyewitness import _run_selenium_chromium_fallback_capture
+
+        captured = {}
+
+        def _run_side_effect(command, **_kwargs):
+            captured["command"] = list(command)
+            return SimpleNamespace(returncode=1, stdout="", stderr="privacy error")
+
+        mock_run.side_effect = _run_side_effect
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = _run_selenium_chromium_fallback_capture(
+                url="https://127.0.0.1:8443",
+                output_parent_dir=temp_dir,
+                delay=1,
+                timeout=10,
+            )
+
+        self.assertFalse(result.get("ok"))
+        script = captured["command"][2]
+        self.assertIn("acceptInsecureCerts", script)
+        self.assertIn("--ignore-ssl-errors=yes", script)
+        self.assertIn("--disable-web-security", script)
+        self.assertIn("details-button", script)
+        self.assertIn("proceed-link", script)
+
+    @patch("app.eyewitness.subprocess.run")
+    def test_selenium_firefox_fallback_script_tries_to_bypass_tls_interstitials(self, mock_run):
+        from app.eyewitness import _run_selenium_fallback_capture
+
+        captured = {}
+
+        def _run_side_effect(command, **_kwargs):
+            captured["command"] = list(command)
+            return SimpleNamespace(returncode=1, stdout="", stderr="cert error")
+
+        mock_run.side_effect = _run_side_effect
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = _run_selenium_fallback_capture(
+                url="https://127.0.0.1:8443",
+                output_parent_dir=temp_dir,
+                delay=1,
+                timeout=10,
+            )
+
+        self.assertFalse(result.get("ok"))
+        script = captured["command"][2]
+        self.assertIn("accept_insecure_certs=True", script)
+        self.assertIn("browser.xul.error_pages.expert_bad_cert", script)
+        self.assertIn("security.mixed_content.block_active_content", script)
+        self.assertIn("advancedButton", script)
+        self.assertIn("exceptionDialogButton", script)
 
     @patch("app.eyewitness._resolve_browser_screenshot_executables")
     @patch("app.eyewitness.subprocess.run")

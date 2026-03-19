@@ -995,12 +995,24 @@ class WebRuntime:
         ).strip()
         label = str(node.get("label", "") or os.path.basename(ref) or node_id)
         filename = str(props.get("filename", "") or os.path.basename(ref) or f"{node_type or 'graph-content'}-{node_id}")
+        resolved_ref = ref
+        if ref.startswith("/api/screenshots/"):
+            try:
+                resolved_ref = self.get_screenshot_file(os.path.basename(ref))
+            except Exception:
+                resolved_ref = ref
+        elif node_type == "screenshot" and filename.lower().endswith(".png") and not self._is_project_artifact_path(project, ref):
+            try:
+                resolved_ref = self.get_screenshot_file(filename)
+            except Exception:
+                resolved_ref = ref
         base = {
             "node_id": node_id,
             "node_type": node_type,
             "label": label,
             "filename": filename,
             "ref": ref,
+            "path": "",
             "kind": "unavailable",
             "available": False,
             "preview_text": "",
@@ -1026,13 +1038,14 @@ class WebRuntime:
                 "message": "" if output_text else "No captured process output is available.",
             }
 
-        if not ref or not self._is_project_artifact_path(project, ref):
+        if not resolved_ref or not self._is_project_artifact_path(project, resolved_ref):
             return base
 
-        mimetype = mimetypes.guess_type(ref)[0] or "application/octet-stream"
-        if node_type == "screenshot" or ref.lower().endswith(".png"):
+        mimetype = mimetypes.guess_type(resolved_ref)[0] or "application/octet-stream"
+        if node_type == "screenshot" or resolved_ref.lower().endswith(".png"):
             return {
                 **base,
+                "path": resolved_ref,
                 "kind": "image",
                 "available": True,
                 "preview_url": f"/api/graph/content/{node_id}",
@@ -1040,18 +1053,20 @@ class WebRuntime:
                 "message": "",
             }
 
-        if self._binary_file_signature(ref):
+        if self._binary_file_signature(resolved_ref):
             return {
                 **base,
+                "path": resolved_ref,
                 "kind": "binary",
                 "available": True,
                 "download_url": f"/api/graph/content/{node_id}?download=1",
                 "message": f"Binary artifact ({mimetype}) is available for download.",
             }
 
-        preview_text = self._read_text_file_head(ref, max_chars=max_chars)
+        preview_text = self._read_text_file_head(resolved_ref, max_chars=max_chars)
         return {
             **base,
+            "path": resolved_ref,
             "kind": "text",
             "available": bool(preview_text),
             "preview_text": preview_text,
@@ -1115,6 +1130,7 @@ class WebRuntime:
                 raise KeyError(f"Unknown graph node id: {node_id}")
             entry = self._resolve_graph_content_entry_locked(project, node, max_chars=max_chars)
             ref = str(entry.get("ref", "") or "").strip()
+            resolved_path = str(entry.get("path", "") or "").strip()
             if str(entry.get("kind", "") or "") == "text" and ref.startswith("process_output:"):
                 return {
                     "kind": "text",
@@ -1123,12 +1139,16 @@ class WebRuntime:
                     "mimetype": "text/plain; charset=utf-8",
                     "download": bool(download),
                 }
-            if str(entry.get("kind", "") or "") in {"image", "binary", "text"} and ref and self._is_project_artifact_path(project, ref):
+            if (
+                    str(entry.get("kind", "") or "") in {"image", "binary", "text"}
+                    and resolved_path
+                    and self._is_project_artifact_path(project, resolved_path)
+            ):
                 return {
                     "kind": str(entry.get("kind", "") or "binary"),
-                    "path": ref,
-                    "filename": str(entry.get("filename", "") or os.path.basename(ref) or f"{node_id}.bin"),
-                    "mimetype": mimetypes.guess_type(ref)[0] or (
+                    "path": resolved_path,
+                    "filename": str(entry.get("filename", "") or os.path.basename(resolved_path) or f"{node_id}.bin"),
+                    "mimetype": mimetypes.guess_type(resolved_path)[0] or (
                         "text/plain; charset=utf-8" if str(entry.get("kind", "") or "") == "text" else "application/octet-stream"
                     ),
                     "download": bool(download),
@@ -2211,6 +2231,279 @@ class WebRuntime:
                 "filename": resolved_filename,
                 "deleted_files": int(deleted_files),
                 "deleted_paths": deleted_paths,
+            }
+
+    @staticmethod
+    def _host_target_item_matches_port(item: Any, port: str, protocol: str) -> bool:
+        if not isinstance(item, dict):
+            return False
+        item_port = str(item.get("port", "") or "").strip()
+        item_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
+        return item_port == str(port or "").strip() and item_protocol == str(protocol or "tcp").strip().lower()
+
+    def _delete_project_artifact_refs(self, project, *, screenshots: List[Dict[str, Any]], artifacts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        screenshot_dir = os.path.join(project.properties.outputFolder, "screenshots")
+        candidate_paths: List[str] = []
+        for item in list(screenshots or []):
+            if not isinstance(item, dict):
+                continue
+            item_ref = str(item.get("artifact_ref", "") or item.get("ref", "") or item.get("url", "") or "").strip()
+            item_name = os.path.basename(str(item.get("filename", "") or item_ref).strip())
+            if item_ref.startswith("/api/screenshots/"):
+                api_name = os.path.basename(item_ref)
+                if api_name:
+                    candidate_paths.append(os.path.join(screenshot_dir, api_name))
+            elif item_ref and self._is_project_artifact_path(project, item_ref):
+                candidate_paths.append(item_ref)
+            if item_name:
+                candidate_paths.append(os.path.join(screenshot_dir, item_name))
+
+        for item in list(artifacts or []):
+            if not isinstance(item, dict):
+                continue
+            item_ref = str(item.get("ref", "") or item.get("artifact_ref", "") or "").strip()
+            if item_ref.startswith("/api/screenshots/"):
+                api_name = os.path.basename(item_ref)
+                if api_name:
+                    candidate_paths.append(os.path.join(screenshot_dir, api_name))
+            elif item_ref and self._is_project_artifact_path(project, item_ref):
+                candidate_paths.append(item_ref)
+
+        deleted_paths: List[str] = []
+        seen_paths = set()
+        for path in candidate_paths:
+            normalized = os.path.abspath(str(path or "").strip())
+            if not normalized or normalized in seen_paths:
+                continue
+            seen_paths.add(normalized)
+            if not os.path.isfile(normalized):
+                continue
+            if not self._is_project_artifact_path(project, normalized):
+                continue
+            try:
+                os.remove(normalized)
+                deleted_paths.append(normalized)
+            except Exception:
+                continue
+        return {
+            "deleted_files": len(deleted_paths),
+            "deleted_paths": deleted_paths,
+        }
+
+    def _prune_target_state_for_port(self, *, project, host_id: int, host_ip: str, hostname: str, port: str, protocol: str) -> Dict[str, Any]:
+        target_state = get_target_state(project.database, int(host_id or 0)) or {}
+        filtered_service_inventory = [
+            dict(item) for item in list(target_state.get("service_inventory", []) or [])
+            if not self._host_target_item_matches_port(item, port, protocol)
+        ]
+        filtered_attempted_actions = [
+            dict(item) for item in list(target_state.get("attempted_actions", []) or [])
+            if not self._host_target_item_matches_port(item, port, protocol)
+        ]
+        filtered_screenshots: List[Dict[str, Any]] = []
+        removed_screenshots: List[Dict[str, Any]] = []
+        for item in list(target_state.get("screenshots", []) or []):
+            if self._host_target_item_matches_port(item, port, protocol):
+                removed_screenshots.append(dict(item))
+                continue
+            if isinstance(item, dict):
+                filtered_screenshots.append(dict(item))
+        filtered_artifacts: List[Dict[str, Any]] = []
+        removed_artifacts: List[Dict[str, Any]] = []
+        for item in list(target_state.get("artifacts", []) or []):
+            if self._host_target_item_matches_port(item, port, protocol):
+                removed_artifacts.append(dict(item))
+                continue
+            if isinstance(item, dict):
+                filtered_artifacts.append(dict(item))
+        preserved_urls = [
+            dict(item) for item in list(target_state.get("urls", []) or [])
+            if not self._host_target_item_matches_port(item, port, protocol)
+        ]
+        rebuilt_urls = build_target_urls(str(host_ip or ""), str(hostname or ""), filtered_service_inventory)
+
+        updated_state = dict(target_state)
+        updated_state["service_inventory"] = filtered_service_inventory
+        updated_state["attempted_actions"] = filtered_attempted_actions
+        updated_state["screenshots"] = filtered_screenshots
+        updated_state["artifacts"] = filtered_artifacts
+        updated_state["urls"] = preserved_urls + rebuilt_urls
+        upsert_target_state(project.database, int(host_id or 0), updated_state, merge=False)
+        return {
+            "state": updated_state,
+            "removed_screenshots": removed_screenshots,
+            "removed_artifacts": removed_artifacts,
+        }
+
+    def delete_workspace_port(self, *, host_id: int, port: str, protocol: str = "tcp") -> Dict[str, Any]:
+        resolved_host_id = int(host_id or 0)
+        resolved_port = str(port or "").strip()
+        resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+        if resolved_host_id <= 0 or not resolved_port:
+            raise ValueError("host_id and port are required.")
+
+        with self._lock:
+            project = self._require_active_project()
+            host = self._resolve_host(resolved_host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+            repo_container = project.repositoryContainer
+            port_repo = repo_container.portRepository
+            service_repo = getattr(repo_container, "serviceRepository", None)
+            port_obj = port_repo.getPortByHostIdAndPort(host.id, resolved_port, resolved_protocol)
+            if port_obj is None:
+                raise KeyError(f"Unknown port {resolved_port}/{resolved_protocol} for host {resolved_host_id}")
+
+            host_ip = str(getattr(host, "ip", "") or "").strip()
+            hostname = str(getattr(host, "hostname", "") or "").strip()
+            service_id = str(getattr(port_obj, "serviceId", "") or "").strip()
+            service_name = ""
+            if service_id and service_repo is not None:
+                try:
+                    service_obj = service_repo.getServiceById(service_id)
+                except Exception:
+                    service_obj = None
+                service_name = str(getattr(service_obj, "name", "") or "").strip()
+
+            port_repo.deletePortByHostIdAndPort(host.id, resolved_port, resolved_protocol)
+
+            session = project.database.session()
+            try:
+                if service_id:
+                    session.execute(text(
+                        "DELETE FROM serviceObj "
+                        "WHERE CAST(id AS TEXT) = :service_id "
+                        "AND CAST(id AS TEXT) NOT IN ("
+                        "SELECT DISTINCT CAST(serviceId AS TEXT) FROM portObj WHERE COALESCE(serviceId, '') <> ''"
+                        ")"
+                    ), {"service_id": service_id})
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+            prune = self._prune_target_state_for_port(
+                project=project,
+                host_id=resolved_host_id,
+                host_ip=host_ip,
+                hostname=hostname,
+                port=resolved_port,
+                protocol=resolved_protocol,
+            )
+            deleted_file_info = self._delete_project_artifact_refs(
+                project,
+                screenshots=list(prune.get("removed_screenshots", []) or []),
+                artifacts=list(prune.get("removed_artifacts", []) or []),
+            )
+            rebuild_evidence_graph(project.database, host_id=resolved_host_id)
+            return {
+                "deleted": True,
+                "kind": "port",
+                "host_id": resolved_host_id,
+                "host_ip": host_ip,
+                "hostname": hostname,
+                "port": resolved_port,
+                "protocol": resolved_protocol,
+                "service": service_name,
+                **deleted_file_info,
+            }
+
+    def delete_workspace_service(
+            self,
+            *,
+            host_id: int,
+            port: str,
+            protocol: str = "tcp",
+            service: str = "",
+    ) -> Dict[str, Any]:
+        resolved_host_id = int(host_id or 0)
+        resolved_port = str(port or "").strip()
+        resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+        requested_service = str(service or "").strip().rstrip("?").lower()
+        if resolved_host_id <= 0 or not resolved_port:
+            raise ValueError("host_id and port are required.")
+
+        with self._lock:
+            project = self._require_active_project()
+            host = self._resolve_host(resolved_host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+            host_ip = str(getattr(host, "ip", "") or "").strip()
+            hostname = str(getattr(host, "hostname", "") or "").strip()
+
+            session = project.database.session()
+            try:
+                row = session.execute(text(
+                    "SELECT p.id, COALESCE(CAST(p.serviceId AS TEXT), ''), COALESCE(s.name, '') "
+                    "FROM portObj AS p "
+                    "LEFT JOIN serviceObj AS s ON s.id = p.serviceId "
+                    "WHERE p.hostId = :host_id "
+                    "AND COALESCE(p.portId, '') = :port "
+                    "AND LOWER(COALESCE(p.protocol, 'tcp')) = LOWER(:protocol) "
+                    "ORDER BY p.id DESC LIMIT 1"
+                ), {
+                    "host_id": str(getattr(host, "id", resolved_host_id) or resolved_host_id),
+                    "port": resolved_port,
+                    "protocol": resolved_protocol,
+                }).fetchone()
+                if not row:
+                    raise KeyError(f"Unknown port {resolved_port}/{resolved_protocol} for host {resolved_host_id}")
+
+                port_row_id = int(row[0] or 0)
+                service_id = str(row[1] or "").strip()
+                current_service = str(row[2] or "").strip()
+                if not service_id and not current_service:
+                    raise KeyError(f"No service is associated with {resolved_port}/{resolved_protocol} for host {resolved_host_id}")
+                current_service_normalized = current_service.rstrip("?").lower()
+                if requested_service and current_service_normalized and requested_service != current_service_normalized:
+                    raise ValueError(
+                        f"Service mismatch for {resolved_port}/{resolved_protocol}: expected {requested_service}, found {current_service_normalized}"
+                    )
+
+                session.execute(text(
+                    "UPDATE portObj SET serviceId = NULL WHERE id = :port_row_id"
+                ), {"port_row_id": port_row_id})
+                if service_id:
+                    session.execute(text(
+                        "DELETE FROM serviceObj "
+                        "WHERE CAST(id AS TEXT) = :service_id "
+                        "AND CAST(id AS TEXT) NOT IN ("
+                        "SELECT DISTINCT CAST(serviceId AS TEXT) FROM portObj WHERE COALESCE(serviceId, '') <> ''"
+                        ")"
+                    ), {"service_id": service_id})
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+            prune = self._prune_target_state_for_port(
+                project=project,
+                host_id=resolved_host_id,
+                host_ip=host_ip,
+                hostname=hostname,
+                port=resolved_port,
+                protocol=resolved_protocol,
+            )
+            deleted_file_info = self._delete_project_artifact_refs(
+                project,
+                screenshots=list(prune.get("removed_screenshots", []) or []),
+                artifacts=list(prune.get("removed_artifacts", []) or []),
+            )
+            rebuild_evidence_graph(project.database, host_id=resolved_host_id)
+            return {
+                "deleted": True,
+                "kind": "service",
+                "host_id": resolved_host_id,
+                "host_ip": host_ip,
+                "hostname": hostname,
+                "port": resolved_port,
+                "protocol": resolved_protocol,
+                "service": current_service,
+                **deleted_file_info,
             }
 
     def _find_active_job(self, *, job_type: str, host_id: Optional[int] = None) -> Optional[Dict[str, Any]]:

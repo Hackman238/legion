@@ -1553,6 +1553,45 @@ body.graph-workspace-resizing * {
     margin-top: 0.2rem;
 }
 
+.graph-node-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.graph-action-menu {
+    position: relative;
+}
+
+.graph-action-menu.is-open {
+    z-index: 6;
+}
+
+.graph-action-menu.is-open .ribbon-submenu {
+    display: grid;
+    z-index: 12;
+}
+
+.graph-action-menu .panel-submenu {
+    left: 0;
+    right: auto;
+    min-width: 220px;
+    max-width: min(320px, 72vw);
+    max-height: 260px;
+    overflow: auto;
+}
+
+.graph-action-menu .ribbon-submenu-item {
+    text-align: left;
+}
+
+.graph-action-menu-status {
+    padding: 0.4rem 0.45rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
 .table-wrap {
     margin-top: 0.75rem;
     max-height: 420px;

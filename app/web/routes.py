@@ -1079,6 +1079,45 @@ def workspace_graph_screenshot_delete():
         return _json_error(str(exc), 500)
 
 
+@web_bp.post("/api/workspace/ports/delete")
+def workspace_port_delete():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = runtime.delete_workspace_port(
+            host_id=int(payload.get("host_id", 0) or 0),
+            port=str(payload.get("port", "") or ""),
+            protocol=str(payload.get("protocol", "tcp") or "tcp"),
+        )
+        return jsonify({"status": "ok", **result})
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/workspace/services/delete")
+def workspace_service_delete():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = runtime.delete_workspace_service(
+            host_id=int(payload.get("host_id", 0) or 0),
+            port=str(payload.get("port", "") or ""),
+            protocol=str(payload.get("protocol", "tcp") or "tcp"),
+            service=str(payload.get("service", "") or ""),
+        )
+        return jsonify({"status": "ok", **result})
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
 @web_bp.delete("/api/workspace/hosts/<int:host_id>")
 def workspace_host_remove(host_id):
     runtime = current_app.extensions["legion_runtime"]

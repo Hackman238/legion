@@ -588,6 +588,38 @@ class DummyRuntime:
             "deleted_paths": [f"/tmp/demo-tool-output/screenshots/{filename or 'shot.png'}"],
         }
 
+    def delete_workspace_port(self, *, host_id, port, protocol="tcp"):
+        if int(host_id) != 11:
+            raise KeyError(host_id)
+        return {
+            "deleted": True,
+            "kind": "port",
+            "host_id": 11,
+            "host_ip": "10.0.0.5",
+            "hostname": "dc01.local",
+            "port": str(port),
+            "protocol": str(protocol or "tcp"),
+            "service": "smb",
+            "deleted_files": 1,
+            "deleted_paths": ["/tmp/demo-tool-output/screenshots/10.0.0.5-445-screenshot.png"],
+        }
+
+    def delete_workspace_service(self, *, host_id, port, protocol="tcp", service=""):
+        if int(host_id) != 11:
+            raise KeyError(host_id)
+        return {
+            "deleted": True,
+            "kind": "service",
+            "host_id": 11,
+            "host_ip": "10.0.0.5",
+            "hostname": "dc01.local",
+            "port": str(port),
+            "protocol": str(protocol or "tcp"),
+            "service": str(service or "smb"),
+            "deleted_files": 1,
+            "deleted_paths": ["/tmp/demo-tool-output/screenshots/10.0.0.5-445-screenshot.png"],
+        }
+
     def delete_host_workspace(self, host_id):
         if int(host_id) != 11:
             raise KeyError(host_id)
@@ -1438,6 +1470,8 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("graph-detail-panel", body)
         self.assertIn("graph-detail-floating-layer", body)
         self.assertIn("graph-host-actions-block", body)
+        self.assertIn("graph-port-actions-block", body)
+        self.assertIn("graph-service-actions-block", body)
         self.assertIn("graph-subnet-actions-block", body)
         self.assertIn("graph-screenshot-actions-block", body)
         self.assertIn("graph-detail-dock-toggle-button", body)
@@ -2021,6 +2055,22 @@ class WebAppTest(unittest.TestCase):
         )
         self.assertEqual(200, graph_screenshot_delete.status_code)
         self.assertTrue(graph_screenshot_delete.json["deleted"])
+
+        graph_port_delete = self.client.post(
+            "/api/workspace/ports/delete",
+            json={"host_id": 11, "port": "445", "protocol": "tcp"},
+        )
+        self.assertEqual(200, graph_port_delete.status_code)
+        self.assertTrue(graph_port_delete.json["deleted"])
+        self.assertEqual("port", graph_port_delete.json["kind"])
+
+        graph_service_delete = self.client.post(
+            "/api/workspace/services/delete",
+            json={"host_id": 11, "port": "445", "protocol": "tcp", "service": "smb"},
+        )
+        self.assertEqual(200, graph_service_delete.status_code)
+        self.assertTrue(graph_service_delete.json["deleted"])
+        self.assertEqual("service", graph_service_delete.json["kind"])
 
         host_dig = self.client.post("/api/workspace/hosts/11/dig-deeper", json={})
         self.assertEqual(202, host_dig.status_code)

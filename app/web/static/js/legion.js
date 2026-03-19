@@ -45,6 +45,7 @@ const graphWorkspaceState = {
     selectedRef: "",
     selectedPayload: null,
     relatedContent: [],
+    toolMenuCache: {},
     contentRequestId: 0,
     annotations: [],
     drag: null,
@@ -410,6 +411,210 @@ function buildScreenshotActionButton(action, payload) {
     return button;
 }
 
+function graphHostRowById(hostId) {
+    const targetId = parseInt(hostId, 10);
+    if (!Number.isFinite(targetId) || targetId <= 0) {
+        return null;
+    }
+    return (workspaceState.hosts || []).find((host) => parseInt(host?.id, 10) === targetId) || null;
+}
+
+function graphConnectedServiceContextForPortNode(entity) {
+    const nodeId = String(entity?.node_id || "");
+    if (!nodeId) {
+        return {serviceName: "", serviceLabel: ""};
+    }
+    const edges = Array.isArray(graphWorkspaceState.data?.edges) ? graphWorkspaceState.data.edges : [];
+    const nodes = Array.isArray(graphWorkspaceState.data?.nodes) ? graphWorkspaceState.data.nodes : [];
+    const serviceEdge = edges.find((edge) => {
+        return (
+            String(edge?.from_node_id || "") === nodeId
+            && String(edge?.type || "").trim().toLowerCase() === "exposes"
+        );
+    });
+    if (!serviceEdge) {
+        return {serviceName: "", serviceLabel: ""};
+    }
+    const serviceNode = nodes.find((node) => String(node?.node_id || "") === String(serviceEdge.to_node_id || ""));
+    if (!serviceNode || String(serviceNode?.type || "").trim().toLowerCase() !== "service") {
+        return {serviceName: "", serviceLabel: ""};
+    }
+    const serviceName = String(graphPropertyValue(serviceNode, "service") || "").trim().replace(/\?+$/, "").toLowerCase();
+    const serviceLabel = String(serviceNode?.label || serviceName || "").trim();
+    return {serviceName, serviceLabel};
+}
+
+function graphToolLaunchContextForEntity(entity) {
+    if (!entity) {
+        return null;
+    }
+    const entityType = String(entity?.type || "").trim().toLowerCase();
+    if (!["port", "service"].includes(entityType)) {
+        return null;
+    }
+    const hostId = graphEntityHostId(entity);
+    const hostRow = graphHostRowById(hostId);
+    const hostIp = String(hostRow?.ip || graphPropertyValue(entity, "ip") || "").trim();
+    const port = String(graphPropertyValue(entity, "port") || "").trim();
+    const protocol = String(graphPropertyValue(entity, "protocol") || "tcp").trim().toLowerCase() || "tcp";
+    if (!hostId || !hostIp || !port) {
+        return null;
+    }
+    let serviceName = "";
+    let serviceLabel = "";
+    if (entityType === "service") {
+        serviceName = String(graphPropertyValue(entity, "service") || entity.label || "").trim().replace(/\?+$/, "").toLowerCase();
+        serviceLabel = String(entity.label || serviceName || "").trim();
+    } else {
+        const derived = graphConnectedServiceContextForPortNode(entity);
+        serviceName = derived.serviceName;
+        serviceLabel = derived.serviceLabel;
+    }
+    return {
+        entityType,
+        hostId,
+        hostIp,
+        hostname: String(hostRow?.hostname || "").trim(),
+        port,
+        protocol,
+        serviceName,
+        serviceLabel: serviceLabel || serviceName || "",
+    };
+}
+
+function closeGraphActionMenus() {
+    document.querySelectorAll(".graph-action-menu.is-open").forEach((menu) => {
+        menu.classList.remove("is-open");
+        const toggle = menu.querySelector(".panel-menu-button");
+        if (toggle) {
+            toggle.setAttribute("aria-expanded", "false");
+        }
+    });
+}
+
+async function graphGetApplicableTools(serviceName) {
+    const key = String(serviceName || "").trim().toLowerCase();
+    if (!key) {
+        return [];
+    }
+    if (Array.isArray(graphWorkspaceState.toolMenuCache[key])) {
+        return graphWorkspaceState.toolMenuCache[key];
+    }
+    const body = await fetchJson(`/api/workspace/tools?service=${encodeURIComponent(key)}&limit=500`);
+    const tools = Array.isArray(body?.tools) ? body.tools.filter((item) => Boolean(item?.runnable)) : [];
+    graphWorkspaceState.toolMenuCache[key] = tools;
+    return tools;
+}
+
+async function runGraphNodeToolAction(context, tool) {
+    if (!context || !tool?.tool_id) {
+        return;
+    }
+    try {
+        const body = await postJson("/api/workspace/tools/run", {
+            host_ip: context.hostIp,
+            port: context.port,
+            protocol: context.protocol,
+            tool_id: String(tool.tool_id || ""),
+        });
+        setWorkspaceStatus(`${tool.label || tool.tool_id} queued for ${context.hostIp}:${context.port}/${context.protocol} (job ${body?.job?.id || "?"})`);
+        await pollSnapshot();
+    } catch (err) {
+        setWorkspaceStatus(`Tool launch failed: ${err.message}`, true);
+    }
+}
+
+function buildGraphToolMenu(context) {
+    const menu = document.createElement("div");
+    menu.className = "panel-menu graph-action-menu";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "panel-menu-button";
+    toggle.title = "Launch Action";
+    toggle.setAttribute("aria-label", "Launch Action");
+    toggle.setAttribute("aria-haspopup", "menu");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.innerHTML = '<i class="fa-solid fa-bars" aria-hidden="true"></i>';
+    menu.appendChild(toggle);
+
+    const submenu = document.createElement("div");
+    submenu.className = "ribbon-submenu panel-submenu";
+    submenu.setAttribute("role", "menu");
+    submenu.setAttribute("aria-label", "Applicable actions");
+    menu.appendChild(submenu);
+
+    const serviceKey = String(context?.serviceName || "").trim();
+    if (!serviceKey) {
+        toggle.disabled = true;
+        toggle.title = "No applicable service-specific actions";
+        toggle.setAttribute("aria-label", "No applicable service-specific actions");
+        const empty = document.createElement("div");
+        empty.className = "graph-action-menu-status";
+        empty.textContent = "No applicable service-specific actions.";
+        submenu.appendChild(empty);
+        return menu;
+    }
+
+    let loaded = false;
+    toggle.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const willOpen = !menu.classList.contains("is-open");
+        closeGraphActionMenus();
+        if (!willOpen) {
+            return;
+        }
+        menu.classList.add("is-open");
+        toggle.setAttribute("aria-expanded", "true");
+        if (loaded) {
+            return;
+        }
+        submenu.innerHTML = "";
+        const loading = document.createElement("div");
+        loading.className = "graph-action-menu-status";
+        loading.textContent = "Loading actions...";
+        submenu.appendChild(loading);
+        try {
+            const tools = await graphGetApplicableTools(serviceKey);
+            submenu.innerHTML = "";
+            if (!tools.length) {
+                const empty = document.createElement("div");
+                empty.className = "graph-action-menu-status";
+                empty.textContent = "No applicable actions.";
+                submenu.appendChild(empty);
+            } else {
+                tools.forEach((tool) => {
+                    const item = document.createElement("button");
+                    item.type = "button";
+                    item.className = "ribbon-submenu-item";
+                    item.textContent = String(tool.label || tool.tool_id || "tool");
+                    item.title = String(tool.command_template || tool.tool_id || "");
+                    item.addEventListener("click", async (clickEvent) => {
+                        clickEvent.preventDefault();
+                        clickEvent.stopPropagation();
+                        closeGraphActionMenus();
+                        await runGraphNodeToolAction(context, tool);
+                    });
+                    submenu.appendChild(item);
+                });
+            }
+            loaded = true;
+        } catch (err) {
+            submenu.innerHTML = "";
+            const failed = document.createElement("div");
+            failed.className = "graph-action-menu-status";
+            failed.textContent = `Failed to load actions: ${err.message}`;
+            submenu.appendChild(failed);
+        }
+    });
+
+    submenu.addEventListener("click", (event) => {
+        event.stopPropagation();
+    });
+    return menu;
+}
+
 async function handleHostActionButtonAction(actionBtn) {
     const hostId = parseInt(actionBtn?.dataset?.hostId, 10);
     const action = String(actionBtn?.dataset?.hostAction || "");
@@ -467,6 +672,49 @@ async function handleScreenshotActionButtonAction(actionBtn) {
         return true;
     }
     return false;
+}
+
+async function deleteGraphPortAction(context) {
+    if (!context?.hostId || !context?.port) {
+        return;
+    }
+    const label = `${context.hostIp}:${context.port}/${context.protocol}`;
+    if (!window.confirm(`Delete port ${label}?`)) {
+        return;
+    }
+    try {
+        await postJson("/api/workspace/ports/delete", {
+            host_id: context.hostId,
+            port: context.port,
+            protocol: context.protocol,
+        });
+        setWorkspaceStatus(`Deleted port ${label}`);
+        await pollSnapshot();
+    } catch (err) {
+        setWorkspaceStatus(`Delete port failed: ${err.message}`, true);
+    }
+}
+
+async function deleteGraphServiceAction(context) {
+    if (!context?.hostId || !context?.port) {
+        return;
+    }
+    const label = `${context.serviceLabel || context.serviceName || "service"} on ${context.hostIp}:${context.port}/${context.protocol}`;
+    if (!window.confirm(`Delete ${label}?`)) {
+        return;
+    }
+    try {
+        await postJson("/api/workspace/services/delete", {
+            host_id: context.hostId,
+            port: context.port,
+            protocol: context.protocol,
+            service: context.serviceName,
+        });
+        setWorkspaceStatus(`Deleted ${label}`);
+        await pollSnapshot();
+    } catch (err) {
+        setWorkspaceStatus(`Delete service failed: ${err.message}`, true);
+    }
 }
 
 const ANSI_FG_CLASS_BY_CODE = {
@@ -5405,6 +5653,10 @@ function graphRenderSelectionDetail() {
     const fieldsNode = document.getElementById("graph-detail-fields");
     const hostActionsBlock = document.getElementById("graph-host-actions-block");
     const hostActionsNode = document.getElementById("graph-host-actions");
+    const portActionsBlock = document.getElementById("graph-port-actions-block");
+    const portActionsNode = document.getElementById("graph-port-actions");
+    const serviceActionsBlock = document.getElementById("graph-service-actions-block");
+    const serviceActionsNode = document.getElementById("graph-service-actions");
     const subnetActionsBlock = document.getElementById("graph-subnet-actions-block");
     const subnetActionsNode = document.getElementById("graph-subnet-actions");
     const screenshotActionsBlock = document.getElementById("graph-screenshot-actions-block");
@@ -5414,7 +5666,7 @@ function graphRenderSelectionDetail() {
     const annotationsNode = document.getElementById("graph-annotations-list");
     const pinButton = document.getElementById("graph-pin-toggle-button");
     const noteButton = document.getElementById("graph-note-open-button");
-    if (!detailCaption || !badgesNode || !fieldsNode || !hostActionsBlock || !hostActionsNode || !subnetActionsBlock || !subnetActionsNode || !screenshotActionsBlock || !screenshotActionsNode || !evidenceNode || !propertiesNode || !annotationsNode || !pinButton || !noteButton) {
+    if (!detailCaption || !badgesNode || !fieldsNode || !hostActionsBlock || !hostActionsNode || !portActionsBlock || !portActionsNode || !serviceActionsBlock || !serviceActionsNode || !subnetActionsBlock || !subnetActionsNode || !screenshotActionsBlock || !screenshotActionsNode || !evidenceNode || !propertiesNode || !annotationsNode || !pinButton || !noteButton) {
         return;
     }
 
@@ -5426,9 +5678,13 @@ function graphRenderSelectionDetail() {
     badgesNode.innerHTML = "";
     fieldsNode.innerHTML = "";
     hostActionsNode.innerHTML = "";
+    portActionsNode.innerHTML = "";
+    serviceActionsNode.innerHTML = "";
     subnetActionsNode.innerHTML = "";
     screenshotActionsNode.innerHTML = "";
     hostActionsBlock.hidden = true;
+    portActionsBlock.hidden = true;
+    serviceActionsBlock.hidden = true;
     subnetActionsBlock.hidden = true;
     screenshotActionsBlock.hidden = true;
     evidenceNode.innerHTML = "";
@@ -5578,6 +5834,42 @@ function graphRenderSelectionDetail() {
             });
             hostActionsNode.appendChild(button);
         });
+    }
+
+    if (kind === "node" && entityType === "port") {
+        const context = graphToolLaunchContextForEntity(entity);
+        if (context) {
+            portActionsBlock.hidden = false;
+            const deleteButton = document.createElement("button");
+            deleteButton.type = "button";
+            deleteButton.className = "icon-btn icon-btn-danger";
+            deleteButton.title = "Delete Port";
+            deleteButton.setAttribute("aria-label", "Delete Port");
+            deleteButton.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+            deleteButton.addEventListener("click", async () => {
+                await deleteGraphPortAction(context);
+            });
+            portActionsNode.appendChild(deleteButton);
+            portActionsNode.appendChild(buildGraphToolMenu(context));
+        }
+    }
+
+    if (kind === "node" && entityType === "service") {
+        const context = graphToolLaunchContextForEntity(entity);
+        if (context) {
+            serviceActionsBlock.hidden = false;
+            const deleteButton = document.createElement("button");
+            deleteButton.type = "button";
+            deleteButton.className = "icon-btn icon-btn-danger";
+            deleteButton.title = "Delete Service";
+            deleteButton.setAttribute("aria-label", "Delete Service");
+            deleteButton.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+            deleteButton.addEventListener("click", async () => {
+                await deleteGraphServiceAction(context);
+            });
+            serviceActionsNode.appendChild(deleteButton);
+            serviceActionsNode.appendChild(buildGraphToolMenu(context));
+        }
     }
 
     if (kind === "node" && entityType === "subnet") {

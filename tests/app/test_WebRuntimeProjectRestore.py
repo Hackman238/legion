@@ -32,6 +32,7 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
     def test_restore_bundle_rebases_screenshot_artifact_and_process_paths(self):
         from app.scheduler.execution import ensure_scheduler_execution_table, store_execution_record
         from app.scheduler.models import ExecutionRecord
+        from app.scheduler.state import upsert_target_state
         from app.web.runtime import WebRuntime
         from db.entities.host import hostObj
         from db.entities.port import portObj
@@ -72,6 +73,22 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
                 handle.write(b"\x89PNG\r\n\x1a\nrestore-test")
             with open(artifact_path, "w", encoding="utf-8") as handle:
                 handle.write("restored artifact preview")
+            upsert_target_state(
+                project.database,
+                host_id,
+                {
+                    "host_ip": "10.0.0.5",
+                    "screenshots": [{
+                        "artifact_ref": f"/api/screenshots/{screenshot_name}",
+                        "filename": screenshot_name,
+                        "port": "443",
+                        "protocol": "tcp",
+                        "source_kind": "observed",
+                        "observed": True,
+                    }],
+                },
+                merge=False,
+            )
 
             runtime._ensure_process_tables()
             process_session = project.database.session()
@@ -211,6 +228,76 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
                 runtime._close_active_project()
             if restore_root:
                 shutil.rmtree(restore_root, ignore_errors=True)
+
+    def test_graph_content_resolves_api_screenshot_refs_to_files(self):
+        from app.scheduler.state import upsert_target_state
+        from db.entities.host import hostObj
+
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+
+        screenshot_name = "192.168.3.1-80-screenshot.png"
+        screenshot_path = os.path.join(str(project.properties.outputFolder or ""), "screenshots", screenshot_name)
+
+        try:
+            session = project.database.session()
+            try:
+                host = hostObj(ip="192.168.3.1", ipv4="192.168.3.1", hostname="unifi.local")
+                session.add(host)
+                session.commit()
+                host_id = int(host.id)
+            finally:
+                session.close()
+
+            os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+            with open(screenshot_path, "wb") as handle:
+                handle.write(
+                    b"\x89PNG\r\n\x1a\n"
+                    b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+                    b"\x00\x00\x00\rIDATx\x9cc```\xf8\x0f\x00\x01\x05\x01\x02\xa7m\xa4\x91"
+                    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+                )
+
+            upsert_target_state(
+                project.database,
+                host_id,
+                {
+                    "host_ip": "192.168.3.1",
+                    "screenshots": [{
+                        "artifact_ref": f"/api/screenshots/{screenshot_name}",
+                        "filename": screenshot_name,
+                        "port": "80",
+                        "protocol": "tcp",
+                        "source_kind": "observed",
+                        "observed": True,
+                    }],
+                },
+                merge=False,
+            )
+
+            runtime.rebuild_evidence_graph(host_id=host_id)
+            with runtime._lock:
+                snapshot = runtime._get_graph_snapshot_locked()
+            screenshot_node = next(
+                node for node in list(snapshot.get("nodes", []) or [])
+                if str(node.get("type", "") or "") == "screenshot"
+            )
+
+            related = runtime.get_graph_related_content(str(screenshot_node.get("node_id", "") or ""))
+            self.assertEqual(1, int(related.get("entry_count", 0) or 0))
+            entry = list(related.get("entries", []) or [])[0]
+            self.assertEqual("image", str(entry.get("kind", "") or ""))
+            self.assertTrue(bool(entry.get("available")))
+            self.assertEqual(f"/api/screenshots/{screenshot_name}", str(entry.get("ref", "") or ""))
+
+            content = runtime.get_graph_content(str(screenshot_node.get("node_id", "") or ""))
+            self.assertTrue(os.path.isfile(str(content.get("path", "") or "")))
+            self.assertTrue(str(content.get("path", "") or "").endswith(screenshot_name))
+        finally:
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
 
 
 if __name__ == "__main__":
