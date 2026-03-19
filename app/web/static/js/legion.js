@@ -1236,6 +1236,28 @@ function renderServices(services) {
     setText("service-count", workspaceState.services.length);
 }
 
+function setServicesPanelCollapsed(collapsed) {
+    const body = document.getElementById("services-panel-body");
+    const button = document.getElementById("services-panel-toggle-button");
+    if (!body || !button) {
+        return;
+    }
+    const nextCollapsed = Boolean(collapsed);
+    body.hidden = nextCollapsed;
+    button.classList.toggle("is-collapsed", nextCollapsed);
+    button.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+    button.title = nextCollapsed ? "Show Services" : "Hide Services";
+    button.setAttribute("aria-label", nextCollapsed ? "Show Services" : "Hide Services");
+}
+
+function toggleServicesPanelAction() {
+    const body = document.getElementById("services-panel-body");
+    if (!body) {
+        return;
+    }
+    setServicesPanelCollapsed(!body.hidden);
+}
+
 function getHostOsIcon(osText) {
     const token = String(osText || "").toLowerCase();
     if (token.includes("windows") || token.includes("microsoft")) {
@@ -8338,6 +8360,7 @@ function bindActionButtons() {
     bind("hosts-export-csv-button", exportHostsCsvAction);
     bind("hosts-filter-show-all-button", () => setHostFilterAction("show_all"));
     bind("hosts-filter-hide-down-button", () => setHostFilterAction("hide_down"));
+    bind("services-panel-toggle-button", toggleServicesPanelAction);
     bind("ribbon-export-project-report-json-action-button", () => exportProjectAiReportAction("json"));
     bind("ribbon-export-project-report-md-action-button", () => exportProjectAiReportAction("md"));
     bind("ribbon-export-project-report-push-action-button", pushProjectAiReportAction);
@@ -8383,6 +8406,7 @@ function bindActionButtons() {
     bind("graph-detail-dock-toggle-button", graphToggleDetailModeAction);
     bind("graph-detail-close-button", graphDismissSelection);
     graphSetFiltersExpanded(graphWorkspaceState.filtersExpanded);
+    setServicesPanelCollapsed(true);
 
     const graphScrollNode = getGraphCanvasScrollNode();
     if (graphScrollNode) {

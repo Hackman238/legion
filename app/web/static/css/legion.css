@@ -198,6 +198,8 @@ body.opaque-ui .ribbon-submenu-item {
 }
 
 .ribbon {
+    --ribbon-menu-row-height: 88px;
+    --ribbon-lower-row-height: 185px;
     display: flex;
     gap: 0.75rem;
     flex-wrap: wrap;
@@ -221,6 +223,7 @@ body.opaque-ui .ribbon-submenu-item {
     gap: 0.75rem;
     align-items: stretch;
     min-height: 0;
+    min-block-size: var(--ribbon-lower-row-height);
 }
 
 .ribbon-group {
@@ -235,6 +238,7 @@ body.opaque-ui .ribbon-submenu-item {
 
 .ribbon-menu-group {
     align-items: stretch;
+    min-block-size: var(--ribbon-menu-row-height);
 }
 
 .ribbon-project-group {
@@ -243,6 +247,7 @@ body.opaque-ui .ribbon-submenu-item {
     align-items: stretch;
     gap: 0.55rem;
     min-height: 0;
+    min-block-size: var(--ribbon-lower-row-height);
 }
 
 .ribbon-project-header {
@@ -273,7 +278,7 @@ body.opaque-ui .ribbon-submenu-item {
     display: grid;
     gap: 0.5rem;
     min-height: 0;
-    max-height: 124px;
+    max-height: 145px;
     overflow: auto;
     padding-right: 0.15rem;
     scrollbar-gutter: stable;
@@ -290,11 +295,15 @@ body.opaque-ui .ribbon-submenu-item {
 }
 
 .ribbon-process-group {
-    flex: 0 1 620px;
-    min-width: min(100%, 520px);
+    flex: 0 1 744px;
+    min-width: min(100%, 620px);
     flex-direction: column;
+    flex-wrap: nowrap;
     align-self: stretch;
     gap: 0.45rem;
+    height: calc(var(--ribbon-menu-row-height) + var(--ribbon-lower-row-height) + 0.75rem);
+    min-height: calc(var(--ribbon-menu-row-height) + var(--ribbon-lower-row-height) + 0.75rem);
+    overflow: hidden;
 }
 
 .ribbon-process-header {
@@ -337,7 +346,11 @@ body.opaque-ui .ribbon-submenu-item {
 
 .ribbon-process-table-wrap {
     margin-top: 0;
-    max-height: 172px;
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    width: 100%;
+    min-width: 0;
     border: 1px solid rgba(173, 181, 227, 0.12);
     border-radius: 10px;
     background: rgba(10, 7, 24, 0.38);
@@ -369,10 +382,11 @@ body.opaque-ui .ribbon-submenu-item {
     min-width: min(100%, 340px);
     max-width: 340px;
     flex: 0 0 340px;
+    min-block-size: var(--ribbon-lower-row-height);
 }
 
 .ribbon-stat-card {
-    min-height: 58px;
+    min-height: 67px;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -528,6 +542,15 @@ body.opaque-ui .ribbon-submenu-item {
 
 .panel-menu-button:hover {
     filter: brightness(1.12);
+}
+
+.panel-menu-button.is-collapsed i {
+    transform: rotate(-90deg);
+}
+
+.scheduler-provider-notice {
+    grid-column: span 4;
+    margin: 0;
 }
 
 .panel-submenu {
@@ -2203,10 +2226,16 @@ td button {
 
     .ribbon {
         flex-direction: column;
+        --ribbon-menu-row-height: auto;
+        --ribbon-lower-row-height: auto;
     }
 
     .ribbon-column {
         width: 100%;
+    }
+
+    .ribbon-lower-row {
+        min-block-size: 0;
     }
 
     .ribbon-group {
@@ -2217,11 +2246,26 @@ td button {
 
     .ribbon-process-group {
         min-width: 0;
+        height: auto;
+        min-height: 0;
+        overflow: visible;
     }
 
     .ribbon-summary-group {
         grid-template-columns: repeat(3, minmax(92px, 1fr));
         min-width: 0;
+        max-width: none;
+        flex: 1 1 auto;
+        min-block-size: 0;
+    }
+
+    .ribbon-menu-group,
+    .ribbon-project-group {
+        min-block-size: 0;
+    }
+
+    .ribbon-process-table-wrap {
+        max-height: 172px;
     }
 }
 

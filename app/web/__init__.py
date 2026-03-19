@@ -2,6 +2,8 @@ from typing import TYPE_CHECKING
 
 from flask import Flask
 
+from app.ApplicationInfo import applicationInfo
+
 try:
     from flask_sock import Sock
 except ModuleNotFoundError:  # pragma: no cover - optional dependency path
@@ -33,6 +35,7 @@ def create_app(runtime: "WebRuntime") -> Flask:
             "legion_web_bind_host": app.config.get("LEGION_WEB_BIND_HOST", "127.0.0.1"),
             "legion_web_bind_label": app.config.get("LEGION_WEB_BIND_LABEL", "Localhost only"),
             "legion_ui_opaque": bool(app.config.get("LEGION_UI_OPAQUE", False)),
+            "legion_version_label": f"v{applicationInfo.get('version', '0.0.0')}",
         }
 
     app.register_blueprint(web_bp)

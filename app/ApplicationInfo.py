@@ -26,9 +26,9 @@ applicationInfo = {
     "emails": [],
     "update": '03/17/2026',
     "license": "GPL v3",
-    "desc": "Legion is a fork of SECFORCE's Sparta, Legion is an open source, easy-to-use, \n" +
-            "super-extensible and semi-automated network penetration testing tool that aids in " +
-            "discovery, \nreconnaissance and exploitation of information systems.",
+    "desc": "Legion is a local-first, operator-guided reconnaissance and penetration testing platform with \n" +
+            "governed deterministic and AI-assisted orchestration, evidence graphing, and MCP-enabled \n" +
+            "automation surfaces.",
     "smallIcon": "./images/icons/Legion-N_128x128.svg",
     "bigIcon": "./images/icons/Legion-N_128x128.svg"
 }

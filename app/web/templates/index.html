@@ -179,7 +179,6 @@
                             <div class="ribbon-project-lines">
                                 <p class="meta-note" id="project-output-folder">{{ snapshot.project.output_folder }}</p>
                                 <p class="meta-note" id="project-running-folder">{{ snapshot.project.running_folder }}</p>
-                                <p class="meta-note">{{ snapshot.scheduler.cloud_notice }}</p>
                                 <p class="meta-note">Action status: <span id="action-status">Idle</span></p>
                                 <p class="meta-note">Workspace status: <span id="workspace-status">Idle</span></p>
                             </div>
@@ -624,6 +623,40 @@
         </div>
     </section>
 
+    <section class="panel">
+        <div class="panel-header">
+            <h2>Services</h2>
+            <div class="panel-header-actions">
+                <p id="service-count">{{ snapshot.services | length }}</p>
+                <button
+                    id="services-panel-toggle-button"
+                    class="panel-menu-button"
+                    type="button"
+                    title="Show Services"
+                    aria-label="Show Services"
+                    aria-expanded="false"
+                    aria-controls="services-panel-body"
+                >
+                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                    <span class="sr-only">Toggle Services</span>
+                </button>
+            </div>
+        </div>
+        <div id="services-panel-body" class="table-wrap" hidden>
+            <table>
+                <thead>
+                <tr>
+                    <th>Service</th>
+                    <th>Hosts</th>
+                    <th>Ports</th>
+                    <th>Protocols</th>
+                </tr>
+                </thead>
+                <tbody id="services-body"></tbody>
+            </table>
+        </div>
+    </section>
+
     <section class="panel panel-full">
         <div class="panel-header">
             <h2>Host Detail</h2>
@@ -737,26 +770,6 @@
             <p id="host-screenshot-count">0</p>
         </div>
         <div id="host-detail-screenshots" class="screenshot-list"></div>
-    </section>
-
-    <section class="panel">
-        <div class="panel-header">
-            <h2>Services</h2>
-            <p id="service-count">{{ snapshot.services | length }}</p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>Service</th>
-                    <th>Hosts</th>
-                    <th>Ports</th>
-                    <th>Protocols</th>
-                </tr>
-                </thead>
-                <tbody id="services-body"></tbody>
-            </table>
-        </div>
     </section>
 
     <section class="panel panel-full">
@@ -1326,6 +1339,7 @@
                     <option value="claude">claude</option>
                 </select>
             </label>
+            <p class="meta-note scheduler-provider-notice">{{ snapshot.scheduler.cloud_notice }}</p>
             <label>
                 Max Concurrent Scheduler Tools
                 <input id="scheduler-concurrency-input" type="number" min="1" max="16" step="1" name="max_concurrency">

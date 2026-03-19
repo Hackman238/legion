@@ -1459,6 +1459,7 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
         self.assertIn("<h1>LEGION</h1>", body)
+        self.assertIn("v0.6.0", body)
         self.assertIn("Localhost only", body)
         self.assertNotIn("Web Console", body)
         self.assertIn("Graph Workspace", body)
@@ -1513,6 +1514,8 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('aria-label="Hide Finished/Issues"', body)
         self.assertIn('id="process-clear-all-button"', body)
         self.assertIn('aria-label="Hide All Non-Running"', body)
+        self.assertIn('id="services-panel-toggle-button"', body)
+        self.assertIn('id="services-panel-body" class="table-wrap" hidden', body)
         self.assertIn('id="graph-zoom-slider" type="range" min="10"', body)
         self.assertIn('id="graph-resize-handle"', body)
         self.assertIn("graph-footer-separator", body)
@@ -1532,6 +1535,8 @@ class WebAppTest(unittest.TestCase):
         self.assertLess(body.index('id="graph-refresh-button"'), body.index('id="graph-resize-handle"'))
         self.assertLess(body.index('id="graph-resize-handle"'), body.index('id="graph-workspace-status"'))
         self.assertLess(body.index("<h2>Graph Workspace</h2>"), body.index('<h2>Hosts</h2>'))
+        self.assertLess(body.index('<h2>Hosts</h2>'), body.index('<h2>Services</h2>'))
+        self.assertLess(body.index('<h2>Services</h2>'), body.index('<h2>Host Detail</h2>'))
 
     def test_index_renders_all_interfaces_chip_when_configured(self):
         self.app.config["LEGION_WEB_BIND_HOST"] = "0.0.0.0"
