@@ -1,11 +1,15 @@
 LEGION 0.6.0
 
-* Introduced the shared orchestrator core across Qt, web, headless, and MCP/API surfaces so planning, approvals, execution, observation, and reporting use the same governed path.
-* Added normalized scheduler models (`ActionSpec`, `PlanStep`, `ExecutionRecord`) so deterministic and AI modes speak the same execution language and share fallback behavior.
+* Introduced the shared orchestrator core across web, headless, MCP/API, and remaining Qt compatibility surfaces so planning, approvals, execution, observation, and reporting use the same governed path.
+* Added normalized scheduler models (`ActionSpec`, `PlanStep`, `ExecutionRecord`) and expanded the shared action registry so deterministic and AI modes use the same governed execution language and fallback behavior.
 * Added first-class engagement policy presets, richer risk taxonomy, auditable approval decisions, family-level approval controls, and policy-aware plan blocking.
 * Added shared target-state persistence, project evidence graph storage, graph export/query APIs, a browser-based graph workspace, and graph-backed reporting.
+* Expanded graph workspace capabilities with large-graph handling, floating/docked detail inspection, contextual node actions, layout controls, exports, host/graph selection sync, and better screenshot/artifact preview handling.
+* Promoted the web UI to the primary operator workflow with a ribbon-driven dashboard, compact project/process trays, logging modals, host filtering/export, submitted scan history, and a broader set of graph/workspace controls.
 * Added strategy packs, optional runner abstraction, expanded MCP/API coverage, report generation from graph and execution ledger, and a regression corpus for rollout hardening.
-* Hardened execution and UX details across 0.6.0: Nmap stats output normalization, Nuclei stats/silent handling, improved duplicate-action suppression, scheme-aware web targeting, screenshot fallback hardening, and improved web dashboard layout/workspace behavior.
+* Broadened governed action coverage with deeper web follow-up and safer internal enumeration, including `whatweb`, `dirsearch`, `ffuf`, `enum4linux-ng`, `smbmap`, and `rpcclient-enum`.
+* Hardened execution details across 0.6.0: Nmap `--stats-every 15s` plus `-vv`, improved Nuclei stats/silent handling, duplicate-action suppression, scheme-aware web targeting, intent-based retry, URL normalization, screenshot TLS bypass behavior, and workspace bundle restore path rebasing.
+* Added web launch flags such as `--web-bind-all` and `--web-opaque-ui`, updated side-by-side install guidance, and refreshed the documentation around the web-first 0.6.0 workflow.
 
 LEGION 0.5.2
 

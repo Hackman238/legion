@@ -1,3 +1,21 @@
+legion (0.6.0-0) UNRELEASED; urgency=medium
+
+  * Promote the web UI to the primary operator workflow while keeping the shared
+    orchestrator, approvals, reporting, and graph/state pipeline aligned across
+    web, headless, MCP, and remaining Qt compatibility paths.
+  * Add normalized scheduler models, engagement policies, richer approvals, and
+    a larger governed action registry covering deeper web follow-up and safer
+    internal enumeration.
+  * Add shared target-state persistence, local evidence graphing, graph export,
+    graph-backed reporting, and a richer browser graph workspace.
+  * Expand MCP/API coverage, optional runner support, strategy-pack planning,
+    regression corpus coverage, and scan/execution auditability.
+  * Harden web execution and operator UX with better Nmap/Nuclei normalization,
+    duplicate suppression, scheme-aware targeting, screenshot reliability, retry
+    by intent, workspace restore fixes, and updated web-first documentation.
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Thu, 19 Mar 2026 09:10:00 -0500
+
 legion (0.5.2-0) UNRELEASED; urgency=medium
 
   * Standardize OS detection and icons across the Hosts/OS tabs with a shared classifier.
