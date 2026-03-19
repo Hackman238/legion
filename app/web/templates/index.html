@@ -1485,6 +1485,31 @@
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
         </div>
+        <div class="settings-tool-audit">
+            <div class="panel-header">
+                <h3>Tool Audit</h3>
+                <p id="settings-tool-audit-status">Idle</p>
+            </div>
+            <p class="meta-note">Kali-first install hints for the external tools Legion currently launches or depends on.</p>
+            <div class="modal-actions">
+                <button id="settings-tool-audit-refresh-button" type="button">Refresh Tool Audit</button>
+            </div>
+            <div class="table-wrap modal-table-wrap tool-audit-table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Tool</th>
+                        <th>Category</th>
+                        <th>Status</th>
+                        <th>Resolved</th>
+                        <th>Kali</th>
+                        <th>Ubuntu</th>
+                    </tr>
+                    </thead>
+                    <tbody id="settings-tool-audit-body"></tbody>
+                </table>
+            </div>
+        </div>
         <p class="meta-note">Edit `legion.conf` directly. Saving reloads settings for subsequent actions.</p>
         <label>
             Config Text

@@ -4,6 +4,10 @@ import legion
 
 
 class LegionLauncherTest(unittest.TestCase):
+    def test_tool_audit_flag_parses(self):
+        args = legion.build_arg_parser().parse_args(["--tool-audit"])
+        self.assertTrue(args.tool_audit)
+
     def test_web_bind_all_flag_defaults_to_localhost(self):
         args = legion.build_arg_parser().parse_args(["--web"])
         self.assertFalse(args.web_bind_all)

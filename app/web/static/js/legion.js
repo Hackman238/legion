@@ -2016,6 +2016,63 @@ function setConfigSettingsStatus(text, isError = false) {
     node.style.color = isError ? "#ff9b9b" : "";
 }
 
+function setToolAuditStatus(text, isError = false) {
+    const node = document.getElementById("settings-tool-audit-status");
+    if (!node) {
+        return;
+    }
+    node.textContent = text || "";
+    node.style.color = isError ? "#ff9b9b" : "";
+}
+
+function renderToolAuditRows(rows) {
+    const tbody = document.getElementById("settings-tool-audit-body");
+    if (!tbody) {
+        return;
+    }
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No tool audit data.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = items.map((row) => {
+        const status = String(row?.status || "unknown");
+        const resolved = row?.resolved_path || row?.configured_value || "-";
+        const statusClass = status === "installed"
+            ? "tool-audit-status-ok"
+            : (status === "configured-missing" ? "tool-audit-status-warn" : "tool-audit-status-missing");
+        return `
+            <tr>
+                <td>
+                    <strong>${escapeHtml(row?.label || row?.key || "tool")}</strong>
+                    <div class="meta-note">${escapeHtml(row?.purpose || "")}</div>
+                    ${row?.notes ? `<div class="meta-note">${escapeHtml(row.notes)}</div>` : ""}
+                </td>
+                <td>${escapeHtml(row?.category || "")}</td>
+                <td><span class="${statusClass}">${escapeHtml(status)}</span></td>
+                <td><code>${escapeHtml(resolved)}</code></td>
+                <td><code>${escapeHtml(row?.kali_install || "-")}</code></td>
+                <td><code>${escapeHtml(row?.ubuntu_install || "-")}</code></td>
+            </tr>
+        `;
+    }).join("");
+}
+
+async function refreshToolAuditAction() {
+    setToolAuditStatus("Checking tools...");
+    try {
+        const body = await fetchJson("/api/settings/tool-audit");
+        renderToolAuditRows(body?.tools || []);
+        const summary = body?.summary || {};
+        setToolAuditStatus(
+            `Installed ${summary.installed || 0}/${summary.total || 0}; missing ${summary.missing || 0}; configured missing ${summary.configured_missing || 0}`
+        );
+    } catch (err) {
+        renderToolAuditRows([]);
+        setToolAuditStatus(`Tool audit failed: ${err.message}`, true);
+    }
+}
+
 function launchStartupWizardAction() {
     syncStartupSchedulerFromMain();
     setStartupWizardStatus("", false);
@@ -2337,7 +2394,10 @@ async function saveAppSettingsConfigAction() {
 
 async function openAppSettingsAction() {
     setAppSettingsModalOpen(true);
-    await refreshAppSettingsConfigAction();
+    await Promise.allSettled([
+        refreshAppSettingsConfigAction(),
+        refreshToolAuditAction(),
+    ]);
 }
 
 function closeAppSettingsAction() {
@@ -8588,6 +8648,7 @@ function bindActionButtons() {
     bind("settings-modal-close", closeAppSettingsAction);
     bind("settings-config-refresh-button", refreshAppSettingsConfigAction);
     bind("settings-config-save-button", saveAppSettingsConfigAction);
+    bind("settings-tool-audit-refresh-button", refreshToolAuditAction);
     bind("nmap-scan-modal-close", closeNmapScanModalAction);
     bind("manual-scan-modal-close", closeManualScanModalAction);
     bind("host-selection-modal-close", closeHostSelectionModalAction);

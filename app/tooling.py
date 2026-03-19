@@ -5,7 +5,10 @@ Helpers for locating optional security tooling in local-first installs.
 from __future__ import annotations
 
 import os
-from typing import Dict, Iterable, List, Optional
+import re
+import shutil
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 def _candidate_go_bin_paths(env: Optional[Dict[str, str]] = None) -> List[str]:
@@ -60,3 +63,656 @@ def build_tool_execution_env(base_env: Optional[Dict[str, str]] = None) -> Dict[
     env["PATH"] = augment_path_for_legion_tools(env.get("PATH", ""), env=env)
     return env
 
+
+@dataclass(frozen=True)
+class ToolSpec:
+    key: str
+    label: str
+    commands: Tuple[str, ...]
+    category: str
+    purpose: str
+    configured_setting: str = ""
+    kali_install: str = ""
+    ubuntu_install: str = ""
+    notes: str = ""
+    optional: bool = True
+
+
+@dataclass(frozen=True)
+class ToolAuditEntry:
+    key: str
+    label: str
+    category: str
+    purpose: str
+    status: str
+    resolved_path: str
+    resolved_command: str
+    configured_value: str
+    kali_install: str
+    ubuntu_install: str
+    notes: str
+    optional: bool
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "category": self.category,
+            "purpose": self.purpose,
+            "status": self.status,
+            "resolved_path": self.resolved_path,
+            "resolved_command": self.resolved_command,
+            "configured_value": self.configured_value,
+            "kali_install": self.kali_install,
+            "ubuntu_install": self.ubuntu_install,
+            "notes": self.notes,
+            "optional": self.optional,
+        }
+
+
+def _tool_specs() -> List[ToolSpec]:
+    return [
+        ToolSpec(
+            "nmap",
+            "Nmap",
+            ("nmap",),
+            "core",
+            "Host discovery, service detection, XML import parity, and most NSE-driven actions.",
+            configured_setting="tools_path_nmap",
+            kali_install="sudo apt install nmap",
+            ubuntu_install="sudo apt install nmap",
+            notes="This is the baseline requirement for most Legion workflows.",
+            optional=False,
+        ),
+        ToolSpec(
+            "hydra",
+            "Hydra",
+            ("hydra",),
+            "credentials",
+            "Credential brute-force and validation workflows.",
+            configured_setting="tools_path_hydra",
+            kali_install="sudo apt install hydra",
+            ubuntu_install="sudo apt install hydra",
+        ),
+        ToolSpec(
+            "curl",
+            "curl",
+            ("curl",),
+            "core",
+            "HTTP headers, OPTIONS, robots.txt, and fallback content checks.",
+            kali_install="sudo apt install curl",
+            ubuntu_install="sudo apt install curl",
+            optional=False,
+        ),
+        ToolSpec(
+            "nuclei",
+            "Nuclei",
+            ("nuclei",),
+            "web",
+            "Governed web, CVE, exposure, and targeted validation follow-up.",
+            kali_install="go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && nuclei -up && nuclei -ut",
+            ubuntu_install="go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && nuclei -up && nuclei -ut",
+            notes="ProjectDiscovery currently documents the v3 install path and template update flow.",
+        ),
+        ToolSpec(
+            "whatweb",
+            "WhatWeb",
+            ("whatweb",),
+            "web",
+            "Technology fingerprinting and graph/state enrichment.",
+            kali_install="sudo apt install whatweb",
+            ubuntu_install="sudo apt install whatweb",
+        ),
+        ToolSpec(
+            "nikto",
+            "Nikto",
+            ("nikto",),
+            "web",
+            "Broad HTTP validation and known issue checks.",
+            kali_install="sudo apt install nikto",
+            ubuntu_install="sudo apt install nikto",
+        ),
+        ToolSpec(
+            "wafw00f",
+            "WAFW00F",
+            ("wafw00f",),
+            "web",
+            "WAF detection and exposure fingerprinting.",
+            kali_install="sudo apt install wafw00f",
+            ubuntu_install="sudo apt install wafw00f",
+        ),
+        ToolSpec(
+            "sslscan",
+            "sslscan",
+            ("sslscan",),
+            "web",
+            "TLS posture checks.",
+            kali_install="sudo apt install sslscan",
+            ubuntu_install="sudo apt install sslscan",
+        ),
+        ToolSpec(
+            "sslyze",
+            "sslyze",
+            ("sslyze",),
+            "web",
+            "TLS protocol, certificate, and cipher validation.",
+            kali_install="sudo apt install sslyze",
+            ubuntu_install="sudo apt install sslyze",
+        ),
+        ToolSpec(
+            "wpscan",
+            "WPScan",
+            ("wpscan",),
+            "web",
+            "WordPress-focused follow-up and validation.",
+            kali_install="sudo apt install wpscan",
+            ubuntu_install="sudo apt install wpscan",
+        ),
+        ToolSpec(
+            "wapiti",
+            "Wapiti",
+            ("wapiti",),
+            "web",
+            "Application follow-up scanning for HTTP/HTTPS services.",
+            kali_install="sudo apt install wapiti",
+            ubuntu_install="sudo apt install wapiti",
+        ),
+        ToolSpec(
+            "gobuster",
+            "Gobuster",
+            ("gobuster",),
+            "web",
+            "Legacy web content discovery fallback.",
+            kali_install="sudo apt install gobuster",
+            ubuntu_install="sudo apt install gobuster",
+        ),
+        ToolSpec(
+            "feroxbuster",
+            "Feroxbuster",
+            ("feroxbuster",),
+            "web",
+            "Legacy web content discovery fallback.",
+            kali_install="sudo apt install feroxbuster",
+            ubuntu_install="sudo apt install feroxbuster",
+        ),
+        ToolSpec(
+            "dirsearch",
+            "dirsearch",
+            ("dirsearch",),
+            "web",
+            "Governed directory/content discovery follow-up.",
+            kali_install="sudo apt install dirsearch",
+            ubuntu_install="sudo apt install dirsearch",
+            notes="If not packaged on your Ubuntu release, install from the upstream dirsearch project.",
+        ),
+        ToolSpec(
+            "ffuf",
+            "ffuf",
+            ("ffuf",),
+            "web",
+            "Governed content fuzzing follow-up.",
+            kali_install="sudo apt install ffuf",
+            ubuntu_install="sudo apt install ffuf",
+        ),
+        ToolSpec(
+            "enum4linux-ng",
+            "enum4linux-ng",
+            ("enum4linux-ng",),
+            "internal",
+            "Safer SMB/AD-aware internal enumeration.",
+            kali_install="sudo apt install enum4linux-ng",
+            ubuntu_install="sudo apt install enum4linux-ng",
+            notes="If your Ubuntu release does not package it, use the upstream project install path.",
+        ),
+        ToolSpec(
+            "smbmap",
+            "smbmap",
+            ("smbmap",),
+            "internal",
+            "SMB share and access enumeration.",
+            kali_install="sudo apt install smbmap",
+            ubuntu_install="sudo apt install smbmap",
+        ),
+        ToolSpec(
+            "rpcclient",
+            "rpcclient",
+            ("rpcclient",),
+            "internal",
+            "SMB/RPC enumeration for internal workflows.",
+            kali_install="sudo apt install samba-common-bin",
+            ubuntu_install="sudo apt install samba-common-bin",
+        ),
+        ToolSpec(
+            "enum4linux",
+            "enum4linux",
+            ("enum4linux",),
+            "internal",
+            "Legacy SMB enumeration workflows.",
+            kali_install="sudo apt install enum4linux",
+            ubuntu_install="sudo apt install enum4linux",
+        ),
+        ToolSpec(
+            "ldapsearch",
+            "ldapsearch",
+            ("ldapsearch",),
+            "internal",
+            "LDAP and directory enumeration.",
+            kali_install="sudo apt install ldap-utils",
+            ubuntu_install="sudo apt install ldap-utils",
+        ),
+        ToolSpec(
+            "nbtscan",
+            "nbtscan",
+            ("nbtscan",),
+            "internal",
+            "NetBIOS name enumeration.",
+            kali_install="sudo apt install nbtscan",
+            ubuntu_install="sudo apt install nbtscan",
+        ),
+        ToolSpec(
+            "rpcinfo",
+            "rpcinfo",
+            ("rpcinfo",),
+            "internal",
+            "RPC exposure enumeration.",
+            kali_install="sudo apt install rpcbind",
+            ubuntu_install="sudo apt install rpcbind",
+        ),
+        ToolSpec(
+            "showmount",
+            "showmount",
+            ("showmount",),
+            "internal",
+            "NFS export enumeration.",
+            kali_install="sudo apt install nfs-common",
+            ubuntu_install="sudo apt install nfs-common",
+        ),
+        ToolSpec(
+            "finger",
+            "finger",
+            ("finger",),
+            "legacy",
+            "Legacy service enumeration.",
+            kali_install="sudo apt install finger",
+            ubuntu_install="sudo apt install finger",
+        ),
+        ToolSpec(
+            "dnsmap",
+            "dnsmap",
+            ("dnsmap",),
+            "passive",
+            "Legacy DNS brute-force and expansion workflows.",
+            kali_install="sudo apt install dnsmap",
+            ubuntu_install="Install from the upstream dnsmap project or Kali package sources.",
+        ),
+        ToolSpec(
+            "theHarvester",
+            "theHarvester",
+            ("theHarvester", "theharvester"),
+            "passive",
+            "Legacy external recon and passive collection.",
+            kali_install="sudo apt install theharvester",
+            ubuntu_install="sudo apt install theharvester",
+        ),
+        ToolSpec(
+            "snmpcheck",
+            "snmpcheck",
+            ("snmpcheck",),
+            "internal",
+            "Legacy SNMP enumeration.",
+            kali_install="sudo apt install snmpcheck",
+            ubuntu_install="Install from the upstream snmpcheck project if unavailable in apt.",
+        ),
+        ToolSpec(
+            "samrdump",
+            "samrdump",
+            ("samrdump",),
+            "internal",
+            "Legacy Impacket SAMR enumeration.",
+            kali_install="sudo apt install impacket-scripts",
+            ubuntu_install="python3 -m pip install impacket",
+        ),
+        ToolSpec(
+            "sqlmap",
+            "sqlmap",
+            ("sqlmap",),
+            "web",
+            "Legacy SQL injection validation path.",
+            kali_install="sudo apt install sqlmap",
+            ubuntu_install="sudo apt install sqlmap",
+        ),
+        ToolSpec(
+            "nc",
+            "netcat",
+            ("nc", "netcat", "ncat"),
+            "core",
+            "Banner and low-level connectivity probes.",
+            kali_install="sudo apt install netcat-openbsd",
+            ubuntu_install="sudo apt install netcat-openbsd",
+        ),
+        ToolSpec(
+            "eyewitness",
+            "EyeWitness",
+            ("eyewitness", "EyeWitness.py", "EyeWitness"),
+            "screenshot",
+            "Primary screenshot engine when available.",
+            kali_install="sudo apt install eyewitness",
+            ubuntu_install="Install EyeWitness from the upstream project if unavailable in apt.",
+            notes="Legion also has browser fallbacks, but EyeWitness remains a preferred path when present.",
+        ),
+        ToolSpec(
+            "chromium",
+            "Chromium / Chrome",
+            ("chromium-browser", "chromium", "google-chrome-stable", "google-chrome", "chrome"),
+            "screenshot",
+            "Browser-based screenshot capture fallback.",
+            kali_install="sudo apt install chromium",
+            ubuntu_install="sudo apt install chromium-browser || sudo apt install chromium",
+        ),
+        ToolSpec(
+            "firefox",
+            "Firefox",
+            ("firefox",),
+            "screenshot",
+            "Browser-based screenshot fallback.",
+            kali_install="sudo apt install firefox-esr",
+            ubuntu_install="sudo apt install firefox",
+        ),
+        ToolSpec(
+            "geckodriver",
+            "geckodriver",
+            ("geckodriver",),
+            "screenshot",
+            "Firefox Selenium driver used by screenshot fallbacks.",
+            kali_install="sudo apt install firefox-geckodriver || sudo apt install geckodriver",
+            ubuntu_install="sudo apt install firefox-geckodriver || sudo apt install geckodriver",
+        ),
+        ToolSpec(
+            "xvfb-run",
+            "xvfb-run",
+            ("xvfb-run",),
+            "screenshot",
+            "Headless display wrapper for EyeWitness/browser capture paths.",
+            kali_install="sudo apt install xvfb",
+            ubuntu_install="sudo apt install xvfb",
+        ),
+        ToolSpec(
+            "responder",
+            "Responder",
+            ("responder",),
+            "relay",
+            "Responder workspace support.",
+            configured_setting="tools_path_responder",
+            kali_install="sudo apt install responder",
+            ubuntu_install="Install from the upstream Responder project or Kali package sources.",
+        ),
+        ToolSpec(
+            "ntlmrelayx",
+            "ntlmrelayx",
+            ("ntlmrelayx.py", "ntlmrelayx"),
+            "relay",
+            "NTLM relay workspace support.",
+            configured_setting="tools_path_ntlmrelay",
+            kali_install="sudo apt install impacket-scripts",
+            ubuntu_install="python3 -m pip install impacket",
+        ),
+        ToolSpec(
+            "httpx",
+            "httpx",
+            ("httpx",),
+            "planned",
+            "Planned / adjacent ProjectDiscovery HTTP probing support.",
+            kali_install="go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest",
+            ubuntu_install="go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest",
+            notes="Not yet a first-class launch action in Legion, but worth having available.",
+        ),
+        ToolSpec(
+            "subfinder",
+            "subfinder",
+            ("subfinder",),
+            "planned",
+            "Planned passive subdomain discovery support.",
+            kali_install="go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+            ubuntu_install="go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+            notes="ProjectDiscovery documents the v2 install path and provider-config model.",
+        ),
+        ToolSpec(
+            "uncover",
+            "uncover",
+            ("uncover",),
+            "planned",
+            "Planned external exposure discovery support.",
+            kali_install="go install -v github.com/projectdiscovery/uncover/cmd/uncover@latest",
+            ubuntu_install="go install -v github.com/projectdiscovery/uncover/cmd/uncover@latest",
+            notes="Useful when Shodan/Censys style exposure discovery is part of workflow.",
+        ),
+        ToolSpec(
+            "cvemap",
+            "vulnx / cvemap",
+            ("vulnx", "cvemap"),
+            "planned",
+            "Planned ProjectDiscovery vulnerability/CPE exploration support.",
+            kali_install="go install github.com/projectdiscovery/cvemap/cmd/vulnx@latest",
+            ubuntu_install="go install github.com/projectdiscovery/cvemap/cmd/vulnx@latest",
+            notes="ProjectDiscovery now recommends vulnx as the successor to cvemap.",
+        ),
+        ToolSpec(
+            "xdg-open",
+            "xdg-open",
+            ("xdg-open",),
+            "desktop",
+            "Open artifacts and exported files from the UI.",
+            configured_setting="tools_path_texteditor",
+            kali_install="sudo apt install xdg-utils",
+            ubuntu_install="sudo apt install xdg-utils",
+        ),
+    ]
+
+
+_SHELL_BUILTINS = {
+    "echo",
+    "command",
+    "bash",
+    "sh",
+    "python",
+    "python3",
+    "sudo",
+    "if",
+    "then",
+    "else",
+    "fi",
+    "true",
+    "false",
+}
+
+
+def _extract_command_v_tools(command_text: str) -> List[str]:
+    return list(dict.fromkeys(re.findall(r"(?i)\bcommand\s+-v\s+([A-Za-z0-9_.+-]+)\b", str(command_text or ""))))
+
+
+def _iter_configured_command_texts(settings: object) -> Iterable[str]:
+    for attr_name, command_index in (
+        ("hostActions", 2),
+        ("portActions", 2),
+        ("portTerminalActions", 2),
+    ):
+        for row in list(getattr(settings, attr_name, []) or []):
+            if isinstance(row, (list, tuple)) and len(row) > command_index:
+                value = str(row[command_index] or "").strip()
+                if value:
+                    yield value
+
+
+def _build_tool_spec_index() -> Dict[str, ToolSpec]:
+    specs = _tool_specs()
+    alias_map: Dict[str, ToolSpec] = {}
+    for spec in specs:
+        alias_map[spec.key] = spec
+        for command_name in spec.commands:
+            alias_map[str(command_name).strip().lower()] = spec
+    return alias_map
+
+
+def _dynamic_specs_from_settings(settings: Optional[object]) -> List[ToolSpec]:
+    if settings is None:
+        return []
+    index = _build_tool_spec_index()
+    dynamic: List[ToolSpec] = []
+    seen = set()
+    for command_text in _iter_configured_command_texts(settings):
+        for tool_name in _extract_command_v_tools(command_text):
+            key = str(tool_name or "").strip().lower()
+            if not key or key in index or key in seen or key in _SHELL_BUILTINS:
+                continue
+            seen.add(key)
+            dynamic.append(
+                ToolSpec(
+                    key=key,
+                    label=tool_name,
+                    commands=(tool_name,),
+                    category="custom",
+                    purpose="Discovered from configured Legion command templates.",
+                    notes="No distro-specific install hint has been curated for this tool yet.",
+                )
+            )
+    return dynamic
+
+
+def list_legion_tool_specs(settings: Optional[object] = None) -> List[ToolSpec]:
+    ordered: List[ToolSpec] = []
+    seen = set()
+    for spec in list(_tool_specs()) + _dynamic_specs_from_settings(settings):
+        if spec.key in seen:
+            continue
+        seen.add(spec.key)
+        ordered.append(spec)
+    return ordered
+
+
+def _resolve_configured_path(spec: ToolSpec, settings: Optional[object], env: Dict[str, str]) -> Tuple[str, str]:
+    if settings is None or not spec.configured_setting:
+        return "", ""
+    configured_value = str(getattr(settings, spec.configured_setting, "") or "").strip()
+    if not configured_value:
+        return "", ""
+    expanded = os.path.abspath(os.path.expanduser(configured_value))
+    if os.path.isabs(configured_value) or "/" in configured_value:
+        if os.path.isfile(expanded):
+            return configured_value, expanded
+    resolved = shutil.which(configured_value, path=env.get("PATH", ""))
+    if resolved:
+        return configured_value, os.path.abspath(resolved)
+    return configured_value, ""
+
+
+def _resolve_tool_command(spec: ToolSpec, env: Dict[str, str]) -> Tuple[str, str]:
+    for command_name in spec.commands:
+        resolved = shutil.which(command_name, path=env.get("PATH", ""))
+        if resolved:
+            return command_name, os.path.abspath(resolved)
+    return "", ""
+
+
+def audit_legion_tools(
+        settings: Optional[object] = None,
+        *,
+        base_env: Optional[Dict[str, str]] = None,
+) -> List[ToolAuditEntry]:
+    env = build_tool_execution_env(base_env)
+    entries: List[ToolAuditEntry] = []
+    for spec in list_legion_tool_specs(settings):
+        configured_value, configured_resolved = _resolve_configured_path(spec, settings, env)
+        resolved_command = ""
+        resolved_path = configured_resolved
+        if configured_resolved:
+            resolved_command = os.path.basename(configured_resolved)
+        else:
+            resolved_command, resolved_path = _resolve_tool_command(spec, env)
+
+        status = "installed" if resolved_path else "missing"
+        notes = spec.notes
+        if configured_value and not configured_resolved:
+            status = "configured-missing"
+            notes = (
+                f"Configured path '{configured_value}' did not resolve."
+                + (f" {notes}" if notes else "")
+            )
+
+        entries.append(
+            ToolAuditEntry(
+                key=spec.key,
+                label=spec.label,
+                category=spec.category,
+                purpose=spec.purpose,
+                status=status,
+                resolved_path=resolved_path,
+                resolved_command=resolved_command,
+                configured_value=configured_value,
+                kali_install=spec.kali_install,
+                ubuntu_install=spec.ubuntu_install,
+                notes=notes,
+                optional=spec.optional,
+            )
+        )
+
+    category_order = {
+        "core": 0,
+        "web": 1,
+        "internal": 2,
+        "screenshot": 3,
+        "relay": 4,
+        "credentials": 5,
+        "passive": 6,
+        "desktop": 7,
+        "legacy": 8,
+        "planned": 9,
+        "custom": 10,
+    }
+    return sorted(entries, key=lambda row: (category_order.get(row.category, 99), row.label.lower()))
+
+
+def tool_audit_summary(entries: Sequence[ToolAuditEntry]) -> Dict[str, int]:
+    installed = sum(1 for entry in entries if entry.status == "installed")
+    configured_missing = sum(1 for entry in entries if entry.status == "configured-missing")
+    missing = sum(1 for entry in entries if entry.status == "missing")
+    required_missing = sum(
+        1 for entry in entries
+        if not entry.optional and entry.status != "installed"
+    )
+    return {
+        "total": len(entries),
+        "installed": installed,
+        "configured_missing": configured_missing,
+        "missing": missing,
+        "required_missing": required_missing,
+    }
+
+
+def format_tool_audit_report(entries: Sequence[ToolAuditEntry]) -> str:
+    summary = tool_audit_summary(entries)
+    lines = [
+        "LEGION tool audit",
+        (
+            f"Installed: {summary['installed']}/{summary['total']} | "
+            f"Missing: {summary['missing']} | "
+            f"Configured missing: {summary['configured_missing']} | "
+            f"Required missing: {summary['required_missing']}"
+        ),
+        "",
+    ]
+    current_category = None
+    for entry in entries:
+        if entry.category != current_category:
+            current_category = entry.category
+            lines.append(f"[{current_category}]")
+        status = entry.status.upper()
+        resolved = entry.resolved_path or entry.configured_value or "-"
+        lines.append(f"- {entry.label}: {status} ({resolved})")
+        lines.append(f"  Purpose: {entry.purpose}")
+        if entry.kali_install:
+            lines.append(f"  Kali: {entry.kali_install}")
+        if entry.ubuntu_install:
+            lines.append(f"  Ubuntu: {entry.ubuntu_install}")
+        if entry.notes:
+            lines.append(f"  Notes: {entry.notes}")
+    return "\n".join(lines).strip() + "\n"

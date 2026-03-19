@@ -52,6 +52,7 @@ def build_arg_parser():
     parser.add_argument("--mcp-server", action="store_true", help="Start MCP server for AI integration")
     parser.add_argument("--headless", action="store_true", help="Run Legion in headless (CLI) mode")
     parser.add_argument("--web", action="store_true", help="Run Legion with the local Flask web interface")
+    parser.add_argument("--tool-audit", action="store_true", help="Print a tool availability audit and exit")
     parser.add_argument("--web-port", type=int, default=5000, help="Local web interface port")
     parser.add_argument(
         "--web-bind-all",
@@ -110,6 +111,15 @@ if __name__ == "__main__":
     cprint(getConsoleLogo())
 
     doPathSetup()
+
+    if args.tool_audit:
+        from app.settings import AppSettings, Settings
+        from app.tooling import audit_legion_tools, format_tool_audit_report
+
+        settings = Settings(AppSettings())
+        entries = audit_legion_tools(settings)
+        print(format_tool_audit_report(entries), end="")
+        sys.exit(0)
 
     if args.web:
         from app.web import create_app

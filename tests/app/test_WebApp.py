@@ -4,6 +4,7 @@ import io
 import json
 import os
 import zipfile
+from types import SimpleNamespace
 
 
 class DummySchedulerConfig:
@@ -1454,6 +1455,29 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("ok", response.json.get("status"))
 
+    def test_tool_audit_route_returns_rows(self):
+        self.runtime.settings = SimpleNamespace(
+            tools_path_nmap="",
+            tools_path_hydra="",
+            tools_path_texteditor="",
+            tools_path_responder="",
+            tools_path_ntlmrelay="",
+            hostActions=[],
+            portActions=[],
+            portTerminalActions=[],
+        )
+        response = self.client.get("/api/settings/tool-audit")
+        self.assertEqual(200, response.status_code)
+        body = response.get_json()
+        self.assertIn("summary", body)
+        self.assertIn("tools", body)
+        self.assertGreater(len(body["tools"]), 10)
+        first = body["tools"][0]
+        self.assertIn("label", first)
+        self.assertIn("status", first)
+        self.assertIn("kali_install", first)
+        self.assertIn("ubuntu_install", first)
+
     def test_index_renders(self):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
@@ -1504,6 +1528,8 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('id="jobs-modal"', body)
         self.assertIn('id="submitted-scans-modal"', body)
         self.assertIn('id="scheduler-decisions-modal"', body)
+        self.assertIn('id="settings-tool-audit-refresh-button"', body)
+        self.assertIn('id="settings-tool-audit-body"', body)
         self.assertIn('id="jobs-body"', body)
         self.assertIn('id="scan-history-body"', body)
         self.assertIn('id="decisions-body"', body)

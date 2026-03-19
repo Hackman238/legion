@@ -1810,6 +1810,40 @@ td button {
     width: min(1080px, 97vw);
 }
 
+.settings-tool-audit {
+    margin-bottom: 1rem;
+}
+
+.tool-audit-table-wrap {
+    max-height: min(28vh, 280px);
+}
+
+.tool-audit-table-wrap code {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.tool-audit-status-ok {
+    color: #7ef3d0;
+    font-weight: 700;
+}
+
+.tool-audit-status-warn {
+    color: #ffd166;
+    font-weight: 700;
+}
+
+.tool-audit-status-missing {
+    color: #ff9b9b;
+    font-weight: 700;
+}
+
+.empty-cell {
+    color: var(--text-dim);
+    text-align: center;
+    padding: 0.75rem;
+}
+
 .scan-modal {
     width: min(1120px, 97vw);
 }

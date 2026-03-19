@@ -19,6 +19,7 @@ from flask import (
 
 from app.ApplicationInfo import getConsoleLogo
 from app.settings import AppSettings, Settings
+from app.tooling import audit_legion_tools, tool_audit_summary
 
 web_bp = Blueprint("web", __name__)
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
@@ -392,6 +393,19 @@ def settings_legion_conf_save():
             pass
 
     return jsonify({"status": "ok", "path": conf_path})
+
+
+@web_bp.get("/api/settings/tool-audit")
+def settings_tool_audit():
+    runtime = current_app.extensions.get("legion_runtime")
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if settings is None:
+        settings = Settings(AppSettings())
+    entries = audit_legion_tools(settings)
+    return jsonify({
+        "summary": tool_audit_summary(entries),
+        "tools": [entry.to_dict() for entry in entries],
+    })
 
 
 @web_bp.get("/api/snapshot")

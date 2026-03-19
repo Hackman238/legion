@@ -55,6 +55,7 @@ The web interface includes:
 - host detail with notes, scripts, CVEs, screenshots, and contextual actions
 - graph workspace with filters, exports, layout management, floating/docked detail inspector, and contextual node actions
 - approval queue, submitted scans, scheduler decision history, and graph-backed reports
+- tool audit visibility for checking whether Legion can resolve the external tools it depends on
 
 ## 🍿 What Legion Does
 
@@ -74,6 +75,7 @@ The web interface includes:
 - Shared target-state persistence and a local evidence graph with query/export APIs, graph layouts, annotations, and graph-backed reporting.
 - Strategy-pack driven planning, optional runner abstraction, scan history, and intent-based process retry.
 - Broader governed action coverage, including deeper web follow-up and safer internal SMB enumeration.
+- Kali-first tool audit coverage with install hints for the external tools Legion launches or depends on.
 - MCP expansion for governed project access, planning, approvals, graph queries, findings, state, execution traces, and reports.
 
 ## 🧰 Action And Tooling Coverage
@@ -184,6 +186,7 @@ python3 legion.py --web
 | `--web-port` | Set the web interface port. Default: `5000`. |
 | `--web-bind-all` | Bind the web interface to `0.0.0.0` instead of `127.0.0.1`. |
 | `--web-opaque-ui` | Disable transparent UI effects for better responsiveness on slower hosts. |
+| `--tool-audit` | Print an external tool availability audit and exit. |
 | `--headless` | Run Legion in headless CLI mode. |
 | `--mcp-server` | Start the MCP server for external automation / AI integration. |
 | `--input-file` | Path to a text file of targets for headless mode. |
