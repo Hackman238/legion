@@ -995,6 +995,22 @@ def workspace_host_rescan(host_id):
         return _json_error(str(exc), 500)
 
 
+@web_bp.post("/api/workspace/subnets/rescan")
+def workspace_subnet_rescan():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    subnet = str(payload.get("subnet", "") or "").strip()
+    try:
+        job = runtime.start_subnet_rescan_job(subnet)
+        return jsonify({"status": "accepted", "job": job}), 202
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
 @web_bp.post("/api/workspace/hosts/<int:host_id>/dig-deeper")
 def workspace_host_dig_deeper(host_id):
     runtime = current_app.extensions["legion_runtime"]
@@ -1015,6 +1031,46 @@ def workspace_host_refresh_screenshots(host_id):
     try:
         job = runtime.start_host_screenshot_refresh_job(host_id)
         return jsonify({"status": "accepted", "job": job}), 202
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/workspace/screenshots/refresh")
+def workspace_graph_screenshot_refresh():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    try:
+        job = runtime.start_graph_screenshot_refresh_job(
+            int(payload.get("host_id", 0) or 0),
+            str(payload.get("port", "") or ""),
+            str(payload.get("protocol", "tcp") or "tcp"),
+        )
+        return jsonify({"status": "accepted", "job": job}), 202
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/workspace/screenshots/delete")
+def workspace_graph_screenshot_delete():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = runtime.delete_graph_screenshot(
+            host_id=int(payload.get("host_id", 0) or 0),
+            artifact_ref=str(payload.get("artifact_ref", "") or ""),
+            filename=str(payload.get("filename", "") or ""),
+            port=str(payload.get("port", "") or ""),
+            protocol=str(payload.get("protocol", "tcp") or "tcp"),
+        )
+        return jsonify({"status": "ok", **result})
     except KeyError as exc:
         return _json_error(str(exc), 404)
     except ValueError as exc:

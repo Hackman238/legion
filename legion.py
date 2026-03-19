@@ -58,6 +58,11 @@ def build_arg_parser():
         action="store_true",
         help="When used with --web, bind the web interface to 0.0.0.0 instead of 127.0.0.1",
     )
+    parser.add_argument(
+        "--web-opaque-ui",
+        action="store_true",
+        help="When used with --web, disable transparent UI effects for better responsiveness on slower hosts",
+    )
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
     parser.add_argument("--discovery", action="store_true", help="Enable host discovery (default: enabled)")
     parser.add_argument("--staged-scan", action="store_true", help="Enable staged scan")
@@ -81,6 +86,10 @@ def describe_web_bind_host(host: str) -> str:
     if host_value == "0.0.0.0":
         return "All interfaces"
     return "Localhost only"
+
+
+def resolve_web_opaque_ui(args) -> bool:
+    return bool(getattr(args, "web_opaque_ui", False))
 
 if __name__ == "__main__":
     parser = build_arg_parser()
@@ -114,6 +123,7 @@ if __name__ == "__main__":
         web_app = create_app(runtime)
         web_app.config["LEGION_WEB_BIND_HOST"] = web_bind_host
         web_app.config["LEGION_WEB_BIND_LABEL"] = describe_web_bind_host(web_bind_host)
+        web_app.config["LEGION_UI_OPAQUE"] = resolve_web_opaque_ui(args)
         web_app.run(host=web_bind_host, port=args.web_port, debug=False, use_reloader=False)
         sys.exit(0)
 

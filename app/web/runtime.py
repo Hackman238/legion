@@ -1929,6 +1929,63 @@ class WebRuntime:
             scan_options=default_scan_options,
         )
 
+    def start_subnet_rescan_job(self, subnet: str) -> Dict[str, Any]:
+        normalized_subnet = self._normalize_subnet_target(subnet)
+        with self._lock:
+            for job in self.jobs.list_jobs(limit=200):
+                if str(job.get("type", "")).strip() != "nmap-scan":
+                    continue
+                status = str(job.get("status", "") or "").strip().lower()
+                if status not in {"queued", "running"}:
+                    continue
+                payload = job.get("payload", {}) if isinstance(job.get("payload", {}), dict) else {}
+                try:
+                    job_targets = self._normalize_targets(payload.get("targets", []))
+                except Exception:
+                    job_targets = []
+                if normalized_subnet in job_targets:
+                    existing_copy = dict(job)
+                    existing_copy["existing"] = True
+                    return existing_copy
+            template = self._best_scan_submission_for_subnet(normalized_subnet, self.get_scan_history(limit=400))
+
+        if isinstance(template, dict):
+            return self.start_nmap_scan_job(
+                targets=[normalized_subnet],
+                discovery=self._record_bool(template.get("discovery"), True),
+                staged=self._record_bool(template.get("staged"), False),
+                run_actions=self._record_bool(template.get("run_actions"), False),
+                nmap_path=str(template.get("nmap_path", "nmap") or "nmap").strip() or "nmap",
+                nmap_args=str(template.get("nmap_args", "") or "").strip(),
+                scan_mode=str(template.get("scan_mode", "legacy") or "legacy").strip().lower() or "legacy",
+                scan_options=dict(template.get("scan_options", {}) or {}),
+            )
+
+        default_scan_options = {
+            "discovery": True,
+            "skip_dns": True,
+            "timing": "T3",
+            "top_ports": 1000,
+            "service_detection": True,
+            "default_scripts": True,
+            "os_detection": False,
+            "aggressive": False,
+            "full_ports": False,
+            "vuln_scripts": False,
+            "host_discovery_only": False,
+            "arp_ping": False,
+        }
+        return self.start_nmap_scan_job(
+            targets=[normalized_subnet],
+            discovery=True,
+            staged=False,
+            run_actions=False,
+            nmap_path="nmap",
+            nmap_args="",
+            scan_mode="easy",
+            scan_options=default_scan_options,
+        )
+
     def start_host_dig_deeper_job(self, host_id: int) -> Dict[str, Any]:
         with self._lock:
             host = self._resolve_host(int(host_id))
@@ -1997,6 +2054,164 @@ class WebRuntime:
                 "target_count": len(targets),
             },
         )
+
+    def start_graph_screenshot_refresh_job(self, host_id: int, port: str, protocol: str = "tcp") -> Dict[str, Any]:
+        resolved_host_id = int(host_id or 0)
+        resolved_port = str(port or "").strip()
+        resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+        if resolved_host_id <= 0 or not resolved_port:
+            raise ValueError("host_id and port are required.")
+        with self._lock:
+            host = self._resolve_host(resolved_host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+            host_ip = str(getattr(host, "ip", "") or "").strip()
+            if not host_ip:
+                raise ValueError(f"Host {host_id} does not have a valid IP.")
+            for job in self.jobs.list_jobs(limit=200):
+                if str(job.get("type", "")).strip() != "graph-screenshot-refresh":
+                    continue
+                status = str(job.get("status", "") or "").strip().lower()
+                if status not in {"queued", "running"}:
+                    continue
+                payload = job.get("payload", {}) if isinstance(job.get("payload", {}), dict) else {}
+                if int(payload.get("host_id", 0) or 0) != resolved_host_id:
+                    continue
+                if str(payload.get("port", "") or "").strip() != resolved_port:
+                    continue
+                if str(payload.get("protocol", "tcp") or "tcp").strip().lower() != resolved_protocol:
+                    continue
+                existing_copy = dict(job)
+                existing_copy["existing"] = True
+                return existing_copy
+            service_name = self._service_name_for_target(host_ip, resolved_port, resolved_protocol)
+            normalized_service = str(service_name or "").strip().rstrip("?").lower()
+            if not (
+                    self._is_web_screenshot_target(resolved_port, resolved_protocol, normalized_service)
+                    or self._is_rdp_service(normalized_service)
+                    or self._is_vnc_service(normalized_service)
+            ):
+                raise ValueError("Target does not support screenshot refresh.")
+
+        return self._start_job(
+            "graph-screenshot-refresh",
+            lambda job_id: self._run_graph_screenshot_refresh(
+                host_id=resolved_host_id,
+                port=resolved_port,
+                protocol=resolved_protocol,
+                job_id=int(job_id or 0),
+            ),
+            payload={
+                "host_id": resolved_host_id,
+                "host_ip": host_ip,
+                "port": resolved_port,
+                "protocol": resolved_protocol,
+            },
+        )
+
+    def delete_graph_screenshot(
+            self,
+            *,
+            host_id: int,
+            artifact_ref: str = "",
+            filename: str = "",
+            port: str = "",
+            protocol: str = "tcp",
+    ) -> Dict[str, Any]:
+        resolved_host_id = int(host_id or 0)
+        if resolved_host_id <= 0:
+            raise ValueError("host_id is required.")
+        resolved_artifact_ref = str(artifact_ref or "").strip()
+        resolved_filename = os.path.basename(str(filename or "").strip())
+        resolved_port = str(port or "").strip()
+        resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+        if not resolved_artifact_ref and not resolved_filename:
+            raise ValueError("artifact_ref or filename is required.")
+
+        with self._lock:
+            project = self._require_active_project()
+            host = self._resolve_host(resolved_host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+
+            screenshot_dir = os.path.join(project.properties.outputFolder, "screenshots")
+            candidate_paths: List[str] = []
+            if resolved_filename:
+                candidate_paths.append(os.path.join(screenshot_dir, resolved_filename))
+            if resolved_artifact_ref:
+                if resolved_artifact_ref.startswith("/api/screenshots/"):
+                    api_filename = os.path.basename(resolved_artifact_ref)
+                    if api_filename:
+                        candidate_paths.append(os.path.join(screenshot_dir, api_filename))
+                else:
+                    candidate_paths.append(resolved_artifact_ref)
+            normalized_candidates: List[str] = []
+            for path in candidate_paths:
+                normalized = os.path.abspath(str(path or "").strip())
+                if normalized and normalized not in normalized_candidates:
+                    normalized_candidates.append(normalized)
+
+            deleted_files = 0
+            deleted_paths: List[str] = []
+            for path in normalized_candidates:
+                if not os.path.isfile(path):
+                    continue
+                if not self._is_project_artifact_path(project, path):
+                    continue
+                try:
+                    os.remove(path)
+                    deleted_files += 1
+                    deleted_paths.append(path)
+                except Exception:
+                    continue
+
+            target_state = get_target_state(project.database, resolved_host_id) or {}
+            filtered_screenshots = []
+            for item in list(target_state.get("screenshots", []) or []):
+                if not isinstance(item, dict):
+                    continue
+                item_ref = str(item.get("artifact_ref", "") or item.get("ref", "") or item.get("url", "") or "").strip()
+                item_name = os.path.basename(str(item.get("filename", "") or item_ref).strip())
+                item_port = str(item.get("port", "") or "").strip()
+                item_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
+                matches_ref = bool(resolved_artifact_ref and (item_ref == resolved_artifact_ref or os.path.basename(item_ref) == resolved_filename))
+                matches_name = bool(resolved_filename and item_name == resolved_filename)
+                matches_target = True
+                if resolved_port:
+                    matches_target = item_port == resolved_port
+                if matches_target and resolved_protocol:
+                    matches_target = item_protocol == resolved_protocol
+                if (matches_ref or matches_name) and matches_target:
+                    continue
+                filtered_screenshots.append(dict(item))
+
+            filtered_artifacts = []
+            for item in list(target_state.get("artifacts", []) or []):
+                if not isinstance(item, dict):
+                    continue
+                item_ref = str(item.get("ref", "") or item.get("artifact_ref", "") or "").strip()
+                item_kind = str(item.get("kind", "") or "").strip().lower()
+                item_name = os.path.basename(item_ref)
+                matches_ref = bool(resolved_artifact_ref and (item_ref == resolved_artifact_ref or os.path.basename(item_ref) == resolved_filename))
+                matches_name = bool(resolved_filename and item_name == resolved_filename)
+                if item_kind == "screenshot" and (matches_ref or matches_name):
+                    continue
+                filtered_artifacts.append(dict(item))
+
+            updated_state = dict(target_state)
+            updated_state["screenshots"] = filtered_screenshots
+            updated_state["artifacts"] = filtered_artifacts
+            upsert_target_state(project.database, resolved_host_id, updated_state, merge=False)
+            rebuild_evidence_graph(project.database, host_id=resolved_host_id)
+
+            return {
+                "deleted": True,
+                "host_id": resolved_host_id,
+                "artifact_ref": resolved_artifact_ref,
+                "filename": resolved_filename,
+                "deleted_files": int(deleted_files),
+                "deleted_paths": deleted_paths,
+            }
 
     def _find_active_job(self, *, job_type: str, host_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         for job in self.jobs.list_jobs(limit=200):
@@ -3273,27 +3488,133 @@ class WebRuntime:
                     f"{getTimestamp()}-{tool_name}-{host_ip}-{port}",
                 )
                 outputfile = os.path.normpath(outputfile).replace("\\", "/")
+            retry_plan = self._build_process_retry_plan(
+                tool_name=tool_name,
+                host_ip=host_ip,
+                port=port,
+                protocol=protocol,
+            )
             if self._is_nmap_command(tool_name, command):
                 command = AppSettings._ensure_nmap_stats_every(command)
 
-        executed, reason, new_process_id = self._run_command_with_tracking(
-            tool_name=tool_name,
-            tab_title=tab_title,
-            host_ip=host_ip,
-            port=port,
-            protocol=protocol,
-            command=command,
-            outputfile=outputfile,
-            timeout=int(timeout),
-            job_id=int(job_id or 0),
-        )
+        if retry_plan.get("mode") == "tool":
+            tool_result = self._run_manual_tool(
+                host_ip=str(retry_plan.get("host_ip", "") or ""),
+                port=str(retry_plan.get("port", "") or ""),
+                protocol=str(retry_plan.get("protocol", "tcp") or "tcp"),
+                tool_id=str(retry_plan.get("tool_id", "") or ""),
+                command_override="",
+                timeout=int(timeout),
+                job_id=int(job_id or 0),
+            )
+            executed = bool(tool_result.get("executed", False))
+            reason = str(tool_result.get("reason", "") or "")
+            new_process_id = int(tool_result.get("process_id", 0) or 0)
+            command = str(tool_result.get("command", "") or "")
+            retry_mode = "intent"
+            retry_intent = "tool-run"
+        elif retry_plan.get("mode") == "nmap_scan":
+            scan_result = self._run_nmap_scan_and_import(
+                targets=list(retry_plan.get("targets", []) or []),
+                discovery=bool(retry_plan.get("discovery", True)),
+                staged=bool(retry_plan.get("staged", False)),
+                run_actions=bool(retry_plan.get("run_actions", False)),
+                nmap_path=str(retry_plan.get("nmap_path", "nmap") or "nmap"),
+                nmap_args=str(retry_plan.get("nmap_args", "") or ""),
+                scan_mode=str(retry_plan.get("scan_mode", "legacy") or "legacy"),
+                scan_options=dict(retry_plan.get("scan_options", {}) or {}),
+                job_id=int(job_id or 0),
+            )
+            stages = list(scan_result.get("stages", []) or [])
+            last_stage = stages[-1] if stages else {}
+            executed = True
+            reason = "completed"
+            new_process_id = int(last_stage.get("process_id", 0) or 0)
+            command = str(last_stage.get("command", "") or "")
+            retry_mode = "intent"
+            retry_intent = "nmap_scan"
+        else:
+            executed, reason, new_process_id = self._run_command_with_tracking(
+                tool_name=tool_name,
+                tab_title=tab_title,
+                host_ip=host_ip,
+                port=port,
+                protocol=protocol,
+                command=command,
+                outputfile=outputfile,
+                timeout=int(timeout),
+                job_id=int(job_id or 0),
+            )
+            retry_mode = "command"
+            retry_intent = "command-replay"
         return {
             "source_process_id": int(process_id),
             "process_id": int(new_process_id),
             "executed": bool(executed),
             "reason": str(reason),
             "command": command,
+            "retry_mode": retry_mode,
+            "retry_intent": retry_intent,
         }
+
+    def _build_process_retry_plan(
+            self,
+            *,
+            tool_name: str,
+            host_ip: str,
+            port: str,
+            protocol: str,
+    ) -> Dict[str, Any]:
+        normalized_tool = str(tool_name or "").strip()
+        normalized_host = str(host_ip or "").strip()
+        normalized_port = str(port or "").strip()
+        normalized_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+
+        settings = self._get_settings()
+        if normalized_tool and normalized_host and normalized_port:
+            action = self._find_port_action(settings, normalized_tool)
+            if action is not None:
+                return {
+                    "mode": "tool",
+                    "tool_id": normalized_tool,
+                    "host_ip": normalized_host,
+                    "port": normalized_port,
+                    "protocol": normalized_protocol,
+                }
+
+        normalized_targets = self._split_process_retry_targets(normalized_host)
+        tool_token = normalized_tool.lower()
+        if normalized_targets and tool_token in {"nmap-easy", "nmap-hard", "nmap-rfc1918_discovery"}:
+            scan_mode = tool_token.split("nmap-", 1)[1]
+            return {
+                "mode": "nmap_scan",
+                "targets": normalized_targets,
+                "discovery": scan_mode != "hard",
+                "staged": False,
+                "run_actions": False,
+                "nmap_path": "nmap",
+                "nmap_args": "",
+                "scan_mode": scan_mode,
+                "scan_options": {},
+            }
+
+        return {"mode": "command"}
+
+    @staticmethod
+    def _split_process_retry_targets(value: str) -> List[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+        tokens = [
+            item.strip()
+            for item in re.split(r"[\s,]+", raw)
+            if item.strip()
+        ]
+        deduped: List[str] = []
+        for item in tokens:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped
 
     @staticmethod
     def _signal_process_tree(proc: Optional[subprocess.Popen], *, force: bool = False):
@@ -6969,6 +7290,68 @@ class WebRuntime:
             "screenshots": screenshots,
         }
 
+    def _run_graph_screenshot_refresh(
+            self,
+            *,
+            host_id: int,
+            port: str,
+            protocol: str = "tcp",
+            job_id: int = 0,
+    ) -> Dict[str, Any]:
+        resolved_host_id = int(host_id or 0)
+        resolved_port = str(port or "").strip()
+        resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+        with self._lock:
+            host = self._resolve_host(resolved_host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+            host_ip = str(getattr(host, "ip", "") or "").strip()
+            hostname = str(getattr(host, "hostname", "") or "").strip()
+            if not host_ip:
+                raise ValueError(f"Host {host_id} does not have a valid IP.")
+            service_name = self._service_name_for_target(host_ip, resolved_port, resolved_protocol)
+
+        if int(job_id or 0) > 0 and self.jobs.is_cancel_requested(int(job_id)):
+            return {
+                "host_id": resolved_host_id,
+                "host_ip": host_ip,
+                "hostname": hostname,
+                "port": resolved_port,
+                "protocol": resolved_protocol,
+                "executed": False,
+                "reason": "cancelled",
+                "artifact_refs": [],
+                "screenshots": [],
+            }
+
+        executed, reason, artifact_refs = self._take_screenshot(
+            host_ip,
+            resolved_port,
+            service_name=str(service_name or ""),
+            return_artifacts=True,
+        )
+        with self._lock:
+            project = self._require_active_project()
+            screenshots = self._list_screenshots_for_host(project, host_ip)
+
+        try:
+            self.get_host_workspace(resolved_host_id)
+        except Exception:
+            pass
+
+        return {
+            "host_id": resolved_host_id,
+            "host_ip": host_ip,
+            "hostname": hostname,
+            "port": resolved_port,
+            "protocol": resolved_protocol,
+            "service_name": str(service_name or ""),
+            "executed": bool(executed),
+            "reason": str(reason or ""),
+            "artifact_refs": list(artifact_refs or []),
+            "screenshots": screenshots,
+        }
+
     def _take_screenshot(
             self,
             host_ip: str,
@@ -9115,6 +9498,94 @@ class WebRuntime:
                 status=str(status or ""),
                 result_summary=str(result_summary or ""),
             )
+
+    @staticmethod
+    def _record_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        text_value = str(value or "").strip().lower()
+        if text_value in {"1", "true", "yes", "on"}:
+            return True
+        if text_value in {"0", "false", "no", "off"}:
+            return False
+        return bool(default)
+
+    @staticmethod
+    def _normalize_subnet_target(subnet: str) -> str:
+        token = str(subnet or "").strip()
+        if not token:
+            raise ValueError("Subnet is required.")
+        try:
+            return str(ipaddress.ip_network(token, strict=False))
+        except ValueError as exc:
+            raise ValueError(f"Invalid subnet: {token}") from exc
+
+    @staticmethod
+    def _scan_history_targets(record: Dict[str, Any]) -> List[str]:
+        if isinstance(record.get("targets"), list):
+            values = [str(item or "").strip() for item in list(record.get("targets", [])) if str(item or "").strip()]
+            if values:
+                return values
+        raw_targets = str(record.get("targets_json", "") or "").strip()
+        if raw_targets:
+            try:
+                parsed = json.loads(raw_targets)
+            except Exception:
+                parsed = []
+            if isinstance(parsed, list):
+                values = [str(item or "").strip() for item in parsed if str(item or "").strip()]
+                if values:
+                    return values
+        fallback: List[str] = []
+        for source in (record.get("scope_summary", ""), record.get("target_summary", "")):
+            for token in re.findall(r"[A-Za-z0-9./:-]+", str(source or "")):
+                cleaned = str(token or "").strip(",:")
+                if cleaned and cleaned not in fallback:
+                    fallback.append(cleaned)
+        return fallback
+
+    @classmethod
+    def _scan_target_match_score_for_subnet(cls, target: Any, subnet: str) -> int:
+        token = str(target or "").strip().strip(",")
+        if not token:
+            return -1
+        subnet_network = ipaddress.ip_network(str(subnet), strict=False)
+        try:
+            target_ip = ipaddress.ip_address(token)
+            return 50 if target_ip in subnet_network else -1
+        except ValueError:
+            pass
+        try:
+            target_network = ipaddress.ip_network(token, strict=False)
+            if target_network == subnet_network:
+                return 100
+            if subnet_network.subnet_of(target_network):
+                return 90
+            if target_network.subnet_of(subnet_network):
+                return 80
+            if target_network.overlaps(subnet_network):
+                return 70
+            return -1
+        except ValueError:
+            pass
+        return -1
+
+    @classmethod
+    def _best_scan_submission_for_subnet(cls, subnet: str, records: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        best_record: Optional[Dict[str, Any]] = None
+        best_score = -1
+        for record in list(records or []):
+            if str(record.get("submission_kind", "") or "").strip() != "nmap_scan":
+                continue
+            score = -1
+            for target in cls._scan_history_targets(record):
+                score = max(score, cls._scan_target_match_score_for_subnet(target, subnet))
+            if score > best_score:
+                best_record = record
+                best_score = score
+        return best_record if best_score >= 0 else None
 
     @staticmethod
     def _split_csv(raw: str) -> List[str]:

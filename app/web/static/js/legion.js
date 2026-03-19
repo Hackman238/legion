@@ -14,6 +14,8 @@ const graphWorkspaceState = {
     groupBy: "finding",
     renderMode: "auto",
     zoomPercent: 70,
+    detailMode: "floating",
+    filtersExpanded: false,
     data: {
         nodes: [],
         edges: [],
@@ -53,6 +55,7 @@ const GRAPH_WORKSPACE_HEIGHT_STORAGE_KEY = "legion.graphWorkspaceHeightPx";
 const GRAPH_WORKSPACE_DEFAULT_HEIGHT = 680;
 const GRAPH_WORKSPACE_MIN_HEIGHT = 520;
 const GRAPH_WORKSPACE_MAX_HEIGHT = 1600;
+const GRAPH_EDGE_HIGHLIGHT_COLOR = "#ff9f43";
 let graphWorkspaceResizeState = null;
 
 const GRAPH_VIEW_PRESETS = {
@@ -95,22 +98,30 @@ const GRAPH_SOURCE_KIND_LABELS = {
 const GRAPH_SOURCE_KIND_STYLES = {
     observed: {
         stroke: "#7ee3cb",
+        edgeStroke: "#5f8f89",
         fill: "rgba(126, 227, 203, 0.16)",
+        fillOpaque: "#17322f",
         dash: "",
     },
     inferred: {
         stroke: "#f1cd6b",
+        edgeStroke: "#9d8555",
         fill: "rgba(241, 205, 107, 0.16)",
+        fillOpaque: "#3a3118",
         dash: "7 5",
     },
     ai_suggested: {
         stroke: "#a38dff",
+        edgeStroke: "#756ca8",
         fill: "rgba(163, 141, 255, 0.16)",
+        fillOpaque: "#282042",
         dash: "2 5",
     },
     user_entered: {
         stroke: "#9ad2ff",
+        edgeStroke: "#6e93ac",
         fill: "rgba(154, 210, 255, 0.16)",
+        fillOpaque: "#1d3141",
         dash: "",
     },
 };
@@ -252,6 +263,7 @@ const uiModalState = {
     scriptCveOpen: false,
     providerLogsOpen: false,
     hostRemoveOpen: false,
+    graphNoteOpen: false,
 };
 
 const ribbonMenuState = {
@@ -275,6 +287,7 @@ function updateBodyModalState() {
         || uiModalState.scriptCveOpen
         || uiModalState.providerLogsOpen
         || uiModalState.hostRemoveOpen
+        || uiModalState.graphNoteOpen
     );
     document.body.classList.toggle("modal-open", anyModalOpen);
 }
@@ -317,6 +330,143 @@ function makeCell(value) {
     const td = document.createElement("td");
     td.textContent = value ?? "";
     return td;
+}
+
+function buildHostActionButton(action, hostId) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "icon-btn";
+    button.dataset.hostAction = String(action || "");
+    button.dataset.hostId = String(hostId || "");
+
+    if (action === "rescan") {
+        button.title = "Rescan";
+        button.setAttribute("aria-label", "Rescan");
+        button.innerHTML = '<i class="fa-solid fa-rotate-right" aria-hidden="true"></i>';
+        return button;
+    }
+    if (action === "refresh-screenshots") {
+        button.title = "Refresh screenshots";
+        button.setAttribute("aria-label", "Refresh screenshots");
+        button.innerHTML = '<i class="fa-solid fa-camera-retro" aria-hidden="true"></i>';
+        return button;
+    }
+    if (action === "dig-deeper") {
+        button.title = "Dig Deeper";
+        button.setAttribute("aria-label", "Dig Deeper");
+        button.innerHTML = '<i class="fa-solid fa-brain" aria-hidden="true"></i>';
+        return button;
+    }
+    if (action === "remove") {
+        button.classList.add("icon-btn-danger");
+        button.title = "Remove host";
+        button.setAttribute("aria-label", "Remove host");
+        button.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+        return button;
+    }
+    return button;
+}
+
+function buildSubnetActionButton(action, subnet) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "icon-btn";
+    button.dataset.subnetAction = String(action || "");
+    button.dataset.subnet = String(subnet || "");
+
+    if (action === "rescan") {
+        button.title = "Rescan subnet";
+        button.setAttribute("aria-label", "Rescan subnet");
+        button.innerHTML = '<i class="fa-solid fa-rotate-right" aria-hidden="true"></i>';
+        return button;
+    }
+    return button;
+}
+
+function buildScreenshotActionButton(action, payload) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "icon-btn";
+    button.dataset.screenshotAction = String(action || "");
+    button.dataset.hostId = String(payload?.hostId || "");
+    button.dataset.port = String(payload?.port || "");
+    button.dataset.protocol = String(payload?.protocol || "tcp");
+    button.dataset.artifactRef = String(payload?.artifactRef || "");
+    button.dataset.filename = String(payload?.filename || "");
+
+    if (action === "refresh") {
+        button.title = "Re-screenshot";
+        button.setAttribute("aria-label", "Re-screenshot");
+        button.innerHTML = '<i class="fa-solid fa-camera-retro" aria-hidden="true"></i>';
+        return button;
+    }
+    if (action === "delete") {
+        button.classList.add("icon-btn-danger");
+        button.title = "Delete screenshot";
+        button.setAttribute("aria-label", "Delete screenshot");
+        button.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+        return button;
+    }
+    return button;
+}
+
+async function handleHostActionButtonAction(actionBtn) {
+    const hostId = parseInt(actionBtn?.dataset?.hostId, 10);
+    const action = String(actionBtn?.dataset?.hostAction || "");
+    if (!hostId) {
+        return true;
+    }
+    if (action === "rescan") {
+        await rescanHostAction(hostId);
+        return true;
+    }
+    if (action === "refresh-screenshots") {
+        await refreshHostScreenshotsAction(hostId);
+        return true;
+    }
+    if (action === "dig-deeper") {
+        await digDeeperHostAction(hostId);
+        return true;
+    }
+    if (action === "remove") {
+        requestHostRemoveAction(hostId);
+        return true;
+    }
+    return false;
+}
+
+async function handleSubnetActionButtonAction(actionBtn) {
+    const subnet = String(actionBtn?.dataset?.subnet || "").trim();
+    const action = String(actionBtn?.dataset?.subnetAction || "");
+    if (!subnet) {
+        return true;
+    }
+    if (action === "rescan") {
+        await rescanSubnetAction(subnet);
+        return true;
+    }
+    return false;
+}
+
+async function handleScreenshotActionButtonAction(actionBtn) {
+    const hostId = parseInt(actionBtn?.dataset?.hostId, 10);
+    const action = String(actionBtn?.dataset?.screenshotAction || "");
+    const port = String(actionBtn?.dataset?.port || "").trim();
+    const protocol = String(actionBtn?.dataset?.protocol || "tcp").trim().toLowerCase() || "tcp";
+    const artifactRef = String(actionBtn?.dataset?.artifactRef || "").trim();
+    const filename = String(actionBtn?.dataset?.filename || "").trim();
+    if (!hostId) {
+        return true;
+    }
+    if (action === "refresh") {
+        await refreshGraphScreenshotAction({hostId, port, protocol});
+        return true;
+    }
+    if (action === "delete") {
+        await deleteGraphScreenshotAction({hostId, port, protocol, artifactRef, filename});
+        return true;
+    }
+    return false;
 }
 
 const ANSI_FG_CLASS_BY_CODE = {
@@ -801,46 +951,9 @@ function renderHosts(hosts) {
         tr.appendChild(makeCell(host.open_ports));
         const actionsCell = document.createElement("td");
         actionsCell.className = "host-actions";
-
-        const rescanBtn = document.createElement("button");
-        rescanBtn.type = "button";
-        rescanBtn.className = "icon-btn";
-        rescanBtn.dataset.hostAction = "rescan";
-        rescanBtn.dataset.hostId = String(host.id || "");
-        rescanBtn.title = "Rescan";
-        rescanBtn.setAttribute("aria-label", "Rescan");
-        rescanBtn.innerHTML = '<i class="fa-solid fa-rotate-right" aria-hidden="true"></i>';
-        actionsCell.appendChild(rescanBtn);
-
-        const screenshotBtn = document.createElement("button");
-        screenshotBtn.type = "button";
-        screenshotBtn.className = "icon-btn";
-        screenshotBtn.dataset.hostAction = "refresh-screenshots";
-        screenshotBtn.dataset.hostId = String(host.id || "");
-        screenshotBtn.title = "Refresh screenshots";
-        screenshotBtn.setAttribute("aria-label", "Refresh screenshots");
-        screenshotBtn.innerHTML = '<i class="fa-solid fa-camera-retro" aria-hidden="true"></i>';
-        actionsCell.appendChild(screenshotBtn);
-
-        const digDeeperBtn = document.createElement("button");
-        digDeeperBtn.type = "button";
-        digDeeperBtn.className = "icon-btn";
-        digDeeperBtn.dataset.hostAction = "dig-deeper";
-        digDeeperBtn.dataset.hostId = String(host.id || "");
-        digDeeperBtn.title = "Dig Deeper";
-        digDeeperBtn.setAttribute("aria-label", "Dig Deeper");
-        digDeeperBtn.innerHTML = '<i class="fa-solid fa-brain" aria-hidden="true"></i>';
-        actionsCell.appendChild(digDeeperBtn);
-
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "icon-btn icon-btn-danger";
-        removeBtn.dataset.hostAction = "remove";
-        removeBtn.dataset.hostId = String(host.id || "");
-        removeBtn.title = "Remove host";
-        removeBtn.setAttribute("aria-label", "Remove host");
-        removeBtn.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
-        actionsCell.appendChild(removeBtn);
+        ["rescan", "refresh-screenshots", "dig-deeper", "remove"].forEach((action) => {
+            actionsCell.appendChild(buildHostActionButton(action, host.id || ""));
+        });
 
         tr.appendChild(actionsCell);
         body.appendChild(tr);
@@ -974,14 +1087,20 @@ function renderProcesses(processes) {
 
         const viewBtn = document.createElement("button");
         viewBtn.type = "button";
-        viewBtn.textContent = "Output";
+        viewBtn.className = "icon-btn";
+        viewBtn.title = "Output";
+        viewBtn.setAttribute("aria-label", "Output");
+        viewBtn.innerHTML = '<i class="fa-solid fa-terminal" aria-hidden="true"></i>';
         viewBtn.dataset.processAction = "output";
         viewBtn.dataset.processId = String(process.id || "");
         actions.appendChild(viewBtn);
 
         const retryBtn = document.createElement("button");
         retryBtn.type = "button";
-        retryBtn.textContent = "Retry";
+        retryBtn.className = "icon-btn";
+        retryBtn.title = "Retry";
+        retryBtn.setAttribute("aria-label", "Retry");
+        retryBtn.innerHTML = '<i class="fa-solid fa-rotate-right" aria-hidden="true"></i>';
         retryBtn.dataset.processAction = "retry";
         retryBtn.dataset.processId = String(process.id || "");
         actions.appendChild(retryBtn);
@@ -989,7 +1108,10 @@ function renderProcesses(processes) {
         if (isProcessRunning(process.status)) {
             const killBtn = document.createElement("button");
             killBtn.type = "button";
-            killBtn.textContent = "Kill";
+            killBtn.className = "icon-btn icon-btn-danger";
+            killBtn.title = "Kill";
+            killBtn.setAttribute("aria-label", "Kill");
+            killBtn.innerHTML = '<i class="fa-solid fa-stop" aria-hidden="true"></i>';
             killBtn.dataset.processAction = "kill";
             killBtn.dataset.processId = String(process.id || "");
             actions.appendChild(killBtn);
@@ -997,7 +1119,10 @@ function renderProcesses(processes) {
 
         const hideBtn = document.createElement("button");
         hideBtn.type = "button";
-        hideBtn.textContent = "Hide";
+        hideBtn.className = "icon-btn";
+        hideBtn.title = "Hide";
+        hideBtn.setAttribute("aria-label", "Hide");
+        hideBtn.innerHTML = '<i class="fa-solid fa-eye-slash" aria-hidden="true"></i>';
         hideBtn.dataset.processAction = "close";
         hideBtn.dataset.processId = String(process.id || "");
         actions.appendChild(hideBtn);
@@ -1398,6 +1523,26 @@ function setHostRemoveModalOpen(open) {
     updateBodyModalState();
 }
 
+function setGraphNoteModalOpen(open) {
+    const overlay = document.getElementById("graph-note-modal");
+    if (!overlay) {
+        return;
+    }
+    uiModalState.graphNoteOpen = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    updateBodyModalState();
+    if (open) {
+        window.requestAnimationFrame(() => {
+            const input = document.getElementById("graph-note-input");
+            if (input) {
+                input.focus();
+                input.setSelectionRange(input.value.length, input.value.length);
+            }
+        });
+    }
+}
+
 function closeNmapScanModalAction() {
     setNmapScanModalOpen(false);
 }
@@ -1425,6 +1570,13 @@ function closeHostRemoveModalAction(clearSelection = true) {
         hostRemoveState.hostIp = "";
         hostRemoveState.hostName = "";
         setText("host-remove-modal-target", "");
+    }
+}
+
+function closeGraphNoteModalAction(clearInput = false) {
+    setGraphNoteModalOpen(false);
+    if (clearInput) {
+        setValue("graph-note-input", "");
     }
 }
 
@@ -2281,6 +2433,25 @@ async function rescanHostAction(hostId) {
     }
 }
 
+async function rescanSubnetAction(subnet) {
+    const value = String(subnet || "").trim();
+    if (!value) {
+        return;
+    }
+    try {
+        const body = await postJson("/api/workspace/subnets/rescan", {subnet: value});
+        const jobId = Number(body?.job?.id || 0);
+        if (body?.job?.existing) {
+            setWorkspaceStatus(`Subnet rescan already queued/running (job ${jobId || "?"})`);
+        } else {
+            setWorkspaceStatus(`Subnet rescan queued (job ${jobId || "?"})`);
+        }
+        await pollSnapshot();
+    } catch (err) {
+        setWorkspaceStatus(`Subnet rescan failed: ${err.message}`, true);
+    }
+}
+
 async function digDeeperHostAction(hostId) {
     const id = parseInt(hostId, 10);
     if (!id) {
@@ -2338,6 +2509,59 @@ async function refreshHostScreenshotsAction(hostId) {
         }
     } catch (err) {
         setWorkspaceStatus(`Screenshot refresh failed: ${err.message}`, true);
+    }
+}
+
+async function refreshGraphScreenshotAction(payload) {
+    const hostId = parseInt(payload?.hostId, 10);
+    const port = String(payload?.port || "").trim();
+    const protocol = String(payload?.protocol || "tcp").trim().toLowerCase() || "tcp";
+    if (!hostId || !port) {
+        return;
+    }
+    try {
+        const body = await postJson("/api/workspace/screenshots/refresh", {
+            host_id: hostId,
+            port,
+            protocol,
+        });
+        const jobId = Number(body?.job?.id || 0);
+        if (body?.job?.existing) {
+            setWorkspaceStatus(`Screenshot refresh already queued/running (job ${jobId || "?"})`);
+        } else {
+            setWorkspaceStatus(`Screenshot refresh queued (job ${jobId || "?"})`);
+        }
+        await pollSnapshot();
+    } catch (err) {
+        setWorkspaceStatus(`Screenshot refresh failed: ${err.message}`, true);
+    }
+}
+
+async function deleteGraphScreenshotAction(payload) {
+    const hostId = parseInt(payload?.hostId, 10);
+    const port = String(payload?.port || "").trim();
+    const protocol = String(payload?.protocol || "tcp").trim().toLowerCase() || "tcp";
+    const artifactRef = String(payload?.artifactRef || "").trim();
+    const filename = String(payload?.filename || "").trim();
+    if (!hostId || (!artifactRef && !filename)) {
+        return;
+    }
+    const targetLabel = filename || artifactRef || "this screenshot";
+    if (!window.confirm(`Delete ${targetLabel}?`)) {
+        return;
+    }
+    try {
+        await postJson("/api/workspace/screenshots/delete", {
+            host_id: hostId,
+            port,
+            protocol,
+            artifact_ref: artifactRef,
+            filename,
+        });
+        setWorkspaceStatus(`Deleted screenshot ${targetLabel}`);
+        await pollSnapshot();
+    } catch (err) {
+        setWorkspaceStatus(`Delete screenshot failed: ${err.message}`, true);
     }
 }
 
@@ -3247,6 +3471,22 @@ function getGraphWorkspacePanel() {
     return canvas ? canvas.closest(".graph-panel") : null;
 }
 
+function getGraphWorkspaceShell() {
+    return document.getElementById("graph-workspace-shell");
+}
+
+function getGraphCanvasPanel() {
+    return document.querySelector(".graph-canvas-panel");
+}
+
+function getGraphCanvasScrollNode() {
+    return document.querySelector(".graph-canvas-scroll");
+}
+
+function graphHasActiveSelection() {
+    return Boolean(graphWorkspaceState.selectedKind && graphWorkspaceState.selectedRef);
+}
+
 function normalizeGraphWorkspaceHeight(value) {
     const parsed = Number.parseInt(String(value || ""), 10);
     if (!Number.isFinite(parsed)) {
@@ -3269,6 +3509,7 @@ function applyGraphWorkspaceHeight(height, {persist = true} = {}) {
             // ignore storage failures
         }
     }
+    graphSyncDetailPresentation();
 }
 
 function restoreGraphWorkspaceHeight() {
@@ -4894,6 +5135,20 @@ function graphSourceStyle(entity) {
     return GRAPH_SOURCE_KIND_STYLES[key] || GRAPH_SOURCE_KIND_STYLES.observed;
 }
 
+function opaqueUiEnabled() {
+    return Boolean(window.LEGION_OPAQUE_UI_ENABLED) || Boolean(document.body?.classList.contains("opaque-ui"));
+}
+
+function graphEdgeStrokeColor(entity) {
+    const style = graphSourceStyle(entity);
+    return String(style?.edgeStroke || style?.stroke || "#687691");
+}
+
+function graphNodeFillColor(entity) {
+    const style = graphSourceStyle(entity);
+    return opaqueUiEnabled() ? String(style?.fillOpaque || "#18182a") : String(style?.fill || "#18182a");
+}
+
 function graphSplitLabel(label) {
     const words = String(label || "").trim().split(/\s+/).filter(Boolean);
     if (!words.length) {
@@ -4986,15 +5241,180 @@ function graphNodeMatchesSelectedHost(node) {
     return graphEntityHostId(node) === selectedHostId;
 }
 
+function graphDismissSelection() {
+    closeGraphNoteModalAction(false);
+    graphWorkspaceState.selectedKind = "";
+    graphWorkspaceState.selectedRef = "";
+    graphWorkspaceState.selectedPayload = null;
+    graphWorkspaceState.relatedContent = [];
+    graphRenderWorkspace();
+}
+
+function graphSetFiltersExpanded(expanded) {
+    const next = Boolean(expanded);
+    graphWorkspaceState.filtersExpanded = next;
+    const panel = document.getElementById("graph-filters-panel");
+    const button = document.getElementById("graph-filters-toggle-button");
+    if (panel) {
+        panel.hidden = !next;
+    }
+    if (button) {
+        const label = next ? "Hide Filters" : "Show Filters";
+        button.setAttribute("title", label);
+        button.setAttribute("aria-label", label);
+        button.setAttribute("aria-expanded", next ? "true" : "false");
+        button.classList.toggle("is-active", next);
+    }
+}
+
+function graphSelectionAnchorPoint() {
+    const canvasPanel = getGraphCanvasPanel();
+    const svg = document.getElementById("graph-workspace-canvas");
+    if (!canvasPanel || !svg || svg.hidden) {
+        return null;
+    }
+    const viewBox = svg.viewBox?.baseVal;
+    if (!viewBox || !Number(viewBox.width) || !Number(viewBox.height)) {
+        return null;
+    }
+    const panelRect = canvasPanel.getBoundingClientRect();
+    const svgRect = svg.getBoundingClientRect();
+    const kind = String(graphWorkspaceState.selectedKind || "");
+    const ref = String(graphWorkspaceState.selectedRef || "");
+    if (!kind || !ref) {
+        return null;
+    }
+
+    let anchorX = 0;
+    let anchorY = 0;
+    if (kind === "node") {
+        const point = graphWorkspaceState.filtered.positions?.[ref] || graphWorkspaceState.positions?.[ref];
+        if (!point) {
+            return null;
+        }
+        anchorX = Number(point.x || 0) + GRAPH_NODE_SIZE.width;
+        anchorY = Number(point.y || 0) + (GRAPH_NODE_SIZE.height / 2);
+    } else if (kind === "edge") {
+        const entity = graphFindEntity("edge", ref);
+        if (!entity) {
+            return null;
+        }
+        const sourcePoint = graphWorkspaceState.filtered.positions?.[String(entity.from_node_id || "")];
+        const targetPoint = graphWorkspaceState.filtered.positions?.[String(entity.to_node_id || "")];
+        if (!sourcePoint || !targetPoint) {
+            return null;
+        }
+        const startX = Number(sourcePoint.x || 0) + GRAPH_NODE_SIZE.width;
+        const startY = Number(sourcePoint.y || 0) + (GRAPH_NODE_SIZE.height / 2);
+        const endX = Number(targetPoint.x || 0);
+        const endY = Number(targetPoint.y || 0) + (GRAPH_NODE_SIZE.height / 2);
+        anchorX = (startX + endX) / 2;
+        anchorY = (startY + endY) / 2;
+    } else {
+        return null;
+    }
+
+    return {
+        x: (svgRect.left - panelRect.left) + ((anchorX / Number(viewBox.width || 1)) * svgRect.width),
+        y: (svgRect.top - panelRect.top) + ((anchorY / Number(viewBox.height || 1)) * svgRect.height),
+    };
+}
+
+function graphSyncDetailPresentation() {
+    const shell = getGraphWorkspaceShell();
+    const sidebar = document.getElementById("graph-sidebar");
+    const dockSlot = document.getElementById("graph-detail-dock-slot");
+    const floatingLayer = document.getElementById("graph-detail-floating-layer");
+    const detailPanel = document.getElementById("graph-detail-panel");
+    const toggleButton = document.getElementById("graph-detail-dock-toggle-button");
+    const closeButton = document.getElementById("graph-detail-close-button");
+    if (!shell || !sidebar || !dockSlot || !floatingLayer || !detailPanel || !toggleButton || !closeButton) {
+        return;
+    }
+
+    const floating = String(graphWorkspaceState.detailMode || "floating") !== "docked";
+    const hasSelection = graphHasActiveSelection();
+
+    shell.classList.toggle("graph-workspace-detail-floating", floating);
+    shell.classList.toggle("graph-workspace-detail-docked", !floating);
+    sidebar.hidden = floating;
+    floatingLayer.hidden = !floating || !hasSelection;
+    detailPanel.classList.toggle("is-floating", floating);
+    toggleButton.setAttribute("title", floating ? "Dock Panel" : "Float Panel");
+    toggleButton.setAttribute("aria-label", floating ? "Dock Panel" : "Float Panel");
+    closeButton.hidden = !floating;
+
+    if (floating) {
+        if (detailPanel.parentElement !== floatingLayer) {
+            floatingLayer.appendChild(detailPanel);
+        }
+    } else if (detailPanel.parentElement !== dockSlot) {
+        dockSlot.appendChild(detailPanel);
+    }
+
+    detailPanel.hidden = floating ? !hasSelection : false;
+    if (!floating || !hasSelection) {
+        detailPanel.style.left = "";
+        detailPanel.style.top = "";
+        return;
+    }
+
+    window.requestAnimationFrame(() => {
+        const canvasPanel = getGraphCanvasPanel();
+        if (!canvasPanel || detailPanel.hidden) {
+            return;
+        }
+        const anchor = graphSelectionAnchorPoint();
+        const panelWidth = Math.min(detailPanel.offsetWidth || 430, Math.max(280, canvasPanel.clientWidth - 16));
+        const panelHeight = detailPanel.offsetHeight || 420;
+        const areaWidth = Math.max(320, canvasPanel.clientWidth);
+        const areaHeight = Math.max(240, canvasPanel.clientHeight);
+        let left = Math.max(8, areaWidth - panelWidth - 10);
+        let top = 12;
+        if (anchor) {
+            left = anchor.x + 18;
+            top = anchor.y + 12;
+            if ((left + panelWidth) > (areaWidth - 8)) {
+                left = Math.max(8, anchor.x - panelWidth - 18);
+            }
+            if ((top + panelHeight) > (areaHeight - 8)) {
+                top = Math.max(8, areaHeight - panelHeight - 8);
+            }
+        }
+        left = Math.max(8, Math.min(left, areaWidth - panelWidth - 8));
+        top = Math.max(8, Math.min(top, areaHeight - Math.min(panelHeight, areaHeight - 8) - 8));
+        detailPanel.style.left = `${Math.round(left)}px`;
+        detailPanel.style.top = `${Math.round(top)}px`;
+    });
+}
+
+function graphSetDetailMode(mode) {
+    graphWorkspaceState.detailMode = String(mode || "floating").trim().toLowerCase() === "docked"
+        ? "docked"
+        : "floating";
+    graphSyncDetailPresentation();
+}
+
+function graphToggleDetailModeAction() {
+    graphSetDetailMode(graphWorkspaceState.detailMode === "docked" ? "floating" : "docked");
+}
+
 function graphRenderSelectionDetail() {
     const detailCaption = document.getElementById("graph-detail-caption");
     const badgesNode = document.getElementById("graph-selection-badges");
     const fieldsNode = document.getElementById("graph-detail-fields");
+    const hostActionsBlock = document.getElementById("graph-host-actions-block");
+    const hostActionsNode = document.getElementById("graph-host-actions");
+    const subnetActionsBlock = document.getElementById("graph-subnet-actions-block");
+    const subnetActionsNode = document.getElementById("graph-subnet-actions");
+    const screenshotActionsBlock = document.getElementById("graph-screenshot-actions-block");
+    const screenshotActionsNode = document.getElementById("graph-screenshot-actions");
     const evidenceNode = document.getElementById("graph-detail-evidence");
     const propertiesNode = document.getElementById("graph-detail-properties");
     const annotationsNode = document.getElementById("graph-annotations-list");
     const pinButton = document.getElementById("graph-pin-toggle-button");
-    if (!detailCaption || !badgesNode || !fieldsNode || !evidenceNode || !propertiesNode || !annotationsNode || !pinButton) {
+    const noteButton = document.getElementById("graph-note-open-button");
+    if (!detailCaption || !badgesNode || !fieldsNode || !hostActionsBlock || !hostActionsNode || !subnetActionsBlock || !subnetActionsNode || !screenshotActionsBlock || !screenshotActionsNode || !evidenceNode || !propertiesNode || !annotationsNode || !pinButton || !noteButton) {
         return;
     }
 
@@ -5005,20 +5425,34 @@ function graphRenderSelectionDetail() {
 
     badgesNode.innerHTML = "";
     fieldsNode.innerHTML = "";
+    hostActionsNode.innerHTML = "";
+    subnetActionsNode.innerHTML = "";
+    screenshotActionsNode.innerHTML = "";
+    hostActionsBlock.hidden = true;
+    subnetActionsBlock.hidden = true;
+    screenshotActionsBlock.hidden = true;
     evidenceNode.innerHTML = "";
     annotationsNode.innerHTML = "";
 
     if (!entity) {
         detailCaption.textContent = "Select a node or edge";
         propertiesNode.textContent = "No graph selection";
+        noteButton.disabled = true;
+        noteButton.setAttribute("title", "Select a node or edge to add a note");
+        noteButton.setAttribute("aria-label", "Select a node or edge to add a note");
         pinButton.disabled = true;
-        pinButton.textContent = "Pin Node";
+        pinButton.classList.remove("is-active");
+        pinButton.setAttribute("title", "Select a node to pin");
+        pinButton.setAttribute("aria-label", "Select a node to pin");
         graphRenderRelatedContent("No related artifacts or screenshots.");
+        graphSyncDetailPresentation();
         return;
     }
 
     const isSummaryNode = kind === "node" && Boolean(graphPropertyValue(entity, "summary_kind"));
     const isAggregateEdge = kind === "edge" && Boolean(graphPropertyValue(entity, "aggregate_kind"));
+    const relatedHostId = kind === "node" ? graphEntityHostId(entity) : 0;
+    const entityType = kind === "node" ? String(entity.type || "").trim().toLowerCase() : "";
     const fields = [];
     if (kind === "node") {
         detailCaption.textContent = `${graphFriendlyLabel(entity.type)}: ${entity.label || entity.node_id || ""}`;
@@ -5117,7 +5551,7 @@ function graphRenderSelectionDetail() {
     if (!annotations.length) {
         const empty = document.createElement("p");
         empty.className = "text-muted";
-        empty.textContent = "No annotations yet.";
+        empty.textContent = "No notes yet.";
         annotationsNode.appendChild(empty);
     } else {
         annotations.forEach((item) => {
@@ -5135,13 +5569,71 @@ function graphRenderSelectionDetail() {
         });
     }
 
+    if (kind === "node" && entityType === "host" && relatedHostId > 0) {
+        hostActionsBlock.hidden = false;
+        ["rescan", "refresh-screenshots", "dig-deeper", "remove"].forEach((action) => {
+            const button = buildHostActionButton(action, relatedHostId);
+            button.addEventListener("click", async () => {
+                await handleHostActionButtonAction(button);
+            });
+            hostActionsNode.appendChild(button);
+        });
+    }
+
+    if (kind === "node" && entityType === "subnet") {
+        const subnetValue = String(graphPropertyValue(entity, "cidr") || entity.label || "").trim();
+        if (subnetValue) {
+            subnetActionsBlock.hidden = false;
+            const button = buildSubnetActionButton("rescan", subnetValue);
+            button.addEventListener("click", async () => {
+                await handleSubnetActionButtonAction(button);
+            });
+            subnetActionsNode.appendChild(button);
+        }
+    }
+
+    if (kind === "node" && entityType === "screenshot") {
+        const screenshotPayload = {
+            hostId: relatedHostId,
+            port: String(graphPropertyValue(entity, "port") || "").trim(),
+            protocol: String(graphPropertyValue(entity, "protocol") || "tcp").trim().toLowerCase() || "tcp",
+            artifactRef: String(graphPropertyValue(entity, "artifact_ref") || "").trim(),
+            filename: String(graphPropertyValue(entity, "filename") || entity.label || "").trim(),
+        };
+        if (screenshotPayload.hostId > 0) {
+            screenshotActionsBlock.hidden = false;
+            ["refresh", "delete"].forEach((action) => {
+                const button = buildScreenshotActionButton(action, screenshotPayload);
+                button.addEventListener("click", async () => {
+                    await handleScreenshotActionButtonAction(button);
+                });
+                screenshotActionsNode.appendChild(button);
+            });
+        }
+    }
+
+    noteButton.disabled = false;
+    noteButton.setAttribute("title", "Add Note");
+    noteButton.setAttribute("aria-label", "Add Note");
     pinButton.disabled = kind !== "node" || isSummaryNode;
-    pinButton.textContent = kind === "node" && graphWorkspaceState.pinnedNodeIds[String(entity.node_id || "")] ? "Unpin Node" : "Pin Node";
+    const nodePinned = kind === "node" && Boolean(graphWorkspaceState.pinnedNodeIds[String(entity.node_id || "")]);
+    pinButton.classList.toggle("is-active", nodePinned);
+    if (kind !== "node") {
+        pinButton.setAttribute("title", "Pinning is available for nodes only");
+        pinButton.setAttribute("aria-label", "Pinning is available for nodes only");
+    } else if (isSummaryNode) {
+        pinButton.setAttribute("title", "Summary nodes cannot be pinned");
+        pinButton.setAttribute("aria-label", "Summary nodes cannot be pinned");
+    } else {
+        pinButton.setAttribute("title", nodePinned ? "Unpin Node" : "Pin Node");
+        pinButton.setAttribute("aria-label", nodePinned ? "Unpin Node" : "Pin Node");
+    }
     if (isSummaryNode) {
         graphRenderRelatedContent("Summary nodes do not have direct related content. Expand or focus the cluster to inspect individual artifacts.");
     } else {
         graphRenderRelatedContent();
     }
+    graphSyncDetailPresentation();
 }
 
 function graphRenderRelatedContent(statusMessage = "") {
@@ -5155,6 +5647,7 @@ function graphRenderRelatedContent(statusMessage = "") {
     const fallback = statusMessage || "No related artifacts or screenshots.";
     if (!entries.length) {
         statusNode.textContent = fallback;
+        graphSyncDetailPresentation();
         return;
     }
     statusNode.textContent = `${entries.length} related item${entries.length === 1 ? "" : "s"}`;
@@ -5200,10 +5693,13 @@ function graphRenderRelatedContent(statusMessage = "") {
         }
 
         const actions = document.createElement("div");
-        actions.className = "scheduler-actions graph-content-actions";
+        actions.className = "graph-content-actions host-actions";
         const copyButton = document.createElement("button");
         copyButton.type = "button";
-        copyButton.textContent = "Copy";
+        copyButton.className = "icon-btn";
+        copyButton.title = "Copy";
+        copyButton.setAttribute("aria-label", "Copy");
+        copyButton.innerHTML = '<i class="fa-solid fa-copy" aria-hidden="true"></i>';
         copyButton.addEventListener("click", async () => {
             if (entry.kind === "image" && entry.preview_url) {
                 screenshotModalState.url = String(entry.preview_url || "");
@@ -5222,7 +5718,10 @@ function graphRenderRelatedContent(statusMessage = "") {
 
         const downloadButton = document.createElement("button");
         downloadButton.type = "button";
-        downloadButton.textContent = "Download";
+        downloadButton.className = "icon-btn";
+        downloadButton.title = "Download";
+        downloadButton.setAttribute("aria-label", "Download");
+        downloadButton.innerHTML = '<i class="fa-solid fa-download" aria-hidden="true"></i>';
         downloadButton.addEventListener("click", () => {
             if (entry.download_url) {
                 window.location.assign(`${entry.download_url}${entry.download_url.includes("?") ? "&" : "?"}t=${Date.now()}`);
@@ -5233,7 +5732,10 @@ function graphRenderRelatedContent(statusMessage = "") {
         if (entry.kind === "image" && entry.preview_url) {
             const openButton = document.createElement("button");
             openButton.type = "button";
-            openButton.textContent = "Open";
+            openButton.className = "icon-btn";
+            openButton.title = "Open";
+            openButton.setAttribute("aria-label", "Open");
+            openButton.innerHTML = '<i class="fa-solid fa-up-right-from-square" aria-hidden="true"></i>';
             openButton.addEventListener("click", () => {
                 openScreenshotModal(entry.preview_url, entry.filename || entry.label || "screenshot.png", "");
             });
@@ -5241,7 +5743,10 @@ function graphRenderRelatedContent(statusMessage = "") {
         } else if (entry.kind === "text") {
             const openButton = document.createElement("button");
             openButton.type = "button";
-            openButton.textContent = "Open";
+            openButton.className = "icon-btn";
+            openButton.title = "Open";
+            openButton.setAttribute("aria-label", "Open");
+            openButton.innerHTML = '<i class="fa-solid fa-up-right-from-square" aria-hidden="true"></i>';
             openButton.addEventListener("click", () => {
                 openTextPreviewModal({
                     title: "Artifact Preview",
@@ -5257,6 +5762,7 @@ function graphRenderRelatedContent(statusMessage = "") {
         card.appendChild(actions);
         listNode.appendChild(card);
     });
+    graphSyncDetailPresentation();
 }
 
 async function graphFetchRelatedContent() {
@@ -5396,6 +5902,7 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         svg.hidden = false;
         emptyNode.hidden = false;
         graphRenderSelectionDetail();
+        graphSyncDetailPresentation();
         return;
     }
 
@@ -5407,6 +5914,7 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         if (!preserveDetail || selectionCleared || !graphWorkspaceState.selectedKind) {
             graphRenderSelectionDetail();
         }
+        graphSyncDetailPresentation();
         return;
     }
 
@@ -5431,9 +5939,23 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
     }));
     const arrow = graphCreateSvgNode("path", {
         d: "M0,0 L8,4 L0,8 z",
-        fill: "rgba(180, 187, 221, 0.7)",
+        fill: "rgba(121, 133, 158, 0.65)",
     });
     defs.firstChild.appendChild(arrow);
+    defs.appendChild(graphCreateSvgNode("marker", {
+        id: "graph-arrow-highlight",
+        markerWidth: 9,
+        markerHeight: 9,
+        refX: 8,
+        refY: 4.5,
+        orient: "auto",
+        markerUnits: "strokeWidth",
+    }));
+    const highlightArrow = graphCreateSvgNode("path", {
+        d: "M0,0 L9,4.5 L0,9 z",
+        fill: GRAPH_EDGE_HIGHLIGHT_COLOR,
+    });
+    defs.lastChild.appendChild(highlightArrow);
     svg.appendChild(defs);
 
     (filtered.groups || []).forEach((group) => {
@@ -5447,7 +5969,7 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
             width: group.width,
             height: group.height,
             rx: 18,
-            fill: "rgba(14, 18, 38, 0.55)",
+            fill: opaqueUiEnabled() ? "#14172d" : "rgba(14, 18, 38, 0.55)",
             stroke: "rgba(147, 159, 229, 0.16)",
             "data-graph-group-key": group.key || "",
         }));
@@ -5460,7 +5982,25 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         svg.appendChild(groupNode);
     });
 
-    edges.forEach((edge) => {
+    const selectedNodeId = graphWorkspaceState.selectedKind === "node"
+        ? String(graphWorkspaceState.selectedRef || "")
+        : "";
+    const selectedEdgeId = graphWorkspaceState.selectedKind === "edge"
+        ? String(graphWorkspaceState.selectedRef || "")
+        : "";
+    const orderedEdges = [...edges].sort((left, right) => {
+        const leftId = String(left?.edge_id || "");
+        const rightId = String(right?.edge_id || "");
+        const leftPriority = selectedEdgeId && leftId === selectedEdgeId
+            ? 2
+            : (selectedNodeId && (String(left?.from_node_id || "") === selectedNodeId || String(left?.to_node_id || "") === selectedNodeId) ? 1 : 0);
+        const rightPriority = selectedEdgeId && rightId === selectedEdgeId
+            ? 2
+            : (selectedNodeId && (String(right?.from_node_id || "") === selectedNodeId || String(right?.to_node_id || "") === selectedNodeId) ? 1 : 0);
+        return leftPriority - rightPriority;
+    });
+
+    orderedEdges.forEach((edge) => {
         const sourcePosition = positions[String(edge?.from_node_id || "")];
         const targetPosition = positions[String(edge?.to_node_id || "")];
         if (!sourcePosition || !targetPosition) {
@@ -5478,11 +6018,26 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
             `${endX - (controlOffset * curveDirection)} ${endY}`,
             `${endX} ${endY}`,
         ].join(" ");
-        const isSelected = graphWorkspaceState.selectedKind === "edge" && String(graphWorkspaceState.selectedRef || "") === String(edge?.edge_id || "");
+        const edgeId = String(edge?.edge_id || "");
+        const isSelected = selectedEdgeId && selectedEdgeId === edgeId;
+        const isConnectedToSelectedNode = Boolean(
+            selectedNodeId
+            && (String(edge?.from_node_id || "") === selectedNodeId || String(edge?.to_node_id || "") === selectedNodeId)
+        );
         const style = graphSourceStyle(edge);
         const aggregateCount = Math.max(1, Number(graphPropertyValue(edge, "aggregate_count") || 1));
-        const strokeWidth = isSelected ? 3.6 : Math.min(6.4, 1.4 + Math.log2(aggregateCount + 1));
-        const opacity = isSelected ? 1 : Math.max(0.42, Math.min(0.9, 0.4 + (Math.log2(aggregateCount + 1) * 0.12)));
+        const strokeWidth = isSelected
+            ? 4.2
+            : (isConnectedToSelectedNode ? Math.min(6.8, 2.5 + Math.log2(aggregateCount + 1)) : Math.min(4.2, 1.05 + (Math.log2(aggregateCount + 1) * 0.7)));
+        const opacity = isSelected
+            ? 1
+            : (isConnectedToSelectedNode ? 0.98 : Math.max(0.18, Math.min(0.34, 0.16 + (Math.log2(aggregateCount + 1) * 0.045))));
+        const stroke = isSelected
+            ? "#eef1ff"
+            : (isConnectedToSelectedNode ? GRAPH_EDGE_HIGHLIGHT_COLOR : graphEdgeStrokeColor(edge));
+        const markerEnd = isSelected || isConnectedToSelectedNode
+            ? "url(#graph-arrow-highlight)"
+            : "url(#graph-arrow)";
         svg.appendChild(graphCreateSvgNode("path", {
             d: pathData,
             stroke: "transparent",
@@ -5493,14 +6048,14 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
         }));
         svg.appendChild(graphCreateSvgNode("path", {
             d: pathData,
-            stroke: style.stroke,
+            stroke,
             fill: "none",
             "stroke-width": strokeWidth,
             "stroke-dasharray": style.dash,
-            "marker-end": "url(#graph-arrow)",
+            "marker-end": markerEnd,
             opacity,
             "data-graph-edge-id": edge.edge_id || "",
-            "class": `graph-edge${isSelected ? " is-selected" : ""}`,
+            "class": `graph-edge${isSelected ? " is-selected" : ""}${isConnectedToSelectedNode ? " is-connected-selected" : ""}`,
         }));
     });
 
@@ -5524,7 +6079,7 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
             width: GRAPH_NODE_SIZE.width,
             height: GRAPH_NODE_SIZE.height,
             rx: 14,
-            fill: style.fill,
+            fill: graphNodeFillColor(node),
             stroke: isSelected ? "#eef1ff" : color,
             "stroke-width": isSelected ? 2.8 : 1.8,
             "data-graph-node-id": nodeId,
@@ -5586,6 +6141,7 @@ function graphRenderWorkspace({preserveDetail = false} = {}) {
     if (!preserveDetail || selectionCleared || !graphWorkspaceState.selectedKind) {
         graphRenderSelectionDetail();
     }
+    graphSyncDetailPresentation();
 }
 
 function graphSelectEntity(kind, ref) {
@@ -6032,13 +6588,13 @@ function graphResetLayoutAction() {
 async function graphSaveAnnotationAction() {
     const kind = String(graphWorkspaceState.selectedKind || "");
     const ref = String(graphWorkspaceState.selectedRef || "");
-    const body = String(getValue("graph-annotation-input") || "").trim();
+    const body = String(getValue("graph-note-input") || "").trim();
     if (!kind || !ref) {
-        setGraphStatus("Select a node or edge before saving an annotation.", true);
+        setGraphStatus("Select a node or edge before saving a note.", true);
         return;
     }
     if (!body) {
-        setGraphStatus("Annotation text is required.", true);
+        setGraphStatus("Note text is required.", true);
         return;
     }
     try {
@@ -6054,12 +6610,26 @@ async function graphSaveAnnotationAction() {
             return String(item?.annotation_id || "") !== String(annotation.annotation_id || "");
         });
         graphWorkspaceState.annotations.push(annotation);
-        setValue("graph-annotation-input", "");
+        setValue("graph-note-input", "");
+        closeGraphNoteModalAction(false);
         graphRenderSelectionDetail();
-        setGraphStatus("Annotation saved");
+        setGraphStatus("Note saved");
     } catch (err) {
-        setGraphStatus(`Annotation save failed: ${err.message}`, true);
+        setGraphStatus(`Note save failed: ${err.message}`, true);
     }
+}
+
+function graphOpenNoteModalAction() {
+    const kind = String(graphWorkspaceState.selectedKind || "");
+    const ref = String(graphWorkspaceState.selectedRef || "");
+    if (!kind || !ref) {
+        setGraphStatus("Select a node or edge before adding a note.", true);
+        return;
+    }
+    const entity = kind === "node" ? graphFindEntity("node", ref) : graphFindEntity("edge", ref);
+    const entityLabel = String(entity?.label || entity?.edge_id || ref || "").trim() || "selected item";
+    setText("graph-note-modal-target", `Target: ${graphFriendlyLabel(kind)} | ${entityLabel}`);
+    setGraphNoteModalOpen(true);
 }
 
 function graphTogglePinAction() {
@@ -6246,10 +6816,7 @@ function bindGraphWorkspaceEvents() {
             if (groupTarget) {
                 return;
             }
-            graphWorkspaceState.selectedKind = "";
-            graphWorkspaceState.selectedRef = "";
-            graphWorkspaceState.relatedContent = [];
-            graphRenderWorkspace();
+            graphDismissSelection();
         });
         svg.addEventListener("dblclick", (event) => {
             const nodeTarget = event.target.closest("[data-graph-node-id]");
@@ -7437,14 +8004,35 @@ function bindActionButtons() {
     bind("graph-export-graphml-button", () => graphExportAction("graphml"));
     bind("graph-export-svg-button", graphExportSvgAction);
     bind("graph-export-png-button", graphExportPngAction);
+    bind("graph-filters-toggle-button", () => graphSetFiltersExpanded(!graphWorkspaceState.filtersExpanded));
     bind("graph-focus-selection-button", graphFocusSelectionAction);
     bind("graph-clear-focus-button", graphClearFocusAction);
     bind("graph-expand-selection-button", graphToggleExpandSelectionAction);
     bind("graph-collapse-expanded-button", graphCollapseExpandedAction);
     bind("graph-layout-save-button", graphSaveLayoutAction);
     bind("graph-layout-reset-button", graphResetLayoutAction);
-    bind("graph-annotation-save-button", graphSaveAnnotationAction);
+    bind("graph-note-open-button", graphOpenNoteModalAction);
+    bind("graph-note-save-button", graphSaveAnnotationAction);
+    bind("graph-note-modal-close", () => closeGraphNoteModalAction(false));
+    bind("graph-note-modal-cancel", () => closeGraphNoteModalAction(false));
     bind("graph-pin-toggle-button", graphTogglePinAction);
+    bind("graph-detail-dock-toggle-button", graphToggleDetailModeAction);
+    bind("graph-detail-close-button", graphDismissSelection);
+    graphSetFiltersExpanded(graphWorkspaceState.filtersExpanded);
+
+    const graphScrollNode = getGraphCanvasScrollNode();
+    if (graphScrollNode) {
+        graphScrollNode.addEventListener("scroll", () => {
+            if (graphWorkspaceState.detailMode === "floating" && graphHasActiveSelection()) {
+                graphSyncDetailPresentation();
+            }
+        });
+    }
+    window.addEventListener("resize", () => {
+        if (graphWorkspaceEnabled()) {
+            graphSyncDetailPresentation();
+        }
+    });
 
     const hostSelect = document.getElementById("workspace-host-select");
     if (hostSelect) {
@@ -7458,25 +8046,7 @@ function bindActionButtons() {
         hostsBody.addEventListener("click", async (event) => {
             const actionBtn = event.target.closest("button[data-host-action]");
             if (actionBtn) {
-                const hostId = parseInt(actionBtn.dataset.hostId, 10);
-                const action = String(actionBtn.dataset.hostAction || "");
-                if (!hostId) {
-                    return;
-                }
-                if (action === "rescan") {
-                    await rescanHostAction(hostId);
-                    return;
-                }
-                if (action === "refresh-screenshots") {
-                    await refreshHostScreenshotsAction(hostId);
-                    return;
-                }
-                if (action === "dig-deeper") {
-                    await digDeeperHostAction(hostId);
-                    return;
-                }
-                if (action === "remove") {
-                    requestHostRemoveAction(hostId);
+                if (await handleHostActionButtonAction(actionBtn)) {
                     return;
                 }
             }
@@ -7769,6 +8339,15 @@ function bindActionButtons() {
         });
     }
 
+    const graphNoteModal = document.getElementById("graph-note-modal");
+    if (graphNoteModal) {
+        graphNoteModal.addEventListener("click", (event) => {
+            if (event.target === graphNoteModal) {
+                closeGraphNoteModalAction(false);
+            }
+        });
+    }
+
     const schedulerModal = document.getElementById("scheduler-settings-modal");
     if (schedulerModal) {
         schedulerModal.addEventListener("click", (event) => {
@@ -7840,6 +8419,10 @@ function bindActionButtons() {
             closeHostRemoveModalAction(true);
             return;
         }
+        if (uiModalState.graphNoteOpen) {
+            closeGraphNoteModalAction(false);
+            return;
+        }
         if (uiModalState.settingsOpen) {
             closeAppSettingsAction();
             return;
@@ -7852,9 +8435,52 @@ function bindActionButtons() {
             closeReportProviderModalAction();
             return;
         }
+        if (graphWorkspaceState.detailMode === "floating" && graphHasActiveSelection()) {
+            graphDismissSelection();
+            return;
+        }
         if (startupWizardState.open) {
             setStartupWizardOpen(false);
         }
+    });
+
+    document.addEventListener("pointerdown", (event) => {
+        if (graphWorkspaceState.detailMode !== "floating" || !graphHasActiveSelection()) {
+            return;
+        }
+        if (
+            ribbonMenuState.openMenuId
+            || processOutputState.modalOpen
+            || scriptOutputState.modalOpen
+            || screenshotModalState.modalOpen
+            || uiModalState.nmapScanOpen
+            || uiModalState.manualScanOpen
+            || uiModalState.hostSelectionOpen
+            || uiModalState.scriptCveOpen
+            || uiModalState.providerLogsOpen
+            || uiModalState.hostRemoveOpen
+            || uiModalState.graphNoteOpen
+            || uiModalState.settingsOpen
+            || uiModalState.schedulerOpen
+            || uiModalState.reportProviderOpen
+            || startupWizardState.open
+        ) {
+            return;
+        }
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        if (target.closest("#graph-detail-panel")) {
+            return;
+        }
+        if (target.closest("[data-graph-node-id], [data-graph-edge-id]")) {
+            return;
+        }
+        if (target.closest("#graph-workspace-shell")) {
+            return;
+        }
+        graphDismissSelection();
     });
 
     const wizardGotoButtons = document.querySelectorAll("[data-wizard-goto]");

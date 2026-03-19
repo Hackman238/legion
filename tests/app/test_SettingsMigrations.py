@@ -94,10 +94,14 @@ class SettingsMigrationTest(unittest.TestCase):
 
                 port_actions = {row[1]: row for row in app_settings.getPortActions()}
                 nuclei_cmd = str(port_actions["nuclei-web"][2])
+                ffuf_cmd = str(port_actions["ffuf"][2])
                 self.assertIn("nuclei -as", nuclei_cmd)
                 self.assertIn("-stats -si 15", nuclei_cmd)
                 self.assertIn("-silent", nuclei_cmd)
                 self.assertNotIn("-no-color", nuclei_cmd)
+                self.assertIn("ffuf -s -of json -o [OUTPUT].json -u [WEB_URL]/FUZZ", ffuf_cmd)
+                self.assertNotIn("-json", ffuf_cmd)
+                self.assertNotIn("-noninteractive", ffuf_cmd)
                 self.assertEqual(
                     "LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] "
                     "LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
@@ -165,6 +169,28 @@ class SettingsMigrationTest(unittest.TestCase):
 
         self.assertIn("portal.example", normalized)
         self.assertNotIn(" -n ", normalized)
+
+    def test_ffuf_normalization_rewrites_legacy_flags_to_supported_output_syntax(self):
+        from app.settings import AppSettings
+
+        normalized = AppSettings._ensure_ffuf_command(
+            "ffuf -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt -json -noninteractive -s > [OUTPUT].jsonl"
+        )
+
+        self.assertIn("ffuf -s -of json -o [OUTPUT].json -u [WEB_URL]/FUZZ", normalized)
+        self.assertNotIn("-json", normalized)
+        self.assertNotIn("-noninteractive", normalized)
+        self.assertNotIn("> [OUTPUT].jsonl", normalized)
+
+    def test_hydra_normalization_strips_escaped_output_quotes(self):
+        from app.settings import AppSettings
+
+        normalized = AppSettings._ensure_hydra_command(
+            'hydra -s [PORT] -C ./wordlists/routers-userpass.txt -u -t 4 -o \\"[OUTPUT].txt\\" -f [IP] ssh'
+        )
+
+        self.assertIn("-o [OUTPUT].txt", normalized)
+        self.assertNotIn('\\"[OUTPUT].txt\\"', normalized)
 
     def test_wapiti_normalization_fixes_missing_url_argument_and_inserts_port(self):
         from app.settings import AppSettings

@@ -106,7 +106,14 @@ class DummyRuntime:
                 "status": "completed",
                 "target_summary": "10.0.0.0/24",
                 "scope_summary": "subnets: 10.0.0.0/24",
+                "targets": ["10.0.0.0/24", "10.0.0.5"],
+                "discovery": True,
+                "staged": False,
+                "run_actions": False,
+                "nmap_path": "nmap",
+                "nmap_args": "",
                 "scan_mode": "easy",
+                "scan_options": {"top_ports": 1000, "timing": "T3", "service_detection": True, "default_scripts": True},
                 "created_at": "2026-02-17T00:00:00Z",
                 "result_summary": "imported 4 hosts",
             }
@@ -538,6 +545,16 @@ class DummyRuntime:
             "payload": {"host_id": 11, "host_ip": "10.0.0.5"},
         }
 
+    def start_subnet_rescan_job(self, subnet):
+        if str(subnet).strip() != "10.0.0.0/24":
+            raise KeyError(subnet)
+        return {
+            "id": 111,
+            "type": "nmap-scan",
+            "status": "queued",
+            "payload": {"targets": ["10.0.0.0/24"], "scan_mode": "easy"},
+        }
+
     def start_host_screenshot_refresh_job(self, host_id):
         if int(host_id) != 11:
             raise KeyError(host_id)
@@ -546,6 +563,29 @@ class DummyRuntime:
             "type": "host-screenshot-refresh",
             "status": "queued",
             "payload": {"host_id": 11, "host_ip": "10.0.0.5", "target_count": 2},
+        }
+
+    def start_graph_screenshot_refresh_job(self, host_id, port, protocol="tcp"):
+        if int(host_id) != 11:
+            raise KeyError(host_id)
+        return {
+            "id": 112,
+            "type": "graph-screenshot-refresh",
+            "status": "queued",
+            "payload": {"host_id": 11, "port": str(port), "protocol": str(protocol or "tcp")},
+        }
+
+    def delete_graph_screenshot(self, *, host_id, artifact_ref="", filename="", port="", protocol="tcp"):
+        _ = (artifact_ref, port, protocol)
+        if int(host_id) != 11:
+            raise KeyError(host_id)
+        return {
+            "deleted": True,
+            "host_id": 11,
+            "artifact_ref": str(artifact_ref or ""),
+            "filename": str(filename or ""),
+            "deleted_files": 1,
+            "deleted_paths": [f"/tmp/demo-tool-output/screenshots/{filename or 'shot.png'}"],
         }
 
     def delete_host_workspace(self, host_id):
@@ -1395,24 +1435,53 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("graph-zoom-slider", body)
         self.assertIn("graph-hide-nmap-xml-artifacts", body)
         self.assertIn("graph-detail-content-list", body)
+        self.assertIn("graph-detail-panel", body)
+        self.assertIn("graph-detail-floating-layer", body)
+        self.assertIn("graph-host-actions-block", body)
+        self.assertIn("graph-subnet-actions-block", body)
+        self.assertIn("graph-screenshot-actions-block", body)
+        self.assertIn("graph-detail-dock-toggle-button", body)
+        self.assertIn("graph-detail-close-button", body)
+        self.assertIn("graph-filters-toggle-button", body)
+        self.assertIn('aria-label="Show Filters"', body)
+        self.assertIn('id="graph-filters-panel" class="graph-filters-panel" hidden', body)
         self.assertIn("graph-layout-tidy-button", body)
         self.assertIn("graph-layout-save-button", body)
         self.assertIn("graph-export-svg-button", body)
         self.assertIn("graph-export-png-button", body)
         self.assertIn("graph-render-mode-select", body)
         self.assertIn("graph-focus-depth-select", body)
+        self.assertIn('aria-label="Refresh Graph"', body)
+        self.assertIn('aria-label="Tidy Layout"', body)
+        self.assertIn('aria-label="Focus Selected"', body)
         self.assertIn("graph-focus-selection-button", body)
         self.assertIn("graph-clear-focus-button", body)
         self.assertIn("graph-expand-selection-button", body)
         self.assertIn("graph-collapse-expanded-button", body)
-        self.assertIn("graph-annotation-save-button", body)
+        self.assertIn("graph-note-open-button", body)
+        self.assertIn("graph-note-modal", body)
+        self.assertIn("graph-note-save-button", body)
+        self.assertIn("ribbon-process-group", body)
+        self.assertIn("ribbon-process-table-wrap", body)
+        self.assertIn('id="processes-body"', body)
+        self.assertIn('id="process-clear-finished-button"', body)
+        self.assertIn('aria-label="Hide Finished/Issues"', body)
+        self.assertIn('id="process-clear-all-button"', body)
+        self.assertIn('aria-label="Hide All Non-Running"', body)
         self.assertIn('id="graph-zoom-slider" type="range" min="10"', body)
         self.assertIn('id="graph-resize-handle"', body)
-        self.assertIn("drag nodes or groups to reposition them", body)
+        self.assertIn("graph-footer-separator", body)
+        self.assertNotIn("graph-legend-footer", body)
+        self.assertNotIn("drag nodes or groups to reposition them", body)
         self.assertNotIn("<h2>Tools</h2>", body)
-        self.assertLess(body.index("<h2>Project</h2>"), body.index('id="stat-hosts"'))
-        self.assertLess(body.index('id="stat-hosts"'), body.index('id="ribbon-launch-wizard-button"'))
+        self.assertNotIn("<h2>Processes</h2>", body)
+        self.assertLess(body.index('id="stat-hosts"'), body.index("<h2>Project</h2>"))
+        self.assertLess(body.index("<h2>Project</h2>"), body.index('id="ribbon-launch-wizard-button"'))
         self.assertLess(body.index('id="ribbon-launch-wizard-button"'), body.index("<h2>Graph Workspace</h2>"))
+        self.assertLess(body.index('id="graph-workspace-shell"'), body.index('id="graph-refresh-button"'))
+        self.assertLess(body.index('id="graph-layout-select"'), body.index('id="graph-focus-depth-select"'))
+        self.assertLess(body.index('id="graph-refresh-button"'), body.index('id="graph-resize-handle"'))
+        self.assertLess(body.index('id="graph-resize-handle"'), body.index('id="graph-workspace-status"'))
         self.assertLess(body.index("<h2>Graph Workspace</h2>"), body.index('<h2>Hosts</h2>'))
 
     def test_index_renders_all_interfaces_chip_when_configured(self):
@@ -1422,6 +1491,14 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
         self.assertIn("All interfaces", body)
+
+    def test_index_renders_opaque_ui_body_class_when_configured(self):
+        self.app.config["LEGION_UI_OPAQUE"] = True
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('<body class="opaque-ui">', body)
+        self.assertIn("window.LEGION_OPAQUE_UI_ENABLED = true", body)
 
     def test_index_hides_graph_workspace_when_rollout_flag_is_disabled(self):
         self.runtime.scheduler_config.update_preferences({
@@ -1917,9 +1994,33 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(202, host_rescan.status_code)
         self.assertEqual("accepted", host_rescan.json["status"])
 
+        subnet_rescan = self.client.post("/api/workspace/subnets/rescan", json={"subnet": "10.0.0.0/24"})
+        self.assertEqual(202, subnet_rescan.status_code)
+        self.assertEqual("accepted", subnet_rescan.json["status"])
+
         host_screenshots = self.client.post("/api/workspace/hosts/11/refresh-screenshots", json={})
         self.assertEqual(202, host_screenshots.status_code)
         self.assertEqual("accepted", host_screenshots.json["status"])
+
+        graph_screenshot_refresh = self.client.post(
+            "/api/workspace/screenshots/refresh",
+            json={"host_id": 11, "port": "443", "protocol": "tcp"},
+        )
+        self.assertEqual(202, graph_screenshot_refresh.status_code)
+        self.assertEqual("accepted", graph_screenshot_refresh.json["status"])
+
+        graph_screenshot_delete = self.client.post(
+            "/api/workspace/screenshots/delete",
+            json={
+                "host_id": 11,
+                "artifact_ref": "/api/screenshots/10.0.0.5-445-screenshot.png",
+                "filename": "10.0.0.5-445-screenshot.png",
+                "port": "445",
+                "protocol": "tcp",
+            },
+        )
+        self.assertEqual(200, graph_screenshot_delete.status_code)
+        self.assertTrue(graph_screenshot_delete.json["deleted"])
 
         host_dig = self.client.post("/api/workspace/hosts/11/dig-deeper", json={})
         self.assertEqual(202, host_dig.status_code)

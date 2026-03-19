@@ -12,46 +12,51 @@
         <input id="nmap-xml-run-actions" type="checkbox">
     </div>
 
-    <section class="panel panel-full project-panel">
-        <div class="panel-header">
-            <h2>Project</h2>
-            <p id="project-name">{{ snapshot.project.name }}</p>
-        </div>
-        <div class="scheduler-meta">
-            <span class="chip">Type: <strong id="project-kind">{{ "temporary" if snapshot.project.is_temporary else "saved" }}</strong></span>
-            <span class="chip">Scheduler: <strong id="scheduler-mode">{{ snapshot.scheduler.mode }}</strong></span>
-            <span class="chip">Engagement: <strong id="scheduler-goal">{{ snapshot.scheduler.engagement_policy.preset_label if snapshot.scheduler.engagement_policy else snapshot.scheduler.goal_profile }}</strong></span>
-            <span class="chip">Preapproved Families: <strong id="scheduler-families">{{ snapshot.scheduler.preapproved_families_count }}</strong></span>
-        </div>
-        <p class="meta-note" id="project-output-folder">{{ snapshot.project.output_folder }}</p>
-        <p class="meta-note" id="project-running-folder">{{ snapshot.project.running_folder }}</p>
-        <p class="meta-note">{{ snapshot.scheduler.cloud_notice }}</p>
-        <p class="meta-note">Action status: <span id="action-status">Idle</span></p>
-        <p class="meta-note">Workspace status: <span id="workspace-status">Idle</span></p>
-    </section>
-
     <section class="panel panel-full ribbon-panel">
         <div class="ribbon">
-            <div class="ribbon-group ribbon-summary-group" aria-label="Workspace summary">
-                <div class="ribbon-stat-card">
-                    <span class="ribbon-stat-label">Hosts</span>
-                    <strong id="stat-hosts" class="ribbon-stat-value">{{ snapshot.summary.hosts }}</strong>
+            <div class="ribbon-column ribbon-summary-column">
+                <div class="ribbon-group ribbon-summary-group" aria-label="Workspace summary">
+                    <div class="ribbon-stat-card">
+                        <span class="ribbon-stat-label">Hosts</span>
+                        <strong id="stat-hosts" class="ribbon-stat-value">{{ snapshot.summary.hosts }}</strong>
+                    </div>
+                    <div class="ribbon-stat-card">
+                        <span class="ribbon-stat-label">Open Ports</span>
+                        <strong id="stat-open-ports" class="ribbon-stat-value">{{ snapshot.summary.open_ports }}</strong>
+                    </div>
+                    <div class="ribbon-stat-card">
+                        <span class="ribbon-stat-label">Services</span>
+                        <strong id="stat-services" class="ribbon-stat-value">{{ snapshot.summary.services }}</strong>
+                    </div>
+                    <div class="ribbon-stat-card">
+                        <span class="ribbon-stat-label">Running Jobs</span>
+                        <strong id="stat-running" class="ribbon-stat-value">{{ snapshot.summary.running_processes }}</strong>
+                    </div>
+                    <div class="ribbon-stat-card">
+                        <span class="ribbon-stat-label">Finished Jobs</span>
+                        <strong id="stat-finished" class="ribbon-stat-value">{{ snapshot.summary.finished_processes }}</strong>
+                    </div>
                 </div>
-                <div class="ribbon-stat-card">
-                    <span class="ribbon-stat-label">Open Ports</span>
-                    <strong id="stat-open-ports" class="ribbon-stat-value">{{ snapshot.summary.open_ports }}</strong>
-                </div>
-                <div class="ribbon-stat-card">
-                    <span class="ribbon-stat-label">Services</span>
-                    <strong id="stat-services" class="ribbon-stat-value">{{ snapshot.summary.services }}</strong>
-                </div>
-                <div class="ribbon-stat-card">
-                    <span class="ribbon-stat-label">Running Jobs</span>
-                    <strong id="stat-running" class="ribbon-stat-value">{{ snapshot.summary.running_processes }}</strong>
-                </div>
-                <div class="ribbon-stat-card">
-                    <span class="ribbon-stat-label">Finished Jobs</span>
-                    <strong id="stat-finished" class="ribbon-stat-value">{{ snapshot.summary.finished_processes }}</strong>
+                <div class="ribbon-group ribbon-project-group" aria-label="Project summary">
+                    <div class="ribbon-project-header">
+                        <h2>Project</h2>
+                        <p id="project-name">{{ snapshot.project.name }}</p>
+                    </div>
+                    <div class="ribbon-project-body">
+                        <div class="scheduler-meta ribbon-project-meta">
+                            <span class="chip">Type: <strong id="project-kind">{{ "temporary" if snapshot.project.is_temporary else "saved" }}</strong></span>
+                            <span class="chip">Scheduler: <strong id="scheduler-mode">{{ snapshot.scheduler.mode }}</strong></span>
+                            <span class="chip">Engagement: <strong id="scheduler-goal">{{ snapshot.scheduler.engagement_policy.preset_label if snapshot.scheduler.engagement_policy else snapshot.scheduler.goal_profile }}</strong></span>
+                            <span class="chip">Preapproved Families: <strong id="scheduler-families">{{ snapshot.scheduler.preapproved_families_count }}</strong></span>
+                        </div>
+                        <div class="ribbon-project-lines">
+                            <p class="meta-note" id="project-output-folder">{{ snapshot.project.output_folder }}</p>
+                            <p class="meta-note" id="project-running-folder">{{ snapshot.project.running_folder }}</p>
+                            <p class="meta-note">{{ snapshot.scheduler.cloud_notice }}</p>
+                            <p class="meta-note">Action status: <span id="action-status">Idle</span></p>
+                            <p class="meta-note">Workspace status: <span id="workspace-status">Idle</span></p>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="ribbon-group">
@@ -196,161 +201,179 @@
                     </div>
                 </div>
             </div>
+            <div class="ribbon-group ribbon-process-group" aria-label="Process activity">
+                <div class="ribbon-process-header">
+                    <div class="ribbon-process-meta">
+                        <span class="ribbon-process-icon" aria-hidden="true">
+                            <i class="fa-solid fa-terminal" aria-hidden="true"></i>
+                        </span>
+                        <span class="sr-only">Processes</span>
+                        <strong id="process-count" class="ribbon-process-count">{{ snapshot.processes | length }}</strong>
+                    </div>
+                    <div class="process-actions ribbon-process-actions">
+                        <button
+                            id="process-clear-finished-button"
+                            class="icon-btn"
+                            type="button"
+                            title="Hide Finished/Issues"
+                            aria-label="Hide Finished/Issues"
+                        >
+                            <i class="fa-solid fa-broom" aria-hidden="true"></i>
+                        </button>
+                        <button
+                            id="process-clear-all-button"
+                            class="icon-btn"
+                            type="button"
+                            title="Hide All Non-Running"
+                            aria-label="Hide All Non-Running"
+                        >
+                            <i class="fa-solid fa-eye-slash" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="table-wrap ribbon-process-table-wrap">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>Target</th>
+                            <th>Status</th>
+                            <th>%</th>
+                            <th>ETA</th>
+                            <th>Actions</th>
+                        </tr>
+                        </thead>
+                        <tbody id="processes-body"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </section>
 
     {% if graph_workspace_enabled %}
     <section class="panel panel-full graph-panel">
-        <div class="panel-header">
-            <h2>Graph Workspace</h2>
-            <p id="graph-workspace-summary">0 nodes shown | 0 edges shown</p>
-        </div>
-        <div class="graph-toolbar">
-            <label>
-                View
-                <select id="graph-view-select">
-                    <option value="attack_surface" selected>attack surface</option>
-                    <option value="host_service_topology">host/service topology</option>
-                    <option value="web_application_map">web application map</option>
-                    <option value="credential_identity_session">credential / identity / session</option>
-                    <option value="exploitation_chain">exploitation chain</option>
-                </select>
-            </label>
-            <label>
-                Group By
-                <select id="graph-group-select">
-                    <option value="finding" selected>finding</option>
-                    <option value="service">service</option>
-                    <option value="host">host</option>
-                    <option value="domain">domain</option>
-                    <option value="subnet">subnet</option>
-                </select>
-            </label>
-            <label>
-                Host Focus
-                <select id="graph-host-filter">
-                    <option value="">all hosts</option>
-                </select>
-            </label>
-            <label>
-                Node Type
-                <select id="graph-node-type-filter">
-                    <option value="">all node types</option>
-                </select>
-            </label>
-            <label>
-                Edge Type
-                <select id="graph-edge-type-filter">
-                    <option value="">all edge types</option>
-                </select>
-            </label>
-            <label>
-                Provenance
-                <select id="graph-source-kind-filter">
-                    <option value="">all provenance</option>
-                </select>
-            </label>
-            <label>
-                Severity
-                <select id="graph-severity-filter">
-                    <option value="">all severities</option>
-                </select>
-            </label>
-            <label>
-                Pack
-                <select id="graph-pack-filter">
-                    <option value="">all packs</option>
-                </select>
-            </label>
-            <label>
-                Density Mode
-                <select id="graph-render-mode-select">
-                    <option value="auto" selected>auto</option>
-                    <option value="graph">full graph</option>
-                    <option value="summary">summary graph</option>
-                    <option value="matrix">matrix</option>
-                </select>
-            </label>
-            <label>
-                Time Window
-                <select id="graph-time-window-filter">
-                    <option value="all">all time</option>
-                    <option value="24h">last 24h</option>
-                    <option value="7d">last 7d</option>
-                    <option value="30d">last 30d</option>
-                    <option value="90d">last 90d</option>
-                </select>
-            </label>
-            <label>
-                Search
-                <input id="graph-search-input" type="search" placeholder="node, edge, evidence, host">
-            </label>
-            <label class="graph-confidence-label">
-                Min Confidence
-                <input id="graph-min-confidence" type="range" min="0" max="100" step="5" value="0">
-                <span id="graph-min-confidence-value">0</span>
-            </label>
-            <label class="graph-confidence-label">
-                Zoom
-                <input id="graph-zoom-slider" type="range" min="10" max="200" step="10" value="70">
-                <span id="graph-zoom-value">70%</span>
-            </label>
-            <label class="checkbox graph-checkbox">
-                <input id="graph-hide-ai-suggested" type="checkbox">
-                Hide AI-suggested
-            </label>
-            <label class="checkbox graph-checkbox">
-                <input id="graph-hide-nmap-xml-artifacts" type="checkbox">
-                Hide Nmap XML artifacts
-            </label>
-        </div>
-        <div class="graph-action-bar">
-            <div class="graph-action-group">
-                <button id="graph-refresh-button" type="button">Refresh Graph</button>
-                <button id="graph-rebuild-button" type="button">Rebuild Graph</button>
-                <button id="graph-export-json-button" type="button">Export JSON</button>
-                <button id="graph-export-graphml-button" type="button">Export GraphML</button>
-                <button id="graph-export-svg-button" type="button">Export SVG</button>
-                <button id="graph-export-png-button" type="button">Export PNG</button>
+        <div class="panel-header graph-panel-header">
+            <div class="graph-panel-heading">
+                <h2>Graph Workspace</h2>
+                <p id="graph-workspace-summary">0 nodes shown | 0 edges shown</p>
             </div>
-            <div class="graph-action-group">
+            <div class="scheduler-actions graph-panel-actions">
+                <button
+                    id="graph-filters-toggle-button"
+                    class="graph-icon-button"
+                    type="button"
+                    title="Show Filters"
+                    aria-label="Show Filters"
+                    aria-expanded="false"
+                    aria-controls="graph-filters-panel"
+                >
+                    <i class="fa-solid fa-sliders" aria-hidden="true"></i>
+                </button>
+            </div>
+        </div>
+        <div id="graph-filters-panel" class="graph-filters-panel" hidden>
+            <div class="graph-toolbar">
                 <label>
-                    Saved Layout
-                    <select id="graph-layout-select">
-                        <option value="">auto layout</option>
+                    View
+                    <select id="graph-view-select">
+                        <option value="attack_surface" selected>attack surface</option>
+                        <option value="host_service_topology">host/service topology</option>
+                        <option value="web_application_map">web application map</option>
+                        <option value="credential_identity_session">credential / identity / session</option>
+                        <option value="exploitation_chain">exploitation chain</option>
                     </select>
                 </label>
                 <label>
-                    Layout Name
-                    <input id="graph-layout-name" type="text" value="default" placeholder="default">
-                </label>
-                <button id="graph-layout-tidy-button" type="button">Tidy Layout</button>
-                <button id="graph-layout-save-button" type="button">Save Layout</button>
-                <button id="graph-layout-reset-button" type="button">Reset Layout</button>
-            </div>
-            <div class="graph-action-group">
-                <label>
-                    Focus Depth
-                    <select id="graph-focus-depth-select">
-                        <option value="1" selected>1 hop</option>
-                        <option value="2">2 hop</option>
-                        <option value="3">3 hop</option>
+                    Group By
+                    <select id="graph-group-select">
+                        <option value="finding" selected>finding</option>
+                        <option value="service">service</option>
+                        <option value="host">host</option>
+                        <option value="domain">domain</option>
+                        <option value="subnet">subnet</option>
                     </select>
                 </label>
-                <button id="graph-focus-selection-button" type="button">Focus Selected</button>
-                <button id="graph-clear-focus-button" type="button">Clear Focus</button>
-                <button id="graph-expand-selection-button" type="button">Expand Selected</button>
-                <button id="graph-collapse-expanded-button" type="button">Collapse Expanded</button>
+                <label>
+                    Host Focus
+                    <select id="graph-host-filter">
+                        <option value="">all hosts</option>
+                    </select>
+                </label>
+                <label>
+                    Node Type
+                    <select id="graph-node-type-filter">
+                        <option value="">all node types</option>
+                    </select>
+                </label>
+                <label>
+                    Edge Type
+                    <select id="graph-edge-type-filter">
+                        <option value="">all edge types</option>
+                    </select>
+                </label>
+                <label>
+                    Provenance
+                    <select id="graph-source-kind-filter">
+                        <option value="">all provenance</option>
+                    </select>
+                </label>
+                <label>
+                    Severity
+                    <select id="graph-severity-filter">
+                        <option value="">all severities</option>
+                    </select>
+                </label>
+                <label>
+                    Pack
+                    <select id="graph-pack-filter">
+                        <option value="">all packs</option>
+                    </select>
+                </label>
+                <label>
+                    Density Mode
+                    <select id="graph-render-mode-select">
+                        <option value="auto" selected>auto</option>
+                        <option value="graph">full graph</option>
+                        <option value="summary">summary graph</option>
+                        <option value="matrix">matrix</option>
+                    </select>
+                </label>
+                <label>
+                    Time Window
+                    <select id="graph-time-window-filter">
+                        <option value="all">all time</option>
+                        <option value="24h">last 24h</option>
+                        <option value="7d">last 7d</option>
+                        <option value="30d">last 30d</option>
+                        <option value="90d">last 90d</option>
+                    </select>
+                </label>
+                <label>
+                    Search
+                    <input id="graph-search-input" type="search" placeholder="node, edge, evidence, host">
+                </label>
+                <label class="graph-confidence-label">
+                    Min Confidence
+                    <input id="graph-min-confidence" type="range" min="0" max="100" step="5" value="0">
+                    <span id="graph-min-confidence-value">0</span>
+                </label>
+                <label class="graph-confidence-label">
+                    Zoom
+                    <input id="graph-zoom-slider" type="range" min="10" max="200" step="10" value="70">
+                    <span id="graph-zoom-value">70%</span>
+                </label>
+                <label class="checkbox graph-checkbox">
+                    <input id="graph-hide-ai-suggested" type="checkbox">
+                    Hide AI-suggested
+                </label>
+                <label class="checkbox graph-checkbox">
+                    <input id="graph-hide-nmap-xml-artifacts" type="checkbox">
+                    Hide Nmap XML artifacts
+                </label>
             </div>
         </div>
-        <div class="graph-legend">
-            <span class="graph-legend-chip graph-legend-observed">observed</span>
-            <span class="graph-legend-chip graph-legend-inferred">inferred</span>
-            <span class="graph-legend-chip graph-legend-ai">ai suggested</span>
-            <span class="graph-legend-chip graph-legend-user">user entered</span>
-            <span class="graph-legend-note">drag nodes or groups to reposition them, click nodes or edges for provenance and evidence</span>
-        </div>
-        <div class="graph-workspace">
+        <div id="graph-workspace-shell" class="graph-workspace graph-workspace-detail-floating">
             <div class="graph-canvas-panel">
                 <div id="graph-workspace-empty" class="graph-empty-state" hidden>No graph data matches the current filters.</div>
                 <div class="graph-canvas-scroll">
@@ -363,40 +386,159 @@
                         aria-label="Evidence graph workspace"
                     ></svg>
                 </div>
+                <div id="graph-detail-floating-layer" class="graph-detail-floating-layer" hidden></div>
             </div>
-            <aside class="graph-sidebar">
-                <div class="panel-header">
-                    <h3>Graph Detail</h3>
-                    <p id="graph-detail-caption">Select a node or edge</p>
-                </div>
-                <div id="graph-selection-badges" class="graph-selection-badges"></div>
-                <dl id="graph-detail-fields" class="graph-detail-list"></dl>
-                <div class="graph-detail-block">
-                    <h4>Evidence</h4>
-                    <ul id="graph-detail-evidence" class="graph-detail-evidence"></ul>
-                </div>
-                <div class="graph-detail-block">
-                    <h4>Related Content</h4>
-                    <p id="graph-detail-content-status" class="text-muted">No related artifacts or screenshots.</p>
-                    <div id="graph-detail-content-list" class="graph-content-list"></div>
-                </div>
-                <div class="graph-detail-block">
-                    <h4>Properties</h4>
-                    <pre id="graph-detail-properties" class="graph-detail-properties">No graph selection</pre>
-                </div>
-                <div class="graph-detail-block">
-                    <h4>Annotations</h4>
-                    <div id="graph-annotations-list" class="graph-annotations-list"></div>
-                    <label>
-                        Add Annotation
-                        <textarea id="graph-annotation-input" rows="4" placeholder="Operator note, validation status, next step..."></textarea>
-                    </label>
-                    <div class="scheduler-actions graph-detail-actions">
-                        <button id="graph-annotation-save-button" type="button">Save Annotation</button>
-                        <button id="graph-pin-toggle-button" type="button">Pin Node</button>
-                    </div>
+            <aside id="graph-sidebar" class="graph-sidebar" hidden>
+                <div id="graph-detail-dock-slot">
+                    <section id="graph-detail-panel" class="graph-detail-panel" hidden>
+                        <div class="panel-header graph-detail-header">
+                            <div class="graph-detail-heading">
+                                <h3>Graph Detail</h3>
+                                <p id="graph-detail-caption">Select a node or edge</p>
+                            </div>
+                            <div class="scheduler-actions graph-detail-shell-actions">
+                                <button
+                                    id="graph-detail-dock-toggle-button"
+                                    class="graph-icon-button"
+                                    type="button"
+                                    title="Dock Panel"
+                                    aria-label="Dock Panel"
+                                >
+                                    <i class="fa-solid fa-table-columns" aria-hidden="true"></i>
+                                </button>
+                                <button
+                                    id="graph-detail-close-button"
+                                    class="modal-close-btn graph-detail-close-btn"
+                                    type="button"
+                                    title="Close"
+                                    aria-label="Close"
+                                    hidden
+                                >
+                                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div id="graph-selection-badges" class="graph-selection-badges"></div>
+                        <dl id="graph-detail-fields" class="graph-detail-list"></dl>
+                        <div id="graph-host-actions-block" class="graph-detail-block" hidden>
+                            <h4>Host Actions</h4>
+                            <div id="graph-host-actions" class="host-actions graph-host-actions"></div>
+                        </div>
+                        <div id="graph-subnet-actions-block" class="graph-detail-block" hidden>
+                            <h4>Subnet Actions</h4>
+                            <div id="graph-subnet-actions" class="host-actions graph-host-actions"></div>
+                        </div>
+                        <div id="graph-screenshot-actions-block" class="graph-detail-block" hidden>
+                            <h4>Screenshot Actions</h4>
+                            <div id="graph-screenshot-actions" class="host-actions graph-host-actions"></div>
+                        </div>
+                        <div class="graph-detail-block">
+                            <h4>Evidence</h4>
+                            <ul id="graph-detail-evidence" class="graph-detail-evidence"></ul>
+                        </div>
+                        <div class="graph-detail-block">
+                            <h4>Related Content</h4>
+                            <p id="graph-detail-content-status" class="text-muted">No related artifacts or screenshots.</p>
+                            <div id="graph-detail-content-list" class="graph-content-list"></div>
+                        </div>
+                        <div class="graph-detail-block">
+                            <h4>Properties</h4>
+                            <pre id="graph-detail-properties" class="graph-detail-properties">No graph selection</pre>
+                        </div>
+                        <div class="graph-detail-block">
+                            <h4>Notes</h4>
+                            <div id="graph-annotations-list" class="graph-annotations-list"></div>
+                            <div class="scheduler-actions graph-detail-actions">
+                                <button
+                                    id="graph-note-open-button"
+                                    class="graph-icon-button"
+                                    type="button"
+                                    title="Add Note"
+                                    aria-label="Add Note"
+                                >
+                                    <i class="fa-solid fa-note-sticky" aria-hidden="true"></i>
+                                </button>
+                                <button
+                                    id="graph-pin-toggle-button"
+                                    class="graph-icon-button"
+                                    type="button"
+                                    title="Pin Node"
+                                    aria-label="Pin Node"
+                                >
+                                    <i class="fa-solid fa-thumbtack" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </section>
                 </div>
             </aside>
+        </div>
+        <div class="graph-action-bar graph-action-footer">
+            <div class="graph-action-group graph-action-footer-left graph-action-buttons">
+                <button id="graph-refresh-button" class="graph-icon-button" type="button" title="Refresh Graph" aria-label="Refresh Graph">
+                    <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                </button>
+                <button id="graph-rebuild-button" class="graph-icon-button" type="button" title="Rebuild Graph" aria-label="Rebuild Graph">
+                    <i class="fa-solid fa-sitemap" aria-hidden="true"></i>
+                </button>
+                <button id="graph-export-json-button" class="graph-icon-button" type="button" title="Export JSON" aria-label="Export JSON">
+                    <i class="fa-solid fa-file-code" aria-hidden="true"></i>
+                </button>
+                <button id="graph-export-graphml-button" class="graph-icon-button" type="button" title="Export GraphML" aria-label="Export GraphML">
+                    <i class="fa-solid fa-diagram-project" aria-hidden="true"></i>
+                </button>
+                <button id="graph-export-svg-button" class="graph-icon-button" type="button" title="Export SVG" aria-label="Export SVG">
+                    <i class="fa-solid fa-vector-square" aria-hidden="true"></i>
+                </button>
+                <button id="graph-export-png-button" class="graph-icon-button" type="button" title="Export PNG" aria-label="Export PNG">
+                    <i class="fa-solid fa-image" aria-hidden="true"></i>
+                </button>
+            </div>
+            <span class="graph-footer-separator" aria-hidden="true"></span>
+            <div class="graph-action-group graph-action-group-separated">
+                <label>
+                    Saved Layout
+                    <select id="graph-layout-select">
+                        <option value="">auto layout</option>
+                    </select>
+                </label>
+                <label>
+                    Layout Name
+                    <input id="graph-layout-name" type="text" value="default" placeholder="default">
+                </label>
+                <button id="graph-layout-tidy-button" class="graph-icon-button" type="button" title="Tidy Layout" aria-label="Tidy Layout">
+                    <i class="fa-solid fa-broom" aria-hidden="true"></i>
+                </button>
+                <button id="graph-layout-save-button" class="graph-icon-button" type="button" title="Save Layout" aria-label="Save Layout">
+                    <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                </button>
+                <button id="graph-layout-reset-button" class="graph-icon-button" type="button" title="Reset Layout" aria-label="Reset Layout">
+                    <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
+                </button>
+            </div>
+            <span class="graph-footer-separator" aria-hidden="true"></span>
+            <div class="graph-action-group graph-action-group-separated">
+                <label>
+                    Focus Depth
+                    <select id="graph-focus-depth-select">
+                        <option value="1" selected>1 hop</option>
+                        <option value="2">2 hop</option>
+                        <option value="3">3 hop</option>
+                    </select>
+                </label>
+                <button id="graph-focus-selection-button" class="graph-icon-button" type="button" title="Focus Selected" aria-label="Focus Selected">
+                    <i class="fa-solid fa-crosshairs" aria-hidden="true"></i>
+                </button>
+                <button id="graph-clear-focus-button" class="graph-icon-button" type="button" title="Clear Focus" aria-label="Clear Focus">
+                    <i class="fa-solid fa-circle-xmark" aria-hidden="true"></i>
+                </button>
+                <button id="graph-expand-selection-button" class="graph-icon-button" type="button" title="Expand Selected" aria-label="Expand Selected">
+                    <i class="fa-solid fa-expand" aria-hidden="true"></i>
+                </button>
+                <button id="graph-collapse-expanded-button" class="graph-icon-button" type="button" title="Collapse Expanded" aria-label="Collapse Expanded">
+                    <i class="fa-solid fa-compress" aria-hidden="true"></i>
+                </button>
+            </div>
         </div>
         <div
             id="graph-resize-handle"
@@ -406,7 +548,7 @@
             aria-label="Resize graph workspace vertically"
             title="Drag to resize graph workspace"
         ></div>
-        <p class="meta-note">Graph status: <span id="graph-workspace-status">Idle</span></p>
+        <p class="meta-note graph-status-note">Graph status: <span id="graph-workspace-status">Idle</span></p>
     </section>
     {% else %}
     <section class="panel panel-full graph-panel">
@@ -462,33 +604,6 @@
                 </tr>
                 </thead>
                 <tbody id="hosts-body"></tbody>
-            </table>
-        </div>
-    </section>
-
-    <section class="panel">
-        <div class="panel-header">
-            <h2>Processes</h2>
-            <p id="process-count">{{ snapshot.processes | length }}</p>
-        </div>
-        <div class="scheduler-actions">
-            <button id="process-clear-finished-button" type="button">Hide Finished/Issues</button>
-            <button id="process-clear-all-button" type="button">Hide All Non-Running</button>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Name</th>
-                    <th>Target</th>
-                    <th>Status</th>
-                    <th>%</th>
-                    <th>ETA</th>
-                    <th>Actions</th>
-                </tr>
-                </thead>
-                <tbody id="processes-body"></tbody>
             </table>
         </div>
     </section>
@@ -732,10 +847,16 @@
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
         </div>
-        <div class="modal-actions">
-            <button id="process-output-refresh-button" type="button">Refresh</button>
-            <button id="process-output-copy-button" type="button">Copy to Clipboard</button>
-            <button id="process-output-download-button" type="button">Download .txt</button>
+        <div class="modal-actions modal-toolbar-actions">
+            <button id="process-output-refresh-button" class="icon-btn" type="button" title="Refresh" aria-label="Refresh">
+                <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+            </button>
+            <button id="process-output-copy-button" class="icon-btn" type="button" title="Copy to Clipboard" aria-label="Copy to Clipboard">
+                <i class="fa-regular fa-copy" aria-hidden="true"></i>
+            </button>
+            <button id="process-output-download-button" class="icon-btn" type="button" title="Download .txt" aria-label="Download .txt">
+                <i class="fa-solid fa-download" aria-hidden="true"></i>
+            </button>
         </div>
         <div class="process-command-block">
             <div class="process-command-header">
@@ -762,9 +883,13 @@
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
         </div>
-        <div class="modal-actions">
-            <button id="script-output-copy-button" type="button">Copy to Clipboard</button>
-            <button id="script-output-download-button" type="button">Download .txt</button>
+        <div class="modal-actions modal-toolbar-actions">
+            <button id="script-output-copy-button" class="icon-btn" type="button" title="Copy to Clipboard" aria-label="Copy to Clipboard">
+                <i class="fa-regular fa-copy" aria-hidden="true"></i>
+            </button>
+            <button id="script-output-download-button" class="icon-btn" type="button" title="Download .txt" aria-label="Download .txt">
+                <i class="fa-solid fa-download" aria-hidden="true"></i>
+            </button>
         </div>
         <div class="process-command-block">
             <div class="process-command-header">
@@ -1449,6 +1574,27 @@
         <div class="modal-actions">
             <button id="host-remove-modal-cancel" type="button">Cancel</button>
             <button id="host-remove-modal-confirm" type="button">Remove Host</button>
+        </div>
+    </div>
+</div>
+
+<div id="graph-note-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal graph-note-modal" role="dialog" aria-modal="true" aria-labelledby="graph-note-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="graph-note-modal-title">Add Note</h2>
+            <p id="graph-note-modal-meta">Add an operator note for the selected graph item.</p>
+            <button id="graph-note-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p id="graph-note-modal-target" class="meta-note"></p>
+        <label>
+            Note
+            <textarea id="graph-note-input" rows="6" placeholder="Operator note, validation status, next step..."></textarea>
+        </label>
+        <div class="modal-actions">
+            <button id="graph-note-modal-cancel" type="button">Cancel</button>
+            <button id="graph-note-save-button" type="button">Save Note</button>
         </div>
     </div>
 </div>

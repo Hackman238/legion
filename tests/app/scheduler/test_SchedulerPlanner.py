@@ -689,7 +689,7 @@ class SchedulerPlannerTest(unittest.TestCase):
                     ["Run nuclei web scan", "nuclei-web", "nuclei -u [WEB_URL] -silent", "http"],
                     ["WhatWeb", "whatweb", "whatweb [WEB_URL]", "http"],
                     ["Run dirsearch", "dirsearch", "dirsearch -u [WEB_URL]/ --format=json --output=[OUTPUT].json", "http"],
-                    ["Run ffuf", "ffuf", "ffuf -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt -json > [OUTPUT].jsonl", "http"],
+                    ["Run ffuf", "ffuf", "ffuf -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt -s -of json -o [OUTPUT].json", "http"],
                 ],
             )
 

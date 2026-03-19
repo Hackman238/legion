@@ -11,7 +11,7 @@
     >
     <link rel="stylesheet" href="{{ url_for('static', filename='css/legion.css') }}">
 </head>
-<body>
+<body{% if legion_ui_opaque %} class="opaque-ui"{% endif %}>
 <div class="background-glow"></div>
 {% if console_logo_art %}
 <div class="logo-watermark" aria-hidden="true">
@@ -33,6 +33,7 @@
 </div>
 <script id="initial-snapshot" type="application/json">{{ snapshot | tojson }}</script>
 <script>window.LEGION_WS_ENABLED = {{ "true" if ws_enabled else "false" }};</script>
+<script>window.LEGION_OPAQUE_UI_ENABLED = {{ "true" if legion_ui_opaque else "false" }};</script>
 <script src="{{ url_for('static', filename='js/legion.js') }}" defer></script>
 </body>
 </html>

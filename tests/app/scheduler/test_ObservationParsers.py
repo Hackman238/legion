@@ -28,14 +28,18 @@ class ObservationParsersTest(unittest.TestCase):
             self.assertIn("https://portal.example/login", urls)
             self.assertIn("Interesting web paths discovered (2)", finding_titles)
 
-    def test_extract_tool_observations_parses_ffuf_jsonl_artifact(self):
+    def test_extract_tool_observations_parses_ffuf_json_artifact(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            artifact = os.path.join(tmpdir, "ffuf.jsonl")
+            artifact = os.path.join(tmpdir, "ffuf.json")
             with open(artifact, "w", encoding="utf-8") as handle:
-                handle.write('{"url":"https://api.example/graphql","status":200}\n')
-                handle.write('{"url":"https://api.example/swagger","status":401}\n')
+                handle.write(
+                    '{"results":['
+                    '{"url":"https://api.example/graphql","status":200},'
+                    '{"url":"https://api.example/swagger","status":401}'
+                    ']}'
+                )
 
             parsed = extract_tool_observations(
                 "ffuf",

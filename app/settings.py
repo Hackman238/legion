@@ -154,7 +154,7 @@ class AppSettings():
     FFUF_COMMAND = (
         "(command -v ffuf >/dev/null 2>&1 && "
         "ffuf -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt "
-        "-json -noninteractive -s > [OUTPUT].jsonl) || "
+        "-s -of json -o [OUTPUT].json) || "
         "echo ffuf not found"
     )
     ENUM4LINUX_NG_COMMAND = (
@@ -406,6 +406,8 @@ class AppSettings():
             normalized = cls._ensure_dirsearch_command(normalized)
         if normalized_tool == "ffuf":
             normalized = cls._ensure_ffuf_command(normalized)
+        if "hydra" in normalized.lower():
+            normalized = cls._ensure_hydra_command(normalized)
         if normalized_tool == "enum4linux-ng":
             normalized = cls._ensure_enum4linux_ng_command(normalized)
         if normalized_tool == "smbmap":
@@ -808,16 +810,24 @@ class AppSettings():
             return raw
         probe_marker = "__LEGION_FFUF_PROBE__"
         normalized = re.sub(r"(?i)command\s+-v\s+ffuf", f"command -v {probe_marker}", raw)
-        normalized = re.sub(r"\[WEB_URL\](?!/)", "[WEB_URL]/FUZZ", normalized)
-        if "-json" not in normalized.lower():
-            normalized = re.sub(r"(?i)\bffuf\b", "ffuf -json", normalized, count=1)
-        if "-noninteractive" not in normalized.lower():
-            normalized = re.sub(r"(?i)\bffuf\b", "ffuf -noninteractive", normalized, count=1)
-        if not re.search(r"(?i)(?:^|\s)-s(?:\s|$)", normalized):
-            normalized = re.sub(r"(?i)\bffuf\b", "ffuf -s", normalized, count=1)
-        if "[OUTPUT]" not in normalized:
-            normalized += " > [OUTPUT].jsonl"
+        normalized = re.sub(r"\[WEB_URL\](?:/FUZZ|/)?", "[WEB_URL]/FUZZ", normalized, count=1)
+        normalized = re.sub(r"(?i)(?:^|\s)-json(?=\s|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-noninteractive(?=\s|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-s(?=\s|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-of\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", normalized)
+        normalized = re.sub(r"\s*>\s*\[OUTPUT\][^\s\)]*", " ", normalized)
+        normalized = re.sub(r"(?i)\bffuf\b", "ffuf -s -of json -o [OUTPUT].json", normalized, count=1)
         return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "ffuf")
+
+    @staticmethod
+    def _ensure_hydra_command(command: str) -> str:
+        raw = str(command or "")
+        if "hydra" not in raw.lower():
+            return raw
+        normalized = re.sub(r"(?i)-o\s+(?:\\?\"|')([^\"']+)(?:\\?\"|')", r"-o \1", raw)
+        normalized = re.sub(r"(?i)-o\s+\[OUTPUT\](?!\.)", "-o [OUTPUT].txt", normalized)
+        return re.sub(r"\s{2,}", " ", normalized).strip()
 
     @staticmethod
     def _ensure_enum4linux_ng_command(command: str) -> str:
