@@ -34,6 +34,8 @@ class ToolingEnvTest(unittest.TestCase):
         self.assertEqual("/opt/projectdiscovery/bin", path_parts[0])
         self.assertIn("/workspace/go/bin", path_parts)
         self.assertIn("/tmp/legion-home/go/bin", path_parts)
+        self.assertIn("/tmp/legion-home/.local/bin", path_parts)
+        self.assertIn("/tmp/legion-home/.cargo/bin", path_parts)
 
     def test_audit_legion_tools_resolves_path_and_configured_tool(self):
         from app.tooling import audit_legion_tools
@@ -95,6 +97,66 @@ class ToolingEnvTest(unittest.TestCase):
         self.assertIn("customscan", by_key)
         self.assertEqual("custom", by_key["customscan"].category)
         self.assertEqual("missing", by_key["customscan"].status)
+
+    def test_audit_legion_tools_detects_user_local_impacket_entry_points(self):
+        from app.tooling import audit_legion_tools
+
+        class StubSettings:
+            tools_path_nmap = ""
+            tools_path_hydra = ""
+            tools_path_texteditor = ""
+            tools_path_responder = ""
+            tools_path_ntlmrelay = ""
+            hostActions = []
+            portTerminalActions = []
+            portActions = []
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            local_bin = os.path.join(tempdir, ".local", "bin")
+            os.makedirs(local_bin, exist_ok=True)
+            impacket_tool = os.path.join(local_bin, "impacket-samrdump")
+            with open(impacket_tool, "w", encoding="utf-8") as handle:
+                handle.write("#!/bin/sh\nexit 0\n")
+            os.chmod(impacket_tool, stat.S_IRWXU)
+
+            rows = audit_legion_tools(StubSettings(), base_env={
+                "HOME": tempdir,
+                "PATH": "/usr/bin",
+                "GOBIN": "",
+                "GOPATH": "",
+                "CARGO_HOME": "",
+                "PIPX_BIN_DIR": "",
+            })
+            by_key = {row.key: row for row in rows}
+            self.assertEqual("installed", by_key["samrdump"].status)
+            self.assertEqual(impacket_tool, by_key["samrdump"].resolved_path)
+            self.assertIn("pipx install --force impacket", by_key["samrdump"].ubuntu_install)
+
+    def test_audit_legion_tools_exposes_curated_ubuntu_hints_for_nonpackaged_tools(self):
+        from app.tooling import audit_legion_tools
+
+        class StubSettings:
+            tools_path_nmap = ""
+            tools_path_hydra = ""
+            tools_path_texteditor = ""
+            tools_path_responder = ""
+            tools_path_ntlmrelay = ""
+            hostActions = []
+            portTerminalActions = []
+            portActions = []
+
+        rows = audit_legion_tools(StubSettings(), base_env={
+            "HOME": "/tmp/legion-home",
+            "PATH": "/usr/bin",
+            "GOBIN": "",
+            "GOPATH": "",
+        })
+        by_key = {row.key: row for row in rows}
+        self.assertEqual("cargo install feroxbuster", by_key["feroxbuster"].ubuntu_install)
+        self.assertIn("github.com/cddmp/enum4linux-ng.git", by_key["enum4linux-ng"].ubuntu_install)
+        self.assertIn("github.com/CiscoCXSecurity/enum4linux.git", by_key["enum4linux"].ubuntu_install)
+        self.assertIn("pipx install --force", by_key["theHarvester"].ubuntu_install)
+        self.assertIn("does not mix Kali repositories into Ubuntu", by_key["snmpcheck"].ubuntu_install)
 
     def test_build_tool_install_plan_rewrites_kali_apt_commands(self):
         from app.tooling import ToolAuditEntry, build_tool_install_plan
@@ -179,6 +241,55 @@ class ToolingEnvTest(unittest.TestCase):
         commands = [item["command"] for item in plan["commands"]]
         self.assertEqual("sudo -n apt-get install -y golang-go", commands[0])
         self.assertIn("go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest", commands[1])
+
+    def test_build_tool_install_plan_bootstraps_git_cargo_and_pipx_for_ubuntu(self):
+        from app.tooling import ToolAuditEntry, build_tool_install_plan
+
+        rows = [
+            ToolAuditEntry(
+                key="feroxbuster",
+                label="Feroxbuster",
+                category="web",
+                purpose="content discovery",
+                status="missing",
+                resolved_path="",
+                resolved_command="",
+                configured_value="",
+                kali_install="sudo apt install feroxbuster",
+                ubuntu_install="cargo install feroxbuster",
+                notes="",
+                optional=True,
+            ),
+            ToolAuditEntry(
+                key="theHarvester",
+                label="theHarvester",
+                category="passive",
+                purpose="recon",
+                status="missing",
+                resolved_path="",
+                resolved_command="",
+                configured_value="",
+                kali_install="sudo apt install theharvester",
+                ubuntu_install='tmpdir="$(mktemp -d)" && git clone --depth 1 https://github.com/laramies/theHarvester.git "$tmpdir/theHarvester" && python3 -m pipx install --force "$tmpdir/theHarvester"',
+                notes="",
+                optional=True,
+            ),
+        ]
+
+        plan = build_tool_install_plan(rows, platform="ubuntu", base_env={
+            "HOME": "/tmp/legion-home",
+            "PATH": "/usr/local/sbin",
+            "GOBIN": "",
+            "GOPATH": "",
+            "CARGO_HOME": "",
+            "PIPX_BIN_DIR": "",
+        })
+        commands = [item["command"] for item in plan["commands"]]
+        self.assertIn("sudo -n apt-get install -y git", commands)
+        self.assertIn("sudo -n apt-get install -y cargo", commands)
+        self.assertIn("sudo -n apt-get install -y pipx python3-venv", commands)
+        self.assertIn("cargo install feroxbuster", commands)
+        self.assertTrue(any("python3 -m pipx install --force" in item for item in commands))
 
     def test_execute_tool_install_plan_runs_commands(self):
         from app.tooling import execute_tool_install_plan

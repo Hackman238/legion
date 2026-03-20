@@ -39,7 +39,12 @@ from app.scheduler.policy import (
     preset_from_legacy_goal_profile,
     upsert_project_engagement_policy,
 )
-from app.scheduler.providers import ProviderError, rank_actions_with_provider, test_provider_connection
+from app.scheduler.providers import (
+    ProviderError,
+    rank_actions_with_provider,
+    select_web_followup_with_provider,
+    test_provider_connection,
+)
 from app.scheduler.reporting import (
     build_host_report,
     build_project_report,
@@ -144,6 +149,7 @@ __all__ = [
     "execute_runner_request",
     "normalize_runner_settings",
     "resolve_runner_selection",
+    "select_web_followup_with_provider",
     "select_strategy_packs",
     "sync_execution_record_to_evidence_graph",
     "sync_target_state_to_evidence_graph",

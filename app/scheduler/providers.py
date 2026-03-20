@@ -1,24 +1,31 @@
 import datetime
 import json
 import re
+import shlex
+import sys
 import threading
 import time
 from copy import deepcopy
 from collections import deque
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-MAX_PROVIDER_PROMPT_CHARS = 3200
-MAX_PROVIDER_CANDIDATES = 18
+MAX_PROVIDER_PROMPT_CHARS = 5200
+MAX_PROVIDER_CANDIDATES = 24
 MAX_CANDIDATE_TEMPLATE_CHARS = 180
 MAX_CANDIDATE_LABEL_CHARS = 96
-MAX_PROVIDER_RESPONSE_TOKENS = 280
+MAX_PROVIDER_RESPONSE_TOKENS = 1000
+MAX_PROVIDER_REFLECTION_RESPONSE_TOKENS = 500
+MAX_PROVIDER_SPECIALIST_RESPONSE_TOKENS = 420
 MAX_PROVIDER_OPENAI_RETRY_ATTEMPTS = 3
 MAX_PROVIDER_OPENAI_RETRY_TOKENS = 1600
 DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
-MAX_PROVIDER_CONTEXT_CHARS = 6200
+MAX_PROVIDER_CONTEXT_CHARS = 10000
 MAX_PROVIDER_CONTEXT_ITEMS = 64
 MAX_PROVIDER_LOG_ENTRIES = 600
 MAX_PROVIDER_LOG_TEXT_CHARS = 20000
+SCHEDULER_PROMPT_VERSION = "scheduler-ranking-v2"
+SCHEDULER_REFLECTION_PROMPT_VERSION = "scheduler-reflection-v1"
+SCHEDULER_WEB_FOLLOWUP_PROMPT_VERSION = "scheduler-web-followup-v1"
 _ALWAYS_INCLUDE_BOOL_SIGNALS = {
     "web_service",
     "rdp_service",
@@ -34,6 +41,31 @@ _ALWAYS_INCLUDE_BOOL_SIGNALS = {
     "ubiquiti_detected",
 }
 _WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
+_SCHEDULER_PHASES = (
+    "initial_discovery",
+    "service_fingerprint",
+    "broad_vuln",
+    "protocol_checks",
+    "targeted_checks",
+    "deep_web",
+    "external_enrichment",
+    "complete",
+)
+_PROVIDER_IPV4_LIKE_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+_STRICT_COVERAGE_GAP_IDS = {
+    "missing_discovery",
+    "missing_banner",
+    "missing_screenshot",
+    "missing_remote_screenshot",
+    "missing_nmap_vuln",
+    "missing_nuclei_auto",
+    "missing_whatweb",
+    "missing_nikto",
+    "missing_web_content_discovery",
+    "missing_http_followup",
+    "missing_smb_signing_checks",
+    "missing_internal_safe_enum",
+}
 
 
 class ProviderError(RuntimeError):
@@ -49,7 +81,9 @@ def _load_requests_module():
     try:
         import requests as requests_module
     except Exception as exc:  # pragma: no cover - depends on local environment packaging
-        raise ProviderError(f"requests dependency unavailable: {exc}") from exc
+        raise ProviderError(
+            f"requests dependency unavailable under {sys.executable} ({sys.version.split()[0]}): {exc}"
+        ) from exc
     return requests_module
 
 
@@ -137,6 +171,241 @@ def _sanitize_headers_for_log(headers: Optional[Dict[str, Any]]) -> Dict[str, st
     return safe
 
 
+def _normalize_tool_token(value: Any) -> str:
+    return str(value or "").strip().lower()[:120]
+
+
+def _expand_unavailable_tool_ids(values: Any) -> List[str]:
+    expanded = set()
+    for item in list(values or []):
+        token = _normalize_tool_token(item)
+        if not token:
+            continue
+        expanded.add(token)
+        if token in {"whatweb", "whatweb-http", "whatweb-https"}:
+            expanded.update({"whatweb", "whatweb-http", "whatweb-https"})
+        if token.endswith(".nse"):
+            expanded.add("nmap")
+    return sorted(expanded)
+
+
+def _extract_unavailable_tool_ids_from_texts(values: Any) -> List[str]:
+    found = set()
+    for item in list(values or []):
+        text = str(item or "").replace("\r", "\n").strip().lower()
+        if not text:
+            continue
+        patterns = (
+            r"(?:^|\n)\s*(?:/bin/sh|bash|zsh|sh|fish):\s*([a-z][a-z0-9._+-]*):\s*(?:command not found|not found)(?:\s|$)",
+            r"(?:^|\n)\s*([a-z][a-z0-9._+-]*):\s*(?:command not found|not found)(?:\s|$)",
+            r"(?:^|\n)\s*([a-z][a-z0-9._+-]*)\s+command not found(?:\s|$)",
+            r"(?:^|\n)\s*([a-z][a-z0-9._+-]*)\s+not found(?:\s|$)",
+        )
+        for pattern in patterns:
+            for match in re.findall(pattern, text):
+                token = _normalize_tool_token(match)
+                if token:
+                    found.add(token)
+    return _expand_unavailable_tool_ids(found)
+
+
+def _collect_unavailable_tool_ids(context: Optional[Dict[str, Any]]) -> List[str]:
+    if not isinstance(context, dict):
+        return []
+    rows: List[str] = []
+
+    signals = context.get("signals", {}) if isinstance(context.get("signals", {}), dict) else {}
+    rows.extend(list(signals.get("missing_tools", []) or []))
+    rows.extend(list(signals.get("audited_missing_tools", []) or []))
+
+    tool_audit = context.get("tool_audit", {}) if isinstance(context.get("tool_audit", {}), dict) else {}
+    rows.extend(list(tool_audit.get("unavailable_tool_ids", []) or []))
+    found = set(_expand_unavailable_tool_ids(rows))
+
+    for item in list(context.get("recent_processes", []) or [])[:48]:
+        if not isinstance(item, dict):
+            continue
+        tool_id = _normalize_tool_token(item.get("tool_id", ""))
+        tool_tokens = set(_expand_unavailable_tool_ids([tool_id])) if tool_id else set()
+        status = str(item.get("status", "") or "").strip().lower()
+        output_excerpt = str(item.get("output_excerpt", "") or "").strip().lower()
+
+        if "missing" in status and tool_tokens:
+            found.update(tool_tokens)
+
+        text_tokens = set(_extract_unavailable_tool_ids_from_texts([status, output_excerpt]))
+        if not text_tokens:
+            continue
+        if tool_tokens:
+            if text_tokens & tool_tokens:
+                found.update(tool_tokens)
+            continue
+        found.update(text_tokens)
+
+    return sorted(found)
+
+
+def _shell_primary_command_token(command: Any) -> str:
+    text = str(command or "").strip()
+    if not text:
+        return ""
+    try:
+        tokens = shlex.split(text, posix=True)
+    except ValueError:
+        tokens = re.findall(r"[A-Za-z0-9_./+-]+", text)
+    wrappers = {"sudo", "env", "timeout", "nohup", "stdbuf", "nice"}
+    control_tokens = {"&&", "||", ";", "|", "(", ")", "{", "}"}
+    for token in tokens:
+        current = str(token or "").strip()
+        if not current or current in control_tokens:
+            continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", current):
+            continue
+        base = current.rsplit("/", 1)[-1].strip().lower()
+        if not base or base in wrappers:
+            continue
+        if re.fullmatch(r"[a-z0-9][a-z0-9._+-]*", base):
+            return base
+    return ""
+
+
+def _provider_is_ipv4_like(value: Any) -> bool:
+    token = str(value or "").strip()
+    if not token or not _PROVIDER_IPV4_LIKE_RE.match(token):
+        return False
+    try:
+        return all(0 <= int(part) <= 255 for part in token.split("."))
+    except Exception:
+        return False
+
+
+def _sanitize_provider_technology_version(value: Any) -> str:
+    token = str(value or "").strip().strip("[](){};,")
+    if not token:
+        return ""
+    if len(token) > 80:
+        token = token[:80]
+    lowered = token.lower()
+    if lowered in {"unknown", "generic", "none", "n/a", "na", "-", "*"}:
+        return ""
+    if re.fullmatch(r"0+", lowered):
+        return ""
+    if re.fullmatch(r"0+[a-z]{1,2}", lowered):
+        return ""
+    if _provider_is_ipv4_like(token):
+        return ""
+    if "/" in token and not re.search(r"\d", token):
+        return ""
+    if not re.search(r"[0-9]", token):
+        return ""
+    return token
+
+
+def _normalize_provider_cpe_token(value: Any) -> str:
+    token = str(value or "").strip().lower()[:220]
+    if not token:
+        return ""
+    if token.startswith("cpe:/"):
+        parts = token.split(":")
+        if len(parts) >= 5:
+            version = _sanitize_provider_technology_version(parts[4])
+            if version:
+                parts[4] = version.lower()
+                return ":".join(parts)
+            return ":".join(parts[:4])
+        return token
+    if token.startswith("cpe:2.3:"):
+        parts = token.split(":")
+        if len(parts) >= 6:
+            version = _sanitize_provider_technology_version(parts[5])
+            if version:
+                parts[5] = version.lower()
+            else:
+                parts[5] = "*"
+            return ":".join(parts)
+        return token
+    return token
+
+
+def _provider_cpe_base(value: Any) -> str:
+    token = _normalize_provider_cpe_token(value)
+    if token.startswith("cpe:/"):
+        parts = token.split(":")
+        return ":".join(parts[:4]) if len(parts) >= 4 else token
+    if token.startswith("cpe:2.3:"):
+        parts = token.split(":")
+        return ":".join(parts[:5]) if len(parts) >= 5 else token
+    return token
+
+
+def _provider_version_from_cpe(value: Any) -> str:
+    token = _normalize_provider_cpe_token(value)
+    if token.startswith("cpe:/"):
+        parts = token.split(":")
+        if len(parts) >= 5:
+            return _sanitize_provider_technology_version(parts[4])
+        return ""
+    if token.startswith("cpe:2.3:"):
+        parts = token.split(":")
+        if len(parts) >= 6:
+            return _sanitize_provider_technology_version(parts[5])
+        return ""
+    return ""
+
+
+def _sanitize_provider_technology_version_for_tech(
+        *,
+        name: Any,
+        version: Any,
+        cpe: Any = "",
+        evidence: Any = "",
+) -> str:
+    cleaned = _sanitize_provider_technology_version(version)
+    if not cleaned:
+        return ""
+    lowered_name = re.sub(r"[^a-z0-9]+", " ", str(name or "").strip().lower()).strip()
+    cpe_base = _provider_cpe_base(cpe)
+    evidence_text = str(evidence or "").strip().lower()
+    major_match = re.match(r"^(\d+)", cleaned)
+    major = int(major_match.group(1)) if major_match else None
+
+    if major is not None:
+        if lowered_name in {"apache", "apache http server"} or "cpe:/a:apache:http_server" in cpe_base:
+            if major > 3:
+                return ""
+        if lowered_name == "nginx" or "cpe:/a:nginx:nginx" in cpe_base:
+            if major > 2:
+                return ""
+        if lowered_name == "php" or "cpe:/a:php:php" in cpe_base:
+            if major < 3:
+                return ""
+
+    if (
+            re.fullmatch(r"[78]\.\d{2}", cleaned)
+            and any(marker in evidence_text for marker in ("nmap", ".nse", "output fingerprint", "service fingerprint"))
+    ):
+        return ""
+    return cleaned
+
+
+def _normalize_next_phase(value: Any, *, current_phase: str = "") -> str:
+    phase = str(value or "").strip().lower()[:80]
+    current = str(current_phase or "").strip().lower()[:80]
+    if not phase:
+        return current
+    if phase not in _SCHEDULER_PHASES:
+        return current
+    if current not in _SCHEDULER_PHASES:
+        return phase
+    current_index = _SCHEDULER_PHASES.index(current)
+    phase_index = _SCHEDULER_PHASES.index(phase)
+    if phase_index < current_index:
+        return current
+    if phase_index > current_index + 1:
+        return _SCHEDULER_PHASES[min(current_index + 1, len(_SCHEDULER_PHASES) - 1)]
+    return phase
+
+
 def _sanitize_value_for_log(value: Any):
     if isinstance(value, dict):
         safe = {}
@@ -185,6 +454,7 @@ def _record_provider_log(
         response_body: Optional[str] = None,
         error: str = "",
         api_style: str = "",
+        prompt_metadata: Optional[Dict[str, Any]] = None,
 ):
     row = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -197,6 +467,7 @@ def _record_provider_log(
         "response_status": int(response_status) if isinstance(response_status, int) else response_status,
         "response_body": _truncate_log_text(response_body or ""),
         "error": _truncate_log_text(error or ""),
+        "prompt_metadata": _sanitize_value_for_log(prompt_metadata or {}),
     }
     with _provider_log_lock:
         _provider_logs.append(row)
@@ -209,9 +480,22 @@ def rank_actions_with_provider(config: Dict[str, Any], goal_profile: str, servic
     provider_name = str(config.get("provider", "none") or "none").strip().lower()
     providers_cfg = config.get("providers", {}) if isinstance(config, dict) else {}
     provider_cfg = providers_cfg.get(provider_name, {}) if isinstance(providers_cfg, dict) else {}
+    feature_flags = config.get("feature_flags", {}) if isinstance(config, dict) else {}
+    prompt_profiles_enabled = True
+    if isinstance(feature_flags, dict) and "scheduler_prompt_profiles" in feature_flags:
+        prompt_profiles_enabled = bool(feature_flags.get("scheduler_prompt_profiles", True))
+    prompt_package = _build_ranking_prompt_package(
+        goal_profile=goal_profile,
+        service=service,
+        protocol=protocol,
+        candidates=candidates,
+        context=context or {},
+        prompt_profiles_enabled=prompt_profiles_enabled,
+    )
+    prompt_metadata = dict(prompt_package.get("metadata", {}) or {})
 
     if provider_name == "none" or not provider_cfg.get("enabled", False):
-        _set_last_provider_payload({
+        disabled_payload = {
             "provider": provider_name,
             "actions": [],
             "host_updates": {},
@@ -219,21 +503,151 @@ def rank_actions_with_provider(config: Dict[str, Any], goal_profile: str, servic
             "manual_tests": [],
             "technologies": [],
             "next_phase": "",
-        })
+        }
+        disabled_payload.update(prompt_metadata)
+        _set_last_provider_payload(disabled_payload)
         return []
 
-    prompt = _build_prompt(goal_profile, service, protocol, candidates, context=context or {})
     if provider_name in {"openai", "lm_studio"}:
-        payload = _call_openai_compatible(provider_name, provider_cfg, prompt)
+        payload = _call_openai_compatible(
+            provider_name,
+            provider_cfg,
+            prompt_package,
+            context=context or {},
+        )
         payload["provider"] = provider_name
+        payload.update(prompt_metadata)
         _set_last_provider_payload(payload)
         return payload.get("actions", [])
     if provider_name == "claude":
-        payload = _call_claude(provider_cfg, prompt)
+        payload = _call_claude(provider_cfg, prompt_package, context=context or {})
         payload["provider"] = provider_name
+        payload.update(prompt_metadata)
         _set_last_provider_payload(payload)
         return payload.get("actions", [])
     raise ProviderError(f"Unsupported provider: {provider_name}")
+
+
+def reflect_on_scheduler_progress(
+        config: Dict[str, Any],
+        goal_profile: str,
+        service: str,
+        protocol: str,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        recent_rounds: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    provider_name = str(config.get("provider", "none") or "none").strip().lower()
+    providers_cfg = config.get("providers", {}) if isinstance(config, dict) else {}
+    provider_cfg = providers_cfg.get(provider_name, {}) if isinstance(providers_cfg, dict) else {}
+
+    if provider_name == "none" or not provider_cfg.get("enabled", False):
+        return {
+            "provider": provider_name,
+            "state": "continue",
+            "reason": "",
+            "priority_shift": "",
+            "promote_tool_ids": [],
+            "suppress_tool_ids": [],
+            "manual_tests": [],
+            "prompt_version": SCHEDULER_REFLECTION_PROMPT_VERSION,
+            "prompt_type": "reflection",
+        }
+
+    prompt_package = _build_reflection_prompt_package(
+        goal_profile=goal_profile,
+        service=service,
+        protocol=protocol,
+        context=context or {},
+        recent_rounds=recent_rounds or [],
+    )
+    metadata = dict(prompt_package.get("metadata", {}) or {})
+
+    if provider_name in {"openai", "lm_studio"}:
+        content = _request_openai_compatible_content(
+            provider_name,
+            provider_cfg,
+            prompt_package,
+            max_tokens=MAX_PROVIDER_REFLECTION_RESPONSE_TOKENS,
+            temperature=0.1,
+        )
+    elif provider_name == "claude":
+        content = _request_claude_content(
+            provider_cfg,
+            prompt_package,
+            max_tokens=420,
+            temperature=0.1,
+        )
+    else:
+        raise ProviderError(f"Unsupported provider: {provider_name}")
+
+    payload = _parse_reflection_payload(
+        content,
+        unavailable_tool_ids=_collect_unavailable_tool_ids(context or {}),
+    )
+    payload["provider"] = provider_name
+    payload.update(metadata)
+    return payload
+
+
+def select_web_followup_with_provider(
+        config: Dict[str, Any],
+        goal_profile: str,
+        service: str,
+        protocol: str,
+        candidates: List[Dict[str, str]],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    provider_name = str(config.get("provider", "none") or "none").strip().lower()
+    providers_cfg = config.get("providers", {}) if isinstance(config, dict) else {}
+    provider_cfg = providers_cfg.get(provider_name, {}) if isinstance(providers_cfg, dict) else {}
+
+    if provider_name == "none" or not provider_cfg.get("enabled", False):
+        return {
+            "provider": provider_name,
+            "focus": "",
+            "selected_tool_ids": [],
+            "reason": "",
+            "manual_tests": [],
+            "prompt_version": SCHEDULER_WEB_FOLLOWUP_PROMPT_VERSION,
+            "prompt_type": "web_followup",
+        }
+
+    prompt_package = _build_web_followup_prompt_package(
+        goal_profile=goal_profile,
+        service=service,
+        protocol=protocol,
+        candidates=candidates,
+        context=context or {},
+    )
+    metadata = dict(prompt_package.get("metadata", {}) or {})
+
+    if provider_name in {"openai", "lm_studio"}:
+        content = _request_openai_compatible_content(
+            provider_name,
+            provider_cfg,
+            prompt_package,
+            max_tokens=MAX_PROVIDER_SPECIALIST_RESPONSE_TOKENS,
+            temperature=0.1,
+        )
+    elif provider_name == "claude":
+        content = _request_claude_content(
+            provider_cfg,
+            prompt_package,
+            max_tokens=360,
+            temperature=0.1,
+        )
+    else:
+        raise ProviderError(f"Unsupported provider: {provider_name}")
+
+    payload = _parse_web_followup_payload(
+        content,
+        unavailable_tool_ids=_collect_unavailable_tool_ids(context or {}),
+    )
+    payload["provider"] = provider_name
+    payload.update(metadata)
+    return payload
 
 
 def test_provider_connection(config: Dict[str, Any], provider_name: Optional[str] = None) -> Dict[str, Any]:
@@ -377,6 +791,18 @@ def _determine_scheduler_phase(
     return "targeted_checks"
 
 
+def determine_scheduler_phase(
+        goal_profile: str,
+        service: str,
+        context: Optional[Dict[str, Any]] = None,
+) -> str:
+    return _determine_scheduler_phase(
+        goal_profile=goal_profile,
+        service=service,
+        context=context,
+    )
+
+
 def _build_prompt(
         goal_profile: str,
         service: str,
@@ -384,40 +810,138 @@ def _build_prompt(
         candidates: List[Dict[str, str]],
         context: Optional[Dict[str, Any]] = None,
 ) -> str:
-    context_block = _build_context_block(context or {})
+    return _build_ranking_prompt_package(
+        goal_profile=goal_profile,
+        service=service,
+        protocol=protocol,
+        candidates=candidates,
+        context=context or {},
+    ).get("user_prompt", "")
+
+
+def _build_ranking_prompt_package(
+        *,
+        goal_profile: str,
+        service: str,
+        protocol: str,
+        candidates: List[Dict[str, str]],
+        context: Optional[Dict[str, Any]] = None,
+        prompt_profiles_enabled: bool = True,
+) -> Dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
     current_phase = _determine_scheduler_phase(
         goal_profile=goal_profile,
         service=service,
-        context=context,
+        context=ctx,
     )
-    prefix = (
-        "You are a penetration-testing scheduler assistant.\n"
+    context_block = _build_context_block(ctx, current_phase_override=current_phase)
+    service_profile = _resolve_prompt_profile(service=service, context=ctx) if prompt_profiles_enabled else "generic"
+    phase_profile = current_phase if prompt_profiles_enabled and current_phase in {"broad_vuln", "deep_web"} else "default"
+    prompt_profile = service_profile if phase_profile == "default" else f"{service_profile}:{phase_profile}"
+
+    system_prompt = _build_scheduler_system_prompt()
+    prefix = _build_ranking_user_prompt_prefix(
+        goal_profile=goal_profile,
+        service=service,
+        protocol=protocol,
+        current_phase=current_phase,
+        service_profile=service_profile,
+        phase_profile=phase_profile,
+        prompt_profile=prompt_profile,
+        context_block=context_block,
+    )
+    candidate_block, omitted_count, visible_candidate_tool_ids = _build_candidate_block(
+        candidates,
+        prefix,
+        context=ctx,
+        prompt_type="ranking",
+    )
+    metadata = {
+        "prompt_version": SCHEDULER_PROMPT_VERSION,
+        "prompt_type": "ranking",
+        "prompt_profile": prompt_profile,
+        "service_profile": service_profile,
+        "phase_profile": phase_profile,
+        "current_phase": current_phase,
+        "context_chars": len(context_block),
+        "candidate_count": len(candidates or []),
+        "visible_candidate_count": len(visible_candidate_tool_ids),
+        "omitted_candidate_count": int(omitted_count or 0),
+        "service_prompt_overlays_enabled": bool(prompt_profiles_enabled),
+        "visible_candidate_tool_ids": visible_candidate_tool_ids,
+    }
+    return {
+        "system_prompt": system_prompt,
+        "user_prompt": prefix + candidate_block,
+        "metadata": metadata,
+    }
+
+
+def _build_scheduler_system_prompt() -> str:
+    return (
+        "You are a penetration-testing scheduler assistant operating inside a governed workflow.\n"
+        "Return strict JSON only.\n"
+        "Rank only the supplied candidates and never invent tools or actions outside that list.\n"
+        "Prefer closing baseline coverage gaps and immediate follow-up dependencies before niche checks.\n"
+        "Use concise rationales grounded in the supplied context.\n"
+        "Do not add markdown, prose, or extra commentary outside the JSON object."
+    )
+
+
+def _resolve_prompt_profile(*, service: str, context: Optional[Dict[str, Any]] = None) -> str:
+    ctx = context if isinstance(context, dict) else {}
+    signals = ctx.get("signals", {}) if isinstance(ctx.get("signals", {}), dict) else {}
+    service_lower = str(service or "").strip().lower()
+    if bool(signals.get("web_service")) or service_lower in _WEB_SERVICE_IDS:
+        return "web"
+    if bool(signals.get("rdp_service")) or bool(signals.get("vnc_service")) or service_lower in {
+        "ms-wbt-server",
+        "rdp",
+        "vnc",
+        "vnc-http",
+    }:
+        return "rdp_vnc"
+    if service_lower in {"microsoft-ds", "netbios-ssn", "smb"}:
+        return "smb"
+    return "generic"
+
+
+def _build_ranking_user_prompt_prefix(
+        *,
+        goal_profile: str,
+        service: str,
+        protocol: str,
+        current_phase: str,
+        service_profile: str,
+        phase_profile: str,
+        prompt_profile: str,
+        context_block: str,
+) -> str:
+    profile_overlay = _build_prompt_profile_overlay(
+        goal_profile=goal_profile,
+        service_profile=service_profile,
+        phase_profile=phase_profile,
+    )
+    return (
+        "Task: rank scheduler-generated candidates for the next safe, high-value actions.\n"
+        f"Prompt version: {SCHEDULER_PROMPT_VERSION}\n"
         f"Goal profile: {goal_profile}\n"
         f"Service: {service}\n"
         f"Protocol: {protocol}\n"
         f"Current phase: {current_phase}\n"
-        "Rank the candidates by expected signal-to-noise and safety.\n"
-        "Second-stage review: identify what baseline coverage is still missing from prior results and prioritize "
-        "those missing scans plus immediate follow-up dependencies before niche checks.\n"
-        "When context.coverage.missing is present, satisfy those gaps first.\n"
-        "When analysis_mode is dig_deeper, reason over full host context (all open ports/services/scripts/process "
-        "results/findings/CVEs) and choose the highest-value next actions.\n"
+        f"Prompt profile: {prompt_profile}\n"
         "Lifecycle phases: initial_discovery -> service_fingerprint -> broad_vuln -> protocol_checks "
         "-> targeted_checks -> deep_web -> external_enrichment -> complete.\n"
-        "Initial discovery priorities: nmap discovery/service+OS (if enabled), screenshots for HTTP/HTTPS and "
-        "RDP/VNC when available, banners for other services.\n"
-        "Use broad vuln discovery early: nmap vuln+vulners and nuclei automatic scan.\n"
-        "When confident CPE/technology evidence exists but CVE correlation is weak, prioritize CPE-to-CVE enrichment "
-        "and related follow-up scans before niche checks.\n"
-        "Then run protocol checks (for example SMB signing/state checks) and targeted checks driven by identified "
-        "technology/vendor/CPE/CVE evidence.\n"
-        "For web services, include deeper checks like whatweb, nikto, web content discovery, and bounded nuclei "
-        "follow-up profiles such as CVE- or exposure-focused scans when the evidence supports them.\n"
-        "If goal profile is external and Shodan is available, include external enrichment when high-value.\n"
-        "Continuously reassess hostname/OS/technology/version confidence from cumulative host evidence.\n"
-        "Only choose technology/vendor-specific tools when context contains matching evidence.\n"
-        "If matching evidence is absent, avoid specialized checks and prefer broad recon/vuln tools.\n"
-        "Avoid rerunning tools that already executed successfully or are known missing.\n"
+        "Ranking priorities:\n"
+        "1. Close missing baseline coverage first.\n"
+        "2. Prefer immediate follow-up dependencies from existing evidence.\n"
+        "3. Use technology-specific or vendor-specific checks only when the context supports them.\n"
+        "4. Avoid rerunning tools that already executed successfully or are known missing.\n"
+        "5. When analysis_mode is dig_deeper, reason over the full host context rather than the target port alone.\n"
+        "6. Never recommend manual tests that directly invoke tools marked unavailable or command not found.\n"
+        "7. If the remaining coverage gaps cannot be closed by any supplied candidate, return actions as [] instead of recommending unrelated retries.\n"
+        "Ignore tool names mentioned elsewhere in the context if they are not present in the Candidates section.\n"
+        f"{profile_overlay}"
         "Return ONLY JSON with this schema:\n"
         "{\"actions\":[{\"tool_id\":\"...\",\"score\":0-100,\"rationale\":\"...\"}],"
         "\"host_updates\":{\"hostname\":\"...\",\"hostname_confidence\":0-100,\"os\":\"...\",\"os_confidence\":0-100,"
@@ -426,26 +950,226 @@ def _build_prompt(
         "\"cve\":\"...\",\"evidence\":\"...\"}],"
         "\"manual_tests\":[{\"why\":\"...\",\"command\":\"...\",\"scope_note\":\"...\"}],"
         "\"next_phase\":\"...\"}\n"
-        "If no safe/high-value action remains, return actions as [] and provide manual_tests command suggestions.\n"
-        "Do not include tools not present in candidates.\n"
+        "If no safe or high-value action remains, return actions as [] and use manual_tests for suggestions.\n"
         f"{context_block}"
         "Candidates:\n"
     )
-    if not candidates:
-        return prefix
 
+
+def _build_prompt_profile_overlay(*, goal_profile: str, service_profile: str, phase_profile: str) -> str:
+    lines = []
+    if service_profile == "web":
+        lines.append(
+            "Service overlay: web. Prefer screenshot, broad web vuln coverage, tech fingerprinting, content "
+            "discovery, then evidence-driven follow-up."
+        )
+    elif service_profile == "smb":
+        lines.append(
+            "Service overlay: smb. Prefer signing checks, safe enumeration, and identity posture before deeper or "
+            "specialized checks."
+        )
+    elif service_profile == "rdp_vnc":
+        lines.append(
+            "Service overlay: rdp_vnc. Prefer screenshot, banner, protocol metadata, TLS posture, and safe identity "
+            "checks before niche follow-up."
+        )
+    else:
+        lines.append(
+            "Service overlay: generic. Prefer broad discovery, banners, vuln baselines, and protocol checks before "
+            "specialized tools."
+        )
+
+    if phase_profile == "broad_vuln":
+        lines.append(
+            "Phase overlay: broad_vuln. Favor broad vuln discovery, CPE-to-CVE enrichment, and immediate follow-up "
+            "dependencies before niche checks."
+        )
+    elif phase_profile == "deep_web":
+        lines.append(
+            "Phase overlay: deep_web. Favor bounded web follow-up such as whatweb, nikto, content discovery, and "
+            "evidence-driven nuclei follow-up."
+        )
+
+    if str(goal_profile or "").strip().lower() == "external_pentest":
+        lines.append(
+            "Goal overlay: external_pentest. When Shodan or external enrichment is available and high-value, "
+            "consider it after core baseline coverage is satisfied."
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def _normalize_tool_token(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _coverage_missing_ids(context: Optional[Dict[str, Any]]) -> Set[str]:
+    if not isinstance(context, dict):
+        return set()
+    coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
+    return {
+        _normalize_tool_token(item)
+        for item in (coverage.get("missing", []) if isinstance(coverage.get("missing", []), list) else [])
+        if _normalize_tool_token(item)
+    }
+
+
+def _coverage_recommended_tool_ids(context: Optional[Dict[str, Any]]) -> Set[str]:
+    if not isinstance(context, dict):
+        return set()
+    coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
+    return {
+        _normalize_tool_token(item)
+        for item in (coverage.get("recommended_tool_ids", []) if isinstance(coverage.get("recommended_tool_ids", []), list) else [])
+        if _normalize_tool_token(item)
+    }
+
+
+def _tool_matches_coverage_gap(tool_id: str, coverage_missing: Set[str]) -> bool:
+    tool_norm = _normalize_tool_token(tool_id)
+    if not tool_norm or not coverage_missing:
+        return False
+    if "missing_discovery" in coverage_missing and (tool_norm == "nmap" or tool_norm.startswith("nmap")):
+        return True
+    if "missing_banner" in coverage_missing and tool_norm == "banner":
+        return True
+    if {"missing_screenshot", "missing_remote_screenshot"} & coverage_missing and tool_norm in {"screenshooter", "x11screen"}:
+        return True
+    if "missing_nmap_vuln" in coverage_missing and tool_norm == "nmap-vuln.nse":
+        return True
+    if "missing_nuclei_auto" in coverage_missing and tool_norm == "nuclei-web":
+        return True
+    if "missing_cpe_cve_enrichment" in coverage_missing and tool_norm in {"nmap-vuln.nse", "nuclei-web", "nuclei-cves", "nuclei-exposures"}:
+        return True
+    if "missing_whatweb" in coverage_missing and tool_norm in {"whatweb", "whatweb-http", "whatweb-https"}:
+        return True
+    if "missing_nikto" in coverage_missing and tool_norm == "nikto":
+        return True
+    if "missing_web_content_discovery" in coverage_missing and tool_norm in {
+        "web-content-discovery",
+        "dirsearch",
+        "ffuf",
+        "feroxbuster",
+        "gobuster",
+    }:
+        return True
+    if "missing_http_followup" in coverage_missing and tool_norm in {"curl-headers", "curl-options", "curl-robots"}:
+        return True
+    if "missing_followup_after_vuln" in coverage_missing and tool_norm in {
+        "whatweb",
+        "whatweb-http",
+        "whatweb-https",
+        "nikto",
+        "web-content-discovery",
+        "dirsearch",
+        "ffuf",
+        "feroxbuster",
+        "gobuster",
+        "nuclei-cves",
+        "nuclei-exposures",
+        "curl-headers",
+        "curl-options",
+        "curl-robots",
+    }:
+        return True
+    if "missing_smb_signing_checks" in coverage_missing and tool_norm in {"smb-security-mode", "smb2-security-mode"}:
+        return True
+    if "missing_internal_safe_enum" in coverage_missing and tool_norm in {
+        "enum4linux-ng",
+        "smbmap",
+        "rpcclient-enum",
+        "smb-enum-users.nse",
+    }:
+        return True
+    return False
+
+
+def _candidate_visibility_priority(
+        candidate: Dict[str, str],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        prompt_type: str = "",
+) -> int:
+    tool_id = str(candidate.get("tool_id", "") or "")
+    tool_norm = _normalize_tool_token(tool_id)
+    if not tool_norm:
+        return 0
+
+    coverage_missing = _coverage_missing_ids(context)
+    coverage_recommended = _coverage_recommended_tool_ids(context)
+    priority = 0
+
+    if tool_norm in coverage_recommended:
+        priority += 220
+    if _tool_matches_coverage_gap(tool_norm, coverage_missing):
+        priority += 320
+
+    if {"missing_screenshot", "missing_remote_screenshot"} & coverage_missing and tool_norm in {"screenshooter", "x11screen"}:
+        priority += 120
+    if "missing_nmap_vuln" in coverage_missing and tool_norm == "nmap-vuln.nse":
+        priority += 110
+    if "missing_nuclei_auto" in coverage_missing and tool_norm == "nuclei-web":
+        priority += 110
+    if "missing_whatweb" in coverage_missing and tool_norm in {"whatweb", "whatweb-http", "whatweb-https"}:
+        priority += 100
+    if "missing_nikto" in coverage_missing and tool_norm == "nikto":
+        priority += 100
+    if "missing_http_followup" in coverage_missing and tool_norm in {"curl-headers", "curl-options", "curl-robots"}:
+        priority += 80
+    if prompt_type == "ranking" and tool_norm in {"banner", "nmap"} and (coverage_missing & _STRICT_COVERAGE_GAP_IDS):
+        priority -= 40
+
+    return priority
+
+
+def _prioritize_candidates_for_prompt(
+        candidates: List[Dict[str, str]],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        prompt_type: str = "",
+) -> List[Dict[str, str]]:
+    if not candidates:
+        return []
+    ranked = []
+    for index, candidate in enumerate(candidates):
+        ranked.append((
+            -int(_candidate_visibility_priority(candidate, context=context, prompt_type=prompt_type)),
+            index,
+            candidate,
+        ))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in ranked]
+
+
+def _build_candidate_block(
+        candidates: List[Dict[str, str]],
+        prefix: str,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        prompt_type: str = "",
+) -> Tuple[str, int, List[str]]:
+    if not candidates:
+        return "", 0, []
+
+    ordered_candidates = _prioritize_candidates_for_prompt(
+        candidates,
+        context=context,
+        prompt_type=prompt_type,
+    )
     candidate_lines = []
+    visible_tool_ids = []
     omitted = 0
     budget = max(800, MAX_PROVIDER_PROMPT_CHARS - len(prefix) - 120)
     used = 0
 
-    for index, candidate in enumerate(candidates):
+    for index, candidate in enumerate(ordered_candidates):
         if index >= MAX_PROVIDER_CANDIDATES:
-            omitted = len(candidates) - index
+            omitted = len(ordered_candidates) - index
             break
 
+        tool_id = str(candidate.get("tool_id", "")).strip()[:120]
         line = json.dumps({
-            "tool_id": str(candidate.get("tool_id", "")).strip()[:120],
+            "tool_id": tool_id,
             "label": str(candidate.get("label", "")).strip()[:MAX_CANDIDATE_LABEL_CHARS],
             "service_scope": str(candidate.get("service_scope", "")).strip()[:120],
             "command_template_excerpt": _normalize_prompt_text(
@@ -456,17 +1180,20 @@ def _build_prompt(
 
         projected = used + len(line) + 1
         if projected > budget:
-            omitted = len(candidates) - index
+            omitted = len(ordered_candidates) - index
             break
 
         candidate_lines.append(line)
+        if tool_id:
+            visible_tool_ids.append(tool_id)
         used = projected
 
     if not candidate_lines:
-        first = candidates[0]
+        first = ordered_candidates[0]
+        tool_id = str(first.get("tool_id", "")).strip()[:120]
         candidate_lines.append(
             json.dumps({
-                "tool_id": str(first.get("tool_id", "")).strip()[:120],
+                "tool_id": tool_id,
                 "label": str(first.get("label", "")).strip()[:MAX_CANDIDATE_LABEL_CHARS],
                 "service_scope": str(first.get("service_scope", "")).strip()[:120],
                 "command_template_excerpt": _normalize_prompt_text(
@@ -475,26 +1202,172 @@ def _build_prompt(
                 ),
             }, separators=(",", ":"))
         )
-        omitted = max(0, len(candidates) - 1)
+        if tool_id:
+            visible_tool_ids.append(tool_id)
+        omitted = max(0, len(ordered_candidates) - 1)
 
     if omitted > 0:
         candidate_lines.append(
             json.dumps({"note": f"{omitted} candidates omitted due to context budget"}, separators=(",", ":"))
         )
 
-    return prefix + "\n".join(candidate_lines)
+    return "\n".join(candidate_lines), omitted, _unique_strings(visible_tool_ids)
 
 
-def _call_openai_compatible(provider_name: str, provider_cfg: Dict[str, Any], prompt: str) -> Dict[str, Any]:
+def _prompt_package_parts(
+        prompt_package: Dict[str, Any],
+        *,
+        default_system_prompt: str = "Return strict JSON only.",
+) -> Tuple[str, str, Dict[str, Any]]:
+    if not isinstance(prompt_package, dict):
+        return str(default_system_prompt or ""), str(prompt_package or ""), {}
+    system_prompt = str(prompt_package.get("system_prompt", "") or default_system_prompt or "")
+    user_prompt = str(prompt_package.get("user_prompt", "") or "")
+    metadata = prompt_package.get("metadata", {}) if isinstance(prompt_package.get("metadata", {}), dict) else {}
+    return system_prompt, user_prompt, metadata
+
+
+def _openai_structured_outputs_enabled(provider_name: str, provider_cfg: Dict[str, Any]) -> bool:
+    if str(provider_name or "").strip().lower() != "openai":
+        return False
+    if not isinstance(provider_cfg, dict):
+        return False
+    return bool(provider_cfg.get("structured_outputs", False))
+
+
+def _scheduler_ranking_response_format(*, allowed_tool_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "scheduler_ranking_response",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["actions", "host_updates", "findings", "manual_tests", "next_phase"],
+                "properties": {
+                    "actions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["tool_id", "score", "rationale"],
+                            "properties": {
+                                "tool_id": {"type": "string"},
+                                "score": {"type": "number"},
+                                "rationale": {"type": "string"},
+                            },
+                        },
+                    },
+                    "host_updates": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["hostname", "hostname_confidence", "os", "os_confidence", "technologies"],
+                        "properties": {
+                            "hostname": {"type": "string"},
+                            "hostname_confidence": {"type": "number"},
+                            "os": {"type": "string"},
+                            "os_confidence": {"type": "number"},
+                            "technologies": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["name", "version", "cpe", "evidence"],
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "version": {"type": "string"},
+                                        "cpe": {"type": "string"},
+                                        "evidence": {"type": "string"},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    "findings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["title", "severity", "cvss", "cve", "evidence"],
+                            "properties": {
+                                "title": {"type": "string"},
+                                "severity": {
+                                    "type": "string",
+                                    "enum": ["critical", "high", "medium", "low", "info"],
+                                },
+                                "cvss": {"type": "number"},
+                                "cve": {"type": "string"},
+                                "evidence": {"type": "string"},
+                            },
+                        },
+                    },
+                    "manual_tests": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["why", "command", "scope_note"],
+                            "properties": {
+                                "why": {"type": "string"},
+                                "command": {"type": "string"},
+                                "scope_note": {"type": "string"},
+                            },
+                        },
+                    },
+                    "next_phase": {"type": "string"},
+                },
+            },
+        },
+    }
+    allowed = _normalized_tool_id_map(allowed_tool_ids)
+    if allowed:
+        response_format["json_schema"]["schema"]["properties"]["actions"]["items"]["properties"]["tool_id"] = {
+            "type": "string",
+            "enum": list(allowed.values()),
+        }
+    return response_format
+
+
+def _should_fallback_from_structured_outputs(exc: ProviderError) -> bool:
+    message = str(exc or "").strip().lower()
+    if "400" not in message:
+        return False
+    markers = (
+        "response_format",
+        "json_schema",
+        "strict",
+        "unsupported",
+        "unknown parameter",
+        "invalid parameter",
+    )
+    return any(marker in message for marker in markers)
+
+
+def _call_openai_compatible(
+        provider_name: str,
+        provider_cfg: Dict[str, Any],
+        prompt_package: Dict[str, Any],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     base_url, headers, model, _models, _auto_selected = _openai_compatible_context(provider_name, provider_cfg)
+    system_prompt, user_prompt, prompt_metadata = _prompt_package_parts(prompt_package)
+    allowed_tool_ids = _visible_candidate_tool_ids_from_metadata(prompt_metadata)
+    normalized_context = context if isinstance(context, dict) else {}
+    unavailable_tool_ids = _collect_unavailable_tool_ids(normalized_context)
+    current_phase = str(prompt_metadata.get("current_phase", "") or "").strip().lower() if normalized_context else ""
+    structured_outputs_enabled = _openai_structured_outputs_enabled(provider_name, provider_cfg)
     if provider_name == "lm_studio":
         result = _post_lmstudio_chat_with_fallback(
             base_url=base_url,
             headers=headers,
             model=model,
-            prompt=prompt,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             temperature=0.2,
             max_tokens=MAX_PROVIDER_RESPONSE_TOKENS,
+            prompt_metadata=prompt_metadata,
         )
         content = str(result.get("content", "") or "")
     else:
@@ -502,20 +1375,340 @@ def _call_openai_compatible(provider_name: str, provider_cfg: Dict[str, Any], pr
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "Return strict JSON only."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
         }
         _set_chat_completion_temperature(payload, provider_name=provider_name, temperature=0.2)
         _set_chat_completion_token_limit(payload, provider_name=provider_name, max_tokens=MAX_PROVIDER_RESPONSE_TOKENS)
-        content = _post_openai_compatible_chat_with_retry(provider_name, endpoint, headers, payload)
-    return _parse_provider_payload(content)
+        request_metadata = dict(prompt_metadata)
+        request_metadata.update({
+            "structured_output_requested": bool(structured_outputs_enabled),
+            "structured_output_used": False,
+            "structured_output_fallback": False,
+        })
+        if structured_outputs_enabled:
+            payload["response_format"] = _scheduler_ranking_response_format(allowed_tool_ids=allowed_tool_ids)
+            request_metadata["structured_output_used"] = True
+        try:
+            content = _post_openai_compatible_chat_with_retry(
+                provider_name,
+                endpoint,
+                headers,
+                payload,
+                prompt_metadata=request_metadata,
+            )
+        except ProviderError as exc:
+            if not structured_outputs_enabled or not _should_fallback_from_structured_outputs(exc):
+                raise
+            fallback_payload = dict(payload)
+            fallback_payload.pop("response_format", None)
+            fallback_metadata = dict(request_metadata)
+            fallback_metadata["structured_output_used"] = False
+            fallback_metadata["structured_output_fallback"] = True
+            content = _post_openai_compatible_chat_with_retry(
+                provider_name,
+                endpoint,
+                headers,
+                fallback_payload,
+                prompt_metadata=fallback_metadata,
+            )
+            request_metadata = fallback_metadata
+    parsed = _parse_provider_payload(
+        content,
+        allowed_tool_ids=allowed_tool_ids,
+        unavailable_tool_ids=unavailable_tool_ids,
+        current_phase=current_phase,
+    )
+    parsed["structured_output_requested"] = bool(structured_outputs_enabled)
+    parsed["structured_output_used"] = bool(
+        structured_outputs_enabled and not request_metadata.get("structured_output_fallback", False)
+    ) if provider_name == "openai" else False
+    parsed["structured_output_fallback"] = bool(request_metadata.get("structured_output_fallback", False)) \
+        if provider_name == "openai" else False
+    return parsed
+
+
+def _request_openai_compatible_content(
+        provider_name: str,
+        provider_cfg: Dict[str, Any],
+        prompt_package: Dict[str, Any],
+        *,
+        max_tokens: int,
+        temperature: float,
+) -> str:
+    base_url, headers, model, _models, _auto_selected = _openai_compatible_context(provider_name, provider_cfg)
+    system_prompt, user_prompt, prompt_metadata = _prompt_package_parts(prompt_package)
+    if provider_name == "lm_studio":
+        result = _post_lmstudio_chat_with_fallback(
+            base_url=base_url,
+            headers=headers,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            prompt_metadata=prompt_metadata,
+        )
+        return str(result.get("content", "") or "")
+
+    endpoint = f"{base_url}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    _set_chat_completion_temperature(payload, provider_name=provider_name, temperature=temperature)
+    _set_chat_completion_token_limit(payload, provider_name=provider_name, max_tokens=max_tokens)
+    return _post_openai_compatible_chat_with_retry(
+        provider_name,
+        endpoint,
+        headers,
+        payload,
+        prompt_metadata=prompt_metadata,
+    )
+
+
+def _build_reflection_prompt_package(
+        *,
+        goal_profile: str,
+        service: str,
+        protocol: str,
+        context: Optional[Dict[str, Any]] = None,
+        recent_rounds: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
+    rounds = recent_rounds if isinstance(recent_rounds, list) else []
+    current_phase = _determine_scheduler_phase(
+        goal_profile=goal_profile,
+        service=service,
+        context=ctx,
+    )
+    service_profile = _resolve_prompt_profile(service=service, context=ctx)
+    context_block = _build_context_block(ctx, current_phase_override=current_phase)
+    recent_rounds_payload = _build_recent_rounds_block(rounds)
+    system_prompt = (
+        "You are an execution monitor for a governed penetration-testing scheduler.\n"
+        "Return strict JSON only.\n"
+        "Assess whether recent rounds are still productive.\n"
+        "Do not invent tools outside the supplied recent decisions.\n"
+        "Prefer continue unless the evidence clearly indicates a stall or completion.\n"
+        "Manual tests must be safe validation suggestions only.\n"
+        "Do not suggest manual tests that directly invoke tools marked unavailable or command not found."
+    )
+    user_prompt = (
+        "Task: assess recent scheduler progress and detect stalls.\n"
+        f"Prompt version: {SCHEDULER_REFLECTION_PROMPT_VERSION}\n"
+        f"Goal profile: {goal_profile}\n"
+        f"Service: {service}\n"
+        f"Protocol: {protocol}\n"
+        f"Current phase: {current_phase}\n"
+        f"Service profile: {service_profile}\n"
+        "Return ONLY JSON with this schema:\n"
+        "{\"state\":\"continue|stalled|complete\","
+        "\"reason\":\"...\","
+        "\"priority_shift\":\"coverage_first|targeted_followup|manual_validation|stop\","
+        "\"promote_tool_ids\":[\"...\"],"
+        "\"suppress_tool_ids\":[\"...\"],"
+        "\"manual_tests\":[{\"why\":\"...\",\"command\":\"...\",\"scope_note\":\"...\"}]}\n"
+        f"{recent_rounds_payload}"
+        f"{context_block}"
+    )
+    return {
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "metadata": {
+            "prompt_version": SCHEDULER_REFLECTION_PROMPT_VERSION,
+            "prompt_type": "reflection",
+            "current_phase": current_phase,
+            "service_profile": service_profile,
+            "recent_round_count": len(rounds[:8]),
+            "context_chars": len(context_block),
+        },
+    }
+
+
+def _build_web_followup_prompt_package(
+        *,
+        goal_profile: str,
+        service: str,
+        protocol: str,
+        candidates: List[Dict[str, str]],
+        context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
+    current_phase = _determine_scheduler_phase(
+        goal_profile=goal_profile,
+        service=service,
+        context=ctx,
+    )
+    context_block = _build_context_block(ctx, current_phase_override=current_phase)
+    system_prompt = (
+        "You are a specialist web follow-up advisor operating inside a governed penetration-testing scheduler.\n"
+        "Return strict JSON only.\n"
+        "Choose only from the supplied candidate list and never invent tools or actions.\n"
+        "Favor bounded, evidence-driven follow-up that closes concrete coverage gaps or validates observed web signals.\n"
+        "Do not re-run broad baseline scans unless the context still shows they are missing.\n"
+        "Manual tests must be safe validation suggestions only.\n"
+        "Do not suggest manual tests that directly invoke tools marked unavailable or command not found."
+    )
+    prefix = (
+        "Task: choose the strongest bounded web follow-up actions from the supplied candidates.\n"
+        f"Prompt version: {SCHEDULER_WEB_FOLLOWUP_PROMPT_VERSION}\n"
+        f"Goal profile: {goal_profile}\n"
+        f"Service: {service}\n"
+        f"Protocol: {protocol}\n"
+        f"Current phase: {current_phase}\n"
+        "Selection priorities:\n"
+        "1. Close missing web follow-up coverage before niche checks.\n"
+        "2. Prefer technology, finding, CVE, or reflection-driven validation over generic retries.\n"
+        "3. Choose a small bounded set of follow-up tools rather than broad rescan behavior.\n"
+        "Return ONLY JSON with this schema:\n"
+        "{\"focus\":\"coverage_gap|tech_validation|vuln_followup|content_discovery|manual_review\","
+        "\"selected_tool_ids\":[\"...\"],"
+        "\"reason\":\"...\","
+        "\"manual_tests\":[{\"why\":\"...\",\"command\":\"...\",\"scope_note\":\"...\"}]}\n"
+        "If no specialist follow-up boost is warranted, return selected_tool_ids as [] and explain why.\n"
+        f"{context_block}"
+        "Candidates:\n"
+    )
+    candidate_block, omitted_count, _visible_candidate_tool_ids = _build_candidate_block(
+        candidates,
+        prefix,
+        context=ctx,
+        prompt_type="web_followup",
+    )
+    return {
+        "system_prompt": system_prompt,
+        "user_prompt": prefix + candidate_block,
+        "metadata": {
+            "prompt_version": SCHEDULER_WEB_FOLLOWUP_PROMPT_VERSION,
+            "prompt_type": "web_followup",
+            "current_phase": current_phase,
+            "service_profile": "web",
+            "candidate_count": len(candidates or []),
+            "omitted_candidate_count": int(omitted_count or 0),
+            "context_chars": len(context_block),
+        },
+    }
+
+
+def _build_recent_rounds_block(rounds: List[Dict[str, Any]]) -> str:
+    compact_rounds = []
+    for item in list(rounds or [])[-8:]:
+        if not isinstance(item, dict):
+            continue
+        payload = {
+            "round": int(item.get("round", 0) or 0),
+            "coverage_missing": [
+                str(entry).strip().lower()[:64]
+                for entry in list(item.get("coverage_missing", []) or [])[:24]
+                if str(entry).strip()
+            ],
+            "findings_count": int(item.get("findings_count", 0) or 0),
+            "manual_tests_count": int(item.get("manual_tests_count", 0) or 0),
+            "technologies_count": int(item.get("technologies_count", 0) or 0),
+            "next_phase": str(item.get("next_phase", "") or "")[:64],
+            "decision_tool_ids": [
+                str(entry).strip().lower()[:80]
+                for entry in list(item.get("decision_tool_ids", []) or [])[:16]
+                if str(entry).strip()
+            ],
+            "decision_family_ids": [
+                str(entry).strip().lower()[:80]
+                for entry in list(item.get("decision_family_ids", []) or [])[:16]
+                if str(entry).strip()
+            ],
+            "signal_key": str(item.get("signal_key", "") or "")[:240],
+            "repeated_selection_count": int(item.get("repeated_selection_count", 0) or 0),
+            "progress_score": int(item.get("progress_score", 0) or 0),
+        }
+        compact_rounds.append(payload)
+    if not compact_rounds:
+        return "Recent rounds:\n[]\n"
+    rendered = json.dumps(compact_rounds, separators=(",", ":"))
+    return f"Recent rounds:\n{_truncate_block_text(rendered, 2400)}\n"
+
+
+def _parse_reflection_payload(
+        content: str,
+        *,
+        unavailable_tool_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    payload_obj = _extract_json(content)
+    state = str(payload_obj.get("state", "continue") or "continue").strip().lower()
+    if state not in {"continue", "stalled", "complete"}:
+        state = "continue"
+    priority_shift = str(payload_obj.get("priority_shift", "") or "").strip().lower()
+    if priority_shift not in {"coverage_first", "targeted_followup", "manual_validation", "stop"}:
+        priority_shift = ""
+    promote_tool_ids = _normalize_tool_id_list(payload_obj.get("promote_tool_ids", []), limit=32)
+    suppress_tool_ids = _normalize_tool_id_list(payload_obj.get("suppress_tool_ids", []), limit=32)
+    manual_tests = _normalize_manual_tests(
+        payload_obj.get("manual_tests", []),
+        unavailable_tool_ids=unavailable_tool_ids,
+    )
+    return {
+        "state": state,
+        "reason": _normalize_prompt_text(str(payload_obj.get("reason", "") or "").strip(), 320),
+        "priority_shift": priority_shift,
+        "promote_tool_ids": promote_tool_ids,
+        "suppress_tool_ids": suppress_tool_ids,
+        "manual_tests": manual_tests,
+    }
+
+
+def _parse_web_followup_payload(
+        content: str,
+        *,
+        unavailable_tool_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    payload_obj = _extract_json(content)
+    focus = str(payload_obj.get("focus", "") or "").strip().lower()
+    if focus not in {
+        "coverage_gap",
+        "tech_validation",
+        "vuln_followup",
+        "content_discovery",
+        "manual_review",
+    }:
+        focus = ""
+    return {
+        "focus": focus,
+        "selected_tool_ids": _normalize_tool_id_list(payload_obj.get("selected_tool_ids", []), limit=6),
+        "reason": _normalize_prompt_text(str(payload_obj.get("reason", "") or "").strip(), 320),
+        "manual_tests": _normalize_manual_tests(
+            payload_obj.get("manual_tests", []),
+            unavailable_tool_ids=unavailable_tool_ids,
+        ),
+    }
+
+
+def _normalize_tool_id_list(values: Any, *, limit: int) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    rows = []
+    seen = set()
+    for item in values:
+        token = str(item or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        rows.append(token[:120])
+        if len(rows) >= int(limit):
+            break
+    return rows
 
 
 def _probe_openai_compatible(provider_name: str, provider_cfg: Dict[str, Any], started: float) -> Dict[str, Any]:
     auth_header_sent = False
     endpoint_used = ""
     api_style = "openai_compatible"
+    structured_output_requested = False
+    structured_output_used = False
+    structured_output_fallback = False
     try:
         base_url, headers, model, discovered_models, auto_selected = _openai_compatible_context(provider_name, provider_cfg)
         auth_header_sent = _has_authorization_header(headers)
@@ -528,7 +1721,8 @@ def _probe_openai_compatible(provider_name: str, provider_cfg: Dict[str, Any], s
                 base_url=base_url,
                 headers=headers,
                 model=model,
-                prompt=test_prompt,
+                system_prompt="Return strict JSON only.",
+                user_prompt=test_prompt,
                 temperature=0.0,
                 max_tokens=120,
             )
@@ -546,7 +1740,41 @@ def _probe_openai_compatible(provider_name: str, provider_cfg: Dict[str, Any], s
             }
             _set_chat_completion_temperature(payload, provider_name=provider_name, temperature=0.0)
             _set_chat_completion_token_limit(payload, provider_name=provider_name, max_tokens=120)
-            content = _post_openai_compatible_chat_with_retry(provider_name, endpoint, headers, payload)
+            structured_outputs_enabled = _openai_structured_outputs_enabled(provider_name, provider_cfg)
+            structured_output_requested = bool(structured_outputs_enabled)
+            if structured_outputs_enabled:
+                payload["response_format"] = _scheduler_ranking_response_format()
+            request_metadata = {
+                "prompt_version": SCHEDULER_PROMPT_VERSION,
+                "prompt_type": "healthcheck",
+                "structured_output_requested": bool(structured_outputs_enabled),
+                "structured_output_used": bool(structured_outputs_enabled),
+                "structured_output_fallback": False,
+            }
+            try:
+                content = _post_openai_compatible_chat_with_retry(
+                    provider_name,
+                    endpoint,
+                    headers,
+                    payload,
+                    prompt_metadata=request_metadata,
+                )
+            except ProviderError as exc:
+                if not structured_outputs_enabled or not _should_fallback_from_structured_outputs(exc):
+                    raise
+                fallback_payload = dict(payload)
+                fallback_payload.pop("response_format", None)
+                request_metadata["structured_output_used"] = False
+                request_metadata["structured_output_fallback"] = True
+                structured_output_fallback = True
+                content = _post_openai_compatible_chat_with_retry(
+                    provider_name,
+                    endpoint,
+                    headers,
+                    fallback_payload,
+                    prompt_metadata=request_metadata,
+                )
+            structured_output_used = bool(structured_outputs_enabled and not structured_output_fallback)
             endpoint_used = endpoint
 
         actions = _parse_provider_payload(content).get("actions", [])
@@ -572,6 +1800,9 @@ def _probe_openai_compatible(provider_name: str, provider_cfg: Dict[str, Any], s
         "auto_selected_model": bool(auto_selected),
         "discovered_models": discovered_models[:12],
         "latency_ms": elapsed_ms,
+        "structured_output_requested": structured_output_requested,
+        "structured_output_used": structured_output_used,
+        "structured_output_fallback": structured_output_fallback,
     }
 
 
@@ -709,21 +1940,36 @@ def _post_openai_compatible_chat_with_retry(
         endpoint: str,
         headers: Dict[str, str],
         payload: Dict[str, Any],
+        *,
+        prompt_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     retriable_provider = str(provider_name or "").strip().lower() == "openai"
     request_payload = dict(payload or {})
     token_limit = _extract_chat_completion_token_limit(request_payload)
+    retry_reason = "initial_request"
 
     for attempt in range(1, MAX_PROVIDER_OPENAI_RETRY_ATTEMPTS + 1):
-        result = _post_openai_compatible_chat_detailed(provider_name, endpoint, headers, request_payload)
+        attempt_prompt_metadata = dict(prompt_metadata or {})
+        attempt_prompt_metadata.update({
+            "retry_attempt": int(attempt),
+            "retry_reason": str(retry_reason or "initial_request"),
+            "effective_max_completion_tokens": int(token_limit),
+        })
+        result = _post_openai_compatible_chat_detailed(
+            provider_name,
+            endpoint,
+            headers,
+            request_payload,
+            prompt_metadata=attempt_prompt_metadata,
+        )
         content = str(result.get("content", "") or "")
         finish_reason = str(result.get("finish_reason", "")).strip().lower()
 
-        if content.strip():
-            return content
         if not retriable_provider or finish_reason != "length":
             return content
         if attempt >= MAX_PROVIDER_OPENAI_RETRY_ATTEMPTS:
+            return content
+        if _response_is_complete_for_prompt(content, prompt_metadata):
             return content
 
         token_limit = min(
@@ -732,12 +1978,26 @@ def _post_openai_compatible_chat_with_retry(
         )
         _set_chat_completion_token_limit(request_payload, provider_name=provider_name, max_tokens=token_limit)
         _append_retry_instruction(request_payload)
+        retry_reason = f"finish_reason:{finish_reason or 'unknown'}"
 
     return ""
 
 
-def _post_openai_compatible_chat(provider_name: str, endpoint: str, headers: Dict[str, str], payload: Dict[str, Any]) -> str:
-    result = _post_openai_compatible_chat_detailed(provider_name, endpoint, headers, payload)
+def _post_openai_compatible_chat(
+        provider_name: str,
+        endpoint: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        *,
+        prompt_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    result = _post_openai_compatible_chat_detailed(
+        provider_name,
+        endpoint,
+        headers,
+        payload,
+        prompt_metadata=prompt_metadata,
+    )
     return str(result.get("content", "") or "")
 
 
@@ -746,6 +2006,8 @@ def _post_openai_compatible_chat_detailed(
         endpoint: str,
         headers: Dict[str, str],
         payload: Dict[str, Any],
+        *,
+        prompt_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     requests_module = _get_requests_module()
     auth_state = _auth_state_text(headers)
@@ -764,6 +2026,7 @@ def _post_openai_compatible_chat_detailed(
             response_body="",
             error=str(exc),
             api_style="openai_compatible",
+            prompt_metadata=prompt_metadata,
         )
         raise ProviderError(f"{provider_name} request failed ({auth_state}): {exc}") from exc
 
@@ -777,6 +2040,7 @@ def _post_openai_compatible_chat_detailed(
         response_body=_response_text_for_log(response),
         error="",
         api_style="openai_compatible",
+        prompt_metadata=prompt_metadata,
     )
 
     if response.status_code >= 300:
@@ -867,9 +2131,11 @@ def _post_lmstudio_chat_with_fallback(
         base_url: str,
         headers: Dict[str, str],
         model: str,
-        prompt: str,
+        system_prompt: str,
+        user_prompt: str,
         temperature: Optional[float],
         max_tokens: Optional[int],
+        prompt_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     errors = []
 
@@ -881,8 +2147,8 @@ def _post_lmstudio_chat_with_fallback(
                 payload = {
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": "Return strict JSON only."},
-                        {"role": "user", "content": prompt},
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
                     ],
                 }
                 if temperature is not None:
@@ -890,7 +2156,13 @@ def _post_lmstudio_chat_with_fallback(
                 if max_tokens is not None:
                     payload["max_tokens"] = int(max_tokens)
                 try:
-                    content = _post_openai_compatible_chat("lm_studio", endpoint, headers, payload)
+                    content = _post_openai_compatible_chat(
+                        "lm_studio",
+                        endpoint,
+                        headers,
+                        payload,
+                        prompt_metadata=prompt_metadata,
+                    )
                     return {
                         "content": content,
                         "endpoint": endpoint,
@@ -902,13 +2174,18 @@ def _post_lmstudio_chat_with_fallback(
             for endpoint in _lmstudio_native_chat_endpoints(base_url):
                 payload = {
                     "model": model,
-                    "system_prompt": "Return strict JSON only.",
-                    "input": prompt,
+                    "system_prompt": system_prompt,
+                    "input": user_prompt,
                 }
                 if temperature is not None:
                     payload["temperature"] = float(temperature)
                 try:
-                    content = _post_lmstudio_native_chat(endpoint, headers, payload)
+                    content = _post_lmstudio_native_chat(
+                        endpoint,
+                        headers,
+                        payload,
+                        prompt_metadata=prompt_metadata,
+                    )
                     return {
                         "content": content,
                         "endpoint": endpoint,
@@ -922,7 +2199,13 @@ def _post_lmstudio_chat_with_fallback(
     )
 
 
-def _post_lmstudio_native_chat(endpoint: str, headers: Dict[str, str], payload: Dict[str, Any]) -> str:
+def _post_lmstudio_native_chat(
+        endpoint: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        *,
+        prompt_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
     requests_module = _get_requests_module()
     auth_state = _auth_state_text(headers)
     request_headers = dict(headers or {})
@@ -940,6 +2223,7 @@ def _post_lmstudio_native_chat(endpoint: str, headers: Dict[str, str], payload: 
             response_body="",
             error=str(exc),
             api_style="lmstudio_native",
+            prompt_metadata=prompt_metadata,
         )
         raise ProviderError(f"lm_studio request failed ({auth_state}): {exc}") from exc
 
@@ -953,6 +2237,7 @@ def _post_lmstudio_native_chat(endpoint: str, headers: Dict[str, str], payload: 
         response_body=_response_text_for_log(response),
         error="",
         api_style="lmstudio_native",
+        prompt_metadata=prompt_metadata,
     )
 
     if response.status_code >= 300:
@@ -985,7 +2270,36 @@ def _post_lmstudio_native_chat(endpoint: str, headers: Dict[str, str], payload: 
     raise ProviderError("lm_studio native chat response had no output content.")
 
 
-def _call_claude(provider_cfg: Dict[str, Any], prompt: str) -> Dict[str, Any]:
+def _call_claude(
+        provider_cfg: Dict[str, Any],
+        prompt_package: Any,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    content = _request_claude_content(
+        provider_cfg,
+        prompt_package,
+        max_tokens=600,
+        temperature=0.2,
+    )
+    prompt_metadata = prompt_package.get("metadata", {}) if isinstance(prompt_package, dict) else {}
+    allowed_tool_ids = _visible_candidate_tool_ids_from_metadata(prompt_metadata)
+    normalized_context = context if isinstance(context, dict) else {}
+    return _parse_provider_payload(
+        content,
+        allowed_tool_ids=allowed_tool_ids,
+        unavailable_tool_ids=_collect_unavailable_tool_ids(normalized_context),
+        current_phase=str(prompt_metadata.get("current_phase", "") or "").strip().lower() if normalized_context else "",
+    )
+
+
+def _request_claude_content(
+        provider_cfg: Dict[str, Any],
+        prompt_package: Any,
+        *,
+        max_tokens: int,
+        temperature: float,
+) -> str:
     requests_module = _get_requests_module()
     model = str(provider_cfg.get("model", "")).strip()
     if not model:
@@ -1005,14 +2319,25 @@ def _call_claude(provider_cfg: Dict[str, Any], prompt: str) -> Dict[str, Any]:
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
     }
+    system_prompt = ""
+    user_prompt = ""
+    prompt_metadata: Dict[str, Any] = {}
+    if isinstance(prompt_package, dict):
+        system_prompt = str(prompt_package.get("system_prompt", "") or "")
+        user_prompt = str(prompt_package.get("user_prompt", "") or "")
+        prompt_metadata = prompt_package.get("metadata", {}) if isinstance(prompt_package.get("metadata", {}), dict) else {}
+    else:
+        user_prompt = str(prompt_package or "")
     payload = {
         "model": model,
-        "max_tokens": 600,
-        "temperature": 0.2,
+        "max_tokens": max(1, int(max_tokens or 1)),
+        "temperature": float(temperature),
         "messages": [
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": user_prompt},
         ],
     }
+    if system_prompt:
+        payload["system"] = system_prompt
 
     try:
         response = requests_module.post(endpoint, headers=headers, json=payload, timeout=25)
@@ -1027,6 +2352,7 @@ def _call_claude(provider_cfg: Dict[str, Any], prompt: str) -> Dict[str, Any]:
             response_body="",
             error=str(exc),
             api_style="anthropic_messages",
+            prompt_metadata=prompt_metadata,
         )
         raise ProviderError(f"claude request failed: {exc}") from exc
 
@@ -1040,6 +2366,7 @@ def _call_claude(provider_cfg: Dict[str, Any], prompt: str) -> Dict[str, Any]:
         response_body=_response_text_for_log(response),
         error="",
         api_style="anthropic_messages",
+        prompt_metadata=prompt_metadata,
     )
 
     if response.status_code >= 300:
@@ -1052,7 +2379,7 @@ def _call_claude(provider_cfg: Dict[str, Any], prompt: str) -> Dict[str, Any]:
         if isinstance(part, dict) and part.get("type") == "text":
             text_chunks.append(str(part.get("text", "")))
     content = "\n".join(text_chunks)
-    return _parse_provider_payload(content)
+    return content
 
 
 def _probe_claude(provider_cfg: Dict[str, Any], started: float) -> Dict[str, Any]:
@@ -1089,12 +2416,21 @@ def _parse_actions_payload(content: str) -> List[Dict[str, Any]]:
     return _parse_provider_payload(content).get("actions", [])
 
 
-def _parse_provider_payload(content: str) -> Dict[str, Any]:
+def _parse_provider_payload(
+        content: str,
+        *,
+        allowed_tool_ids: Optional[List[str]] = None,
+        unavailable_tool_ids: Optional[List[str]] = None,
+        current_phase: str = "",
+) -> Dict[str, Any]:
     payload_obj = _extract_json(content)
     actions = payload_obj.get("actions", [])
     if not isinstance(actions, list):
         actions = []
 
+    allowed_tool_id_map = _normalized_tool_id_map(allowed_tool_ids)
+    unavailable_tool_id_map = _normalized_tool_id_map(_expand_unavailable_tool_ids(unavailable_tool_ids or []))
+    rejected_tool_ids = []
     parsed = []
     for item in actions:
         if not isinstance(item, dict):
@@ -1102,6 +2438,14 @@ def _parse_provider_payload(content: str) -> Dict[str, Any]:
         tool_id = str(item.get("tool_id", "")).strip()
         if not tool_id:
             continue
+        normalized_tool_id = tool_id.lower()
+        if allowed_tool_id_map and normalized_tool_id not in allowed_tool_id_map:
+            rejected_tool_ids.append(tool_id[:120])
+            continue
+        if unavailable_tool_id_map and normalized_tool_id in unavailable_tool_id_map:
+            rejected_tool_ids.append(tool_id[:120])
+            continue
+        canonical_tool_id = allowed_tool_id_map.get(normalized_tool_id, tool_id)
         score_value = item.get("score", 50)
         try:
             score = float(score_value)
@@ -1109,7 +2453,7 @@ def _parse_provider_payload(content: str) -> Dict[str, Any]:
             score = 50.0
         rationale = str(item.get("rationale", "")).strip()
         parsed.append({
-            "tool_id": tool_id,
+            "tool_id": canonical_tool_id,
             "score": score,
             "rationale": rationale,
         })
@@ -1140,8 +2484,14 @@ def _parse_provider_payload(content: str) -> Dict[str, Any]:
         normalized_host_updates["technologies"] = technologies
 
     findings = _normalize_findings(payload_obj.get("findings", []))
-    manual_tests = _normalize_manual_tests(payload_obj.get("manual_tests", []))
-    next_phase = str(payload_obj.get("next_phase", "")).strip()[:80]
+    manual_tests = _normalize_manual_tests(
+        payload_obj.get("manual_tests", []),
+        unavailable_tool_ids=unavailable_tool_ids,
+    )
+    next_phase = _normalize_next_phase(
+        payload_obj.get("next_phase", ""),
+        current_phase=current_phase,
+    )
 
     return {
         "actions": parsed,
@@ -1150,6 +2500,7 @@ def _parse_provider_payload(content: str) -> Dict[str, Any]:
         "findings": findings,
         "manual_tests": manual_tests,
         "next_phase": next_phase,
+        "rejected_action_tool_ids": _unique_strings(rejected_tool_ids),
     }
 
 
@@ -1174,9 +2525,25 @@ def _normalize_technologies(items: Any) -> List[Dict[str, str]]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name", "")).strip()[:120]
-        version = str(item.get("version", "")).strip()[:120]
-        cpe = str(item.get("cpe", "")).strip()[:220]
         evidence = _normalize_prompt_text(str(item.get("evidence", "")).strip(), 420)
+        cpe = _normalize_provider_cpe_token(item.get("cpe", ""))
+        version = _sanitize_provider_technology_version_for_tech(
+            name=name,
+            version=item.get("version", ""),
+            cpe=cpe,
+            evidence=evidence,
+        )
+        if not version and cpe:
+            cpe_version = _sanitize_provider_technology_version_for_tech(
+                name=name,
+                version=_provider_version_from_cpe(cpe),
+                cpe=cpe,
+                evidence=evidence,
+            )
+            if cpe_version:
+                version = cpe_version
+            else:
+                cpe = _provider_cpe_base(cpe)
         if not name and not cpe:
             continue
         key = "|".join([name.lower(), version.lower(), cpe.lower()])
@@ -1228,9 +2595,14 @@ def _normalize_findings(items: Any) -> List[Dict[str, Any]]:
     return rows
 
 
-def _normalize_manual_tests(items: Any) -> List[Dict[str, str]]:
+def _normalize_manual_tests(
+        items: Any,
+        *,
+        unavailable_tool_ids: Optional[List[str]] = None,
+) -> List[Dict[str, str]]:
     if not isinstance(items, list):
         return []
+    unavailable = set(_expand_unavailable_tool_ids(unavailable_tool_ids or []))
     rows: List[Dict[str, str]] = []
     seen = set()
     for item in items:
@@ -1241,7 +2613,10 @@ def _normalize_manual_tests(items: Any) -> List[Dict[str, str]]:
         scope_note = _normalize_prompt_text(str(item.get("scope_note", "")).strip(), 260)
         if not command and not why:
             continue
-        key = "|".join([command.lower(), why.lower()])
+        primary_command = _shell_primary_command_token(command)
+        if primary_command and primary_command in unavailable:
+            continue
+        key = command.lower()
         if key in seen:
             continue
         seen.add(key)
@@ -1279,6 +2654,49 @@ def _extract_json(text: str) -> Dict[str, Any]:
     raise ProviderError("Provider returned non-JSON payload.")
 
 
+def _response_is_complete_for_prompt(text: str, prompt_metadata: Optional[Dict[str, Any]] = None) -> bool:
+    try:
+        payload = _extract_json(text)
+    except ProviderError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    metadata = prompt_metadata if isinstance(prompt_metadata, dict) else {}
+    prompt_type = str(metadata.get("prompt_type", "") or "").strip().lower()
+    required_by_prompt_type = {
+        "ranking": {"actions", "host_updates", "findings", "manual_tests", "next_phase"},
+        "healthcheck": {"actions"},
+        "reflection": {"state", "reason", "priority_shift", "promote_tool_ids", "suppress_tool_ids", "manual_tests"},
+        "web_followup": {"focus", "selected_tool_ids", "reason", "manual_tests"},
+    }
+    required = required_by_prompt_type.get(prompt_type, set())
+    if not required:
+        return True
+    return required.issubset(set(payload.keys()))
+
+
+def _normalized_tool_id_map(values: Optional[List[str]]) -> Dict[str, str]:
+    if not isinstance(values, list):
+        return {}
+    normalized = {}
+    for item in values:
+        token = str(item or "").strip()
+        key = token.lower()
+        if not token or key in normalized:
+            continue
+        normalized[key] = token[:120]
+    return normalized
+
+
+def _visible_candidate_tool_ids_from_metadata(metadata: Dict[str, Any]) -> List[str]:
+    if not isinstance(metadata, dict):
+        return []
+    values = metadata.get("visible_candidate_tool_ids", [])
+    if not isinstance(values, list):
+        return []
+    return list(_normalized_tool_id_map(values).values())[:MAX_PROVIDER_CANDIDATES]
+
+
 def _normalize_prompt_text(value: str, max_chars: int) -> str:
     text = str(value or "").replace("\n", " ").replace("\r", " ")
     text = " ".join(text.split())
@@ -1294,11 +2712,92 @@ def _truncate_block_text(value: str, max_chars: int) -> str:
     return text[:max_chars].rstrip() + "\n...[truncated]"
 
 
-def _build_context_block(context: Dict[str, Any]) -> str:
+def _build_context_block(context: Dict[str, Any], *, current_phase_override: str = "") -> str:
     if not isinstance(context, dict) or not context:
         return ""
 
     lines = []
+    unavailable_tool_ids = set(_collect_unavailable_tool_ids(context))
+    context_summary = context.get("context_summary", {})
+    if isinstance(context_summary, dict) and context_summary:
+        summary_payload: Dict[str, Any] = {}
+        focus = context_summary.get("focus", {})
+        if isinstance(focus, dict):
+            compact_focus = {}
+            for key, max_chars in (
+                    ("analysis_mode", 24),
+                    ("service", 64),
+                    ("service_product", 120),
+                    ("service_version", 80),
+                    ("coverage_stage", 32),
+                    ("current_phase", 64),
+            ):
+                value = str(focus.get(key, "")).strip()
+                if key == "current_phase" and str(current_phase_override or "").strip():
+                    value = str(current_phase_override or "").strip()
+                if value:
+                    compact_focus[key] = value[:max_chars]
+            if str(current_phase_override or "").strip() and "current_phase" not in compact_focus:
+                compact_focus["current_phase"] = str(current_phase_override or "").strip()[:64]
+            if compact_focus:
+                summary_payload["focus"] = compact_focus
+        elif str(current_phase_override or "").strip():
+            summary_payload["focus"] = {"current_phase": str(current_phase_override or "").strip()[:64]}
+
+        for key, limit, max_chars in (
+                ("coverage_missing", 8, 64),
+                ("recommended_tools", 8, 80),
+                ("active_signals", 10, 48),
+                ("known_technologies", 8, 96),
+                ("top_findings", 8, 120),
+                ("recent_attempts", 10, 80),
+                ("recent_failures", 6, 120),
+                ("manual_tests", 4, 140),
+        ):
+            values = context_summary.get(key, [])
+            if not isinstance(values, list):
+                continue
+            compact_values = []
+            for item in values[:limit]:
+                token = _normalize_prompt_text(str(item).strip(), max_chars)
+                if not token:
+                    continue
+                if key == "manual_tests":
+                    primary_command = _shell_primary_command_token(token)
+                    if primary_command and primary_command in unavailable_tool_ids:
+                        continue
+                compact_values.append(token)
+            if compact_values:
+                summary_payload[key] = compact_values
+
+        reflection_posture = context_summary.get("reflection_posture", {})
+        if isinstance(reflection_posture, dict) and reflection_posture:
+            reflection_payload = {}
+            for key, max_chars in (
+                    ("state", 24),
+                    ("priority_shift", 64),
+                    ("reason", 180),
+            ):
+                value = _normalize_prompt_text(str(reflection_posture.get(key, "")).strip(), max_chars)
+                if value:
+                    reflection_payload[key] = value
+            for key in ("suppress_tool_ids", "promote_tool_ids"):
+                values = reflection_posture.get(key, [])
+                if not isinstance(values, list):
+                    continue
+                compact_values = [
+                    _normalize_prompt_text(str(item).strip(), 80)
+                    for item in values[:6]
+                    if str(item).strip()
+                ]
+                if compact_values:
+                    reflection_payload[key] = compact_values
+            if reflection_payload:
+                summary_payload["reflection_posture"] = reflection_payload
+
+        if summary_payload:
+            lines.append(json.dumps({"context_summary": summary_payload}, separators=(",", ":")))
+
     target = context.get("target", {})
     if isinstance(target, dict):
         target_payload = {
@@ -1374,9 +2873,21 @@ def _build_context_block(context: Dict[str, Any]) -> str:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()[:120]
-            version = str(item.get("version", "")).strip()[:80]
-            cpe = str(item.get("cpe", "")).strip()[:180]
             evidence = _normalize_prompt_text(str(item.get("evidence", "")).strip(), 220)
+            cpe = _normalize_provider_cpe_token(item.get("cpe", ""))
+            version = _sanitize_provider_technology_version_for_tech(
+                name=name,
+                version=item.get("version", ""),
+                cpe=cpe,
+                evidence=evidence,
+            )
+            if not version and cpe and not _sanitize_provider_technology_version_for_tech(
+                    name=name,
+                    version=_provider_version_from_cpe(cpe),
+                    cpe=cpe,
+                    evidence=evidence,
+            ):
+                cpe = _provider_cpe_base(cpe)
             if not name and not cpe:
                 continue
             compact_inferred.append({
@@ -1480,9 +2991,21 @@ def _build_context_block(context: Dict[str, Any]) -> str:
                 if not isinstance(item, dict):
                     continue
                 name = str(item.get("name", "")).strip()[:120]
-                version = str(item.get("version", "")).strip()[:80]
-                cpe = str(item.get("cpe", "")).strip()[:180]
                 evidence = _normalize_prompt_text(str(item.get("evidence", "")).strip(), 220)
+                cpe = _normalize_provider_cpe_token(item.get("cpe", ""))
+                version = _sanitize_provider_technology_version_for_tech(
+                    name=name,
+                    version=item.get("version", ""),
+                    cpe=cpe,
+                    evidence=evidence,
+                )
+                if not version and cpe and not _sanitize_provider_technology_version_for_tech(
+                        name=name,
+                        version=_provider_version_from_cpe(cpe),
+                        cpe=cpe,
+                        evidence=evidence,
+                ):
+                    cpe = _provider_cpe_base(cpe)
                 if not name and not cpe:
                     continue
                 compact_technologies.append({
@@ -1526,6 +3049,9 @@ def _build_context_block(context: Dict[str, Any]) -> str:
                 scope_note = _normalize_prompt_text(str(item.get("scope_note", "")).strip(), 140)
                 if not command and not why:
                     continue
+                primary_command = _shell_primary_command_token(command)
+                if primary_command and primary_command in unavailable_tool_ids:
+                    continue
                 compact_manual.append({
                     "command": command,
                     "why": why,
@@ -1533,6 +3059,30 @@ def _build_context_block(context: Dict[str, Any]) -> str:
                 })
             if compact_manual:
                 ai_payload["manual_tests"] = compact_manual
+
+        reflection = host_ai_state.get("reflection", {})
+        if isinstance(reflection, dict) and reflection:
+            reflection_payload = {
+                "state": str(reflection.get("state", "")).strip().lower()[:24],
+                "priority_shift": str(reflection.get("priority_shift", "")).strip().lower()[:64],
+                "reason": _normalize_prompt_text(str(reflection.get("reason", "")).strip(), 220),
+            }
+            promote_tool_ids = [
+                str(item).strip().lower()[:80]
+                for item in list(reflection.get("promote_tool_ids", []) or [])[:8]
+                if str(item).strip()
+            ]
+            if promote_tool_ids:
+                reflection_payload["promote_tool_ids"] = promote_tool_ids
+            suppress_tool_ids = [
+                str(item).strip().lower()[:80]
+                for item in list(reflection.get("suppress_tool_ids", []) or [])[:8]
+                if str(item).strip()
+            ]
+            if suppress_tool_ids:
+                reflection_payload["suppress_tool_ids"] = suppress_tool_ids
+            if any(value for value in reflection_payload.values()):
+                ai_payload["reflection"] = reflection_payload
 
         if any(value for value in ai_payload.values()):
             lines.append(json.dumps({"host_ai_state": ai_payload}, separators=(",", ":")))

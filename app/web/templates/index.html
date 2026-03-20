@@ -1418,6 +1418,10 @@
                 OpenAI API Key
                 <input id="provider-openai-apikey" type="password" name="openai_api_key">
             </label>
+            <label class="checkbox scheduler-provider-field" data-scheduler-provider="openai">
+                <input id="provider-openai-structured-outputs" type="checkbox" name="openai_structured_outputs">
+                Use OpenAI structured outputs
+            </label>
             <label class="scheduler-provider-field" data-scheduler-provider="claude">
                 Claude Base URL
                 <input id="provider-claude-baseurl" type="text" name="claude_base_url">
@@ -1430,6 +1434,41 @@
                 Claude API Key
                 <input id="provider-claude-apikey" type="password" name="claude_api_key">
             </label>
+            <fieldset class="danger-group">
+                <legend>AI Feedback Controls</legend>
+                <label class="checkbox">
+                    <input id="scheduler-ai-feedback-enabled" type="checkbox" name="ai_feedback_enabled">
+                    Enable AI feedback loop
+                </label>
+                <label>
+                    Max Rounds Per Target
+                    <input id="scheduler-ai-max-rounds" type="number" min="1" max="12" step="1" name="ai_feedback_max_rounds">
+                </label>
+                <label>
+                    Max Actions Per Round
+                    <input id="scheduler-ai-max-actions" type="number" min="1" max="8" step="1" name="ai_feedback_max_actions">
+                </label>
+                <label>
+                    Recent Output Chars
+                    <input id="scheduler-ai-recent-output-chars" type="number" min="320" max="4000" step="10" name="ai_feedback_recent_output_chars">
+                </label>
+                <label class="checkbox">
+                    <input id="scheduler-ai-reflection-enabled" type="checkbox" name="ai_feedback_reflection_enabled">
+                    Enable stalled-loop reflection
+                </label>
+                <label>
+                    Stall Rounds Without Progress
+                    <input id="scheduler-ai-stall-rounds" type="number" min="1" max="6" step="1" name="ai_feedback_stall_rounds">
+                </label>
+                <label>
+                    Repeated Selection Threshold
+                    <input id="scheduler-ai-repeat-threshold" type="number" min="1" max="8" step="1" name="ai_feedback_repeat_threshold">
+                </label>
+                <label>
+                    Max Reflections Per Target
+                    <input id="scheduler-ai-max-reflections" type="number" min="0" max="4" step="1" name="ai_feedback_max_reflections">
+                </label>
+            </fieldset>
             <fieldset class="danger-group">
                 <legend>Dangerous Categories</legend>
                 <label class="checkbox">
@@ -1447,6 +1486,17 @@
                 <label class="checkbox">
                     <input id="danger-destructive_write_actions" type="checkbox" value="destructive_write_actions">
                     destructive_write_actions
+                </label>
+            </fieldset>
+            <fieldset class="danger-group">
+                <legend>Scheduler Prompt Controls</legend>
+                <label class="checkbox">
+                    <input id="feature-scheduler-prompt-profiles" type="checkbox" value="scheduler_prompt_profiles">
+                    Enable service and phase prompt overlays
+                </label>
+                <label class="checkbox">
+                    <input id="feature-scheduler-web-followup-sidecar" type="checkbox" value="scheduler_web_followup_sidecar">
+                    Enable web follow-up specialist sidecar
                 </label>
             </fieldset>
             <div class="scheduler-actions">
@@ -1536,7 +1586,7 @@
                 <h3>Tool Audit</h3>
                 <p id="settings-tool-audit-status">Idle</p>
             </div>
-            <p class="meta-note">Kali-first install hints for the external tools Legion currently launches or depends on.</p>
+            <p class="meta-note">Curated install hints for the external tools Legion launches or depends on, including upstream fallbacks where Ubuntu lacks native packages.</p>
             <div class="tool-install-controls">
                 <label>
                     Install Platform

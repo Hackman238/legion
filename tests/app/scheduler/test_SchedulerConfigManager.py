@@ -33,14 +33,25 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertTrue(defaults["ai_feedback"]["enabled"])
             self.assertEqual(5, int(defaults["ai_feedback"]["max_rounds_per_target"]))
             self.assertEqual(6, int(defaults["ai_feedback"]["max_actions_per_round"]))
+            self.assertTrue(defaults["ai_feedback"]["reflection_enabled"])
+            self.assertEqual(2, int(defaults["ai_feedback"]["stall_rounds_without_progress"]))
+            self.assertEqual(2, int(defaults["ai_feedback"]["stall_repeat_selection_threshold"]))
+            self.assertEqual(1, int(defaults["ai_feedback"]["max_reflections_per_target"]))
             self.assertEqual("gpt-4.1-mini", defaults["providers"]["openai"]["model"])
+            self.assertFalse(defaults["providers"]["openai"]["structured_outputs"])
             self.assertIn("feature_flags", defaults)
             self.assertTrue(defaults["feature_flags"]["graph_workspace"])
             self.assertTrue(defaults["feature_flags"]["optional_runners"])
+            self.assertTrue(defaults["feature_flags"]["scheduler_prompt_profiles"])
+            self.assertFalse(defaults["feature_flags"]["scheduler_web_followup_sidecar"])
             self.assertIn("disabled_tool_ids", defaults)
             self.assertIn("http-drupal-modules.nse", defaults["disabled_tool_ids"])
             self.assertIn("http-vuln-zimbra-lfi.nse", defaults["disabled_tool_ids"])
             self.assertIn("http-drupal-modules.nse", manager.get_disabled_tool_ids())
+            self.assertIn("tool_execution_profiles", defaults)
+            self.assertTrue(defaults["tool_execution_profiles"]["nikto"]["quiet_long_running"])
+            self.assertEqual(1800, int(defaults["tool_execution_profiles"]["nikto"]["activity_timeout_seconds"]))
+            self.assertEqual(0, int(defaults["tool_execution_profiles"]["nikto"]["hard_timeout_seconds"]))
             self.assertIn("runners", defaults)
             self.assertFalse(defaults["runners"]["container"]["enabled"])
             self.assertTrue(defaults["runners"]["browser"]["enabled"])
@@ -57,6 +68,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
                         "enabled": True,
                         "model": "gpt-5-mini",
                         "api_key": "test-key",
+                        "structured_outputs": True,
                     }
                 },
             })
@@ -66,6 +78,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual("openai", updated["provider"])
             self.assertEqual(1, int(updated["max_concurrency"]))
             self.assertEqual("gpt-5-mini", updated["providers"]["openai"]["model"])
+            self.assertTrue(updated["providers"]["openai"]["structured_outputs"])
             self.assertEqual(5, int(updated["ai_feedback"]["max_rounds_per_target"]))
 
             normalized_openai_model = manager.update_preferences({
@@ -118,11 +131,19 @@ class SchedulerConfigManagerTest(unittest.TestCase):
                     "max_rounds_per_target": 99,
                     "max_actions_per_round": 0,
                     "recent_output_chars": 10,
+                    "reflection_enabled": False,
+                    "stall_rounds_without_progress": 99,
+                    "stall_repeat_selection_threshold": 0,
+                    "max_reflections_per_target": 99,
                 }
             })
             self.assertEqual(12, int(normalized["ai_feedback"]["max_rounds_per_target"]))
             self.assertEqual(1, int(normalized["ai_feedback"]["max_actions_per_round"]))
             self.assertEqual(320, int(normalized["ai_feedback"]["recent_output_chars"]))
+            self.assertFalse(normalized["ai_feedback"]["reflection_enabled"])
+            self.assertEqual(6, int(normalized["ai_feedback"]["stall_rounds_without_progress"]))
+            self.assertEqual(1, int(normalized["ai_feedback"]["stall_repeat_selection_threshold"]))
+            self.assertEqual(4, int(normalized["ai_feedback"]["max_reflections_per_target"]))
 
             updated_runners = manager.update_preferences({
                 "runners": {
@@ -147,12 +168,35 @@ class SchedulerConfigManagerTest(unittest.TestCase):
                 "feature_flags": {
                     "graph_workspace": False,
                     "optional_runners": False,
+                    "scheduler_prompt_profiles": False,
+                    "scheduler_web_followup_sidecar": True,
                 }
             })
             self.assertFalse(updated_flags["feature_flags"]["graph_workspace"])
             self.assertFalse(updated_flags["feature_flags"]["optional_runners"])
+            self.assertFalse(updated_flags["feature_flags"]["scheduler_prompt_profiles"])
+            self.assertTrue(updated_flags["feature_flags"]["scheduler_web_followup_sidecar"])
             self.assertFalse(manager.is_feature_enabled("graph_workspace"))
             self.assertFalse(manager.is_feature_enabled("optional_runners"))
+            self.assertFalse(manager.is_feature_enabled("scheduler_prompt_profiles"))
+            self.assertTrue(manager.is_feature_enabled("scheduler_web_followup_sidecar"))
+
+            updated_profiles = manager.update_preferences({
+                "tool_execution_profiles": {
+                    "nikto": {
+                        "activity_timeout_seconds": 2400,
+                    },
+                    "feroxbuster": {
+                        "quiet_long_running": True,
+                        "activity_timeout_seconds": 900,
+                        "hard_timeout_seconds": 7200,
+                    },
+                }
+            })
+            self.assertEqual(2400, int(updated_profiles["tool_execution_profiles"]["nikto"]["activity_timeout_seconds"]))
+            self.assertTrue(updated_profiles["tool_execution_profiles"]["feroxbuster"]["quiet_long_running"])
+            self.assertEqual(900, int(updated_profiles["tool_execution_profiles"]["feroxbuster"]["activity_timeout_seconds"]))
+            self.assertEqual(7200, int(updated_profiles["tool_execution_profiles"]["feroxbuster"]["hard_timeout_seconds"]))
 
             updated_policy = manager.update_preferences({
                 "engagement_policy": {

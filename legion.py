@@ -16,25 +16,197 @@ Copyright (c) 2025 Shane William Scott
 
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
-import shutil
-
-from app.ApplicationInfo import getConsoleLogo
-from app.ProjectManager import ProjectManager
-from app.logging.legionLog import getStartupLogger, getDbLogger, getAppLogger
-from app.paths import ensure_legion_home, get_legion_backup_dir, get_legion_conf_path
-from app.shell.DefaultShell import DefaultShell
-from app.tools.nmap.DefaultNmapExporter import DefaultNmapExporter
-from db.RepositoryFactory import RepositoryFactory
-from app.tools.ToolCoordinator import ToolCoordinator
-from app.logic import Logic
 import os
-import sys
+import re
+import shutil
 import subprocess
+import sys
+from typing import Optional
 
-startupLog = getStartupLogger()
+MIN_SUPPORTED_PYTHON = (3, 12)
+
+
+def _coerce_python_version_tuple(version_info=None):
+    info = version_info if version_info is not None else sys.version_info
+    major = getattr(info, "major", None)
+    minor = getattr(info, "minor", None)
+    micro = getattr(info, "micro", None)
+    if major is None:
+        try:
+            major = int(info[0])
+        except Exception:
+            major = 0
+    if minor is None:
+        try:
+            minor = int(info[1])
+        except Exception:
+            minor = 0
+    if micro is None:
+        try:
+            micro = int(info[2])
+        except Exception:
+            micro = 0
+    return int(major), int(minor), int(micro)
+
+
+def is_supported_python_runtime(version_info=None):
+    major, minor, _micro = _coerce_python_version_tuple(version_info)
+    return (major, minor) >= tuple(MIN_SUPPORTED_PYTHON)
+
+
+def is_virtualenv_runtime(prefix=None, base_prefix=None, real_prefix=None):
+    resolved_prefix = str(prefix if prefix is not None else getattr(sys, "prefix", ""))
+    resolved_base_prefix = str(base_prefix if base_prefix is not None else getattr(sys, "base_prefix", resolved_prefix))
+    resolved_real_prefix = str(real_prefix if real_prefix is not None else getattr(sys, "real_prefix", ""))
+    return bool(resolved_real_prefix) or resolved_prefix != resolved_base_prefix
+
+
+def format_python_runtime_error(version_info=None, executable=None, prefix=None, base_prefix=None, real_prefix=None):
+    major, minor, micro = _coerce_python_version_tuple(version_info)
+    resolved_executable = str(executable if executable is not None else getattr(sys, "executable", "python")).strip() or "python"
+    runtime_scope = "virtualenv" if is_virtualenv_runtime(prefix=prefix, base_prefix=base_prefix, real_prefix=real_prefix) else "system interpreter"
+    required_version = ".".join(str(part) for part in MIN_SUPPORTED_PYTHON)
+    current_version = f"{major}.{minor}.{micro}"
+    return (
+        f"Legion requires Python {required_version}+.\n"
+        f"Current interpreter: {resolved_executable} ({current_version}, {runtime_scope}).\n"
+        "Recreate or activate a compatible environment first, for example:\n"
+        "  python3.12 -m venv .venv\n"
+        "  source .venv/bin/activate\n"
+        "  python legion.py --web"
+    )
+
+
+def ensure_supported_python_runtime(version_info=None, executable=None, prefix=None, base_prefix=None, real_prefix=None, stderr=None):
+    if is_supported_python_runtime(version_info):
+        return
+    stream = stderr if stderr is not None else sys.stderr
+    print(
+        format_python_runtime_error(
+            version_info=version_info,
+            executable=executable,
+            prefix=prefix,
+            base_prefix=base_prefix,
+            real_prefix=real_prefix,
+        ),
+        file=stream,
+    )
+    raise SystemExit(1)
+
+
+def _distribution_version(distribution_name: str) -> str:
+    try:
+        from importlib import metadata as importlib_metadata
+    except Exception:
+        return ""
+    try:
+        return str(importlib_metadata.version(str(distribution_name or "").strip()))
+    except Exception:
+        return ""
+
+
+def _module_origin(module_name: str) -> str:
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec(str(module_name or "").strip())
+    except Exception:
+        return ""
+    if spec is None:
+        return ""
+    return str(getattr(spec, "origin", "") or "")
+
+
+def _coerce_distribution_version_tuple(version_text: str):
+    parts = [int(item) for item in re.findall(r"\d+", str(version_text or ""))]
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def has_known_flask_werkzeug_mismatch(flask_version: str = "", werkzeug_version: str = "") -> bool:
+    if not str(flask_version or "").strip() or not str(werkzeug_version or "").strip():
+        return False
+    return _coerce_distribution_version_tuple(flask_version) < (2, 3, 0) and _coerce_distribution_version_tuple(werkzeug_version) >= (3, 0, 0)
+
+
+def _find_local_venv_python() -> str:
+    for rel_path in ("venv/bin/python", ".venv/bin/python"):
+        abs_path = os.path.abspath(rel_path)
+        if os.path.isfile(abs_path) and os.access(abs_path, os.X_OK):
+            return abs_path
+    return ""
+
+
+def format_web_dependency_environment_error(
+        *,
+        executable: Optional[str] = None,
+        flask_version: str = "",
+        flask_origin: str = "",
+        werkzeug_version: str = "",
+        werkzeug_origin: str = "",
+) -> str:
+    resolved_executable = str(executable if executable is not None else getattr(sys, "executable", "python")).strip() or "python"
+    local_venv_python = _find_local_venv_python()
+    lines = [
+        "Legion detected an incompatible Flask/Werkzeug environment for web mode.",
+        f"Interpreter: {resolved_executable}",
+        f"Flask: {str(flask_version or 'unknown').strip() or 'unknown'} from {str(flask_origin or 'not found').strip() or 'not found'}",
+        f"Werkzeug: {str(werkzeug_version or 'unknown').strip() or 'unknown'} from {str(werkzeug_origin or 'not found').strip() or 'not found'}",
+        "This usually means the system interpreter is mixing distro packages with pip-installed packages instead of using Legion's virtualenv.",
+    ]
+    if local_venv_python:
+        lines.extend([
+            "Use Legion's local virtualenv instead:",
+            f"  {local_venv_python} legion.py --web",
+            "or:",
+            f"  source {os.path.dirname(local_venv_python)}/activate",
+            "  python legion.py --web",
+        ])
+    else:
+        lines.extend([
+            "Create a clean Python 3.12 virtualenv and reinstall requirements:",
+            "  python3.12 -m venv venv",
+            "  source venv/bin/activate",
+            "  python -m pip install --upgrade pip",
+            "  python -m pip install -r requirements.txt",
+            "  python legion.py --web",
+        ])
+    return "\n".join(lines)
+
+
+def ensure_web_dependency_compatibility(
+        *,
+        executable: Optional[str] = None,
+        flask_version: Optional[str] = None,
+        flask_origin: Optional[str] = None,
+        werkzeug_version: Optional[str] = None,
+        werkzeug_origin: Optional[str] = None,
+        stderr=None,
+):
+    resolved_flask_version = str(flask_version) if flask_version is not None else _distribution_version("Flask")
+    resolved_werkzeug_version = str(werkzeug_version) if werkzeug_version is not None else _distribution_version("Werkzeug")
+    resolved_flask_origin = str(flask_origin) if flask_origin is not None else _module_origin("flask")
+    resolved_werkzeug_origin = str(werkzeug_origin) if werkzeug_origin is not None else _module_origin("werkzeug")
+    if not has_known_flask_werkzeug_mismatch(resolved_flask_version, resolved_werkzeug_version):
+        return
+    stream = stderr if stderr is not None else sys.stderr
+    print(
+        format_web_dependency_environment_error(
+            executable=executable,
+            flask_version=resolved_flask_version,
+            flask_origin=resolved_flask_origin,
+            werkzeug_version=resolved_werkzeug_version,
+            werkzeug_origin=resolved_werkzeug_origin,
+        ),
+        file=stream,
+    )
+    raise SystemExit(1)
+
+startupLog = None
 
 def doPathSetup():
-    import os
+    from app.paths import ensure_legion_home, get_legion_backup_dir, get_legion_conf_path
+
     ensure_legion_home()
     backup_dir = get_legion_backup_dir()
     conf_path = get_legion_conf_path()
@@ -104,8 +276,20 @@ def resolve_web_opaque_ui(args) -> bool:
     return bool(getattr(args, "web_opaque_ui", False))
 
 if __name__ == "__main__":
+    ensure_supported_python_runtime()
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    from app.ApplicationInfo import getConsoleLogo
+    from app.ProjectManager import ProjectManager
+    from app.logging.legionLog import getStartupLogger, getDbLogger, getAppLogger
+    from app.shell.DefaultShell import DefaultShell
+    from app.tools.nmap.DefaultNmapExporter import DefaultNmapExporter
+    from db.RepositoryFactory import RepositoryFactory
+    from app.tools.ToolCoordinator import ToolCoordinator
+    from app.logic import Logic
+
+    startupLog = getStartupLogger()
 
     if args.mcp_server:
         # Start MCP server as a subprocess (separate stdio)
@@ -177,6 +361,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if args.web:
+        ensure_web_dependency_compatibility()
         from app.web import create_app
         from app.web.bootstrap import create_default_logic
         from app.web.runtime import WebRuntime

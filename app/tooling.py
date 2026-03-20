@@ -47,12 +47,40 @@ def _candidate_go_bin_paths(env: Optional[Dict[str, str]] = None) -> List[str]:
     return normalized
 
 
+def _candidate_user_bin_paths(env: Optional[Dict[str, str]] = None) -> List[str]:
+    source = env if isinstance(env, dict) else os.environ
+    candidates: List[str] = []
+
+    home = str(source.get("HOME", "") or "").strip()
+    if home:
+        candidates.append(os.path.abspath(os.path.expanduser(os.path.join(home, ".local", "bin"))))
+
+    cargo_home = str(source.get("CARGO_HOME", "") or "").strip()
+    if cargo_home:
+        candidates.append(os.path.abspath(os.path.expanduser(os.path.join(cargo_home, "bin"))))
+    elif home:
+        candidates.append(os.path.abspath(os.path.expanduser(os.path.join(home, ".cargo", "bin"))))
+
+    pipx_bin_dir = str(source.get("PIPX_BIN_DIR", "") or "").strip()
+    if pipx_bin_dir:
+        candidates.append(os.path.abspath(os.path.expanduser(pipx_bin_dir)))
+
+    seen = set()
+    normalized: List[str] = []
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
 def augment_path_for_legion_tools(path_value: str = "", *, env: Optional[Dict[str, str]] = None) -> str:
     existing_parts = [part for part in str(path_value or "").split(os.pathsep) if str(part or "").strip()]
     seen = set()
     ordered: List[str] = []
 
-    for part in list(_candidate_go_bin_paths(env)) + existing_parts:
+    for part in list(_candidate_go_bin_paths(env)) + list(_candidate_user_bin_paths(env)) + existing_parts:
         normalized = os.path.abspath(os.path.expanduser(str(part or "").strip()))
         if not normalized or normalized in seen:
             continue
@@ -214,8 +242,14 @@ def build_tool_install_plan(
     manual: List[Dict[str, str]] = []
     seen_commands = set()
     needs_go_bootstrap = False
+    needs_cargo_bootstrap = False
+    needs_pipx_bootstrap = False
+    needs_git_bootstrap = False
     execution_env = build_tool_execution_env(base_env)
     go_path = shutil.which("go", path=execution_env.get("PATH", ""))
+    cargo_path = shutil.which("cargo", path=execution_env.get("PATH", ""))
+    pipx_path = shutil.which("pipx", path=execution_env.get("PATH", ""))
+    git_path = shutil.which("git", path=execution_env.get("PATH", ""))
 
     for entry in candidate_rows:
         hint = tool_install_hint_for_platform(entry, normalized_platform)
@@ -223,6 +257,12 @@ def build_tool_install_plan(
         if normalized_command:
             if normalized_command.startswith("go install ") and not go_path:
                 needs_go_bootstrap = True
+            if re.search(r"(^|\s)cargo\s+install\s+", normalized_command) and not cargo_path:
+                needs_cargo_bootstrap = True
+            if re.search(r"(^|\s)(?:python3\s+-m\s+pipx|pipx)\s+install\s+", normalized_command) and not pipx_path:
+                needs_pipx_bootstrap = True
+            if re.search(r"(^|\s)git\s+clone\s+", normalized_command) and not git_path:
+                needs_git_bootstrap = True
             if normalized_command in seen_commands:
                 continue
             seen_commands.add(normalized_command)
@@ -239,16 +279,50 @@ def build_tool_install_plan(
             "hint": hint or str(entry.notes or "").strip() or "No curated install hint is available for this tool.",
         })
 
+    bootstrap_commands: List[Dict[str, str]] = []
+    if needs_git_bootstrap:
+        bootstrap_command = "sudo -n apt-get install -y git"
+        if bootstrap_command not in seen_commands:
+            seen_commands.add(bootstrap_command)
+            bootstrap_commands.append({
+                "tool_key": "git",
+                "label": "Git",
+                "command": bootstrap_command,
+                "hint": "sudo apt install git",
+            })
     if needs_go_bootstrap:
         bootstrap_command = "sudo -n apt-get install -y golang-go"
         if bootstrap_command not in seen_commands:
             seen_commands.add(bootstrap_command)
-            commands.insert(0, {
+            bootstrap_commands.append({
                 "tool_key": "golang-go",
                 "label": "Go toolchain",
                 "command": bootstrap_command,
                 "hint": "sudo apt install golang-go",
             })
+    if needs_cargo_bootstrap:
+        bootstrap_command = "sudo -n apt-get install -y cargo"
+        if bootstrap_command not in seen_commands:
+            seen_commands.add(bootstrap_command)
+            bootstrap_commands.append({
+                "tool_key": "cargo",
+                "label": "Rust / Cargo",
+                "command": bootstrap_command,
+                "hint": "sudo apt install cargo",
+            })
+    if needs_pipx_bootstrap:
+        bootstrap_command = "sudo -n apt-get install -y pipx python3-venv"
+        if bootstrap_command not in seen_commands:
+            seen_commands.add(bootstrap_command)
+            bootstrap_commands.append({
+                "tool_key": "pipx",
+                "label": "pipx",
+                "command": bootstrap_command,
+                "hint": "sudo apt install pipx python3-venv",
+            })
+
+    if bootstrap_commands:
+        commands = bootstrap_commands + commands
 
     script_lines = [
         "#!/usr/bin/env bash",
@@ -515,7 +589,8 @@ def _tool_specs() -> List[ToolSpec]:
             "web",
             "Legacy web content discovery fallback.",
             kali_install="sudo apt install feroxbuster",
-            ubuntu_install="sudo apt install feroxbuster",
+            ubuntu_install="cargo install feroxbuster",
+            notes="Ubuntu users can install Feroxbuster from the upstream Rust/Cargo release path when apt does not ship it.",
         ),
         ToolSpec(
             "dirsearch",
@@ -543,8 +618,14 @@ def _tool_specs() -> List[ToolSpec]:
             "internal",
             "Safer SMB/AD-aware internal enumeration.",
             kali_install="sudo apt install enum4linux-ng",
-            ubuntu_install="sudo apt install enum4linux-ng",
-            notes="If your Ubuntu release does not package it, use the upstream project install path.",
+            ubuntu_install=(
+                'sudo apt install smbclient samba-common-bin python3-ldap3 python3-yaml python3-impacket && '
+                'tmpdir="$(mktemp -d)" && '
+                'git clone --depth 1 https://github.com/cddmp/enum4linux-ng.git "$tmpdir/enum4linux-ng" && '
+                'sudo install -m 0755 "$tmpdir/enum4linux-ng/enum4linux-ng.py" /usr/local/bin/enum4linux-ng && '
+                'rm -rf "$tmpdir"'
+            ),
+            notes="Ubuntu support uses upstream enum4linux-ng plus its documented Debian/Ubuntu dependencies instead of a Kali-only apt package.",
         ),
         ToolSpec(
             "smbmap",
@@ -571,7 +652,14 @@ def _tool_specs() -> List[ToolSpec]:
             "internal",
             "Legacy SMB enumeration workflows.",
             kali_install="sudo apt install enum4linux",
-            ubuntu_install="sudo apt install enum4linux",
+            ubuntu_install=(
+                'sudo apt install perl smbclient samba-common-bin && '
+                'tmpdir="$(mktemp -d)" && '
+                'git clone --depth 1 https://github.com/CiscoCXSecurity/enum4linux.git "$tmpdir/enum4linux" && '
+                'sudo install -m 0755 "$tmpdir/enum4linux/enum4linux.pl" /usr/local/bin/enum4linux && '
+                'rm -rf "$tmpdir"'
+            ),
+            notes="Ubuntu support installs the upstream enum4linux wrapper and its Samba client dependencies instead of mixing Kali repositories.",
         ),
         ToolSpec(
             "ldapsearch",
@@ -630,11 +718,18 @@ def _tool_specs() -> List[ToolSpec]:
         ToolSpec(
             "theHarvester",
             "theHarvester",
-            ("theHarvester", "theharvester"),
+            ("theHarvester", "theharvester", "theHarvester.py"),
             "passive",
             "Legacy external recon and passive collection.",
             kali_install="sudo apt install theharvester",
-            ubuntu_install="sudo apt install theharvester",
+            ubuntu_install=(
+                'PYTHON_BIN="$(if command -v python3.12 >/dev/null 2>&1; then printf python3.12; else printf python3; fi)" && '
+                'tmpdir="$(mktemp -d)" && '
+                'git clone --depth 1 https://github.com/laramies/theHarvester.git "$tmpdir/theHarvester" && '
+                'python3 -m pipx install --force --python "$PYTHON_BIN" "$tmpdir/theHarvester" && '
+                'rm -rf "$tmpdir"'
+            ),
+            notes="Ubuntu support follows the upstream git + pipx install path. Install Playwright browsers separately if you need browser-backed providers.",
         ),
         ToolSpec(
             "snmpcheck",
@@ -643,16 +738,18 @@ def _tool_specs() -> List[ToolSpec]:
             "internal",
             "Legacy SNMP enumeration.",
             kali_install="sudo apt install snmpcheck",
-            ubuntu_install="Install from the upstream snmpcheck project if unavailable in apt.",
+            ubuntu_install="Use a Kali container/VM or install snmpcheck from upstream source; Legion does not mix Kali repositories into Ubuntu.",
+            notes="Ubuntu does not have a curated native package path for snmpcheck in Legion today.",
         ),
         ToolSpec(
             "samrdump",
             "samrdump",
-            ("samrdump",),
+            ("impacket-samrdump", "samrdump.py", "samrdump"),
             "internal",
             "Legacy Impacket SAMR enumeration.",
             kali_install="sudo apt install impacket-scripts",
-            ubuntu_install="python3 -m pip install impacket",
+            ubuntu_install="python3 -m pipx install --force impacket",
+            notes="Ubuntu support uses the official Impacket pipx install path and detects the modern impacket-samrdump entry point.",
         ),
         ToolSpec(
             "sqlmap",
@@ -731,12 +828,12 @@ def _tool_specs() -> List[ToolSpec]:
         ToolSpec(
             "ntlmrelayx",
             "ntlmrelayx",
-            ("ntlmrelayx.py", "ntlmrelayx"),
+            ("impacket-ntlmrelayx", "ntlmrelayx.py", "ntlmrelayx"),
             "relay",
             "NTLM relay workspace support.",
             configured_setting="tools_path_ntlmrelay",
             kali_install="sudo apt install impacket-scripts",
-            ubuntu_install="python3 -m pip install impacket",
+            ubuntu_install="python3 -m pipx install --force impacket",
         ),
         ToolSpec(
             "httpx",

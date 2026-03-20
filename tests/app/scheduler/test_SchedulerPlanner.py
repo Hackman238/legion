@@ -333,6 +333,125 @@ class SchedulerPlannerTest(unittest.TestCase):
                 self.assertIn("nmap-vuln.nse", tool_ids)
                 self.assertIn("screenshooter", tool_ids)
 
+    def test_ai_mode_filters_candidates_whose_binary_is_known_missing(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "goal_profile": "internal_asset_discovery",
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["WhatWeb", "whatweb-http", "whatweb http://[IP]:[PORT]", "http"],
+                    ["Banner", "banner", "echo | nc -v -n [IP] [PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {
+                        "web_service": True,
+                        "missing_tools": ["whatweb-http"],
+                    },
+                    "coverage": {
+                        "missing": ["missing_whatweb"],
+                    },
+                },
+            )
+
+            tool_ids = [item.tool_id for item in actions]
+            self.assertIn("banner", tool_ids)
+            self.assertNotIn("whatweb-http", tool_ids)
+
+    def test_deterministic_mode_filters_candidates_whose_binary_is_not_available_in_tool_audit(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "deterministic",
+                "goal_profile": "internal_asset_discovery",
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[
+                    ["whatweb-http", "http", "tcp"],
+                    ["nikto", "http", "tcp"],
+                    ["banner", "http", "tcp"],
+                ],
+                portActions=[
+                    ["WhatWeb", "whatweb-http", "whatweb http://[IP]:[PORT]", "http"],
+                    ["Nikto", "nikto", "nikto -h [IP] -p [PORT]", "http"],
+                    ["Banner", "banner", "LEGION_BANNER_TARGET=[IP] python3 -m app.banner_probe", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "tool_audit": {
+                        "available_tool_ids": [],
+                        "unavailable_tool_ids": ["whatweb", "nikto"],
+                    },
+                },
+            )
+
+            tool_ids = [item.tool_id for item in actions]
+            self.assertIn("banner", tool_ids)
+            self.assertNotIn("whatweb-http", tool_ids)
+            self.assertNotIn("nikto", tool_ids)
+
+    def test_context_recent_failures_do_not_mark_tools_unavailable_without_explicit_missing_signals(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "deterministic",
+                "goal_profile": "internal_asset_discovery",
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[
+                    ["whatweb-http", "http", "tcp"],
+                    ["banner", "http", "tcp"],
+                ],
+                portActions=[
+                    ["WhatWeb", "whatweb-http", "whatweb http://[IP]:[PORT]", "http"],
+                    ["Banner", "banner", "LEGION_BANNER_TARGET=[IP] python3 -m app.banner_probe", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "context_summary": {
+                        "recent_failures": ["whatweb-http: command not found"],
+                    },
+                },
+            )
+
+            tool_ids = [item.tool_id for item in actions]
+            self.assertIn("whatweb-http", tool_ids)
+            self.assertIn("banner", tool_ids)
+
     def test_ai_mode_excludes_already_attempted_tools(self):
         from app.scheduler.config import SchedulerConfigManager
         from app.scheduler.planner import SchedulerPlanner
@@ -869,6 +988,262 @@ class SchedulerPlannerTest(unittest.TestCase):
             self.assertIn("Provider selected TLS posture validation.", actions[0].rationale)
             self.assertIn("tls_and_exposure", actions[0].rationale)
             self.assertEqual("missing_deep_tls_waf_checks", actions[0].coverage_gap)
+
+    @patch("app.scheduler.planner.select_web_followup_with_provider")
+    @patch("app.scheduler.planner.rank_actions_with_provider")
+    def test_ai_mode_web_followup_sidecar_boosts_selected_candidate_and_persists_payload(
+            self,
+            mock_rank_actions,
+            mock_sidecar,
+    ):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        mock_rank_actions.return_value = [
+            {"tool_id": "banner", "score": 78, "rationale": "Provider prefers a simple banner check."},
+            {"tool_id": "curl-headers", "score": 62, "rationale": "Lower initial confidence."},
+        ]
+        mock_sidecar.return_value = {
+            "focus": "tech_validation",
+            "selected_tool_ids": ["curl-headers"],
+            "reason": "Reflection posture favors bounded HTTP follow-up over another generic check.",
+            "manual_tests": [{"why": "Verify headers manually", "command": "curl -k -I https://10.0.0.5", "scope_note": "safe read-only"}],
+            "prompt_version": "scheduler-web-followup-v1",
+            "prompt_type": "web_followup",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-web-sidecar.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "provider": "openai",
+                "feature_flags": {
+                    "scheduler_web_followup_sidecar": True,
+                },
+                "providers": {
+                    "openai": {"enabled": True, "model": "gpt-5-mini", "api_key": "x"}
+                },
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["Banner", "banner", "echo | nc -v -n [IP] [PORT]", "http"],
+                    ["HTTP Headers", "curl-headers", "curl -k -I https://[IP]:[PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True},
+                    "coverage": {"missing": []},
+                    "context_summary": {
+                        "reflection_posture": {
+                            "state": "stalled",
+                            "priority_shift": "targeted_followup",
+                            "reason": "Repeated generic picks are no longer moving coverage.",
+                        }
+                    },
+                },
+                limit=2,
+            )
+
+            self.assertEqual("curl-headers", actions[0].tool_id)
+            self.assertGreater(actions[0].score, 78)
+            self.assertIn("Web follow-up specialist favored curl-headers", actions[0].rationale)
+            _, kwargs = mock_sidecar.call_args
+            self.assertEqual(["curl-headers"], [item["tool_id"] for item in kwargs["candidates"]])
+            payload = planner.get_last_provider_payload(clear=True)
+            self.assertEqual("curl-headers", payload["specialist_sidecars"][0]["selected_tool_ids"][0])
+            self.assertIn("curl -k -I", payload["manual_tests"][0]["command"])
+
+    @patch("app.scheduler.planner.select_web_followup_with_provider")
+    @patch("app.scheduler.planner.rank_actions_with_provider")
+    def test_ai_mode_skips_web_followup_sidecar_for_already_covered_broad_web_tools(
+            self,
+            mock_rank_actions,
+            mock_sidecar,
+    ):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        mock_rank_actions.return_value = [
+            {"tool_id": "banner", "score": 78, "rationale": "Provider prefers a simple banner check."},
+            {"tool_id": "whatweb", "score": 76, "rationale": "Re-run technology fingerprinting."},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-web-covered.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "provider": "openai",
+                "feature_flags": {
+                    "scheduler_web_followup_sidecar": True,
+                },
+                "providers": {
+                    "openai": {"enabled": True, "model": "gpt-5-mini", "api_key": "x"}
+                },
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["Banner", "banner", "echo | nc -v -n [IP] [PORT]", "http"],
+                    ["WhatWeb", "whatweb", "whatweb http://[IP]:[PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True},
+                    "coverage": {
+                        "missing": [],
+                        "has": {
+                            "whatweb": True,
+                            "nikto": True,
+                            "web_content_discovery": True,
+                        },
+                    },
+                    "context_summary": {
+                        "reflection_posture": {
+                            "state": "continue",
+                            "priority_shift": "targeted_followup",
+                            "reason": "Prefer bounded follow-up only if a concrete gap remains.",
+                        }
+                    },
+                },
+                limit=2,
+            )
+
+            self.assertEqual("banner", actions[0].tool_id)
+            mock_sidecar.assert_not_called()
+
+    def test_ai_mode_abstains_when_only_remaining_strict_gap_has_no_matching_candidates(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-abstain-gap.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "provider": "openai",
+                "engagement_policy": {"preset": "external_pentest"},
+                "providers": {
+                    "openai": {"enabled": True, "model": "gpt-5-mini", "api_key": "x"},
+                },
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["HTTP Headers", "curl-headers", "curl -I http://[IP]:[PORT]", "http"],
+                    ["Banner", "banner", "echo | nc -v -n [IP] [PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True},
+                    "coverage": {"missing": ["missing_nikto"]},
+                },
+                limit=3,
+            )
+
+            self.assertEqual([], actions)
+
+    @patch("app.scheduler.planner.rank_actions_with_provider")
+    def test_ai_mode_discards_provider_rankings_that_skip_visible_gap_closer(self, mock_rank_actions):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        mock_rank_actions.return_value = [
+            {"tool_id": "banner", "score": 99, "rationale": "Provider drifted toward a generic refresh."},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-gap-fallback.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "provider": "openai",
+                "engagement_policy": {"preset": "external_pentest"},
+                "providers": {
+                    "openai": {"enabled": True, "model": "gpt-5-mini", "api_key": "x"},
+                },
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[["screenshooter", "http", "tcp"]],
+                portActions=[
+                    ["Capture screenshot", "screenshooter", "screenshooter [WEB_URL]", "http"],
+                    ["Banner", "banner", "echo | nc -v -n [IP] [PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True},
+                    "coverage": {"missing": ["missing_screenshot"]},
+                },
+                limit=2,
+            )
+
+            self.assertTrue(actions)
+            self.assertEqual("screenshooter", actions[0].tool_id)
+
+    def test_ai_mode_reflection_suppression_filters_web_candidates(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai-reflection-suppress.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "provider": "none",
+            })
+            planner = SchedulerPlanner(manager)
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["HTTP Vulns", "nmap-vuln.nse", "nmap --script vuln [IP] -p [PORT]", "https-alt"],
+                    ["WAFW00F", "wafw00f", "wafw00f https://[IP]:[PORT]", "https-alt"],
+                    ["HTTP Headers", "curl-headers", "curl -k -I https://[IP]:[PORT]", "https-alt"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "https-alt",
+                "tcp",
+                settings,
+                context={
+                    "signals": {"web_service": True, "waf_detected": True},
+                    "coverage": {"missing": ["missing_nikto"]},
+                    "context_summary": {
+                        "reflection_posture": {
+                            "state": "continue",
+                            "priority_shift": "coverage_first",
+                            "reason": "Broad vuln coverage already ran; avoid repeating it.",
+                            "suppress_tool_ids": ["nmap-vuln.nse"],
+                        }
+                    },
+                },
+                limit=3,
+            )
+
+            tool_ids = [item.tool_id for item in actions]
+            self.assertNotIn("nmap-vuln.nse", tool_ids)
+            self.assertIn("curl-headers", tool_ids)
 
 
 if __name__ == "__main__":

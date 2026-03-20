@@ -1828,7 +1828,7 @@ td button {
 .legion-modal-overlay {
     position: fixed;
     inset: 0;
-    z-index: 40;
+    z-index: 70;
     display: none;
     align-items: center;
     justify-content: center;
@@ -2228,7 +2228,7 @@ td button {
 .startup-wizard-overlay {
     position: fixed;
     inset: 0;
-    z-index: 60;
+    z-index: 80;
     display: none;
     align-items: center;
     justify-content: center;

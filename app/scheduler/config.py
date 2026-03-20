@@ -15,11 +15,20 @@ from app.scheduler.runners import normalize_runner_settings
 DEFAULT_FEATURE_FLAGS = {
     "graph_workspace": True,
     "optional_runners": True,
+    "scheduler_prompt_profiles": True,
+    "scheduler_web_followup_sidecar": False,
 }
 DEFAULT_DISABLED_TOOL_IDS = [
     "http-drupal-modules.nse",
     "http-vuln-zimbra-lfi.nse",
 ]
+DEFAULT_TOOL_EXECUTION_PROFILES = {
+    "nikto": {
+        "quiet_long_running": True,
+        "activity_timeout_seconds": 1800,
+        "hard_timeout_seconds": 0,
+    }
+}
 
 
 def normalize_feature_flags(raw: Any) -> Dict[str, bool]:
@@ -41,6 +50,52 @@ def normalize_disabled_tool_ids(raw: Any) -> List[str]:
             continue
         seen.add(token)
         normalized.append(token)
+    return normalized
+
+
+def normalize_tool_execution_profiles(raw: Any) -> Dict[str, Dict[str, Any]]:
+    source = raw if isinstance(raw, dict) else {}
+    merged: Dict[str, Dict[str, Any]] = {
+        str(tool_id): dict(profile)
+        for tool_id, profile in DEFAULT_TOOL_EXECUTION_PROFILES.items()
+        if isinstance(profile, dict)
+    }
+    for tool_id, profile in source.items():
+        if not isinstance(profile, dict):
+            continue
+        token = str(tool_id or "").strip().lower()
+        if not token:
+            continue
+        current = dict(merged.get(token, {}))
+        current.update(profile)
+        merged[token] = current
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for tool_id, profile in merged.items():
+        token = str(tool_id or "").strip().lower()
+        if not token:
+            continue
+        quiet_long_running = bool(profile.get("quiet_long_running", False))
+        try:
+            activity_timeout = int(profile.get("activity_timeout_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            activity_timeout = 0
+        try:
+            hard_timeout = int(profile.get("hard_timeout_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            hard_timeout = 0
+
+        if quiet_long_running:
+            activity_timeout = max(30, min(activity_timeout or 1800, 86400))
+        else:
+            activity_timeout = 0
+        hard_timeout = max(0, min(hard_timeout, 172800))
+
+        normalized[token] = {
+            "quiet_long_running": quiet_long_running,
+            "activity_timeout_seconds": int(activity_timeout),
+            "hard_timeout_seconds": int(hard_timeout),
+        }
     return normalized
 
 
@@ -66,6 +121,7 @@ DEFAULT_SCHEDULER_CONFIG = {
             "base_url": "https://api.openai.com/v1",
             "model": "gpt-4.1-mini",
             "api_key": "",
+            "structured_outputs": False,
         },
         "claude": {
             "enabled": False,
@@ -79,6 +135,7 @@ DEFAULT_SCHEDULER_CONFIG = {
     ),
     "feature_flags": normalize_feature_flags({}),
     "disabled_tool_ids": normalize_disabled_tool_ids(DEFAULT_DISABLED_TOOL_IDS),
+    "tool_execution_profiles": normalize_tool_execution_profiles(DEFAULT_TOOL_EXECUTION_PROFILES),
     "dangerous_categories": [
         "exploit_execution",
         "credential_bruteforce",
@@ -91,6 +148,10 @@ DEFAULT_SCHEDULER_CONFIG = {
         "max_rounds_per_target": 5,
         "max_actions_per_round": 6,
         "recent_output_chars": 900,
+        "reflection_enabled": True,
+        "stall_rounds_without_progress": 2,
+        "stall_repeat_selection_threshold": 2,
+        "max_reflections_per_target": 1,
     },
     "runners": normalize_runner_settings({}),
     "project_report_delivery": {
@@ -181,6 +242,16 @@ class SchedulerConfigManager:
                         continue
                     feature_flags[flag_name] = bool(flag_value)
                 merged["feature_flags"] = feature_flags
+            elif key == "tool_execution_profiles" and isinstance(value, dict):
+                profiles = normalize_tool_execution_profiles(merged.get("tool_execution_profiles", {}))
+                for tool_id, profile in value.items():
+                    token = str(tool_id or "").strip().lower()
+                    if not token or not isinstance(profile, dict):
+                        continue
+                    merged_profile = dict(profiles.get(token, {}))
+                    merged_profile.update(profile)
+                    profiles[token] = merged_profile
+                merged["tool_execution_profiles"] = normalize_tool_execution_profiles(profiles)
             elif key == "engagement_policy" and isinstance(value, dict):
                 policy = dict(merged.get("engagement_policy", {}))
                 for policy_key, policy_value in value.items():
@@ -382,12 +453,16 @@ class SchedulerConfigManager:
             model_value = str(openai_provider.get("model", "")).strip()
             if not model_value:
                 openai_provider["model"] = str(DEFAULT_SCHEDULER_CONFIG["providers"]["openai"]["model"])
+            openai_provider["structured_outputs"] = bool(openai_provider.get("structured_outputs", False))
             providers["openai"] = openai_provider
         config["providers"] = providers
         config["feature_flags"] = normalize_feature_flags(raw.get("feature_flags", config.get("feature_flags", {})))
         config["runners"] = normalize_runner_settings(raw.get("runners", config.get("runners", {})))
         config["disabled_tool_ids"] = normalize_disabled_tool_ids(
             raw.get("disabled_tool_ids", config.get("disabled_tool_ids", DEFAULT_DISABLED_TOOL_IDS))
+        )
+        config["tool_execution_profiles"] = normalize_tool_execution_profiles(
+            raw.get("tool_execution_profiles", config.get("tool_execution_profiles", DEFAULT_TOOL_EXECUTION_PROFILES))
         )
 
         dangerous_categories = raw.get("dangerous_categories", config["dangerous_categories"])
@@ -432,8 +507,19 @@ class SchedulerConfigManager:
             "max_rounds_per_target": 4,
             "max_actions_per_round": 2,
             "recent_output_chars": 900,
+            "reflection_enabled": bool(feedback_defaults.get("reflection_enabled", True)),
+            "stall_rounds_without_progress": 2,
+            "stall_repeat_selection_threshold": 2,
+            "max_reflections_per_target": 1,
         }
-        for key in ("max_rounds_per_target", "max_actions_per_round", "recent_output_chars"):
+        for key in (
+                "max_rounds_per_target",
+                "max_actions_per_round",
+                "recent_output_chars",
+                "stall_rounds_without_progress",
+                "stall_repeat_selection_threshold",
+                "max_reflections_per_target",
+        ):
             try:
                 feedback[key] = int(feedback_defaults.get(key, feedback[key]))
             except (TypeError, ValueError):
@@ -441,6 +527,9 @@ class SchedulerConfigManager:
         feedback["max_rounds_per_target"] = max(1, min(int(feedback["max_rounds_per_target"]), 12))
         feedback["max_actions_per_round"] = max(1, min(int(feedback["max_actions_per_round"]), 8))
         feedback["recent_output_chars"] = max(320, min(int(feedback["recent_output_chars"]), 4000))
+        feedback["stall_rounds_without_progress"] = max(1, min(int(feedback["stall_rounds_without_progress"]), 6))
+        feedback["stall_repeat_selection_threshold"] = max(1, min(int(feedback["stall_repeat_selection_threshold"]), 8))
+        feedback["max_reflections_per_target"] = max(0, min(int(feedback["max_reflections_per_target"]), 4))
         config["ai_feedback"] = feedback
 
         delivery_defaults = dict(DEFAULT_SCHEDULER_CONFIG["project_report_delivery"])

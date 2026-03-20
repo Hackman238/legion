@@ -25,6 +25,17 @@ web_bp = Blueprint("web", __name__)
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
 
+@web_bp.after_request
+def disable_cache_for_api_responses(response):
+    path = str(getattr(request, "path", "") or "").strip()
+    if not path.startswith("/api/"):
+        return response
+    response.headers["Cache-Control"] = "no-store, max-age=0, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 def _as_bool(value, default=False):
     if value is None:
         return bool(default)
@@ -1469,6 +1480,7 @@ def scheduler_preferences_update():
         "mode",
         "goal_profile",
         "engagement_policy",
+        "ai_feedback",
         "feature_flags",
         "provider",
         "max_concurrency",
@@ -1549,6 +1561,9 @@ def scheduler_provider_logs():
                 lines.append(f"status: {status}")
             if row.get("api_style"):
                 lines.append(f"api_style: {row.get('api_style')}")
+            prompt_metadata = row.get("prompt_metadata", {})
+            if isinstance(prompt_metadata, dict) and prompt_metadata:
+                lines.append(f"prompt metadata: {json.dumps(prompt_metadata, ensure_ascii=False)}")
             lines.append(f"request headers: {json.dumps(row.get('request_headers', {}), ensure_ascii=False)}")
             lines.append(f"request body: {row.get('request_body', '')}")
             lines.append(f"response body: {row.get('response_body', '')}")

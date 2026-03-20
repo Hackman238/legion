@@ -11,13 +11,15 @@ import signal
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import zipfile
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+import psutil
 from sqlalchemy import text
 
 from app.cli_utils import import_targets_from_textfile, is_wsl, to_windows_path
@@ -100,9 +102,18 @@ from app.scheduler.scan_history import (
     record_scan_submission,
     update_scan_submission,
 )
-from app.scheduler.config import SchedulerConfigManager
+from app.scheduler.config import (
+    DEFAULT_TOOL_EXECUTION_PROFILES,
+    SchedulerConfigManager,
+    normalize_tool_execution_profiles,
+)
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
-from app.scheduler.providers import get_provider_logs, test_provider_connection
+from app.scheduler.providers import (
+    determine_scheduler_phase,
+    get_provider_logs,
+    reflect_on_scheduler_progress,
+    test_provider_connection,
+)
 from app.scheduler.reporting import (
     build_host_report,
     build_project_report,
@@ -167,6 +178,7 @@ _CPE22_TOKEN_RE = re.compile(r"\bcpe:/[aho]:[a-z0-9._:-]+\b", flags=re.IGNORECAS
 _CPE23_TOKEN_RE = re.compile(r"\bcpe:2\.3:[aho]:[a-z0-9._:-]+\b", flags=re.IGNORECASE)
 _CVE_TOKEN_RE = re.compile(r"\bcve-\d{4}-\d+\b", flags=re.IGNORECASE)
 _TECH_VERSION_RE = re.compile(r"\b(\d+(?:[._-][0-9a-z]+){0,4})\b", flags=re.IGNORECASE)
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _IPV4_LIKE_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _TECH_CPE_HINTS = (
     (("jetty",), "Jetty", "cpe:/a:eclipse:jetty"),
@@ -219,6 +231,21 @@ _TECH_STRONG_EVIDENCE_MARKERS = (
     "output cpe",
     "server header",
 )
+_PSEUDO_TECH_NAME_TOKENS = {
+    "cache-control",
+    "content-language",
+    "content-security-policy",
+    "content-type",
+    "etag",
+    "referrer-policy",
+    "strict-transport-security",
+    "uncommonheaders",
+    "vary",
+    "x-content-type-options",
+    "x-frame-options",
+    "x-powered-by",
+    "x-xss-protection",
+}
 _GENERIC_TECH_NAME_TOKENS = {
     "unknown",
     "generic",
@@ -246,6 +273,10 @@ _DEFAULT_AI_FEEDBACK_CONFIG = {
     "max_rounds_per_target": 5,
     "max_actions_per_round": 6,
     "recent_output_chars": 900,
+    "reflection_enabled": True,
+    "stall_rounds_without_progress": 2,
+    "stall_repeat_selection_threshold": 2,
+    "max_reflections_per_target": 1,
 }
 _DIG_DEEPER_MAX_RUNTIME_SECONDS = 900
 _DIG_DEEPER_MAX_TOTAL_ACTIONS = 24
@@ -259,7 +290,9 @@ def _get_requests_module():
     try:
         import requests as requests_module
     except Exception as exc:  # pragma: no cover - depends on local environment packaging
-        raise RuntimeError(f"requests dependency unavailable: {exc}") from exc
+        raise RuntimeError(
+            f"requests dependency unavailable under {sys.executable} ({sys.version.split()[0]}): {exc}"
+        ) from exc
     return requests_module
 
 
@@ -713,6 +746,10 @@ class WebRuntime:
             scheduler_prefs = self.scheduler_config.load()
             engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
             settings = self._get_settings()
+            goal_profile = str(
+                engagement_policy.get("legacy_goal_profile", scheduler_prefs.get("goal_profile", "internal_asset_discovery"))
+                or "internal_asset_discovery"
+            )
             targets = self.scheduler_orchestrator.collect_project_targets(
                 project,
                 host_ids={int(host_id)} if int(host_id or 0) > 0 else None,
@@ -762,6 +799,7 @@ class WebRuntime:
                 port=str(target.port or ""),
                 protocol=str(target.protocol or "tcp"),
                 service_name=str(target.service_name or ""),
+                goal_profile=goal_profile,
                 attempted_tool_ids=set(attempted_tool_ids),
                 attempted_family_ids=set(attempted_summary["family_ids"]),
                 attempted_command_signatures=set(attempted_summary["command_signatures"]),
@@ -1486,6 +1524,37 @@ class WebRuntime:
             "supported_platforms": ["kali", "ubuntu"],
             "recommended_platform": detect_supported_tool_install_platform(),
         }
+
+    @staticmethod
+    def _tool_audit_availability(entries: Any) -> Dict[str, List[str]]:
+        available = set()
+        unavailable = set()
+        for item in list(entries or []):
+            status = ""
+            key = ""
+            if isinstance(item, dict):
+                key = str(item.get("key", "") or "").strip().lower()
+                status = str(item.get("status", "") or "").strip().lower()
+            else:
+                key = str(getattr(item, "key", "") or "").strip().lower()
+                status = str(getattr(item, "status", "") or "").strip().lower()
+            if not key:
+                continue
+            if status == "installed":
+                available.add(key)
+            elif status in {"missing", "configured-missing"}:
+                unavailable.add(key)
+        unavailable.difference_update(available)
+        return {
+            "available_tool_ids": sorted(available),
+            "unavailable_tool_ids": sorted(unavailable),
+        }
+
+    def _scheduler_tool_audit_snapshot(self) -> Dict[str, List[str]]:
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            settings = Settings(AppSettings())
+        return self._tool_audit_availability(audit_legion_tools(settings))
 
     def get_tool_install_plan(
             self,
@@ -4648,6 +4717,7 @@ class WebRuntime:
                 port=str(target.port or ""),
                 protocol=str(target.protocol or "tcp"),
                 service_name=str(target.service_name or ""),
+                goal_profile=goal_profile,
                 attempted_tool_ids=set(attempted_tool_ids or set()),
                 attempted_family_ids=set(attempted_family_ids or set()),
                 attempted_command_signatures=set(attempted_command_signatures or set()),
@@ -4664,6 +4734,28 @@ class WebRuntime:
                 service_name=str(target.service_name or ""),
                 goal_profile=goal_profile,
                 provider_payload=provider_payload,
+            )
+
+        def _reflect_progress(*, target, context, recent_rounds):
+            return reflect_on_scheduler_progress(
+                scheduler_prefs,
+                goal_profile,
+                str(target.service_name or ""),
+                str(target.protocol or "tcp"),
+                context=context,
+                recent_rounds=recent_rounds,
+            )
+
+        def _on_reflection_analysis(*, target, reflection_payload, recent_rounds):
+            _ = recent_rounds
+            self._persist_scheduler_reflection_analysis(
+                host_id=int(target.host_id or 0),
+                host_ip=str(target.host_ip or ""),
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service_name=str(target.service_name or ""),
+                goal_profile=goal_profile,
+                reflection_payload=reflection_payload,
             )
 
         def _handle_blocked(*, target, decision, command_template):
@@ -4873,6 +4965,8 @@ class WebRuntime:
             existing_attempts=_existing_attempts,
             build_context=_build_context,
             on_ai_analysis=_on_ai_analysis,
+            reflect_progress=_reflect_progress,
+            on_reflection_analysis=_on_reflection_analysis,
             handle_blocked=_handle_blocked,
             handle_approval=_handle_approval,
             execute_batch=_execute_batch,
@@ -5027,15 +5121,26 @@ class WebRuntime:
         if "enabled" in source:
             merged["enabled"] = bool(source.get("enabled"))
 
-        for key in ("max_rounds_per_target", "max_actions_per_round", "recent_output_chars"):
+        for key in (
+                "max_rounds_per_target",
+                "max_actions_per_round",
+                "recent_output_chars",
+                "stall_rounds_without_progress",
+                "stall_repeat_selection_threshold",
+                "max_reflections_per_target",
+        ):
             try:
                 merged[key] = int(source.get(key, merged[key]))
             except (TypeError, ValueError):
                 continue
 
+        merged["reflection_enabled"] = bool(source.get("reflection_enabled", merged.get("reflection_enabled", True)))
         merged["max_rounds_per_target"] = max(1, min(int(merged["max_rounds_per_target"]), 12))
         merged["max_actions_per_round"] = max(1, min(int(merged["max_actions_per_round"]), 8))
         merged["recent_output_chars"] = max(320, min(int(merged["recent_output_chars"]), 4000))
+        merged["stall_rounds_without_progress"] = max(1, min(int(merged["stall_rounds_without_progress"]), 6))
+        merged["stall_repeat_selection_threshold"] = max(1, min(int(merged["stall_repeat_selection_threshold"]), 8))
+        merged["max_reflections_per_target"] = max(0, min(int(merged["max_reflections_per_target"]), 4))
         return merged
 
     def _existing_attempt_summary_for_target(self, host_id: int, host_ip: str, port: str, protocol: str) -> Dict[str, set]:
@@ -5150,6 +5255,7 @@ class WebRuntime:
             port: str,
             protocol: str,
             service_name: str,
+            goal_profile: str = "internal_asset_discovery",
             attempted_tool_ids: set,
             attempted_family_ids: Optional[set] = None,
             attempted_command_signatures: Optional[set] = None,
@@ -5401,6 +5507,7 @@ class WebRuntime:
             recent_processes=recent_processes,
             target=target_data,
         )
+        tool_audit = self._scheduler_tool_audit_snapshot()
 
         ai_state = self._load_host_ai_analysis(project, int(host_id or 0), str(host_ip or ""))
         ai_context_state = {}
@@ -5476,6 +5583,23 @@ class WebRuntime:
                 "findings": ai_findings,
                 "manual_tests": ai_manual_tests,
             }
+            reflection = ai_state.get("reflection", {}) if isinstance(ai_state.get("reflection", {}), dict) else {}
+            if reflection:
+                ai_context_state["reflection"] = {
+                    "state": str(reflection.get("state", "") or "")[:24],
+                    "priority_shift": str(reflection.get("priority_shift", "") or "")[:64],
+                    "reason": self._truncate_scheduler_text(reflection.get("reason", ""), 220),
+                    "promote_tool_ids": [
+                        str(item or "").strip().lower()[:80]
+                        for item in list(reflection.get("promote_tool_ids", []) or [])[:8]
+                        if str(item or "").strip()
+                    ],
+                    "suppress_tool_ids": [
+                        str(item or "").strip().lower()[:80]
+                        for item in list(reflection.get("suppress_tool_ids", []) or [])[:8]
+                        if str(item or "").strip()
+                    ],
+                }
 
             ai_observed_tech = [
                 str(item.get("name", "")).strip().lower()
@@ -5574,6 +5698,35 @@ class WebRuntime:
             inferred_technologies=inferred_technologies,
             analysis_mode=analysis_mode,
         )
+        current_phase = determine_scheduler_phase(
+            goal_profile=str(goal_profile or "internal_asset_discovery"),
+            service=str(target_data.get("service", "") or service_name or ""),
+            context={
+                "analysis_mode": str(analysis_mode or "standard"),
+                "signals": signals,
+                "coverage": coverage,
+                "attempted_tool_ids": sorted(
+                    {str(item).strip().lower() for item in attempted_tool_ids if str(item).strip()}
+                ),
+            },
+        )
+        context_summary = self._build_scheduler_context_summary(
+            target=target_data,
+            analysis_mode=str(analysis_mode or "standard"),
+            coverage=coverage,
+            signals=signals,
+            current_phase=current_phase,
+            attempted_tool_ids=attempted_tool_ids,
+            summary_technologies=(
+                ai_context_state.get("technologies", [])
+                if isinstance(ai_context_state.get("technologies", []), list) and ai_context_state.get("technologies", [])
+                else inferred_technologies
+            ),
+            host_cves=host_cves,
+            host_ai_state=ai_context_state,
+            recent_processes=recent_processes,
+            target_recent_processes=target_recent_processes,
+        )
         self._persist_shared_target_state(
             host_id=int(host_id or 0),
             host_ip=str(host_ip or ""),
@@ -5592,6 +5745,7 @@ class WebRuntime:
         return {
             "target": target_data,
             "signals": signals,
+            "tool_audit": tool_audit,
             "attempted_tool_ids": sorted({str(item).strip().lower() for item in attempted_tool_ids if str(item).strip()}),
             "attempted_family_ids": sorted({str(item).strip().lower() for item in list(attempted_family_ids or set()) if str(item).strip()}),
             "attempted_command_signatures": sorted({str(item).strip().lower() for item in list(attempted_command_signatures or set()) if str(item).strip()}),
@@ -5604,8 +5758,237 @@ class WebRuntime:
             "host_cves": host_cves,
             "coverage": coverage,
             "analysis_mode": str(analysis_mode or "standard").strip().lower() or "standard",
+            "context_summary": context_summary,
             "host_ai_state": ai_context_state,
         }
+
+    @staticmethod
+    def _build_scheduler_context_summary(
+            *,
+            target: Optional[Dict[str, Any]],
+            analysis_mode: str,
+            coverage: Optional[Dict[str, Any]],
+            signals: Optional[Dict[str, Any]],
+            current_phase: str = "",
+            attempted_tool_ids: Any,
+            summary_technologies: Optional[List[Dict[str, Any]]] = None,
+            host_cves: Optional[List[Dict[str, Any]]] = None,
+            host_ai_state: Optional[Dict[str, Any]] = None,
+            recent_processes: Optional[List[Dict[str, Any]]] = None,
+            target_recent_processes: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        target_payload = target if isinstance(target, dict) else {}
+        coverage_payload = coverage if isinstance(coverage, dict) else {}
+        signals_payload = signals if isinstance(signals, dict) else {}
+        ai_payload = host_ai_state if isinstance(host_ai_state, dict) else {}
+        technology_rows = summary_technologies if isinstance(summary_technologies, list) else []
+        host_cve_rows = host_cves if isinstance(host_cves, list) else []
+        all_recent_processes = recent_processes if isinstance(recent_processes, list) else []
+        scoped_recent_processes = target_recent_processes if isinstance(target_recent_processes, list) else []
+
+        def _unique_strings(values: Any, *, limit: int, max_chars: int, lowercase: bool = False) -> List[str]:
+            rows: List[str] = []
+            seen = set()
+            for item in list(values or []):
+                token = WebRuntime._truncate_scheduler_text(item, max_chars)
+                if lowercase:
+                    token = token.lower()
+                if not token:
+                    continue
+                key = token.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(token)
+                if len(rows) >= int(limit):
+                    break
+            return rows
+
+        focus = {}
+        analysis_mode_value = str(analysis_mode or coverage_payload.get("analysis_mode", "") or "").strip().lower()
+        if analysis_mode_value:
+            focus["analysis_mode"] = analysis_mode_value[:24]
+        service_value = str(target_payload.get("service", "") or "").strip()
+        if service_value:
+            focus["service"] = service_value[:64]
+        service_product = str(target_payload.get("service_product", "") or "").strip()
+        if service_product:
+            focus["service_product"] = service_product[:120]
+        service_version = str(target_payload.get("service_version", "") or "").strip()
+        if service_version:
+            focus["service_version"] = service_version[:80]
+        coverage_stage = str(coverage_payload.get("stage", "") or "").strip().lower()
+        if coverage_stage:
+            focus["coverage_stage"] = coverage_stage[:32]
+        current_phase_value = str(current_phase or ai_payload.get("next_phase", "") or "").strip().lower()
+        if current_phase_value:
+            focus["current_phase"] = current_phase_value[:64]
+
+        coverage_missing = _unique_strings(
+            coverage_payload.get("missing", []),
+            limit=8,
+            max_chars=64,
+            lowercase=True,
+        )
+        recommended_tools = _unique_strings(
+            coverage_payload.get("recommended_tool_ids", []),
+            limit=8,
+            max_chars=80,
+            lowercase=True,
+        )
+
+        active_signals = []
+        for key, value in sorted(signals_payload.items(), key=lambda item: str(item[0] or "").lower()):
+            if isinstance(value, bool) and value:
+                active_signals.append(str(key or "").strip().lower()[:48])
+            if len(active_signals) >= 10:
+                break
+
+        technology_labels = []
+        for item in technology_rows[:16]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "") or "").strip()
+            version = str(item.get("version", "") or "").strip()
+            cpe = str(item.get("cpe", "") or "").strip()
+            label = " ".join(part for part in [name, version] if part).strip() or cpe
+            label = WebRuntime._truncate_scheduler_text(label, 96)
+            if label:
+                technology_labels.append(label)
+        known_technologies = _unique_strings(technology_labels, limit=8, max_chars=96)
+
+        finding_labels = []
+        ai_findings = ai_payload.get("findings", []) if isinstance(ai_payload.get("findings", []), list) else []
+        sorted_findings = sorted(
+            [item for item in ai_findings if isinstance(item, dict)],
+            key=lambda row: WebRuntime._finding_sort_key(row),
+            reverse=True,
+        )
+        for item in sorted_findings[:10]:
+            title = str(item.get("title", "") or item.get("cve", "") or "").strip()
+            severity = str(item.get("severity", "") or "").strip().lower()
+            label = title
+            if severity:
+                label = f"{label} [{severity}]".strip()
+            label = WebRuntime._truncate_scheduler_text(label, 120)
+            if label:
+                finding_labels.append(label)
+        for item in host_cve_rows[:8]:
+            if not isinstance(item, dict):
+                continue
+            cve_name = str(item.get("name", "") or "").strip()
+            severity = str(item.get("severity", "") or "").strip().lower()
+            label = cve_name or str(item.get("product", "") or "").strip()
+            if severity and label:
+                label = f"{label} [{severity}]"
+            label = WebRuntime._truncate_scheduler_text(label, 120)
+            if label:
+                finding_labels.append(label)
+        top_findings = _unique_strings(finding_labels, limit=8, max_chars=120)
+
+        attempted_values = sorted({
+            str(item or "").strip().lower()
+            for item in list(attempted_tool_ids or set())
+            if str(item or "").strip()
+        })
+        recent_attempts = _unique_strings(attempted_values, limit=10, max_chars=80, lowercase=True)
+
+        def _failure_labels(process_rows: List[Dict[str, Any]]) -> List[str]:
+            rows = []
+            for item in process_rows[:32]:
+                if not isinstance(item, dict):
+                    continue
+                tool_id = str(item.get("tool_id", "") or "").strip().lower()
+                status = str(item.get("status", "") or "").strip().lower()
+                output_excerpt = str(item.get("output_excerpt", "") or "").strip().lower()
+                failure_reason = ""
+                if any(token in status for token in ["crash", "fail", "error", "timeout", "cancel", "kill", "missing"]):
+                    failure_reason = status
+                else:
+                    unavailable_tokens = WebRuntime._extract_unavailable_tool_tokens(output_excerpt)
+                    if unavailable_tokens and (
+                            not tool_id
+                            or bool(unavailable_tokens & WebRuntime._scheduler_tool_alias_tokens(tool_id))
+                    ):
+                        failure_reason = "command not found"
+                if not failure_reason and "no such file" in output_excerpt:
+                    failure_reason = "missing file"
+                elif not failure_reason and ("traceback" in output_excerpt or "exception" in output_excerpt):
+                    failure_reason = "exception"
+                if not failure_reason:
+                    continue
+                label = ": ".join(part for part in [tool_id[:80], failure_reason[:80]] if part)
+                if label:
+                    rows.append(label)
+            return rows
+
+        recent_failures = _unique_strings(
+            _failure_labels(scoped_recent_processes) + _failure_labels(all_recent_processes),
+            limit=6,
+            max_chars=120,
+            lowercase=True,
+        )
+
+        manual_tests = []
+        for item in list(ai_payload.get("manual_tests", []) or [])[:6]:
+            if not isinstance(item, dict):
+                continue
+            command = WebRuntime._truncate_scheduler_text(item.get("command", ""), 140)
+            if command:
+                manual_tests.append(command)
+        manual_tests = _unique_strings(manual_tests, limit=4, max_chars=140)
+
+        reflection_posture = {}
+        reflection = ai_payload.get("reflection", {}) if isinstance(ai_payload.get("reflection", {}), dict) else {}
+        if reflection:
+            reflection_state = str(reflection.get("state", "") or "").strip().lower()
+            if reflection_state:
+                reflection_posture["state"] = reflection_state[:24]
+            priority_shift = str(reflection.get("priority_shift", "") or "").strip().lower()
+            if priority_shift:
+                reflection_posture["priority_shift"] = priority_shift[:64]
+            reason = WebRuntime._truncate_scheduler_text(reflection.get("reason", ""), 180)
+            if reason:
+                reflection_posture["reason"] = reason
+            suppress_tool_ids = _unique_strings(
+                reflection.get("suppress_tool_ids", []),
+                limit=6,
+                max_chars=80,
+                lowercase=True,
+            )
+            if suppress_tool_ids:
+                reflection_posture["suppress_tool_ids"] = suppress_tool_ids
+            promote_tool_ids = _unique_strings(
+                reflection.get("promote_tool_ids", []),
+                limit=6,
+                max_chars=80,
+                lowercase=True,
+            )
+            if promote_tool_ids:
+                reflection_posture["promote_tool_ids"] = promote_tool_ids
+
+        summary = {}
+        if focus:
+            summary["focus"] = focus
+        if coverage_missing:
+            summary["coverage_missing"] = coverage_missing
+        if recommended_tools:
+            summary["recommended_tools"] = recommended_tools
+        if active_signals:
+            summary["active_signals"] = active_signals
+        if known_technologies:
+            summary["known_technologies"] = known_technologies
+        if top_findings:
+            summary["top_findings"] = top_findings
+        if recent_attempts:
+            summary["recent_attempts"] = recent_attempts
+        if recent_failures:
+            summary["recent_failures"] = recent_failures
+        if manual_tests:
+            summary["manual_tests"] = manual_tests
+        if reflection_posture:
+            summary["reflection_posture"] = reflection_posture
+        return summary
 
     @staticmethod
     def _build_scheduler_coverage_summary(
@@ -5825,6 +6208,38 @@ class WebRuntime:
             return text_value
         return text_value[:int(max_chars)].rstrip() + "...[truncated]"
 
+    @staticmethod
+    def _scheduler_tool_alias_tokens(tool_id: Any) -> Set[str]:
+        token = str(tool_id or "").strip().lower()
+        if not token:
+            return set()
+        aliases = {token}
+        if token in {"whatweb", "whatweb-http", "whatweb-https"}:
+            aliases.update({"whatweb", "whatweb-http", "whatweb-https"})
+        elif token.endswith(".nse"):
+            aliases.add("nmap")
+        return aliases
+
+    @staticmethod
+    def _extract_unavailable_tool_tokens(text: Any) -> Set[str]:
+        normalized = str(text or "").replace("\r", "\n").strip().lower()
+        if not normalized:
+            return set()
+
+        found = set()
+        patterns = (
+            r"(?:^|\n)\s*(?:/bin/sh|bash|zsh|sh|fish):\s*([a-z][a-z0-9._+-]*):\s*(?:command not found|not found)(?:\s|$)",
+            r"(?:^|\n)\s*([a-z][a-z0-9._+-]*):\s*(?:command not found|not found)(?:\s|$)",
+            r"(?:^|\n)\s*([a-z][a-z0-9._+-]*)\s+command not found(?:\s|$)",
+            r"(?:^|\n)\s*([a-z][a-z0-9._+-]*)\s+not found(?:\s|$)",
+        )
+        for pattern in patterns:
+            for match in re.findall(pattern, normalized):
+                token = str(match or "").strip().lower()
+                if token:
+                    found.add(token[:48])
+        return found
+
     def _extract_scheduler_signals(
             self,
             *,
@@ -5847,34 +6262,80 @@ class WebRuntime:
             " ".join(str(item or "") for item in target_meta.get("host_banners", []) if str(item or "").strip()),
         ]).lower()
         script_blob = "\n".join(
-            f"{str(item.get('script_id', '')).strip()} {str(item.get('excerpt', '')).strip()}"
+            " ".join([
+                str(item.get("script_id", "")).strip(),
+                self._observation_text_for_analysis(
+                    item.get("script_id", ""),
+                    item.get("excerpt", ""),
+                ),
+            ]).strip()
             for item in scripts
         ).lower()
         process_blob = "\n".join(
-            f"{str(item.get('tool_id', '')).strip()} {str(item.get('status', '')).strip()} "
-            f"{str(item.get('output_excerpt', '')).strip()}"
+            " ".join([
+                str(item.get("tool_id", "")).strip(),
+                str(item.get("status", "")).strip(),
+                self._observation_text_for_analysis(
+                    item.get("tool_id", ""),
+                    item.get("output_excerpt", ""),
+                ),
+            ]).strip()
             for item in recent_processes
         ).lower()
+        signal_evidence_blob = "\n".join(
+            text
+            for text in (
+                str(service_name or "").strip().lower(),
+                target_blob,
+                "\n".join(
+                    self._observation_text_for_analysis(
+                        item.get("script_id", ""),
+                        item.get("excerpt", ""),
+                    )
+                    for item in scripts
+                    if isinstance(item, dict)
+                ).lower(),
+                "\n".join(
+                    self._observation_text_for_analysis(
+                        item.get("tool_id", ""),
+                        item.get("output_excerpt", ""),
+                    )
+                    for item in recent_processes
+                    if isinstance(item, dict)
+                ).lower(),
+            )
+            if str(text or "").strip()
+        )
         combined = f"{target_blob}\n{script_blob}\n{process_blob}"
 
         missing_tools = set()
-        for match in re.findall(r"\b([a-z0-9._+-]+)\s+(?:not found|command not found)\b", combined):
-            token = str(match or "").strip().lower()
-            if token and len(token) <= 48:
-                missing_tools.add(token)
-        for match in re.findall(r"(?:/bin/sh:\s*)?([a-z0-9._+-]+):\s*(?:not found|command not found)", combined):
-            token = str(match or "").strip().lower()
-            if token and len(token) <= 48:
-                missing_tools.add(token)
+        missing_tools.update(self._extract_unavailable_tool_tokens(target_blob))
+        missing_tools.update(self._extract_unavailable_tool_tokens(script_blob))
+        for item in recent_processes:
+            if not isinstance(item, dict):
+                continue
+            tool_tokens = self._scheduler_tool_alias_tokens(item.get("tool_id", ""))
+            detected = self._extract_unavailable_tool_tokens(
+                "\n".join([
+                    str(item.get("status", "") or ""),
+                    str(item.get("output_excerpt", "") or ""),
+                ])
+            )
+            if not detected:
+                continue
+            if tool_tokens and detected & tool_tokens:
+                missing_tools.update(tool_tokens)
+            else:
+                missing_tools.update(detected)
 
-        cve_hits = set(re.findall(r"\bcve-\d{4}-\d+\b", combined))
+        cve_hits = set(re.findall(r"\bcve-\d{4}-\d+\b", signal_evidence_blob))
         allow_blob = ""
-        allow_match = re.search(r"allow:\s*([^\n]+)", combined)
+        allow_match = re.search(r"allow:\s*([^\n]+)", signal_evidence_blob)
         if allow_match:
             allow_blob = str(allow_match.group(1) or "").lower()
         webdav_via_allow = any(token in allow_blob for token in ["propfind", "proppatch", "mkcol", "copy", "move"])
 
-        iis_detected = any(token in combined for token in [
+        iis_detected = any(token in signal_evidence_blob for token in [
             "microsoft-iis",
             " iis ",
             "iis/7",
@@ -5882,14 +6343,18 @@ class WebRuntime:
             "iis/10",
         ])
         webdav_detected = (
-            "webdav" in combined
+            "webdav" in signal_evidence_blob
             or webdav_via_allow
-            or ("dav" in combined and ("propfind" in combined or "proppatch" in combined))
+            or ("dav" in signal_evidence_blob and ("propfind" in signal_evidence_blob or "proppatch" in signal_evidence_blob))
         )
-        vmware_detected = any(token in combined for token in ["vmware", "vsphere", "vcenter", "esxi"])
-        coldfusion_detected = any(token in combined for token in ["coldfusion", "cfusion", "adobe coldfusion", "jrun"])
-        huawei_detected = any(token in combined for token in ["huawei", "hg5x", "hgw"])
-        ubiquiti_detected = any(token in combined for token in ["ubiquiti", "unifi", "dream machine", "udm"])
+        vmware_detected = any(token in signal_evidence_blob for token in ["vmware", "vsphere", "vcenter", "esxi"])
+        coldfusion_detected = any(token in signal_evidence_blob for token in ["coldfusion", "cfusion", "adobe coldfusion", "jrun"])
+        huawei_detected = any(token in signal_evidence_blob for token in ["huawei", "hg5x", "hgw"])
+        ubiquiti_detected = any(token in signal_evidence_blob for token in ["ubiquiti", "unifi", "dream machine", "udm"])
+        wordpress_detected = any(
+            token in signal_evidence_blob
+            for token in ["wordpress", "wp-content", "wp-includes", "wp-json", "/wp-admin", "xmlrpc.php"]
+        )
 
         observed_technologies = []
         for marker, present in (
@@ -5899,9 +6364,9 @@ class WebRuntime:
                 ("coldfusion", coldfusion_detected),
                 ("huawei", huawei_detected),
                 ("ubiquiti", ubiquiti_detected),
-                ("wordpress", "wordpress" in combined or "wp-content" in combined),
-                ("nginx", "nginx" in combined),
-                ("apache", "apache" in combined),
+                ("wordpress", wordpress_detected),
+                ("nginx", "nginx" in signal_evidence_blob),
+                ("apache", "apache" in signal_evidence_blob),
         ):
             if present:
                 observed_technologies.append(marker)
@@ -5910,17 +6375,17 @@ class WebRuntime:
             "web_service": service_lower in SchedulerPlanner.WEB_SERVICE_IDS,
             "rdp_service": service_lower in {"rdp", "ms-wbt-server", "vmrdp"},
             "vnc_service": service_lower in {"vnc", "vnc-http", "rfb"},
-            "tls_detected": any(token in combined for token in ["ssl", "tls", "certificate", "https"]),
+            "tls_detected": any(token in signal_evidence_blob for token in ["ssl", "tls", "certificate", "https"]),
             "smb_signing_disabled": any(token in combined for token in [
                 "message signing enabled but not required",
                 "smb signing disabled",
                 "signing: disabled",
                 "signing: false",
             ]),
-            "directory_listing": "index of /" in combined or "directory listing" in combined,
-            "waf_detected": "waf" in combined,
+            "directory_listing": "index of /" in signal_evidence_blob or "directory listing" in signal_evidence_blob,
+            "waf_detected": "waf" in signal_evidence_blob,
             "shodan_enabled": bool(target_meta.get("shodan_enabled", False)),
-            "wordpress_detected": "wordpress" in combined or "wp-content" in combined,
+            "wordpress_detected": wordpress_detected,
             "iis_detected": iis_detected,
             "webdav_detected": webdav_detected,
             "vmware_detected": vmware_detected,
@@ -5999,6 +6464,10 @@ class WebRuntime:
         lowered = token.lower()
         if lowered in {"unknown", "generic", "none", "n/a", "na", "-", "*"}:
             return ""
+        if re.fullmatch(r"0+", lowered):
+            return ""
+        if re.fullmatch(r"0+[a-z]{1,2}", lowered):
+            return ""
         if WebRuntime._is_ipv4_like(token):
             return ""
         if "/" in token and not re.search(r"\d", token):
@@ -6006,6 +6475,90 @@ class WebRuntime:
         if not re.search(r"[0-9]", token):
             return ""
         return token
+
+    @staticmethod
+    def _sanitize_technology_version_for_tech(
+            *,
+            name: Any,
+            version: Any,
+            cpe: Any = "",
+            evidence: Any = "",
+    ) -> str:
+        cleaned = WebRuntime._sanitize_technology_version(version)
+        if not cleaned:
+            return ""
+        lowered_name = re.sub(r"[^a-z0-9]+", " ", str(name or "").strip().lower()).strip()
+        cpe_base = WebRuntime._cpe_base(cpe)
+        evidence_text = str(evidence or "").strip().lower()
+        major_match = re.match(r"^(\d+)", cleaned)
+        major = int(major_match.group(1)) if major_match else None
+
+        if major is not None:
+            if lowered_name in {"apache", "apache http server"} or "cpe:/a:apache:http_server" in cpe_base:
+                if major > 3:
+                    return ""
+            if lowered_name == "nginx" or "cpe:/a:nginx:nginx" in cpe_base:
+                if major > 2:
+                    return ""
+            if lowered_name == "php" or "cpe:/a:php:php" in cpe_base:
+                if major < 3:
+                    return ""
+
+        if (
+                re.fullmatch(r"[78]\.\d{2}", cleaned)
+                and any(marker in evidence_text for marker in ("nmap", ".nse", "output fingerprint", "service fingerprint"))
+        ):
+            return ""
+        return cleaned
+
+    @staticmethod
+    def _technology_hint_source_text(source_id: Any, output_text: Any) -> str:
+        return WebRuntime._observation_text_for_analysis(source_id, output_text)
+
+    @staticmethod
+    def _observation_text_for_analysis(source_id: Any, output_text: Any) -> str:
+        cleaned = _ANSI_ESCAPE_RE.sub("", str(output_text or ""))
+        if not cleaned.strip():
+            return ""
+        source_token = str(source_id or "").strip().lower()
+        lowered = cleaned.lower()
+        if (
+                "nmap" in source_token
+                or "nse" in source_token
+                or "starting nmap" in lowered
+                or "nmap done:" in lowered
+        ):
+            cleaned = WebRuntime._strip_nmap_preamble(cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _cve_evidence_lines(source_id: Any, output_text: Any, limit: int = 24) -> List[Tuple[str, str]]:
+        cleaned = WebRuntime._observation_text_for_analysis(source_id, output_text)
+        if not cleaned:
+            return []
+        rows: List[Tuple[str, str]] = []
+        seen = set()
+        for raw_line in cleaned.splitlines():
+            line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
+            if not line:
+                continue
+            lowered = line.lower()
+            if lowered.startswith(("stats:", "initiating ", "completed ", "discovered open port ")):
+                continue
+            if "nmap.org" in lowered:
+                continue
+            for match in _CVE_TOKEN_RE.findall(line):
+                cve_id = str(match or "").strip().upper()
+                if not cve_id:
+                    continue
+                key = (cve_id, line.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append((cve_id, line))
+                if len(rows) >= int(limit):
+                    return rows
+        return rows
 
     @staticmethod
     def _extract_version_near_tokens(value: Any, tokens: Any) -> str:
@@ -6206,14 +6759,28 @@ class WebRuntime:
 
         def _add(name: Any, version: Any, cpe: Any, evidence: Any):
             tech_name = str(name or "").strip()[:120]
-            tech_version = self._sanitize_technology_version(version)
             tech_cpe = self._normalize_cpe_token(cpe)
             tech_evidence = self._truncate_scheduler_text(evidence, 520)
+            tech_version = self._sanitize_technology_version_for_tech(
+                name=tech_name,
+                version=version,
+                cpe=tech_cpe,
+                evidence=tech_evidence,
+            )
 
             if not tech_name and tech_cpe:
                 tech_name = self._name_from_cpe(tech_cpe)
             if not tech_version and tech_cpe:
-                tech_version = self._version_from_cpe(tech_cpe)
+                cpe_version = self._sanitize_technology_version_for_tech(
+                    name=tech_name,
+                    version=self._version_from_cpe(tech_cpe),
+                    cpe=tech_cpe,
+                    evidence=tech_evidence,
+                )
+                if cpe_version:
+                    tech_version = cpe_version
+                else:
+                    tech_cpe = self._cpe_base(tech_cpe)
 
             if not tech_cpe:
                 hinted_name, hinted_cpe = self._guess_technology_hint(tech_name, tech_version)
@@ -6308,6 +6875,7 @@ class WebRuntime:
             output = str(record.get("excerpt", "") or record.get("output_excerpt", "")).strip()
             if not output:
                 continue
+            analysis_output = self._technology_hint_source_text(source_id, output)
             parsed = extract_tool_observations(
                 source_id,
                 output,
@@ -6327,16 +6895,14 @@ class WebRuntime:
                     item.get("cpe", ""),
                     item.get("evidence", "") or f"{source_id} parsed output",
                 )
-            cpes = self._extract_cpe_tokens(output, limit=4)
+            cpes = self._extract_cpe_tokens(analysis_output or output, limit=4)
             for token in cpes:
                 _add("", "", token, f"{source_id} output CPE")
-            hinted_rows = self._guess_technology_hints(output, version_hint=output)
+            hinted_rows = self._guess_technology_hints(analysis_output or output, version_hint=analysis_output or output)
             for hinted_name, hinted_cpe in hinted_rows:
                 version = self._version_from_cpe(hinted_cpe)
                 if not version:
-                    version = self._extract_version_near_tokens(output, [hinted_name])
-                if not version and hinted_cpe:
-                    version = self._extract_version_token(output)
+                    version = self._extract_version_near_tokens(analysis_output or output, [hinted_name])
                 _add(
                     hinted_name,
                     version,
@@ -6437,14 +7003,30 @@ class WebRuntime:
                 continue
             name = str(item.get("name", "")).strip()[:120]
             cpe = self._normalize_cpe_token(item.get("cpe", ""))
-            version = self._sanitize_technology_version(item.get("version", ""))
             evidence = self._truncate_scheduler_text(item.get("evidence", ""), 520)
+            version = self._sanitize_technology_version_for_tech(
+                name=name,
+                version=item.get("version", ""),
+                cpe=cpe,
+                evidence=evidence,
+            )
             if not name and not cpe:
                 continue
             if not name and cpe:
                 name = self._name_from_cpe(cpe)
+            if str(name or "").strip().lower() in _PSEUDO_TECH_NAME_TOKENS and not cpe:
+                continue
             if not version and cpe:
-                version = self._version_from_cpe(cpe)
+                cpe_version = self._sanitize_technology_version_for_tech(
+                    name=name,
+                    version=self._version_from_cpe(cpe),
+                    cpe=cpe,
+                    evidence=evidence,
+                )
+                if cpe_version:
+                    version = cpe_version
+                else:
+                    cpe = self._cpe_base(cpe)
             if not cpe and name:
                 hinted_name, hinted_cpe = self._guess_technology_hint(name, version)
                 if hinted_name and not name:
@@ -6591,9 +7173,10 @@ class WebRuntime:
             excerpt = str(record.get("excerpt", "") or record.get("output_excerpt", "")).strip()
             if not excerpt:
                 continue
+            cleaned_excerpt = self._observation_text_for_analysis(source_id, excerpt)
             parsed = extract_tool_observations(
                 source_id,
-                excerpt,
+                cleaned_excerpt or excerpt,
                 port=str(record.get("port", "") or ""),
                 protocol=str(record.get("protocol", "tcp") or "tcp"),
                 service=str(record.get("service", "") or ""),
@@ -6609,16 +7192,13 @@ class WebRuntime:
                     "severity": self._severity_from_text(item.get("severity", "info")),
                     "cvss": 0.0,
                     "cve": str(item.get("cve", "") or "").upper(),
-                    "evidence": self._truncate_scheduler_text(item.get("evidence", "") or excerpt, 420),
+                    "evidence": self._truncate_scheduler_text(item.get("evidence", "") or cleaned_excerpt or excerpt, 420),
                 })
-            for match in _CVE_TOKEN_RE.findall(excerpt):
-                cve_id = str(match or "").strip().upper()
-                if not cve_id:
-                    continue
+            for cve_id, evidence_line in self._cve_evidence_lines(source_id, cleaned_excerpt or excerpt):
                 mapped = cve_index.get(cve_id, {})
                 severity = str(mapped.get("severity", "info") or "info")
                 evidence = self._truncate_scheduler_text(
-                    f"{source_id}: {excerpt}",
+                    f"{source_id}: {evidence_line}",
                     420,
                 )
                 rows.append({
@@ -6849,7 +7429,7 @@ class WebRuntime:
             scope_note = self._truncate_scheduler_text(item.get("scope_note", ""), 280)
             if not command and not why:
                 continue
-            key = "|".join([command.lower(), why.lower()])
+            key = command.lower()
             if key in seen:
                 continue
             seen.add(key)
@@ -7090,6 +7670,7 @@ class WebRuntime:
                 return
             ensure_scheduler_ai_state_table(project.database)
             existing = get_host_ai_state(project.database, int(host_id)) or {}
+            existing_raw = existing.get("raw", {}) if isinstance(existing.get("raw", {}), dict) else {}
 
             merged_technologies = self._merge_technologies(
                 existing=existing.get("technologies", []) if isinstance(existing.get("technologies", []), list) else [],
@@ -7105,7 +7686,7 @@ class WebRuntime:
             merged_manual = self._merge_ai_items(
                 existing=existing.get("manual_tests", []) if isinstance(existing.get("manual_tests", []), list) else [],
                 incoming=manual_tests,
-                key_fields=["command", "why"],
+                key_fields=["command"],
                 limit=200,
             )
 
@@ -7127,6 +7708,11 @@ class WebRuntime:
                 selected_os = existing_os
                 selected_os_conf = existing_os_conf
 
+            raw_payload = dict(existing_raw)
+            raw_payload.update(payload)
+            if isinstance(existing_raw.get("reflection", {}), dict) and "reflection" not in raw_payload:
+                raw_payload["reflection"] = dict(existing_raw.get("reflection", {}))
+
             state_payload = {
                 "host_id": int(host_id),
                 "host_ip": str(host_ip or ""),
@@ -7143,7 +7729,7 @@ class WebRuntime:
                 "technologies": merged_technologies,
                 "findings": merged_findings,
                 "manual_tests": merged_manual,
-                "raw": payload,
+                "raw": raw_payload,
             }
             upsert_host_ai_state(project.database, int(host_id), state_payload)
             self._persist_shared_target_state(
@@ -7164,7 +7750,7 @@ class WebRuntime:
                 technologies=merged_technologies,
                 findings=merged_findings,
                 manual_tests=merged_manual,
-                raw=payload,
+                raw=raw_payload,
             )
 
         self._apply_ai_host_updates(
@@ -7175,6 +7761,107 @@ class WebRuntime:
             os_match=os_candidate,
             os_confidence=os_confidence,
         )
+
+    def _persist_scheduler_reflection_analysis(
+            self,
+            *,
+            host_id: int,
+            host_ip: str,
+            port: str,
+            protocol: str,
+            service_name: str,
+            goal_profile: str,
+            reflection_payload: Optional[Dict[str, Any]],
+    ):
+        payload = reflection_payload if isinstance(reflection_payload, dict) else {}
+        reflection_state = str(payload.get("state", "") or "").strip().lower()
+        reason = self._truncate_scheduler_text(payload.get("reason", ""), 320)
+        priority_shift = str(payload.get("priority_shift", "") or "").strip().lower()[:64]
+        promote_tool_ids = [
+            str(item or "").strip().lower()[:120]
+            for item in list(payload.get("promote_tool_ids", []) or [])[:16]
+            if str(item or "").strip()
+        ]
+        suppress_tool_ids = [
+            str(item or "").strip().lower()[:120]
+            for item in list(payload.get("suppress_tool_ids", []) or [])[:16]
+            if str(item or "").strip()
+        ]
+        manual_tests = self._normalize_ai_manual_tests(payload.get("manual_tests", []))
+
+        if not any([reflection_state, reason, priority_shift, promote_tool_ids, suppress_tool_ids, manual_tests]):
+            return
+
+        reflection_record = {
+            "state": reflection_state or "continue",
+            "reason": reason,
+            "priority_shift": priority_shift,
+            "promote_tool_ids": promote_tool_ids,
+            "suppress_tool_ids": suppress_tool_ids,
+            "manual_tests": manual_tests,
+            "provider": str(payload.get("provider", "") or ""),
+            "prompt_version": str(payload.get("prompt_version", "") or ""),
+            "prompt_type": str(payload.get("prompt_type", "") or "reflection"),
+            "reflected_at": getTimestamp(True),
+        }
+
+        with self._lock:
+            project = getattr(self.logic, "activeProject", None)
+            if not project:
+                return
+            ensure_scheduler_ai_state_table(project.database)
+            existing = get_host_ai_state(project.database, int(host_id)) or {}
+            existing_raw = existing.get("raw", {}) if isinstance(existing.get("raw", {}), dict) else {}
+            existing_technologies = self._normalize_ai_technologies(existing.get("technologies", []))
+            existing_findings = self._normalize_ai_findings(existing.get("findings", []))
+            merged_manual = self._merge_ai_items(
+                existing=existing.get("manual_tests", []) if isinstance(existing.get("manual_tests", []), list) else [],
+                incoming=manual_tests,
+                key_fields=["command"],
+                limit=200,
+            )
+            raw_payload = dict(existing_raw)
+            raw_payload["reflection"] = reflection_record
+
+            state_payload = {
+                "host_id": int(host_id),
+                "host_ip": str(host_ip or existing.get("host_ip", "")),
+                "provider": str(payload.get("provider", "") or existing.get("provider", "")),
+                "goal_profile": str(goal_profile or existing.get("goal_profile", "")),
+                "last_port": str(port or existing.get("last_port", "")),
+                "last_protocol": str(protocol or existing.get("last_protocol", "")),
+                "last_service": str(service_name or existing.get("last_service", "")),
+                "hostname": self._sanitize_ai_hostname(existing.get("hostname", "")),
+                "hostname_confidence": self._ai_confidence_value(existing.get("hostname_confidence", 0.0)),
+                "os_match": str(existing.get("os_match", "") or ""),
+                "os_confidence": self._ai_confidence_value(existing.get("os_confidence", 0.0)),
+                "next_phase": str(existing.get("next_phase", "") or ""),
+                "technologies": existing_technologies,
+                "findings": existing_findings,
+                "manual_tests": merged_manual,
+                "raw": raw_payload,
+            }
+            upsert_host_ai_state(project.database, int(host_id), state_payload)
+            self._persist_shared_target_state(
+                host_id=int(host_id),
+                host_ip=str(host_ip or existing.get("host_ip", "")),
+                port=str(port or existing.get("last_port", "")),
+                protocol=str(protocol or existing.get("last_protocol", "tcp") or "tcp"),
+                service_name=str(service_name or existing.get("last_service", "")),
+                scheduler_mode="ai",
+                goal_profile=str(goal_profile or existing.get("goal_profile", "")),
+                engagement_preset=str(existing.get("engagement_preset", "") or ""),
+                provider=str(payload.get("provider", "") or existing.get("provider", "")),
+                hostname=self._sanitize_ai_hostname(existing.get("hostname", "")),
+                hostname_confidence=self._ai_confidence_value(existing.get("hostname_confidence", 0.0)),
+                os_match=str(existing.get("os_match", "") or ""),
+                os_confidence=self._ai_confidence_value(existing.get("os_confidence", 0.0)),
+                next_phase=str(existing.get("next_phase", "") or ""),
+                technologies=existing_technologies,
+                findings=existing_findings,
+                manual_tests=merged_manual,
+                raw=raw_payload,
+            )
 
     def _apply_ai_host_updates(
             self,
@@ -8003,6 +8690,109 @@ class WebRuntime:
             return False, "skipped: remote screenshot missing", []
         return False, "skipped: remote screenshot missing"
 
+    def _tool_execution_profile(self, tool_name: Any) -> Dict[str, Any]:
+        tool_id = str(tool_name or "").strip().lower()
+        profiles = normalize_tool_execution_profiles(DEFAULT_TOOL_EXECUTION_PROFILES)
+        scheduler_config = getattr(self, "scheduler_config", None)
+        if scheduler_config is not None and hasattr(scheduler_config, "load"):
+            try:
+                loaded = scheduler_config.load()
+            except Exception:
+                loaded = {}
+            if isinstance(loaded, dict):
+                profiles = normalize_tool_execution_profiles(loaded.get("tool_execution_profiles", profiles))
+        return dict(profiles.get(tool_id, {}))
+
+    def _resolve_process_timeout_policy(self, tool_name: Any, requested_timeout: Any) -> Dict[str, Any]:
+        try:
+            default_timeout = max(1, int(requested_timeout or 300))
+        except (TypeError, ValueError):
+            default_timeout = 300
+        profile = self._tool_execution_profile(tool_name)
+        quiet_long_running = bool(profile.get("quiet_long_running", False))
+        if not quiet_long_running:
+            return {
+                "quiet_long_running": False,
+                "inactivity_timeout_seconds": int(default_timeout),
+                "hard_timeout_seconds": 0,
+            }
+        try:
+            inactivity_timeout = int(profile.get("activity_timeout_seconds", default_timeout) or default_timeout)
+        except (TypeError, ValueError):
+            inactivity_timeout = default_timeout
+        try:
+            hard_timeout = int(profile.get("hard_timeout_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            hard_timeout = 0
+        return {
+            "quiet_long_running": True,
+            "inactivity_timeout_seconds": max(30, int(inactivity_timeout or 1800)),
+            "hard_timeout_seconds": max(0, int(hard_timeout or 0)),
+        }
+
+    @staticmethod
+    def _sample_process_tree_activity(proc: Optional[subprocess.Popen]) -> Optional[Tuple[float, int]]:
+        if proc is None or int(getattr(proc, "pid", 0) or 0) <= 0:
+            return None
+        try:
+            root = psutil.Process(int(proc.pid))
+        except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied, ValueError):
+            return None
+
+        cpu_total = 0.0
+        io_total = 0
+        seen_pids = set()
+        processes = [root]
+        try:
+            processes.extend(root.children(recursive=True))
+        except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
+            pass
+
+        for current in processes:
+            try:
+                pid = int(current.pid)
+            except Exception:
+                continue
+            if pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            try:
+                cpu_times = current.cpu_times()
+                cpu_total += float(getattr(cpu_times, "user", 0.0) or 0.0)
+                cpu_total += float(getattr(cpu_times, "system", 0.0) or 0.0)
+            except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
+                pass
+            try:
+                io_counters = current.io_counters()
+                if io_counters is not None:
+                    read_chars = getattr(io_counters, "read_chars", None)
+                    write_chars = getattr(io_counters, "write_chars", None)
+                    if read_chars is not None or write_chars is not None:
+                        io_total += int(read_chars or 0) + int(write_chars or 0)
+                    else:
+                        io_total += int(getattr(io_counters, "read_bytes", 0) or 0)
+                        io_total += int(getattr(io_counters, "write_bytes", 0) or 0)
+            except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied, AttributeError):
+                pass
+        return round(cpu_total, 4), int(io_total)
+
+    @staticmethod
+    def _process_tree_activity_changed(
+            previous: Optional[Tuple[float, int]],
+            current: Optional[Tuple[float, int]],
+    ) -> bool:
+        if previous is None or current is None:
+            return False
+        try:
+            prev_cpu, prev_io = previous
+            cur_cpu, cur_io = current
+        except Exception:
+            return False
+        return (
+            float(cur_cpu) > float(prev_cpu)
+            or int(cur_io) > int(prev_io)
+        )
+
     def _run_command_with_tracking(
             self,
             *,
@@ -8078,6 +8868,10 @@ class WebRuntime:
         output_queue: queue.Queue = queue.Queue()
         reader_done = threading.Event()
         started_at = time.monotonic()
+        timeout_policy = self._resolve_process_timeout_policy(tool_name, timeout)
+        quiet_long_running = bool(timeout_policy.get("quiet_long_running", False))
+        inactivity_timeout_seconds = max(1, int(timeout_policy.get("inactivity_timeout_seconds", timeout) or timeout or 300))
+        hard_timeout_seconds = max(0, int(timeout_policy.get("hard_timeout_seconds", 0) or 0))
         nmap_progress_state = {
             "percent": None,
             "remaining": None,
@@ -8085,10 +8879,14 @@ class WebRuntime:
         }
         is_nmap_command = self._is_nmap_command(str(tool_name), str(command))
         timed_out = False
+        timeout_reason = ""
         killed = False
         flush_due_at = started_at
         elapsed_due_at = started_at
         last_output_at = started_at
+        last_activity_at = started_at
+        activity_sample_due_at = started_at
+        last_process_activity = None
         process_exited_at = None
 
         def _store_failure_status(status_name: str):
@@ -8151,6 +8949,8 @@ class WebRuntime:
             with self._process_runtime_lock:
                 self._active_processes[int(process_id)] = proc
                 self._kill_requests.discard(int(process_id))
+            if quiet_long_running:
+                last_process_activity = self._sample_process_tree_activity(proc)
 
             reader_thread = threading.Thread(target=_reader, args=(proc.stdout,), daemon=True)
             reader_thread.start()
@@ -8175,9 +8975,18 @@ class WebRuntime:
                 now = time.monotonic()
                 if changed:
                     last_output_at = now
+                    last_activity_at = now
                 if changed and now >= flush_due_at:
                     self._write_process_output_partial(int(process_id), "".join(output_parts))
                     flush_due_at = now + 0.5
+
+                if quiet_long_running and now >= activity_sample_due_at and proc.poll() is None:
+                    current_activity = self._sample_process_tree_activity(proc)
+                    if self._process_tree_activity_changed(last_process_activity, current_activity):
+                        last_activity_at = now
+                    if current_activity is not None:
+                        last_process_activity = current_activity
+                    activity_sample_due_at = now + 1.0
 
                 if now >= elapsed_due_at:
                     elapsed_seconds = int(now - started_at)
@@ -8205,9 +9014,19 @@ class WebRuntime:
                     except Exception:
                         self._signal_process_tree(proc, force=True)
 
-                if (now - last_output_at) > int(timeout) and proc.poll() is None:
-                    timed_out = True
-                    self._signal_process_tree(proc, force=True)
+                if proc.poll() is None:
+                    if hard_timeout_seconds > 0 and (now - started_at) > int(hard_timeout_seconds):
+                        timed_out = True
+                        timeout_reason = f"timeout after {int(hard_timeout_seconds)}s total runtime"
+                        self._signal_process_tree(proc, force=True)
+                    elif quiet_long_running and (now - last_activity_at) > int(inactivity_timeout_seconds):
+                        timed_out = True
+                        timeout_reason = f"timeout after {int(inactivity_timeout_seconds)}s without CPU/IO activity"
+                        self._signal_process_tree(proc, force=True)
+                    elif (not quiet_long_running) and (now - last_output_at) > int(inactivity_timeout_seconds):
+                        timed_out = True
+                        timeout_reason = f"timeout after {int(inactivity_timeout_seconds)}s without output"
+                        self._signal_process_tree(proc, force=True)
 
                 if proc.poll() is not None:
                     if process_exited_at is None:
@@ -8245,11 +9064,11 @@ class WebRuntime:
             combined_output = "".join(output_parts)
             runtime_seconds = max(0.0, float((process_exited_at or time.monotonic()) - started_at))
             if timed_out:
-                combined_output += f"\n[timeout after {int(timeout)}s without output]"
+                combined_output += f"\n[{timeout_reason}]"
                 process_repo.storeProcessProblemStatus(str(process_id))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
-                return _build_result(False, f"failed: timeout after {int(timeout)}s without output", int(process_id))
+                return _build_result(False, f"failed: {timeout_reason}", int(process_id))
 
             if killed:
                 process_repo.storeProcessKillStatus(str(process_id))
@@ -9342,9 +10161,11 @@ class WebRuntime:
     def _load_host_ai_analysis(self, project, host_id: int, host_ip: str) -> Dict[str, Any]:
         ensure_scheduler_ai_state_table(project.database)
         row = get_host_ai_state(project.database, int(host_id)) or {}
+        raw = row.get("raw", {}) if isinstance(row.get("raw", {}), dict) else {}
         stored_technologies = row.get("technologies", [])
         stored_findings = row.get("findings", [])
         manual_tests = row.get("manual_tests", [])
+        reflection = raw.get("reflection", {}) if isinstance(raw.get("reflection", {}), dict) else {}
         if not isinstance(stored_technologies, list):
             stored_technologies = []
         if not isinstance(stored_findings, list):
@@ -9391,6 +10212,7 @@ class WebRuntime:
             "technologies": technologies,
             "findings": findings,
             "manual_tests": manual_tests,
+            "reflection": reflection,
         }
 
     def _list_screenshots_for_host(self, project, host_ip: str) -> List[Dict[str, Any]]:

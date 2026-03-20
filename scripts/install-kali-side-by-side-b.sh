@@ -8,7 +8,7 @@ DATA_DIR="${LEGION_DEV_DATA_DIR:-$HOME/.local/share/legion-web-dev}"
 BIN_DIR="${LEGION_DEV_BIN_DIR:-$HOME/.local/bin}"
 LAUNCHER_PATH="$BIN_DIR/legion-web-dev"
 VENV_DIR="$INSTALL_DIR/.venv"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 
 log() {
   printf '[legion-web-dev installer] %s\n' "$*"
@@ -24,6 +24,29 @@ need_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || die "Missing required command: $cmd"
 }
 
+supports_python_312_plus() {
+  local cmd="$1"
+  "$cmd" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1
+}
+
+resolve_python_bin() {
+  if [[ -n "${PYTHON_BIN:-}" ]]; then
+    need_cmd "$PYTHON_BIN"
+    supports_python_312_plus "$PYTHON_BIN" || die "PYTHON_BIN=$PYTHON_BIN is not Python 3.12+."
+    return
+  fi
+
+  local candidate
+  for candidate in python3.13 python3.12 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && supports_python_312_plus "$candidate"; then
+      PYTHON_BIN="$candidate"
+      return
+    fi
+  done
+
+  die "Python 3.12+ is required. Install python3.12 and recreate the virtual environment."
+}
+
 write_launcher() {
   mkdir -p "$BIN_DIR"
   cat > "$LAUNCHER_PATH" <<EOF
@@ -36,6 +59,11 @@ export LEGION_HOME="$DATA_DIR"
 
 if [[ ! -x "\$VENV_PY" ]]; then
   echo "legion-web-dev is not fully installed. Re-run installer." >&2
+  exit 1
+fi
+
+if ! "\$VENV_PY" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
+  echo "legion-web-dev requires a Python 3.12+ virtual environment. Re-run installer with python3.12." >&2
   exit 1
 fi
 
@@ -72,6 +100,7 @@ install_latest_repo() {
 setup_python_env() {
   log "Creating/updating virtual environment at $VENV_DIR"
   "$PYTHON_BIN" -m venv "$VENV_DIR"
+  supports_python_312_plus "$VENV_DIR/bin/python3" || die "Virtual environment at $VENV_DIR is not using Python 3.12+."
   "$VENV_DIR/bin/python3" -m pip install --upgrade pip wheel setuptools
   "$VENV_DIR/bin/python3" -m pip install -r "$INSTALL_DIR/requirements.txt"
 }
@@ -85,7 +114,7 @@ prepare_data_dir() {
 
 main() {
   need_cmd git
-  need_cmd "$PYTHON_BIN"
+  resolve_python_bin
 
   install_latest_repo
   setup_python_env
@@ -101,12 +130,12 @@ main() {
   log "Recommended run flow:"
   log "  cd \"$INSTALL_DIR\""
   log "  source \"$VENV_DIR/bin/activate\""
-  log "  python3 legion.py --web"
+  log "  python legion.py --web"
   log ""
   log "Optional:"
-  log "  python3 legion.py --web --web-port 5000 --web-bind-all"
-  log "  python3 legion.py --web --web-port 5001"
-  log "  python3 legion.py --headless --input-file targets.txt --discovery"
+  log "  python legion.py --web --web-port 5000 --web-bind-all"
+  log "  python legion.py --web --web-port 5001"
+  log "  python legion.py --headless --input-file targets.txt --discovery"
   log ""
   log "Convenience launcher still available:"
   log "  legion-web-dev"

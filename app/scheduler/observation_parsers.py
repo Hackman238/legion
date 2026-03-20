@@ -19,16 +19,28 @@ _NUCLEI_STATS_RE = re.compile(r"^\[[0-9:]+\]\s*\|\s*templates:\s*\d+\s*\|\s*host
 _NUCLEI_LOG_LEVELS = {"wrn", "inf", "err", "dbg", "ftl"}
 _WHATWEB_PAIR_RE = re.compile(r"([A-Za-z][A-Za-z0-9+_. -]{1,48})\[([^\]]{1,180})\]")
 _WHATWEB_IGNORED_NAMES = {
+    "cache-control",
+    "content-language",
+    "content-security-policy",
+    "content-type",
     "country",
     "cookies",
     "email",
+    "etag",
     "httpcountry",
     "ip",
     "meta-generator",
+    "referrer-policy",
+    "redirectlocation",
     "script",
+    "strict-transport-security",
     "title",
     "uncommonheaders",
+    "vary",
+    "x-content-type-options",
+    "x-frame-options",
     "x-powered-by",
+    "x-xss-protection",
 }
 _LEGACY_TLS_FINDINGS = {
     "sslv2": ("SSLv2 supported", "high"),
@@ -259,7 +271,10 @@ def _parse_whatweb_output(tool_id: str, output_text: str) -> Dict[str, Any]:
                     )
                 continue
             version = ""
-            if re.fullmatch(r"[0-9][A-Za-z0-9._-]{0,31}", value_token):
+            if (
+                    re.fullmatch(r"[0-9][A-Za-z0-9._-]{0,31}", value_token)
+                    and ("." in value_token or bool(re.search(r"[A-Za-z]", value_token)))
+            ):
                 version = value_token
             _append_technology(
                 technologies,

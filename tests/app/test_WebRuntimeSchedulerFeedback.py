@@ -1,5 +1,6 @@
 import unittest
 import threading
+from unittest import mock
 from types import SimpleNamespace
 
 
@@ -75,12 +76,171 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 "max_rounds_per_target": 100,
                 "max_actions_per_round": -3,
                 "recent_output_chars": 10,
+                "reflection_enabled": False,
+                "stall_rounds_without_progress": 99,
+                "stall_repeat_selection_threshold": 0,
+                "max_reflections_per_target": 99,
             }
         })
         self.assertTrue(cfg["enabled"])
         self.assertEqual(12, cfg["max_rounds_per_target"])
         self.assertEqual(1, cfg["max_actions_per_round"])
         self.assertEqual(320, cfg["recent_output_chars"])
+        self.assertFalse(cfg["reflection_enabled"])
+        self.assertEqual(6, cfg["stall_rounds_without_progress"])
+        self.assertEqual(1, cfg["stall_repeat_selection_threshold"])
+        self.assertEqual(4, cfg["max_reflections_per_target"])
+
+    def test_load_host_ai_analysis_exposes_last_reflection(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._normalize_ai_technologies = lambda items: list(items or [])
+        runtime._normalize_ai_findings = lambda items: list(items or [])
+        runtime._merge_technologies = lambda existing, incoming, limit=0: list(incoming or existing or [])
+        runtime._merge_ai_items = lambda existing, incoming, key_fields=None, limit=0: list(incoming or existing or [])
+        runtime._load_cves_for_host = lambda project, host_id: []
+        runtime._infer_host_technologies = lambda project, host_id, host_ip: []
+        runtime._infer_host_findings = lambda project, host_id, host_ip, host_cves_raw: []
+
+        project = SimpleNamespace(database=object())
+        ai_row = {
+            "host_ip": "10.0.0.5",
+            "provider": "openai",
+            "goal_profile": "external_pentest",
+            "last_port": "443",
+            "last_protocol": "tcp",
+            "last_service": "https",
+            "hostname": "portal.local",
+            "hostname_confidence": 92,
+            "os_match": "Linux",
+            "os_confidence": 77,
+            "next_phase": "targeted_checks",
+            "technologies": [{"name": "nginx", "version": "1.25", "cpe": "cpe:/a:nginx:nginx:1.25", "evidence": "banner"}],
+            "findings": [{"title": "Admin portal", "severity": "medium", "cve": "", "evidence": "/admin"}],
+            "manual_tests": [{"why": "validate auth", "command": "curl -k https://10.0.0.5/admin", "scope_note": "safe"}],
+            "raw": {
+                "reflection": {
+                    "state": "stalled",
+                    "priority_shift": "manual_validation",
+                    "reason": "Coverage has stopped moving.",
+                    "promote_tool_ids": ["whatweb"],
+                    "suppress_tool_ids": ["nikto"],
+                }
+            },
+        }
+
+        with mock.patch("app.web.runtime.ensure_scheduler_ai_state_table"), \
+                mock.patch("app.web.runtime.get_host_ai_state", return_value=ai_row):
+            loaded = runtime._load_host_ai_analysis(project, 11, "10.0.0.5")
+
+        self.assertEqual("openai", loaded["provider"])
+        self.assertEqual("stalled", loaded["reflection"]["state"])
+        self.assertEqual("manual_validation", loaded["reflection"]["priority_shift"])
+        self.assertEqual(["nikto"], loaded["reflection"]["suppress_tool_ids"])
+
+    def test_build_scheduler_context_summary_prioritizes_focus_failures_and_reflection(self):
+        from app.web.runtime import WebRuntime
+
+        summary = WebRuntime._build_scheduler_context_summary(
+            target={
+                "service": "https",
+                "service_product": "nginx",
+                "service_version": "1.25.3",
+            },
+            analysis_mode="dig_deeper",
+            coverage={
+                "stage": "baseline",
+                "missing": ["missing_nmap_vuln", "missing_nuclei_auto"],
+                "recommended_tool_ids": ["nmap-vuln.nse", "nuclei-web"],
+            },
+            signals={
+                "web_service": True,
+                "tls_detected": True,
+                "wordpress_detected": False,
+            },
+            attempted_tool_ids={"banner", "whatweb"},
+            summary_technologies=[
+                {"name": "Jetty", "version": "10.0.13", "cpe": "cpe:/a:eclipse:jetty:10.0.13"},
+                {"name": "nginx", "version": "1.25.3", "cpe": "cpe:/a:nginx:nginx:1.25.3"},
+            ],
+            host_cves=[
+                {"name": "CVE-2025-1111", "severity": "high", "product": "nginx"},
+            ],
+            host_ai_state={
+                "next_phase": "deep_web",
+                "findings": [{"title": "Admin console exposed", "severity": "medium", "cve": "", "evidence": "/admin"}],
+                "manual_tests": [{"command": "curl -k https://10.0.0.5/admin", "why": "validate auth"}],
+                "reflection": {
+                    "state": "stalled",
+                    "priority_shift": "manual_validation",
+                    "reason": "Coverage plateaued",
+                    "suppress_tool_ids": ["nikto"],
+                    "promote_tool_ids": ["whatweb"],
+                },
+            },
+            recent_processes=[
+                {"tool_id": "feroxbuster", "status": "Crashed", "output_excerpt": "feroxbuster: command not found"},
+            ],
+            target_recent_processes=[
+                {"tool_id": "ffuf", "status": "Failed", "output_excerpt": "timeout reached"},
+            ],
+        )
+
+        self.assertEqual("dig_deeper", summary["focus"]["analysis_mode"])
+        self.assertEqual("deep_web", summary["focus"]["current_phase"])
+        self.assertIn("missing_nmap_vuln", summary["coverage_missing"])
+        self.assertIn("nmap-vuln.nse", summary["recommended_tools"])
+        self.assertIn("tls_detected", summary["active_signals"])
+        self.assertIn("Jetty 10.0.13", summary["known_technologies"])
+        self.assertTrue(any("Admin console exposed" in item for item in summary["top_findings"]))
+        self.assertTrue(any(item.startswith("ffuf:") or item.startswith("feroxbuster:") for item in summary["recent_failures"]))
+        self.assertIn("banner", summary["recent_attempts"])
+        self.assertIn("curl -k https://10.0.0.5/admin", summary["manual_tests"])
+        self.assertEqual("stalled", summary["reflection_posture"]["state"])
+        self.assertEqual("manual_validation", summary["reflection_posture"]["priority_shift"])
+
+    def test_tool_audit_availability_tracks_installed_and_missing_tools(self):
+        from app.web.runtime import WebRuntime
+
+        snapshot = WebRuntime._tool_audit_availability([
+            {"key": "whatweb", "status": "installed"},
+            {"key": "nikto", "status": "missing"},
+            {"key": "dirsearch", "status": "configured-missing"},
+            {"key": "curl", "status": "installed"},
+        ])
+
+        self.assertEqual(["curl", "whatweb"], snapshot["available_tool_ids"])
+        self.assertEqual(["dirsearch", "nikto"], snapshot["unavailable_tool_ids"])
+
+    def test_context_summary_does_not_treat_wrapper_command_excerpt_as_missing_tool(self):
+        from app.web.runtime import WebRuntime
+
+        summary = WebRuntime._build_scheduler_context_summary(
+            target={"service": "http", "service_product": "nginx"},
+            analysis_mode="standard",
+            coverage={},
+            signals={},
+            attempted_tool_ids=set(),
+            recent_processes=[
+                {
+                    "tool_id": "whatweb-http",
+                    "status": "Finished",
+                    "command_excerpt": "(command -v whatweb >/dev/null 2>&1 && whatweb http://unifi.local:8080 --color=never) || echo whatweb not found",
+                    "output_excerpt": "http://unifi.local:8080 [400 Bad Request] nginx, HTML5",
+                }
+            ],
+            target_recent_processes=[
+                {
+                    "tool_id": "whatweb-http",
+                    "status": "Finished",
+                    "command_excerpt": "(command -v whatweb >/dev/null 2>&1 && whatweb http://unifi.local:8080 --color=never) || echo whatweb not found",
+                    "output_excerpt": "http://unifi.local:8080 [400 Bad Request] nginx, HTML5",
+                }
+            ],
+        )
+
+        self.assertNotIn("recent_failures", summary)
 
     def test_scheduler_max_concurrency_clamps_values(self):
         from app.web.runtime import WebRuntime
@@ -141,6 +301,45 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertTrue(signals["ubiquiti_detected"])
         self.assertFalse(signals["vmware_detected"])
         self.assertIn("ubiquiti", signals["observed_technologies"])
+
+    def test_extract_scheduler_signals_ignores_script_and_tool_names_without_positive_evidence(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        signals = runtime._extract_scheduler_signals(
+            service_name="http",
+            scripts=[
+                {"script_id": "http-wordpress-enum.nse", "excerpt": ""},
+                {"script_id": "http-vmware-path-vuln.nse", "excerpt": "check completed"},
+                {"script_id": "http-coldfusion-subzero.nse", "excerpt": ""},
+                {"script_id": "http-huawei-hg5xx-vuln.nse", "excerpt": ""},
+                {"script_id": "http-iis-webdav-vuln.nse", "excerpt": "no issue reported"},
+                {"script_id": "http-vuln-cve2011-3192.nse", "excerpt": "range header check completed with no finding"},
+            ],
+            recent_processes=[
+                {"tool_id": "nuclei-wordpress", "status": "Finished", "output_excerpt": ""},
+                {"tool_id": "wafw00f", "status": "Finished", "output_excerpt": ""},
+            ],
+            target={
+                "service": "http",
+                "service_product": "nginx",
+                "host_open_services": ["http"],
+                "host_banners": ["80/tcp:nginx"],
+            },
+        )
+
+        self.assertFalse(signals["wordpress_detected"])
+        self.assertFalse(signals["vmware_detected"])
+        self.assertFalse(signals["coldfusion_detected"])
+        self.assertFalse(signals["huawei_detected"])
+        self.assertFalse(signals["webdav_detected"])
+        self.assertFalse(signals["waf_detected"])
+        self.assertEqual(0, int(signals["vuln_hits"]))
+        self.assertNotIn("wordpress", signals["observed_technologies"])
+        self.assertNotIn("vmware", signals["observed_technologies"])
+        self.assertNotIn("coldfusion", signals["observed_technologies"])
+        self.assertNotIn("huawei", signals["observed_technologies"])
+        self.assertNotIn("webdav", signals["observed_technologies"])
 
     def test_build_scheduler_coverage_summary_flags_missing_web_baseline(self):
         from app.web.runtime import WebRuntime
@@ -386,6 +585,130 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertIn("bootstrap", names)
         self.assertIn("nginx", names)
 
+    def test_infer_technologies_ignores_whatweb_header_pseudo_technologies(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        technologies = runtime._infer_technologies_from_observations(
+            service_records=[],
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "whatweb-http",
+                    "output_excerpt": (
+                        "https://portal.example:443 [200 OK] Apache[2.4.57], "
+                        "Content-Language[en], "
+                        "RedirectLocation[https://portal.example/login], "
+                        "Strict-Transport-Security[max-age=15552000; includeSubDomains], "
+                        "X-Frame-Options[SAMEORIGIN], X-XSS-Protection[1; mode=block], "
+                        "HTTPServer[Apache/2.4.57 (Ubuntu)]"
+                    ),
+                }
+            ],
+            limit=64,
+        )
+
+        names = {str(item.get("name", "")).strip().lower() for item in technologies}
+        apache_versions = {
+            str(item.get("version", "")).strip()
+            for item in technologies
+            if str(item.get("name", "")).strip().lower() in {"apache", "apache http server"}
+        }
+        self.assertIn("apache", names)
+        self.assertNotIn("content-language", names)
+        self.assertNotIn("redirectlocation", names)
+        self.assertNotIn("strict-transport-security", names)
+        self.assertNotIn("x-frame-options", names)
+        self.assertNotIn("x-xss-protection", names)
+        self.assertIn("2.4.57", apache_versions)
+
+    def test_infer_technologies_strips_nmap_and_ansi_version_noise(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        technologies = runtime._infer_technologies_from_observations(
+            service_records=[],
+            script_records=[
+                {
+                    "script_id": "http-vuln-cve2011-3192.nse",
+                    "excerpt": (
+                        "Starting Nmap 7.80 ( https://nmap.org ) at 2026-03-17 07:15 CDT\n"
+                        "| http-vuln-cve2011-3192: Apache HTTP Server Range header DoS check\n"
+                        "|_  Apache HTTP Server appears present\n"
+                    ),
+                }
+            ],
+            process_records=[
+                {
+                    "tool_id": "nuclei-web",
+                    "output_excerpt": "\u001b[0m nginx login panel detected",
+                }
+            ],
+            limit=64,
+        )
+
+        bad_versions = {
+            str(item.get("version", "")).strip()
+            for item in technologies
+            if str(item.get("version", "")).strip()
+        }
+        names = {str(item.get("name", "")).strip().lower() for item in technologies}
+        self.assertIn("apache http server", names)
+        self.assertIn("nginx", names)
+        self.assertNotIn("7.80", bad_versions)
+        self.assertNotIn("0m", bad_versions)
+
+    def test_infer_technologies_drops_invalid_php_major_versions_from_weak_fingerprints(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        technologies = runtime._infer_technologies_from_observations(
+            service_records=[],
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "http-useragent-tester.nse",
+                    "output_excerpt": "Possible stack fingerprint: PHP 2.5 on upstream service",
+                }
+            ],
+            limit=64,
+        )
+
+        php_versions = {
+            str(item.get("version", "")).strip()
+            for item in technologies
+            if str(item.get("name", "")).strip().lower() == "php"
+        }
+        self.assertNotIn("2.5", php_versions)
+
+    def test_normalize_ai_technologies_strips_nmap_release_leakage_from_versions_and_cpes(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        technologies = runtime._normalize_ai_technologies([
+            {
+                "name": "nginx",
+                "version": "7.80",
+                "cpe": "cpe:/a:nginx:nginx:7.80",
+                "evidence": "http-headers.nse output fingerprint",
+            },
+            {
+                "name": "Apache HTTP Server",
+                "version": "7.80",
+                "cpe": "cpe:/a:apache:http_server:7.80",
+                "evidence": "http-vuln-cve2011-3192.nse output fingerprint",
+            },
+        ])
+
+        by_name = {
+            str(item.get("name", "")).strip().lower(): item
+            for item in technologies
+        }
+        self.assertEqual("", str(by_name["nginx"].get("version", "")).strip())
+        self.assertEqual("cpe:/a:nginx:nginx", str(by_name["nginx"].get("cpe", "")).strip())
+        self.assertEqual("", str(by_name["apache http server"].get("version", "")).strip())
+        self.assertEqual("cpe:/a:apache:http_server", str(by_name["apache http server"].get("cpe", "")).strip())
+
     def test_infer_findings_uses_tool_specific_nuclei_and_tls_parsers(self):
         from app.web.runtime import WebRuntime
 
@@ -418,6 +741,33 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertIn("Self-signed TLS certificate", finding_titles)
         self.assertNotIn("WRN", finding_titles)
         self.assertNotIn("0:00:05", finding_titles)
+
+    def test_infer_findings_uses_line_level_cve_evidence_for_nmap_output(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        findings = runtime._infer_findings_from_observations(
+            host_cves_raw=[],
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "nmap-vuln.nse",
+                    "output_excerpt": (
+                        "Starting Nmap 7.80 ( https://nmap.org ) at 2026-03-20 15:44 CDT\n"
+                        "NSE: Loaded 149 scripts for scanning.\n"
+                        "| http-vuln-cve2011-3192:\n"
+                        "|   IDs: CVE:CVE-2011-3192\n"
+                        "|_  Apache HTTP Server byterange filter DoS\n"
+                        "Nmap done: 1 IP address (1 host up) scanned in 4.72 seconds\n"
+                    ),
+                }
+            ],
+            limit=32,
+        )
+
+        finding = next(item for item in findings if str(item.get("cve", "")).strip().upper() == "CVE-2011-3192")
+        self.assertIn("IDs: CVE:CVE-2011-3192", str(finding.get("evidence", "")))
+        self.assertNotIn("Starting Nmap", str(finding.get("evidence", "")))
 
     def test_infer_urls_extracts_urls_from_httpx_and_nuclei_outputs(self):
         from app.web.runtime import WebRuntime
@@ -510,6 +860,26 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         )
 
         self.assertEqual("| http-title: portal.example", cleaned)
+
+    def test_normalize_ai_manual_tests_dedupes_by_command(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        manual_tests = runtime._normalize_ai_manual_tests([
+            {
+                "why": "Confirm headers",
+                "command": "curl -k -I https://10.0.0.5",
+                "scope_note": "safe",
+            },
+            {
+                "why": "Validate front door",
+                "command": "curl -k -I https://10.0.0.5",
+                "scope_note": "same command",
+            },
+        ])
+
+        self.assertEqual(1, len(manual_tests))
+        self.assertEqual("curl -k -I https://10.0.0.5", manual_tests[0]["command"])
 
 
 if __name__ == "__main__":

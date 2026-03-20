@@ -2649,6 +2649,7 @@ async function pushProjectAiReportAction(event) {
 }
 
 function openSchedulerSettingsAction() {
+    closeRibbonMenus();
     setSchedulerModalOpen(true);
 }
 
@@ -2690,6 +2691,7 @@ async function saveAppSettingsConfigAction() {
 }
 
 async function openAppSettingsAction() {
+    closeRibbonMenus();
     setAppSettingsModalOpen(true);
     await Promise.allSettled([
         refreshAppSettingsConfigAction(),
@@ -3077,10 +3079,16 @@ async function loadProviderLogsAction() {
         const payload = await fetchJson("/api/scheduler/provider/logs?limit=400");
         providerLogsState.text = String(payload.text || "");
         providerLogsState.count = Array.isArray(payload.logs) ? payload.logs.length : 0;
+        const fallbackCount = Array.isArray(payload.logs)
+            ? payload.logs.filter((row) => Boolean(row?.prompt_metadata?.structured_output_fallback)).length
+            : 0;
+        const structuredCount = Array.isArray(payload.logs)
+            ? payload.logs.filter((row) => Boolean(row?.prompt_metadata?.structured_output_used)).length
+            : 0;
         renderAnsiOutput("provider-logs-text", providerLogsState.text);
         setText(
             "provider-logs-meta",
-            `Entries ${providerLogsState.count} | bytes ${providerLogsState.text.length}`
+            `Entries ${providerLogsState.count} | structured ${structuredCount} | fallback ${fallbackCount} | bytes ${providerLogsState.text.length}`
         );
     } catch (err) {
         const message = `Failed to load provider logs: ${err.message}`;
@@ -3533,23 +3541,36 @@ function renderJobs(jobs) {
         const tr = document.createElement("tr");
         tr.appendChild(makeCell(job.id || ""));
         tr.appendChild(makeCell(job.type || ""));
-        tr.appendChild(makeCell(job.status || ""));
+        const status = String(job?.status || "").trim().toLowerCase();
+        const cancelRequested = Boolean(job?.cancel_requested);
+        const renderedStatus = cancelRequested && status === "running"
+            ? "stopping"
+            : (cancelRequested && status === "queued" ? "cancelling" : (job.status || ""));
+        tr.appendChild(makeCell(renderedStatus));
         tr.appendChild(makeCell(job.created_at || ""));
         tr.appendChild(makeCell(job.started_at || ""));
         tr.appendChild(makeCell(job.finished_at || ""));
         const warnings = Array.isArray(job?.result?.warnings) ? job.result.warnings.filter(Boolean) : [];
         const errorText = String(job?.error || "");
-        const diagnostic = errorText || (warnings.length ? warnings.join(" | ") : "");
+        const cancelReason = String(job?.cancel_reason || "").trim();
+        const diagnostic = errorText
+            || (warnings.length ? warnings.join(" | ") : "")
+            || (cancelRequested ? (cancelReason || "stop requested") : "");
         tr.appendChild(makeCell(diagnostic));
         const actionsCell = document.createElement("td");
-        const status = String(job?.status || "").trim().toLowerCase();
-        if (status === "running" || status === "queued") {
+        if ((status === "running" || status === "queued") && !cancelRequested) {
             const stopBtn = document.createElement("button");
             stopBtn.type = "button";
             stopBtn.textContent = "Stop";
             stopBtn.dataset.jobAction = "stop";
             stopBtn.dataset.jobId = String(job.id || "");
             actionsCell.appendChild(stopBtn);
+        } else if ((status === "running" || status === "queued") && cancelRequested) {
+            const stoppingBtn = document.createElement("button");
+            stoppingBtn.type = "button";
+            stoppingBtn.textContent = status === "queued" ? "Cancelling..." : "Stopping...";
+            stoppingBtn.disabled = true;
+            actionsCell.appendChild(stoppingBtn);
         }
         tr.appendChild(actionsCell);
         body.appendChild(tr);
@@ -3842,6 +3863,7 @@ function applySchedulerPreferences(prefs) {
     const lmStudio = providers.lm_studio || {};
     const openai = providers.openai || {};
     const claude = providers.claude || {};
+    const aiFeedback = prefs.ai_feedback || {};
     const projectDelivery = prefs.project_report_delivery || {};
     const projectDeliveryMtls = projectDelivery.mtls || {};
 
@@ -3852,10 +3874,21 @@ function applySchedulerPreferences(prefs) {
     setValue("provider-openai-baseurl", openai.base_url || "");
     setValue("provider-openai-model", openai.model || "");
     setValue("provider-openai-apikey", "");
+    setChecked("provider-openai-structured-outputs", Boolean(openai.structured_outputs));
 
     setValue("provider-claude-baseurl", claude.base_url || "");
     setValue("provider-claude-model", claude.model || "");
     setValue("provider-claude-apikey", "");
+    setChecked("scheduler-ai-feedback-enabled", aiFeedback.enabled !== false);
+    setValue("scheduler-ai-max-rounds", String(aiFeedback.max_rounds_per_target || 5));
+    setValue("scheduler-ai-max-actions", String(aiFeedback.max_actions_per_round || 6));
+    setValue("scheduler-ai-recent-output-chars", String(aiFeedback.recent_output_chars || 900));
+    setChecked("scheduler-ai-reflection-enabled", aiFeedback.reflection_enabled !== false);
+    setValue("scheduler-ai-stall-rounds", String(aiFeedback.stall_rounds_without_progress || 2));
+    setValue("scheduler-ai-repeat-threshold", String(aiFeedback.stall_repeat_selection_threshold || 2));
+    setValue("scheduler-ai-max-reflections", String(aiFeedback.max_reflections_per_target || 1));
+    setChecked("feature-scheduler-prompt-profiles", featureFlags.scheduler_prompt_profiles !== false);
+    setChecked("feature-scheduler-web-followup-sidecar", Boolean(featureFlags.scheduler_web_followup_sidecar));
 
     setValue("project-report-provider-name", projectDelivery.provider_name || "");
     setValue("project-report-endpoint", projectDelivery.endpoint || "");
@@ -3889,6 +3922,8 @@ function normalizeSchedulerFeatureFlags(flags) {
     return {
         graph_workspace: provided.graph_workspace !== false,
         optional_runners: provided.optional_runners !== false,
+        scheduler_prompt_profiles: provided.scheduler_prompt_profiles !== false,
+        scheduler_web_followup_sidecar: Boolean(provided.scheduler_web_followup_sidecar),
     };
 }
 
@@ -4054,6 +4089,30 @@ function collectSchedulerPreferencesFromForm() {
     const maxJobs = Number.isFinite(rawMaxJobs)
         ? Math.max(20, Math.min(2000, rawMaxJobs))
         : 200;
+    const rawAiMaxRounds = parseInt(getValue("scheduler-ai-max-rounds"), 10);
+    const aiMaxRounds = Number.isFinite(rawAiMaxRounds)
+        ? Math.max(1, Math.min(12, rawAiMaxRounds))
+        : 5;
+    const rawAiMaxActions = parseInt(getValue("scheduler-ai-max-actions"), 10);
+    const aiMaxActions = Number.isFinite(rawAiMaxActions)
+        ? Math.max(1, Math.min(8, rawAiMaxActions))
+        : 6;
+    const rawAiRecentOutputChars = parseInt(getValue("scheduler-ai-recent-output-chars"), 10);
+    const aiRecentOutputChars = Number.isFinite(rawAiRecentOutputChars)
+        ? Math.max(320, Math.min(4000, rawAiRecentOutputChars))
+        : 900;
+    const rawAiStallRounds = parseInt(getValue("scheduler-ai-stall-rounds"), 10);
+    const aiStallRounds = Number.isFinite(rawAiStallRounds)
+        ? Math.max(1, Math.min(6, rawAiStallRounds))
+        : 2;
+    const rawAiRepeatThreshold = parseInt(getValue("scheduler-ai-repeat-threshold"), 10);
+    const aiRepeatThreshold = Number.isFinite(rawAiRepeatThreshold)
+        ? Math.max(1, Math.min(8, rawAiRepeatThreshold))
+        : 2;
+    const rawAiMaxReflections = parseInt(getValue("scheduler-ai-max-reflections"), 10);
+    const aiMaxReflections = Number.isFinite(rawAiMaxReflections)
+        ? Math.max(0, Math.min(4, rawAiMaxReflections))
+        : 1;
     const dangerousCategories = [
         "exploit_execution",
         "credential_bruteforce",
@@ -4071,6 +4130,7 @@ function collectSchedulerPreferencesFromForm() {
             enabled: selectedProvider === "openai",
             base_url: getValue("provider-openai-baseurl"),
             model: getValue("provider-openai-model"),
+            structured_outputs: getChecked("provider-openai-structured-outputs"),
         },
         claude: {
             enabled: selectedProvider === "claude",
@@ -4126,7 +4186,21 @@ function collectSchedulerPreferencesFromForm() {
         provider: selectedProvider,
         max_concurrency: maxConcurrency,
         max_jobs: maxJobs,
+        ai_feedback: {
+            enabled: getChecked("scheduler-ai-feedback-enabled"),
+            max_rounds_per_target: aiMaxRounds,
+            max_actions_per_round: aiMaxActions,
+            recent_output_chars: aiRecentOutputChars,
+            reflection_enabled: getChecked("scheduler-ai-reflection-enabled"),
+            stall_rounds_without_progress: aiStallRounds,
+            stall_repeat_selection_threshold: aiRepeatThreshold,
+            max_reflections_per_target: aiMaxReflections,
+        },
         dangerous_categories: dangerousCategories,
+        feature_flags: {
+            scheduler_prompt_profiles: getChecked("feature-scheduler-prompt-profiles"),
+            scheduler_web_followup_sidecar: getChecked("feature-scheduler-web-followup-sidecar"),
+        },
         providers,
     };
 }
@@ -4193,7 +4267,7 @@ async function postJson(url, payload) {
 }
 
 async function fetchJson(url) {
-    const response = await fetch(url);
+    const response = await fetch(url, {cache: "no-store"});
     if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
     }
@@ -8527,7 +8601,7 @@ function connectSnapshotWebSocket() {
 
 async function pollSnapshot() {
     try {
-        const response = await fetch("/api/snapshot");
+        const response = await fetch("/api/snapshot", {cache: "no-store"});
         if (!response.ok) {
             setLiveChip("Polling Error", true);
             return;
@@ -8673,6 +8747,11 @@ async function testSchedulerProviderAction(event) {
         }
         if (result.endpoint) {
             summaryParts.push(result.endpoint);
+        }
+        if (result.structured_output_used) {
+            summaryParts.push("structured");
+        } else if (result.structured_output_fallback) {
+            summaryParts.push("structured-fallback");
         }
         if (result.auto_selected_model) {
             summaryParts.push("auto-selected");

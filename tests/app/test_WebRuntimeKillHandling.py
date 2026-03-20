@@ -210,7 +210,10 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         runtime._process_runtime_lock = threading.Lock()
         runtime._active_processes = {}
         runtime._kill_requests = set()
+        runtime._job_process_ids = {}
+        runtime._process_job_id = {}
         runtime._ensure_process_tables = lambda: None
+        runtime._emit_ui_invalidation = lambda *_args, **_kwargs: None
         runtime._is_nmap_command = lambda *_args, **_kwargs: False
         runtime._update_nmap_process_progress = lambda *_args, **_kwargs: None
         runtime._write_process_output_partial = lambda *_args, **_kwargs: None
@@ -395,6 +398,94 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         self.assertEqual([], repo.problems)
         self.assertEqual([], repo.crashed)
         self.assertIn("progress heartbeat", repo.outputs["1"])
+
+    def test_quiet_long_running_timeout_uses_cpu_io_inactivity(self):
+        from app.web.runtime import WebRuntime
+
+        repo = _DummyProcessRepo()
+        runtime = self._make_runtime(repo)
+        runtime._signal_process_tree = lambda proc, force=False: proc.kill() if force else proc.terminate()
+        runtime._resolve_process_timeout_policy = lambda *_args, **_kwargs: {
+            "quiet_long_running": True,
+            "inactivity_timeout_seconds": 5,
+            "hard_timeout_seconds": 0,
+        }
+        runtime._sample_process_tree_activity = lambda _proc: (0.0, 0)
+        clock = _FakeClock(start=100.0)
+        proc = _ClockDrivenProc(
+            clock,
+            stdout=_ScheduledStdout(clock, []),
+            exit_at=None,
+            pid=65012,
+        )
+
+        with patch("app.web.runtime.subprocess.Popen", return_value=proc):
+            with patch("app.web.runtime.time.monotonic", side_effect=clock.monotonic):
+                with patch("app.web.runtime.time.sleep", side_effect=clock.sleep):
+                    executed, reason, process_id = WebRuntime._run_command_with_tracking(
+                        runtime,
+                        tool_name="nikto",
+                        tab_title="Test",
+                        host_ip="127.0.0.1",
+                        port="443",
+                        protocol="tcp",
+                        command="nikto -h https://127.0.0.1/",
+                        outputfile="/tmp/out",
+                        timeout=5,
+                    )
+
+        self.assertFalse(executed)
+        self.assertEqual("failed: timeout after 5s without CPU/IO activity", reason)
+        self.assertEqual(1, process_id)
+        self.assertEqual(["1"], repo.problems)
+        self.assertIn("[timeout after 5s without CPU/IO activity]", repo.outputs["1"])
+
+    def test_cpu_io_activity_extends_quiet_long_running_budget(self):
+        from app.web.runtime import WebRuntime
+
+        repo = _DummyProcessRepo()
+        runtime = self._make_runtime(repo)
+        runtime._signal_process_tree = lambda proc, force=False: proc.kill() if force else proc.terminate()
+        runtime._resolve_process_timeout_policy = lambda *_args, **_kwargs: {
+            "quiet_long_running": True,
+            "inactivity_timeout_seconds": 5,
+            "hard_timeout_seconds": 0,
+        }
+        clock = _FakeClock(start=100.0)
+        proc = _ClockDrivenProc(
+            clock,
+            stdout=_ScheduledStdout(clock, []),
+            exit_at=108.0,
+            pid=65013,
+        )
+
+        def activity_sample(_proc):
+            if clock.monotonic() >= 104.0:
+                return 1.0, 128
+            return 0.0, 0
+
+        runtime._sample_process_tree_activity = activity_sample
+
+        with patch("app.web.runtime.subprocess.Popen", return_value=proc):
+            with patch("app.web.runtime.time.monotonic", side_effect=clock.monotonic):
+                with patch("app.web.runtime.time.sleep", side_effect=clock.sleep):
+                    executed, reason, process_id = WebRuntime._run_command_with_tracking(
+                        runtime,
+                        tool_name="nikto",
+                        tab_title="Test",
+                        host_ip="127.0.0.1",
+                        port="443",
+                        protocol="tcp",
+                        command="nikto -h https://127.0.0.1/",
+                        outputfile="/tmp/out",
+                        timeout=5,
+                    )
+
+        self.assertTrue(executed)
+        self.assertEqual("completed", reason)
+        self.assertEqual(1, process_id)
+        self.assertEqual([], repo.problems)
+        self.assertEqual([], repo.crashed)
 
 
 if __name__ == "__main__":

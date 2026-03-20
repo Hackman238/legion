@@ -143,11 +143,11 @@ Legion is local-first by design. It does not require Docker, external databases,
 ```shell
 git clone https://github.com/Hackman238/legion.git
 cd legion
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -r requirements.txt
-python3 legion.py --web
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python legion.py --web
 ```
 
 Open `http://127.0.0.1:5000` unless you used `--web-bind-all`.
@@ -173,7 +173,7 @@ Recommended way to launch the side-by-side install:
 ```shell
 cd ~/.local/opt/legion-web-dev
 source ~/.local/opt/legion-web-dev/.venv/bin/activate
-python3 legion.py --web
+python legion.py --web
 ```
 
 ## 🏗 Development

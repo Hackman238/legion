@@ -30,10 +30,42 @@ class DummySchedulerConfig:
                 "legacy_goal_profile": "internal_asset_discovery",
             },
             "provider": "none",
-            "providers": {},
+            "providers": {
+                "openai": {
+                    "enabled": False,
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-4.1-mini",
+                    "api_key": "",
+                    "structured_outputs": False,
+                },
+                "claude": {
+                    "enabled": False,
+                    "base_url": "https://api.anthropic.com",
+                    "model": "",
+                    "api_key": "",
+                },
+                "lm_studio": {
+                    "enabled": False,
+                    "base_url": "http://127.0.0.1:1234/v1",
+                    "model": "",
+                    "api_key": "",
+                },
+            },
             "feature_flags": {
                 "graph_workspace": True,
                 "optional_runners": True,
+                "scheduler_prompt_profiles": True,
+                "scheduler_web_followup_sidecar": False,
+            },
+            "ai_feedback": {
+                "enabled": True,
+                "max_rounds_per_target": 5,
+                "max_actions_per_round": 6,
+                "recent_output_chars": 900,
+                "reflection_enabled": True,
+                "stall_rounds_without_progress": 2,
+                "stall_repeat_selection_threshold": 2,
+                "max_reflections_per_target": 1,
             },
             "project_report_delivery": {
                 "provider_name": "",
@@ -63,6 +95,18 @@ class DummySchedulerConfig:
             feature_flags = dict(self.state.get("feature_flags", {}))
             feature_flags.update(updates.get("feature_flags", {}))
             updates["feature_flags"] = feature_flags
+        if isinstance(updates.get("ai_feedback"), dict):
+            ai_feedback = dict(self.state.get("ai_feedback", {}))
+            ai_feedback.update(updates.get("ai_feedback", {}))
+            updates["ai_feedback"] = ai_feedback
+        if isinstance(updates.get("providers"), dict):
+            providers = dict(self.state.get("providers", {}))
+            for provider_name, provider_cfg in updates.get("providers", {}).items():
+                existing = dict(providers.get(provider_name, {}))
+                if isinstance(provider_cfg, dict):
+                    existing.update(provider_cfg)
+                providers[provider_name] = existing
+            updates["providers"] = providers
         elif "goal_profile" in updates:
             policy = dict(self.state.get("engagement_policy", {}))
             policy["preset"] = "external_pentest" if str(updates.get("goal_profile", "")).strip().lower() == "external_pentest" else "internal_recon"
@@ -670,6 +714,21 @@ class DummyRuntime:
     def clear_processes(self, reset_all=False):
         return {"cleared": True, "reset_all": bool(reset_all)}
 
+    def get_workspace_processes(self, limit=75):
+        rows = [
+            {
+                "id": 1,
+                "name": "smb-enum-users.nse",
+                "hostIp": "10.0.0.5",
+                "port": "445",
+                "protocol": "tcp",
+                "status": "Finished",
+                "startTime": "2026-02-18T12:00:00Z",
+                "elapsed": "10s",
+            }
+        ]
+        return rows[: max(1, int(limit or 75))]
+
     def list_jobs(self, limit=100):
         return self.jobs[:limit]
 
@@ -720,6 +779,7 @@ class DummyRuntime:
             "provider": self.scheduler_config.state["provider"],
             "providers": self.scheduler_config.state["providers"],
             "feature_flags": self.scheduler_config.state["feature_flags"],
+            "ai_feedback": self.scheduler_config.state["ai_feedback"],
             "project_report_delivery": self.scheduler_config.state["project_report_delivery"],
             "dangerous_categories": self.scheduler_config.state["dangerous_categories"],
             "preapproved_families_count": len(self.scheduler_config.state["preapproved_command_families"]),
@@ -1256,6 +1316,22 @@ class DummyRuntime:
                 "model": "o3-7b",
                 "latency_ms": 41,
             }
+        if provider == "openai":
+            openai_cfg = (
+                merged.get("providers", {}).get("openai", {})
+                if isinstance(merged.get("providers", {}), dict)
+                else {}
+            )
+            structured_enabled = bool(openai_cfg.get("structured_outputs", False)) if isinstance(openai_cfg, dict) else False
+            return {
+                "ok": True,
+                "provider": "openai",
+                "model": str(openai_cfg.get("model", "gpt-4.1-mini") or "gpt-4.1-mini"),
+                "latency_ms": 52,
+                "structured_output_requested": structured_enabled,
+                "structured_output_used": structured_enabled,
+                "structured_output_fallback": False,
+            }
         return {
             "ok": False,
             "provider": provider,
@@ -1275,6 +1351,14 @@ class DummyRuntime:
                 "response_status": 200,
                 "response_body": "{\"choices\":[]}",
                 "error": "",
+                "prompt_metadata": {
+                    "prompt_version": "scheduler-ranking-v2",
+                    "prompt_type": "ranking",
+                    "prompt_profile": "web:broad_vuln",
+                    "structured_output_requested": True,
+                    "structured_output_used": False,
+                    "structured_output_fallback": True,
+                },
             }
         ][:max(1, int(limit or 1))]
 
@@ -1603,6 +1687,17 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('id="settings-tool-install-copy-button"', body)
         self.assertIn('id="settings-tool-install-run-button"', body)
         self.assertIn('id="settings-tool-install-script"', body)
+        self.assertIn('id="provider-openai-structured-outputs"', body)
+        self.assertIn('id="scheduler-ai-feedback-enabled"', body)
+        self.assertIn('id="scheduler-ai-max-rounds"', body)
+        self.assertIn('id="scheduler-ai-max-actions"', body)
+        self.assertIn('id="scheduler-ai-recent-output-chars"', body)
+        self.assertIn('id="scheduler-ai-reflection-enabled"', body)
+        self.assertIn('id="scheduler-ai-stall-rounds"', body)
+        self.assertIn('id="scheduler-ai-repeat-threshold"', body)
+        self.assertIn('id="scheduler-ai-max-reflections"', body)
+        self.assertIn('id="feature-scheduler-prompt-profiles"', body)
+        self.assertIn('id="feature-scheduler-web-followup-sidecar"', body)
         self.assertIn('id="jobs-body"', body)
         self.assertIn('id="scan-history-body"', body)
         self.assertIn('id="decisions-body"', body)
@@ -1683,6 +1778,9 @@ class WebAppTest(unittest.TestCase):
         response = self.client.get("/api/snapshot")
         self.assertEqual(200, response.status_code)
         self.assertEqual("demo", response.json["project"]["name"])
+        self.assertEqual("no-store, max-age=0, must-revalidate", response.headers.get("Cache-Control"))
+        self.assertEqual("no-cache", response.headers.get("Pragma"))
+        self.assertEqual("0", response.headers.get("Expires"))
 
     def test_project_endpoints(self):
         details = self.client.get("/api/project")
@@ -1776,6 +1874,15 @@ class WebAppTest(unittest.TestCase):
         response = self.client.get("/api/scheduler/preferences")
         self.assertEqual(200, response.status_code)
         self.assertEqual("deterministic", response.json["mode"])
+        self.assertTrue(response.json["feature_flags"]["scheduler_prompt_profiles"])
+        self.assertFalse(response.json["feature_flags"]["scheduler_web_followup_sidecar"])
+        self.assertIn("openai", response.json["providers"])
+        self.assertFalse(response.json["providers"]["openai"]["structured_outputs"])
+        self.assertTrue(response.json["ai_feedback"]["enabled"])
+        self.assertTrue(response.json["ai_feedback"]["reflection_enabled"])
+        self.assertEqual(2, response.json["ai_feedback"]["stall_rounds_without_progress"])
+        self.assertEqual(2, response.json["ai_feedback"]["stall_repeat_selection_threshold"])
+        self.assertEqual(1, response.json["ai_feedback"]["max_reflections_per_target"])
 
     def test_scheduler_preferences_update_endpoint(self):
         response = self.client.post("/api/scheduler/preferences", json={"mode": "ai", "goal_profile": "external_pentest"})
@@ -1806,12 +1913,59 @@ class WebAppTest(unittest.TestCase):
                 "feature_flags": {
                     "graph_workspace": False,
                     "optional_runners": False,
+                    "scheduler_prompt_profiles": False,
+                    "scheduler_web_followup_sidecar": True,
                 }
             },
         )
         self.assertEqual(200, response.status_code)
         self.assertFalse(response.json["feature_flags"]["graph_workspace"])
         self.assertFalse(response.json["feature_flags"]["optional_runners"])
+        self.assertFalse(response.json["feature_flags"]["scheduler_prompt_profiles"])
+        self.assertTrue(response.json["feature_flags"]["scheduler_web_followup_sidecar"])
+
+    def test_scheduler_preferences_update_accepts_openai_structured_outputs(self):
+        response = self.client.post(
+            "/api/scheduler/preferences",
+            json={
+                "provider": "openai",
+                "providers": {
+                    "openai": {
+                        "enabled": True,
+                        "structured_outputs": True,
+                    }
+                },
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("openai", response.json["provider"])
+        self.assertTrue(response.json["providers"]["openai"]["structured_outputs"])
+
+    def test_scheduler_preferences_update_accepts_ai_feedback_controls(self):
+        response = self.client.post(
+            "/api/scheduler/preferences",
+            json={
+                "ai_feedback": {
+                    "enabled": False,
+                    "max_rounds_per_target": 7,
+                    "max_actions_per_round": 4,
+                    "recent_output_chars": 1200,
+                    "reflection_enabled": True,
+                    "stall_rounds_without_progress": 3,
+                    "stall_repeat_selection_threshold": 5,
+                    "max_reflections_per_target": 2,
+                }
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertFalse(response.json["ai_feedback"]["enabled"])
+        self.assertEqual(7, response.json["ai_feedback"]["max_rounds_per_target"])
+        self.assertEqual(4, response.json["ai_feedback"]["max_actions_per_round"])
+        self.assertEqual(1200, response.json["ai_feedback"]["recent_output_chars"])
+        self.assertTrue(response.json["ai_feedback"]["reflection_enabled"])
+        self.assertEqual(3, response.json["ai_feedback"]["stall_rounds_without_progress"])
+        self.assertEqual(5, response.json["ai_feedback"]["stall_repeat_selection_threshold"])
+        self.assertEqual(2, response.json["ai_feedback"]["max_reflections_per_target"])
 
     def test_engagement_policy_endpoints(self):
         current = self.client.get("/api/engagement-policy")
@@ -1848,12 +2002,35 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(response.json["ok"])
         self.assertEqual("lm_studio", response.json["provider"])
 
+    def test_scheduler_provider_test_endpoint_reports_openai_structured_outputs(self):
+        response = self.client.post(
+            "/api/scheduler/provider/test",
+            json={
+                "provider": "openai",
+                "providers": {
+                    "openai": {
+                        "enabled": True,
+                        "model": "gpt-5-mini",
+                        "structured_outputs": True,
+                    }
+                },
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json["ok"])
+        self.assertEqual("openai", response.json["provider"])
+        self.assertTrue(response.json["structured_output_requested"])
+        self.assertTrue(response.json["structured_output_used"])
+        self.assertFalse(response.json["structured_output_fallback"])
+
     def test_scheduler_provider_logs_endpoint(self):
         response = self.client.get("/api/scheduler/provider/logs?limit=20")
         self.assertEqual(200, response.status_code)
         self.assertIn("logs", response.json)
         self.assertIn("text", response.json)
         self.assertEqual("openai", response.json["logs"][0]["provider"])
+        self.assertIn("prompt metadata:", response.json["text"])
+        self.assertTrue(response.json["logs"][0]["prompt_metadata"]["structured_output_fallback"])
 
     def test_scheduler_approve_family_endpoint(self):
         response = self.client.post("/api/scheduler/approve-family", json={"family_id": "fam123", "tool_id": "hydra"})
@@ -1893,6 +2070,7 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(1, len(response.json["scans"]))
         self.assertEqual("nmap_scan", response.json["scans"][0]["submission_kind"])
         self.assertEqual("10.0.0.0/24", response.json["scans"][0]["target_summary"])
+        self.assertEqual("no-store, max-age=0, must-revalidate", response.headers.get("Cache-Control"))
 
     def test_graph_api_endpoints(self):
         graph = self.client.get("/api/graph?node_type=technology&hide_ai_suggested=true&host_id=11")
@@ -2028,10 +2206,12 @@ class WebAppTest(unittest.TestCase):
         listing = self.client.get("/api/jobs?limit=10")
         self.assertEqual(200, listing.status_code)
         self.assertEqual(1, len(listing.json["jobs"]))
+        self.assertEqual("no-store, max-age=0, must-revalidate", listing.headers.get("Cache-Control"))
 
         details = self.client.get("/api/jobs/1")
         self.assertEqual(200, details.status_code)
         self.assertEqual(1, details.json["id"])
+        self.assertEqual("no-store, max-age=0, must-revalidate", details.headers.get("Cache-Control"))
 
         stop = self.client.post("/api/jobs/1/stop", json={})
         self.assertEqual(200, stop.status_code)
@@ -2255,9 +2435,14 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(202, tool_run.status_code)
         self.assertEqual("accepted", tool_run.json["status"])
 
+        processes = self.client.get("/api/processes?limit=10")
+        self.assertEqual(200, processes.status_code)
+        self.assertEqual("no-store, max-age=0, must-revalidate", processes.headers.get("Cache-Control"))
+
         process_output = self.client.get("/api/processes/1/output")
         self.assertEqual(200, process_output.status_code)
         self.assertEqual("sample output", process_output.json["output"])
+        self.assertEqual("no-store, max-age=0, must-revalidate", process_output.headers.get("Cache-Control"))
         process_output_tail = self.client.get("/api/processes/1/output?offset=7")
         self.assertEqual(200, process_output_tail.status_code)
         self.assertEqual("output", process_output_tail.json["output_chunk"])

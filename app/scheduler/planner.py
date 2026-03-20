@@ -1,6 +1,7 @@
 import logging
 import json
 import re
+import shlex
 import threading
 from typing import Any, Dict, List, Optional, Set
 
@@ -8,7 +9,12 @@ from app.scheduler.family import build_command_family_id
 from app.scheduler.models import PlanStep
 from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
 from app.scheduler.policy import EngagementPolicy, normalize_engagement_policy
-from app.scheduler.providers import ProviderError, get_last_provider_payload, rank_actions_with_provider
+from app.scheduler.providers import (
+    ProviderError,
+    get_last_provider_payload,
+    rank_actions_with_provider,
+    select_web_followup_with_provider,
+)
 from app.scheduler.registry import ActionRegistry
 from app.scheduler.strategy_packs import evaluate_action_strategy, select_strategy_packs
 
@@ -23,6 +29,42 @@ class SchedulerPlanner:
     WEB_AI_DEEP_WEB_TOOL_IDS = ("whatweb", "whatweb-http", "whatweb-https", "nikto", "web-content-discovery", "dirsearch", "ffuf")
     WEB_AI_TARGETED_NUCLEI_TOOL_IDS = ("nuclei-cves", "nuclei-exposures", "nuclei-wordpress")
     WEB_AI_GENERIC_HTTP_FOLLOWUP_TOOL_IDS = ("curl-headers", "curl-options", "curl-robots")
+    WEB_AI_SPECIALIST_FOLLOWUP_TOOL_IDS = (
+        "whatweb",
+        "whatweb-http",
+        "whatweb-https",
+        "nikto",
+        "web-content-discovery",
+        "dirsearch",
+        "ffuf",
+        "feroxbuster",
+        "gobuster",
+        "nuclei-cves",
+        "nuclei-exposures",
+        "nuclei-wordpress",
+        "curl-headers",
+        "curl-options",
+        "curl-robots",
+        "wafw00f",
+        "wpscan",
+        "http-wapiti",
+        "https-wapiti",
+    )
+    WEB_AI_SPECIALIST_FOLLOWUP_BONUS = 18.0
+    STRICT_COVERAGE_GAP_IDS = {
+        "missing_discovery",
+        "missing_banner",
+        "missing_screenshot",
+        "missing_remote_screenshot",
+        "missing_nmap_vuln",
+        "missing_nuclei_auto",
+        "missing_whatweb",
+        "missing_nikto",
+        "missing_web_content_discovery",
+        "missing_http_followup",
+        "missing_smb_signing_checks",
+        "missing_internal_safe_enum",
+    }
     GENERIC_WEB_TOOL_TOKENS = {
         "http", "https", "ssl", "tls", "web", "proxy", "alt",
         "scan", "scanner", "check", "checker", "test", "testing",
@@ -214,6 +256,12 @@ class SchedulerPlanner:
                     or self._normalize_text_token(command_signature) in excluded_signatures
             ):
                 continue
+            if self._candidate_blocked_by_tool_audit(
+                    tool_id=tool_id,
+                    command_template=str(action.command_template or ""),
+                    context=context,
+            ):
+                continue
             strategy_guidance = evaluate_action_strategy(
                 action,
                 selected_packs,
@@ -306,13 +354,22 @@ class SchedulerPlanner:
         if not candidates:
             return []
 
-        scores_by_tool = {}
-        rationales_by_tool = {}
         config = self.config_manager.load()
+        feature_flags = config.get("feature_flags", {}) if isinstance(config, dict) else {}
         provider_name = str(config.get("provider", "none") or "none").strip().lower()
         provider_cfg = config.get("providers", {}).get(provider_name, {}) if isinstance(config.get("providers", {}), dict) else {}
         provider_enabled = bool(provider_cfg.get("enabled", False)) if isinstance(provider_cfg, dict) else False
+        if provider_enabled and self._should_abstain_for_unmatched_strict_coverage_gap(candidates, context=context):
+            return []
+
+        scores_by_tool = {}
+        rationales_by_tool = {}
+        web_followup_sidecar_enabled = bool(feature_flags.get("scheduler_web_followup_sidecar", False)) \
+            if isinstance(feature_flags, dict) else False
         provider_error = ""
+        provider_payload = {}
+        specialist_selected_tool_ids = set()
+        specialist_reason_by_tool = {}
         try:
             provider_ranked = rank_actions_with_provider(
                 config=config,
@@ -322,7 +379,8 @@ class SchedulerPlanner:
                 candidates=candidates,
                 context=context or {},
             )
-            self._set_last_provider_payload(get_last_provider_payload(clear=True))
+            provider_payload = get_last_provider_payload(clear=True)
+            self._set_last_provider_payload(provider_payload)
         except ProviderError as exc:
             provider_error = str(exc)
             logger.warning(
@@ -332,7 +390,8 @@ class SchedulerPlanner:
                 provider_name,
                 provider_error,
             )
-            self._set_last_provider_payload(get_last_provider_payload(clear=True))
+            provider_payload = get_last_provider_payload(clear=True)
+            self._set_last_provider_payload(provider_payload)
             provider_ranked = []
 
         for item in provider_ranked:
@@ -346,6 +405,58 @@ class SchedulerPlanner:
             scores_by_tool[tool_id] = score
             rationales_by_tool[tool_id] = str(item.get("rationale", "")).strip()
 
+        if provider_ranked and self._provider_rankings_skip_visible_gap_closers(
+                provider_ranked=provider_ranked,
+                candidates=candidates,
+                context=context,
+        ):
+            scores_by_tool = {}
+            rationales_by_tool = {}
+
+        if (
+                provider_enabled
+                and not provider_error
+                and bool(web_followup_sidecar_enabled)
+                and self._should_run_web_followup_sidecar(service_name, context=context)
+        ):
+            specialist_candidates = self._web_followup_sidecar_candidates(candidates, context=context)
+            if specialist_candidates:
+                try:
+                    sidecar_payload = select_web_followup_with_provider(
+                        config=config,
+                        goal_profile=policy.legacy_goal_profile,
+                        service=service_name,
+                        protocol=protocol_name,
+                        candidates=specialist_candidates,
+                        context=context or {},
+                    )
+                    allowed_sidecar_tool_ids = {
+                        self._normalized_tool_id(item.get("tool_id", ""))
+                        for item in specialist_candidates
+                        if str(item.get("tool_id", "")).strip()
+                    }
+                    normalized_sidecar_tool_ids = [
+                        tool_id
+                        for tool_id in self._normalize_tool_id_set(sidecar_payload.get("selected_tool_ids", []))
+                        if tool_id in allowed_sidecar_tool_ids
+                    ]
+                    sidecar_payload["selected_tool_ids"] = normalized_sidecar_tool_ids
+                    specialist_selected_tool_ids = set(normalized_sidecar_tool_ids)
+                    sidecar_reason = str(sidecar_payload.get("reason", "") or "").strip()
+                    if sidecar_reason:
+                        for tool_id in specialist_selected_tool_ids:
+                            specialist_reason_by_tool[tool_id] = sidecar_reason
+                    provider_payload = self._merge_specialist_sidecar_payload(provider_payload, sidecar_payload)
+                    self._set_last_provider_payload(provider_payload)
+                except ProviderError as exc:
+                    logger.warning(
+                        "AI web follow-up sidecar failed for %s/%s using provider=%s: %s",
+                        service_name,
+                        protocol_name,
+                        provider_name,
+                        exc,
+                    )
+
         decisions = []
         for candidate in candidates:
             action = candidate["action"]
@@ -354,6 +465,11 @@ class SchedulerPlanner:
             command_template = candidate["command_template"]
             family_id = str(candidate.get("family_id", "") or build_command_family_id(tool_id, protocol_name, command_template))
             command_signature = str(candidate.get("command_signature", "") or self._command_signature(protocol_name, command_template))
+            unavailable_tools = self._context_unavailable_tool_ids(context)
+            tool_unavailable = (
+                self._normalized_tool_id(tool_id) in unavailable_tools
+                or bool(self._command_tool_tokens(command_template) & unavailable_tools)
+            )
 
             score = scores_by_tool.get(tool_id)
             provider_supplied_score = score is not None
@@ -376,7 +492,7 @@ class SchedulerPlanner:
             )
             if not provider_supplied_score:
                 score = float(score) + float(strategy_guidance.bonus or 0.0)
-            if self._is_web_service(service_name):
+            if self._is_web_service(service_name) and not tool_unavailable:
                 if tool_id == "nuclei-web":
                     score = max(score, 96.0)
                 elif tool_id == "nmap-vuln.nse":
@@ -391,6 +507,8 @@ class SchedulerPlanner:
                     score = max(score, 84.0)
                 elif tool_id == "nikto":
                     score = max(score, 82.0)
+            if self._normalized_tool_id(tool_id) in specialist_selected_tool_ids:
+                score = min(100.0, max(float(score) + float(self.WEB_AI_SPECIALIST_FOLLOWUP_BONUS), 86.0))
             rationale = rationales_by_tool.get(tool_id) or self._build_rationale(
                 tool_id,
                 policy,
@@ -401,6 +519,11 @@ class SchedulerPlanner:
                 context_signals=self._active_context_signals(context),
             )
             rationale = self._append_strategy_context(rationale, strategy_guidance)
+            rationale = self._append_specialist_sidecar_context(
+                rationale,
+                tool_id=tool_id,
+                specialist_reason=specialist_reason_by_tool.get(self._normalized_tool_id(tool_id), ""),
+            )
 
             step = PlanStep.from_action_spec(
                 action,
@@ -530,7 +653,8 @@ class SchedulerPlanner:
         attempted_families = cls._normalize_text_token_set(context.get("attempted_family_ids", []))
         attempted_signatures = cls._normalize_text_token_set(context.get("attempted_command_signatures", []))
         signals = context.get("signals", {}) if isinstance(context.get("signals", {}), dict) else {}
-        missing_tools = cls._normalize_tool_id_set(signals.get("missing_tools", []))
+        missing_tools = cls._context_unavailable_tool_ids(context)
+        command_tools = cls._command_tool_tokens(command_template)
         coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
         coverage_missing = {
             str(item or "").strip().lower()
@@ -553,7 +677,7 @@ class SchedulerPlanner:
             value -= 42.0
         if cls._normalize_text_token(command_signature) in attempted_signatures:
             value -= 58.0
-        if tool_norm in missing_tools:
+        if tool_norm in missing_tools or bool(command_tools & missing_tools):
             value -= 90.0
         if tool_norm in coverage_recommended:
             value += 22.0
@@ -682,6 +806,8 @@ class SchedulerPlanner:
         signals = context.get("signals", {})
         if not isinstance(signals, dict):
             return candidates
+        missing_tools = cls._context_unavailable_tool_ids(context)
+        suppressed_tools = cls._context_suppressed_tool_ids(context)
         coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
         coverage_missing = {
             str(item or "").strip().lower()
@@ -709,9 +835,27 @@ class SchedulerPlanner:
                 label,
                 command_template,
             ]).lower()
+            command_tools = cls._command_tool_tokens(command_template)
 
             blocked = False
             specialized_rule_matched = False
+            if cls._candidate_blocked_by_tool_audit(
+                    tool_id=tool_id,
+                    command_template=command_template,
+                    context=context,
+            ):
+                blocked = True
+            if (
+                    cls._normalized_tool_id(tool_id) in missing_tools
+                    or bool(command_tools & missing_tools)
+                    or cls._normalized_tool_id(tool_id) in suppressed_tools
+            ):
+                blocked = True
+            if cls._covered_web_followup_tool_already_satisfied(
+                    tool_id=tool_id,
+                    context=context,
+            ):
+                blocked = True
             if baseline_missing:
                 if cls._matches_any_token(tool_text, ("coldfusion", "vmware", "webdav", "huawei", "drupal", "wordpress", "qnap", "domino")):
                     if cls._normalized_tool_id(tool_id) not in {
@@ -768,10 +912,307 @@ class SchedulerPlanner:
         # Keep original candidates if pruning would remove everything.
         return filtered or candidates
 
+    @classmethod
+    def _covered_web_followup_tool_already_satisfied(
+            cls,
+            *,
+            tool_id: str,
+            context: Optional[Dict[str, Any]],
+    ) -> bool:
+        if not isinstance(context, dict):
+            return False
+        tool_norm = cls._normalized_tool_id(tool_id)
+        if not tool_norm:
+            return False
+
+        coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
+        coverage_has = coverage.get("has", {}) if isinstance(coverage.get("has", {}), dict) else {}
+        coverage_missing = {
+            str(item or "").strip().lower()
+            for item in (coverage.get("missing", []) if isinstance(coverage.get("missing", []), list) else [])
+            if str(item or "").strip()
+        }
+        analysis_mode = str(
+            coverage.get("analysis_mode", "")
+            or context.get("analysis_mode", "")
+            or "standard"
+        ).strip().lower()
+        if analysis_mode == "dig_deeper":
+            return False
+
+        summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        reflection = summary.get("reflection_posture", {}) if isinstance(summary.get("reflection_posture", {}), dict) else {}
+        reflection_promotes = cls._normalize_tool_id_set(reflection.get("promote_tool_ids", []))
+        if tool_norm in reflection_promotes:
+            return False
+
+        if tool_norm in {"whatweb", "whatweb-http", "whatweb-https"}:
+            return bool(coverage_has.get("whatweb")) and not bool(
+                coverage_missing & {"missing_whatweb", "missing_technology_fingerprint"}
+            )
+        if tool_norm == "nikto":
+            return bool(coverage_has.get("nikto")) and not bool(
+                coverage_missing & {"missing_nikto", "missing_followup_after_vuln"}
+            )
+        if tool_norm in {"web-content-discovery", "dirsearch", "ffuf", "feroxbuster", "gobuster"}:
+            return bool(coverage_has.get("web_content_discovery")) and not bool(
+                coverage_missing & {"missing_web_content_discovery", "missing_followup_after_vuln"}
+            )
+        return False
+
+    @classmethod
+    def _tool_matches_coverage_gap(cls, *, tool_id: str, coverage_missing: Set[str]) -> bool:
+        tool_norm = cls._normalized_tool_id(tool_id)
+        if not tool_norm or not coverage_missing:
+            return False
+        if "missing_discovery" in coverage_missing and (tool_norm == "nmap" or tool_norm.startswith("nmap")):
+            return True
+        if "missing_banner" in coverage_missing and tool_norm == "banner":
+            return True
+        if {"missing_screenshot", "missing_remote_screenshot"} & coverage_missing and tool_norm in {"screenshooter", "x11screen"}:
+            return True
+        if "missing_nmap_vuln" in coverage_missing and tool_norm == "nmap-vuln.nse":
+            return True
+        if "missing_nuclei_auto" in coverage_missing and tool_norm == "nuclei-web":
+            return True
+        if "missing_cpe_cve_enrichment" in coverage_missing and tool_norm in {
+            "nmap-vuln.nse",
+            "nuclei-web",
+            "nuclei-cves",
+            "nuclei-exposures",
+        }:
+            return True
+        if "missing_whatweb" in coverage_missing and tool_norm in {"whatweb", "whatweb-http", "whatweb-https"}:
+            return True
+        if "missing_nikto" in coverage_missing and tool_norm == "nikto":
+            return True
+        if "missing_web_content_discovery" in coverage_missing and tool_norm in {
+            "web-content-discovery",
+            "dirsearch",
+            "ffuf",
+            "feroxbuster",
+            "gobuster",
+        }:
+            return True
+        if "missing_http_followup" in coverage_missing and tool_norm in {"curl-headers", "curl-options", "curl-robots"}:
+            return True
+        if "missing_followup_after_vuln" in coverage_missing and tool_norm in {
+            "whatweb",
+            "whatweb-http",
+            "whatweb-https",
+            "nikto",
+            "web-content-discovery",
+            "dirsearch",
+            "ffuf",
+            "feroxbuster",
+            "gobuster",
+            "nuclei-cves",
+            "nuclei-exposures",
+            "curl-headers",
+            "curl-options",
+            "curl-robots",
+        }:
+            return True
+        if "missing_smb_signing_checks" in coverage_missing and tool_norm in {"smb-security-mode", "smb2-security-mode"}:
+            return True
+        if "missing_internal_safe_enum" in coverage_missing and tool_norm in {
+            "enum4linux-ng",
+            "smbmap",
+            "rpcclient-enum",
+            "smb-enum-users.nse",
+        }:
+            return True
+        return False
+
+    @classmethod
+    def _strict_coverage_gaps_without_visible_closer(
+            cls,
+            candidates: List[Dict[str, Any]],
+            *,
+            context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if not isinstance(context, dict):
+            return False
+        coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
+        coverage_missing = {
+            str(item or "").strip().lower()
+            for item in (coverage.get("missing", []) if isinstance(coverage.get("missing", []), list) else [])
+            if str(item or "").strip()
+        }
+        strict_missing = coverage_missing & cls.STRICT_COVERAGE_GAP_IDS
+        if not strict_missing or (coverage_missing - strict_missing):
+            return False
+        for candidate in list(candidates or []):
+            if not isinstance(candidate, dict):
+                continue
+            if cls._tool_matches_coverage_gap(
+                    tool_id=str(candidate.get("tool_id", "") or ""),
+                    coverage_missing=strict_missing,
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _should_abstain_for_unmatched_strict_coverage_gap(
+            cls,
+            candidates: List[Dict[str, Any]],
+            *,
+            context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        return cls._strict_coverage_gaps_without_visible_closer(candidates, context=context)
+
+    @classmethod
+    def _provider_rankings_skip_visible_gap_closers(
+            cls,
+            *,
+            provider_ranked: List[Dict[str, Any]],
+            candidates: List[Dict[str, Any]],
+            context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if not isinstance(context, dict):
+            return False
+        coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
+        coverage_missing = {
+            str(item or "").strip().lower()
+            for item in (coverage.get("missing", []) if isinstance(coverage.get("missing", []), list) else [])
+            if str(item or "").strip()
+        }
+        if not coverage_missing:
+            return False
+        has_visible_gap_closer = False
+        for candidate in list(candidates or []):
+            if not isinstance(candidate, dict):
+                continue
+            if cls._tool_matches_coverage_gap(
+                    tool_id=str(candidate.get("tool_id", "") or ""),
+                    coverage_missing=coverage_missing,
+            ):
+                has_visible_gap_closer = True
+                break
+        if not has_visible_gap_closer:
+            return False
+
+        for item in list(provider_ranked or []):
+            if not isinstance(item, dict):
+                continue
+            if cls._tool_matches_coverage_gap(
+                    tool_id=str(item.get("tool_id", "") or ""),
+                    coverage_missing=coverage_missing,
+            ):
+                return False
+        return True
+
     @staticmethod
     def _matches_any_token(text: str, tokens) -> bool:
         lowered = str(text or "").lower()
         return any(str(token or "").strip().lower() in lowered for token in list(tokens or []))
+
+    @classmethod
+    def _expand_tool_id_aliases(cls, values: Set[str]) -> Set[str]:
+        expanded = set()
+        for item in set(values or set()):
+            token = cls._normalized_tool_id(item)
+            if not token:
+                continue
+            expanded.add(token)
+            if token in {"whatweb", "whatweb-http", "whatweb-https"}:
+                expanded.update({"whatweb", "whatweb-http", "whatweb-https"})
+            if token.endswith(".nse"):
+                expanded.add("nmap")
+        return expanded
+
+    @classmethod
+    def _context_audited_tool_availability(cls, context: Optional[Dict[str, Any]]) -> Dict[str, Set[str]]:
+        if not isinstance(context, dict):
+            return {
+                "known": set(),
+                "available": set(),
+                "unavailable": set(),
+            }
+
+        tool_audit = context.get("tool_audit", {}) if isinstance(context.get("tool_audit", {}), dict) else {}
+        available = cls._expand_tool_id_aliases(cls._normalize_tool_id_set(tool_audit.get("available_tool_ids", [])))
+        unavailable = cls._expand_tool_id_aliases(cls._normalize_tool_id_set(tool_audit.get("unavailable_tool_ids", [])))
+        unavailable.difference_update(available)
+        return {
+            "known": set(available) | set(unavailable),
+            "available": set(available),
+            "unavailable": set(unavailable),
+        }
+
+    @classmethod
+    def _candidate_blocked_by_tool_audit(
+            cls,
+            *,
+            tool_id: str,
+            command_template: str,
+            context: Optional[Dict[str, Any]],
+    ) -> bool:
+        availability = cls._context_audited_tool_availability(context)
+        known = availability.get("known", set())
+        if not known:
+            return False
+
+        matched = set()
+        tool_norm = cls._normalized_tool_id(tool_id)
+        if tool_norm in known:
+            matched.add(tool_norm)
+        matched.update(cls._command_tool_tokens(command_template) & known)
+        if not matched:
+            return False
+
+        available = availability.get("available", set())
+        return not bool(matched & available)
+
+    @classmethod
+    def _context_unavailable_tool_ids(cls, context: Optional[Dict[str, Any]]) -> Set[str]:
+        if not isinstance(context, dict):
+            return set()
+        signals = context.get("signals", {}) if isinstance(context.get("signals", {}), dict) else {}
+        raw_missing = cls._normalize_tool_id_set(signals.get("missing_tools", []))
+        raw_missing.update(cls._normalize_tool_id_set(signals.get("audited_missing_tools", [])))
+        tool_audit = context.get("tool_audit", {}) if isinstance(context.get("tool_audit", {}), dict) else {}
+        raw_missing.update(cls._normalize_tool_id_set(tool_audit.get("unavailable_tool_ids", [])))
+        return cls._expand_tool_id_aliases(raw_missing)
+
+    @classmethod
+    def _context_suppressed_tool_ids(cls, context: Optional[Dict[str, Any]]) -> Set[str]:
+        if not isinstance(context, dict):
+            return set()
+        summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        reflection = summary.get("reflection_posture", {}) if isinstance(summary.get("reflection_posture", {}), dict) else {}
+        raw_suppressed = cls._normalize_tool_id_set(reflection.get("suppress_tool_ids", []))
+        host_ai_state = context.get("host_ai_state", {}) if isinstance(context.get("host_ai_state", {}), dict) else {}
+        host_reflection = host_ai_state.get("reflection", {}) if isinstance(host_ai_state.get("reflection", {}), dict) else {}
+        raw_suppressed.update(cls._normalize_tool_id_set(host_reflection.get("suppress_tool_ids", [])))
+        return cls._expand_tool_id_aliases(raw_suppressed)
+
+    @staticmethod
+    def _command_tool_tokens(command: str) -> Set[str]:
+        text = str(command or "").strip()
+        if not text:
+            return set()
+        try:
+            tokens = shlex.split(text, posix=True)
+        except ValueError:
+            tokens = re.findall(r"[A-Za-z0-9_./+-]+", text)
+
+        wrappers = {"sudo", "env", "timeout", "nohup", "stdbuf", "nice"}
+        shell_tokens = {"bash", "sh", "zsh", "fish"}
+        control_tokens = {"&&", "||", ";", "|", "(", ")", "{", "}"}
+        results: Set[str] = set()
+        for token in tokens:
+            current = str(token or "").strip()
+            if not current or current in control_tokens:
+                continue
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", current):
+                continue
+            base = current.rsplit("/", 1)[-1].strip().lower()
+            if not base or base in wrappers or base in shell_tokens:
+                continue
+            if re.fullmatch(r"[a-z0-9][a-z0-9._+-]*", base):
+                results.add(base)
+        return results
 
     @staticmethod
     def _has_any_signal(signals: Dict[str, Any], names) -> bool:
@@ -887,7 +1328,6 @@ class SchedulerPlanner:
                     str(item.get("service_version", "") or ""),
                     str(item.get("service_extrainfo", "") or ""),
                     str(item.get("banner", "") or ""),
-                    " ".join(str(script or "") for script in item.get("scripts", []) if str(script or "").strip()),
                 ]).lower()
                 observed.update(cls._tokenize(port_text))
 
@@ -919,28 +1359,35 @@ class SchedulerPlanner:
         if isinstance(scripts, list):
             for item in scripts[:48]:
                 if isinstance(item, dict):
-                    observed.update(cls._tokenize(" ".join([
-                        str(item.get("script_id", "") or ""),
-                        str(item.get("excerpt", "") or ""),
-                    ])))
+                    observed.update(cls._tokenize(str(item.get("excerpt", "") or "")))
 
         processes = context.get("recent_processes", [])
         if isinstance(processes, list):
             for item in processes[:48]:
                 if isinstance(item, dict):
-                    observed.update(cls._tokenize(" ".join([
-                        str(item.get("tool_id", "") or ""),
-                        str(item.get("command_excerpt", "") or ""),
-                        str(item.get("output_excerpt", "") or ""),
-                    ])))
+                    observed.update(cls._tokenize(str(item.get("output_excerpt", "") or "")))
 
         host_ai_state = context.get("host_ai_state", {})
         if isinstance(host_ai_state, dict):
-            observed.update(cls._tokenize(" ".join([
-                str(host_ai_state.get("provider", "") or ""),
-                str(host_ai_state.get("goal_profile", "") or ""),
-                str(host_ai_state.get("next_phase", "") or ""),
-            ])))
+            ai_text_parts = []
+            for item in list(host_ai_state.get("technologies", []) or [])[:32]:
+                if not isinstance(item, dict):
+                    continue
+                ai_text_parts.append(" ".join([
+                    str(item.get("name", "") or ""),
+                    str(item.get("version", "") or ""),
+                    str(item.get("cpe", "") or ""),
+                    str(item.get("evidence", "") or ""),
+                ]))
+            for item in list(host_ai_state.get("findings", []) or [])[:32]:
+                if not isinstance(item, dict):
+                    continue
+                ai_text_parts.append(" ".join([
+                    str(item.get("title", "") or ""),
+                    str(item.get("cve", "") or ""),
+                    str(item.get("evidence", "") or ""),
+                ]))
+            observed.update(cls._tokenize(" ".join(ai_text_parts)))
 
             host_updates = host_ai_state.get("host_updates", {})
             if isinstance(host_updates, dict):
@@ -1015,6 +1462,159 @@ class SchedulerPlanner:
     @classmethod
     def _is_web_service(cls, service_name: str) -> bool:
         return str(service_name or "").strip().lower() in cls.WEB_SERVICE_IDS
+
+    @classmethod
+    def _should_run_web_followup_sidecar(
+            cls,
+            service_name: str,
+            *,
+            context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if not cls._is_web_service(service_name) or not isinstance(context, dict):
+            return False
+
+        coverage = context.get("coverage", {}) if isinstance(context.get("coverage", {}), dict) else {}
+        coverage_missing = {
+            str(item or "").strip().lower()
+            for item in (coverage.get("missing", []) if isinstance(coverage.get("missing", []), list) else [])
+            if str(item or "").strip()
+        }
+        analysis_mode = str(
+            coverage.get("analysis_mode", "")
+            or context.get("analysis_mode", "")
+            or "standard"
+        ).strip().lower()
+        signals = context.get("signals", {}) if isinstance(context.get("signals", {}), dict) else {}
+        host_cves = context.get("host_cves", []) if isinstance(context.get("host_cves", []), list) else []
+        summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        reflection = summary.get("reflection_posture", {}) if isinstance(summary.get("reflection_posture", {}), dict) else {}
+        reflection_priority = str(reflection.get("priority_shift", "") or "").strip().lower()
+        reflection_promotes = cls._normalize_tool_id_set(reflection.get("promote_tool_ids", []))
+
+        return bool(coverage_missing & {
+            "missing_whatweb",
+            "missing_nikto",
+            "missing_web_content_discovery",
+            "missing_followup_after_vuln",
+            "missing_http_followup",
+            "missing_cpe_cve_enrichment",
+        }) or analysis_mode == "dig_deeper" \
+            or int(signals.get("vuln_hits", 0) or 0) > 0 \
+            or bool(host_cves) \
+            or reflection_priority in {"targeted_followup", "manual_validation"} \
+            or bool(reflection_promotes)
+
+    @classmethod
+    def _web_followup_sidecar_candidates(
+            cls,
+            candidates: List[Dict[str, Any]],
+            *,
+            context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not candidates:
+            return []
+
+        signals = context.get("signals", {}) if isinstance(context, dict) and isinstance(context.get("signals", {}), dict) else {}
+        suppressed_tools = cls._context_suppressed_tool_ids(context)
+        selected = []
+        seen = set()
+        for candidate in candidates:
+            tool_id = str(candidate.get("tool_id", "") or "").strip()
+            tool_norm = cls._normalized_tool_id(tool_id)
+            if (
+                    not tool_norm
+                    or tool_norm in seen
+                    or tool_norm in suppressed_tools
+                    or cls._covered_web_followup_tool_already_satisfied(tool_id=tool_id, context=context)
+            ):
+                continue
+            tool_text = " ".join([
+                tool_id,
+                str(candidate.get("label", "") or ""),
+                str(candidate.get("command_template", "") or ""),
+            ]).lower()
+
+            include = tool_norm in cls.WEB_AI_SPECIALIST_FOLLOWUP_TOOL_IDS or cls._matches_any_token(
+                tool_text,
+                (
+                    "whatweb",
+                    "nikto",
+                    "web-content-discovery",
+                    "dirsearch",
+                    "ffuf",
+                    "feroxbuster",
+                    "gobuster",
+                    "curl-headers",
+                    "curl-options",
+                    "curl-robots",
+                    "wafw00f",
+                    "wpscan",
+                    "wapiti",
+                    "nuclei-cves",
+                    "nuclei-exposures",
+                    "nuclei-wordpress",
+                ),
+            )
+            if not include:
+                for rule in cls.SPECIALIZED_WEB_TOOL_RULES:
+                    if not cls._matches_any_token(tool_text, rule.get("tokens", ())):
+                        continue
+                    if cls._has_any_signal(signals, rule.get("required_signals", ())):
+                        include = True
+                    break
+
+            if not include:
+                continue
+            seen.add(tool_norm)
+            selected.append(candidate)
+            if len(selected) >= 10:
+                break
+        return selected
+
+    @staticmethod
+    def _merge_specialist_sidecar_payload(
+            provider_payload: Optional[Dict[str, Any]],
+            sidecar_payload: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        merged = dict(provider_payload or {})
+        payload = dict(sidecar_payload or {})
+        specialist_sidecars = list(merged.get("specialist_sidecars", []) or [])
+        specialist_sidecars.append(payload)
+        merged["specialist_sidecars"] = specialist_sidecars
+
+        manual_tests = list(merged.get("manual_tests", []) or [])
+        seen = {
+            str(item.get("command", "") or "").strip().lower()
+            for item in manual_tests
+            if isinstance(item, dict)
+            and str(item.get("command", "") or "").strip()
+        }
+        for item in list(payload.get("manual_tests", []) or []):
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("command", "") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            manual_tests.append(item)
+        merged["manual_tests"] = manual_tests
+        return merged
+
+    @staticmethod
+    def _append_specialist_sidecar_context(
+            rationale: str,
+            *,
+            tool_id: str,
+            specialist_reason: str,
+    ) -> str:
+        if not specialist_reason:
+            return rationale
+        note = f"Web follow-up specialist favored {tool_id}: {specialist_reason}"
+        if note in str(rationale or ""):
+            return rationale
+        if not rationale:
+            return note
+        return f"{rationale} {note}"
 
     @classmethod
     def _apply_web_ai_baseline(
