@@ -7,6 +7,18 @@ class LegionLauncherTest(unittest.TestCase):
     def test_tool_audit_flag_parses(self):
         args = legion.build_arg_parser().parse_args(["--tool-audit"])
         self.assertTrue(args.tool_audit)
+        self.assertIsNone(args.tool_install_plan)
+        self.assertIsNone(args.tool_install)
+
+    def test_tool_install_plan_flag_parses(self):
+        args = legion.build_arg_parser().parse_args(["--tool-install-plan", "ubuntu"])
+        self.assertEqual("ubuntu", args.tool_install_plan)
+        self.assertIsNone(args.tool_install)
+
+    def test_tool_install_flag_parses(self):
+        args = legion.build_arg_parser().parse_args(["--tool-install", "kali"])
+        self.assertEqual("kali", args.tool_install)
+        self.assertIsNone(args.tool_install_plan)
 
     def test_web_bind_all_flag_defaults_to_localhost(self):
         args = legion.build_arg_parser().parse_args(["--web"])

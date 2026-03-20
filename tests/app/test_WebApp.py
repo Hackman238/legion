@@ -125,8 +125,13 @@ class DummyRuntime:
             {"id": 13, "ip": "10.0.0.7", "hostname": "web01.local", "status": "up", "os": "linux", "open_ports": 4, "total_ports": 5, "services": ["http", "https", "ssh"]},
         ]
         self.workspace_services = [
+            {"service": "http", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
+            {"service": "https", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
+            {"service": "kerberos", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
             {"service": "smb", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
+            {"service": "ssh", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
         ]
+        self.tool_install_requests = []
         self.workspace_tools = [
             {
                 "label": "SMB Enum Users",
@@ -673,6 +678,20 @@ class DummyRuntime:
             return self.jobs[0]
         raise KeyError(job_id)
 
+    def start_tool_install_job(self, platform="kali", scope="missing", tool_keys=None):
+        request_payload = {
+            "platform": str(platform or "kali"),
+            "scope": str(scope or "missing"),
+            "tool_keys": list(tool_keys or []),
+        }
+        self.tool_install_requests.append(request_payload)
+        return {
+            "id": 91,
+            "type": "tool-install",
+            "status": "queued",
+            "payload": request_payload,
+        }
+
     def stop_job(self, job_id):
         if int(job_id) != 1:
             raise KeyError(job_id)
@@ -752,7 +771,20 @@ class DummyRuntime:
     def get_scan_history(self, limit=200):
         return self.scan_history[:limit]
 
-    def get_workspace_services(self, limit=300):
+    def get_workspace_services(self, limit=300, host_id=0):
+        normalized_host_id = int(host_id or 0)
+        if normalized_host_id > 0:
+            host = next((row for row in self.workspace_hosts if int(row.get("id", 0) or 0) == normalized_host_id), None)
+            services = list(host.get("services", []) if isinstance(host, dict) else [])
+            return [
+                {
+                    "service": str(service),
+                    "host_count": 1,
+                    "port_count": 1,
+                    "protocols": ["tcp"],
+                }
+                for service in services[:limit]
+            ]
         return self.workspace_services[:limit]
 
     def get_workspace_tools(self, service="", limit=300):
@@ -1484,6 +1516,37 @@ class WebAppTest(unittest.TestCase):
         self.assertIn("kali_install", first)
         self.assertIn("ubuntu_install", first)
 
+    def test_tool_audit_install_plan_route_returns_script(self):
+        self.runtime.settings = SimpleNamespace(
+            tools_path_nmap="",
+            tools_path_hydra="",
+            tools_path_texteditor="",
+            tools_path_responder="",
+            tools_path_ntlmrelay="",
+            hostActions=[],
+            portActions=[],
+            portTerminalActions=[],
+        )
+        response = self.client.get("/api/settings/tool-audit/install-plan?platform=ubuntu")
+        self.assertEqual(200, response.status_code)
+        body = response.get_json()
+        self.assertEqual("ubuntu", body.get("platform"))
+        self.assertIn("script", body)
+        self.assertIn("commands", body)
+        self.assertIn("manual", body)
+        self.assertIn("supported_platforms", body)
+
+    def test_tool_audit_install_route_queues_job(self):
+        response = self.client.post("/api/settings/tool-audit/install", json={
+            "platform": "ubuntu",
+            "scope": "missing",
+        })
+        self.assertEqual(202, response.status_code)
+        body = response.get_json()
+        self.assertEqual("accepted", body.get("status"))
+        self.assertEqual("tool-install", body.get("job", {}).get("type"))
+        self.assertEqual("ubuntu", self.runtime.tool_install_requests[-1]["platform"])
+
     def test_index_renders(self):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
@@ -1536,6 +1599,10 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('id="scheduler-decisions-modal"', body)
         self.assertIn('id="settings-tool-audit-refresh-button"', body)
         self.assertIn('id="settings-tool-audit-body"', body)
+        self.assertIn('id="settings-tool-install-platform"', body)
+        self.assertIn('id="settings-tool-install-copy-button"', body)
+        self.assertIn('id="settings-tool-install-run-button"', body)
+        self.assertIn('id="settings-tool-install-script"', body)
         self.assertIn('id="jobs-body"', body)
         self.assertIn('id="scan-history-body"', body)
         self.assertIn('id="decisions-body"', body)
@@ -1995,7 +2062,12 @@ class WebAppTest(unittest.TestCase):
 
         services = self.client.get("/api/workspace/services")
         self.assertEqual(200, services.status_code)
-        self.assertEqual("smb", services.json["services"][0]["service"])
+        self.assertIn("smb", [item["service"] for item in services.json["services"]])
+
+        filtered_services = self.client.get("/api/workspace/services?host_id=11")
+        self.assertEqual(200, filtered_services.status_code)
+        self.assertEqual(11, filtered_services.json["host_id"])
+        self.assertEqual(["kerberos", "smb"], [item["service"] for item in filtered_services.json["services"]])
 
         tools = self.client.get("/api/workspace/tools")
         self.assertEqual(200, tools.status_code)

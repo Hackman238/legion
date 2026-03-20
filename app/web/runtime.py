@@ -118,7 +118,15 @@ from app.screenshot_targets import (
 )
 from app.settings import AppSettings, Settings
 from app.timing import getTimestamp
-from app.tooling import build_tool_execution_env
+from app.tooling import (
+    audit_legion_tools,
+    build_tool_execution_env,
+    build_tool_install_plan,
+    detect_supported_tool_install_platform,
+    execute_tool_install_plan,
+    normalize_tool_install_platform,
+    tool_audit_summary,
+)
 from app.web.jobs import WebJobManager
 from db.entities.cve import cve
 from db.entities.host import hostObj
@@ -1467,6 +1475,36 @@ class WebRuntime:
             metadata["is_temporary"] = self._is_temp_project()
             return metadata
 
+    def get_tool_audit(self) -> Dict[str, Any]:
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            settings = Settings(AppSettings())
+        entries = audit_legion_tools(settings)
+        return {
+            "summary": tool_audit_summary(entries),
+            "tools": [entry.to_dict() for entry in entries],
+            "supported_platforms": ["kali", "ubuntu"],
+            "recommended_platform": detect_supported_tool_install_platform(),
+        }
+
+    def get_tool_install_plan(
+            self,
+            *,
+            platform: str = "kali",
+            scope: str = "missing",
+            tool_keys: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            settings = Settings(AppSettings())
+        entries = audit_legion_tools(settings)
+        return build_tool_install_plan(
+            entries,
+            platform=platform,
+            scope=scope,
+            tool_keys=tool_keys,
+        )
+
     def _start_job(
             self,
             job_type: str,
@@ -1493,6 +1531,47 @@ class WebRuntime:
         )
         job_ref["id"] = int(job.get("id", 0) or 0)
         return job
+
+    def start_tool_install_job(
+            self,
+            *,
+            platform: str = "kali",
+            scope: str = "missing",
+            tool_keys: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        normalized_platform = normalize_tool_install_platform(platform)
+        normalized_scope = str(scope or "missing").strip().lower() or "missing"
+        normalized_keys = [str(item or "").strip() for item in list(tool_keys or []) if str(item or "").strip()]
+        payload = {
+            "platform": normalized_platform,
+            "scope": normalized_scope,
+            "tool_keys": normalized_keys,
+        }
+        return self._start_job(
+            "tool-install",
+            lambda job_id: self._run_tool_install_job(
+                platform=normalized_platform,
+                scope=normalized_scope,
+                tool_keys=normalized_keys,
+                job_id=int(job_id or 0),
+            ),
+            payload=payload,
+        )
+
+    def _run_tool_install_job(
+            self,
+            *,
+            platform: str = "kali",
+            scope: str = "missing",
+            tool_keys: Optional[List[str]] = None,
+            job_id: int = 0,
+    ) -> Dict[str, Any]:
+        plan = self.get_tool_install_plan(platform=platform, scope=scope, tool_keys=tool_keys)
+        resolved_job_id = int(job_id or 0)
+        return execute_tool_install_plan(
+            plan,
+            is_cancel_requested=(lambda: self.jobs.is_cancel_requested(resolved_job_id)) if resolved_job_id > 0 else None,
+        )
 
     def _register_job_process(self, job_id: int, process_id: int):
         resolved_job_id = int(job_id or 0)
@@ -2712,13 +2791,17 @@ class WebRuntime:
                     rows = rows[:normalized_limit]
             return rows
 
-    def get_workspace_services(self, limit: int = 300) -> List[Dict[str, Any]]:
+    def get_workspace_services(self, limit: int = 300, host_id: int = 0) -> List[Dict[str, Any]]:
         with self._lock:
             project = getattr(self.logic, "activeProject", None)
             if not project:
                 return []
             session = project.database.session()
             try:
+                try:
+                    normalized_host_id = int(host_id or 0)
+                except (TypeError, ValueError):
+                    normalized_host_id = 0
                 result = session.execute(text(
                     "SELECT COALESCE(services.name, 'unknown') AS service, "
                     "COUNT(*) AS port_count, "
@@ -2728,10 +2811,11 @@ class WebRuntime:
                     "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
                     "LEFT OUTER JOIN serviceObj AS services ON services.id = ports.serviceId "
                     "WHERE ports.state IN ('open', 'open|filtered') "
+                    "AND (:host_id <= 0 OR hosts.id = :host_id) "
                     "GROUP BY COALESCE(services.name, 'unknown') "
                     "ORDER BY host_count DESC, port_count DESC, service ASC "
                     "LIMIT :limit"
-                ), {"limit": max(1, min(int(limit), 2000))})
+                ), {"limit": max(1, min(int(limit), 2000)), "host_id": normalized_host_id})
                 rows = result.fetchall()
                 keys = result.keys()
                 data = [dict(zip(keys, row)) for row in rows]

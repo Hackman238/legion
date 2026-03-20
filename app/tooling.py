@@ -7,8 +7,12 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
+import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+SUPPORTED_TOOL_INSTALL_PLATFORMS = ("kali", "ubuntu")
 
 
 def _candidate_go_bin_paths(env: Optional[Dict[str, str]] = None) -> List[str]:
@@ -108,6 +112,284 @@ class ToolAuditEntry:
             "notes": self.notes,
             "optional": self.optional,
         }
+
+
+def normalize_tool_install_platform(platform: str = "") -> str:
+    token = str(platform or "").strip().lower()
+    if token in SUPPORTED_TOOL_INSTALL_PLATFORMS:
+        return token
+    return "kali"
+
+
+def detect_supported_tool_install_platform(
+        *,
+        os_release_path: str = "/etc/os-release",
+        base_env: Optional[Dict[str, str]] = None,
+) -> str:
+    env = dict(base_env or os.environ)
+    candidates = [
+        str(env.get("LEGION_TOOL_AUDIT_PLATFORM", "") or "").strip().lower(),
+        str(env.get("ID", "") or "").strip().lower(),
+        str(env.get("DISTRO_ID", "") or "").strip().lower(),
+    ]
+    for candidate in candidates:
+        if candidate in SUPPORTED_TOOL_INSTALL_PLATFORMS:
+            return candidate
+
+    try:
+        with open(os_release_path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+    except Exception:
+        return "kali"
+
+    id_match = re.search(r"(?im)^ID=(.+)$", content)
+    like_match = re.search(r"(?im)^ID_LIKE=(.+)$", content)
+    tokens: List[str] = []
+    for match in (id_match, like_match):
+        if not match:
+            continue
+        raw = str(match.group(1) or "").strip().strip("\"'")
+        tokens.extend(part.strip().lower() for part in raw.split() if part.strip())
+
+    if "kali" in tokens:
+        return "kali"
+    if "ubuntu" in tokens:
+        return "ubuntu"
+    return "kali"
+
+
+def tool_install_hint_for_platform(entry: ToolAuditEntry, platform: str) -> str:
+    normalized = normalize_tool_install_platform(platform)
+    if normalized == "ubuntu":
+        return str(entry.ubuntu_install or "").strip()
+    return str(entry.kali_install or "").strip()
+
+
+def _normalize_install_command(command: str) -> str:
+    text = str(command or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith("install ") or lowered.startswith("use ") or lowered.startswith("projectdiscovery ") or lowered.startswith("not yet "):
+        return ""
+
+    def _rewrite_apt(match: re.Match) -> str:
+        package_expr = str(match.group(1) or "").strip()
+        return f"sudo -n apt-get install -y {package_expr}"
+
+    rewritten = re.sub(r"(?i)\bsudo\s+apt\s+install\s+(.+?)(?=(?:\s*\|\||\s*&&|$))", _rewrite_apt, text)
+    if rewritten != text:
+        return rewritten
+    return text
+
+
+def build_tool_install_plan(
+        entries: Sequence[ToolAuditEntry],
+        *,
+        platform: str = "kali",
+        scope: str = "missing",
+        tool_keys: Optional[Sequence[str]] = None,
+        base_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, object]:
+    normalized_platform = normalize_tool_install_platform(platform)
+    normalized_scope = str(scope or "missing").strip().lower() or "missing"
+    selected_keys = {
+        str(item or "").strip().lower()
+        for item in list(tool_keys or [])
+        if str(item or "").strip()
+    }
+
+    rows = list(entries or [])
+    if selected_keys:
+        rows = [entry for entry in rows if str(entry.key or "").strip().lower() in selected_keys]
+
+    if normalized_scope == "all":
+        candidate_rows = [entry for entry in rows if entry.status != "installed"]
+    elif normalized_scope == "configured_missing":
+        candidate_rows = [entry for entry in rows if entry.status == "configured-missing"]
+    else:
+        candidate_rows = [entry for entry in rows if entry.status in {"missing", "configured-missing"}]
+
+    commands: List[Dict[str, str]] = []
+    manual: List[Dict[str, str]] = []
+    seen_commands = set()
+    needs_go_bootstrap = False
+    execution_env = build_tool_execution_env(base_env)
+    go_path = shutil.which("go", path=execution_env.get("PATH", ""))
+
+    for entry in candidate_rows:
+        hint = tool_install_hint_for_platform(entry, normalized_platform)
+        normalized_command = _normalize_install_command(hint)
+        if normalized_command:
+            if normalized_command.startswith("go install ") and not go_path:
+                needs_go_bootstrap = True
+            if normalized_command in seen_commands:
+                continue
+            seen_commands.add(normalized_command)
+            commands.append({
+                "tool_key": str(entry.key or ""),
+                "label": str(entry.label or entry.key or "tool"),
+                "command": normalized_command,
+                "hint": hint,
+            })
+            continue
+        manual.append({
+            "tool_key": str(entry.key or ""),
+            "label": str(entry.label or entry.key or "tool"),
+            "hint": hint or str(entry.notes or "").strip() or "No curated install hint is available for this tool.",
+        })
+
+    if needs_go_bootstrap:
+        bootstrap_command = "sudo -n apt-get install -y golang-go"
+        if bootstrap_command not in seen_commands:
+            seen_commands.add(bootstrap_command)
+            commands.insert(0, {
+                "tool_key": "golang-go",
+                "label": "Go toolchain",
+                "command": bootstrap_command,
+                "hint": "sudo apt install golang-go",
+            })
+
+    script_lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+        "# Generated by Legion Tool Audit",
+        f"# Platform: {normalized_platform}",
+        f"# Scope: {normalized_scope}",
+        "",
+    ]
+    script_lines.extend(item["command"] for item in commands)
+    if manual:
+        script_lines.extend([
+            "",
+            "# Manual follow-up required for:",
+        ])
+        script_lines.extend(f"# - {item['label']}: {item['hint']}" for item in manual)
+
+    return {
+        "platform": normalized_platform,
+        "scope": normalized_scope,
+        "supported_platforms": list(SUPPORTED_TOOL_INSTALL_PLATFORMS),
+        "selected_tool_count": len(candidate_rows),
+        "command_count": len(commands),
+        "manual_count": len(manual),
+        "commands": commands,
+        "manual": manual,
+        "script": "\n".join(script_lines).strip() + "\n",
+    }
+
+
+def execute_tool_install_plan(
+        plan: Dict[str, Any],
+        *,
+        base_env: Optional[Dict[str, str]] = None,
+        is_cancel_requested: Optional[Callable[[], bool]] = None,
+) -> Dict[str, Any]:
+    resolved_plan = dict(plan or {})
+    commands = list(resolved_plan.get("commands", []) or [])
+    manual = list(resolved_plan.get("manual", []) or [])
+    platform = str(resolved_plan.get("platform", "kali") or "kali")
+    scope = str(resolved_plan.get("scope", "missing") or "missing")
+    script = str(resolved_plan.get("script", "") or "")
+    if not commands:
+        return {
+            "platform": platform,
+            "scope": scope,
+            "command_count": 0,
+            "manual_count": len(manual),
+            "completed_commands": [],
+            "manual": manual,
+            "script": script,
+            "message": "No installable missing tools matched the selected scope.",
+        }
+
+    env = build_tool_execution_env(base_env)
+    completed_commands: List[Dict[str, Any]] = []
+    cancel_check = is_cancel_requested if callable(is_cancel_requested) else None
+
+    for index, item in enumerate(commands, start=1):
+        if cancel_check and cancel_check():
+            return {
+                "platform": platform,
+                "scope": scope,
+                "command_count": len(commands),
+                "manual_count": len(manual),
+                "completed_commands": completed_commands,
+                "manual": manual,
+                "script": script,
+                "cancelled": True,
+                "message": "Tool installation cancelled before all commands completed.",
+            }
+
+        label = str(item.get("label", item.get("tool_key", f"tool-{index}")) or f"tool-{index}")
+        command = str(item.get("command", "") or "").strip()
+        if not command:
+            continue
+
+        process = subprocess.Popen(
+            ["bash", "-lc", command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        while process.poll() is None:
+            if cancel_check and cancel_check():
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+                return {
+                    "platform": platform,
+                    "scope": scope,
+                    "command_count": len(commands),
+                    "manual_count": len(manual),
+                    "completed_commands": completed_commands,
+                    "manual": manual,
+                    "script": script,
+                    "cancelled": True,
+                    "message": f"Tool installation cancelled while running '{label}'.",
+                }
+            time.sleep(0.25)
+
+        stdout_text, stderr_text = process.communicate()
+        exit_code = int(process.returncode or 0)
+        completed_commands.append({
+            "index": int(index),
+            "label": label,
+            "command": command,
+            "exit_code": exit_code,
+            "stdout_tail": str(stdout_text or "")[-6000:],
+            "stderr_tail": str(stderr_text or "")[-6000:],
+        })
+        if exit_code != 0:
+            failure_output = str(stderr_text or stdout_text or "").strip()
+            if len(failure_output) > 400:
+                failure_output = failure_output[-400:]
+            raise RuntimeError(
+                f"Tool install failed while running '{label}' (exit {exit_code}). "
+                f"{failure_output or command}"
+            )
+
+    return {
+        "platform": platform,
+        "scope": scope,
+        "command_count": len(commands),
+        "manual_count": len(manual),
+        "completed_commands": completed_commands,
+        "manual": manual,
+        "script": script,
+        "message": (
+            f"Completed {len(completed_commands)} install command"
+            f"{'' if len(completed_commands) == 1 else 's'}"
+            + (f"; {len(manual)} tool{'s' if len(manual) != 1 else ''} still require manual follow-up." if manual else ".")
+        ),
+    }
 
 
 def _tool_specs() -> List[ToolSpec]:

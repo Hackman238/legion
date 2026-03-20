@@ -2,6 +2,8 @@ const workspaceState = {
     hosts: [],
     hostFilter: "hide_down",
     hostServiceFilter: "",
+    servicesHostFilterId: 0,
+    servicesHostFilterLabel: "",
     services: [],
     tools: [],
     toolsHydrated: false,
@@ -61,6 +63,11 @@ const workspaceInvalidateState = {
 };
 
 const workspaceInvalidationWaiters = [];
+const toolAuditState = {
+    recommendedPlatform: "kali",
+    supportedPlatforms: ["kali", "ubuntu"],
+    plan: null,
+};
 
 const GRAPH_WORKSPACE_HEIGHT_STORAGE_KEY = "legion.graphWorkspaceHeightPx";
 const GRAPH_WORKSPACE_DEFAULT_HEIGHT = 680;
@@ -1059,6 +1066,10 @@ function clearHostDetailView({resetForms = true} = {}) {
 
 function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {}) {
     workspaceState.hosts = [];
+    workspaceState.hostFilter = "hide_down";
+    workspaceState.hostServiceFilter = "";
+    workspaceState.servicesHostFilterId = 0;
+    workspaceState.servicesHostFilterLabel = "";
     workspaceState.services = [];
     workspaceState.tools = [];
     workspaceState.toolsHydrated = false;
@@ -1200,6 +1211,26 @@ function renderHosts(hosts) {
     workspaceState.hosts.forEach((host) => {
         const tr = document.createElement("tr");
         tr.dataset.hostId = String(host.id || "");
+        const filterCell = document.createElement("td");
+        filterCell.className = "host-filter-cell";
+        const filterButton = document.createElement("button");
+        filterButton.type = "button";
+        filterButton.className = "icon-btn";
+        const hostLabel = String(host.hostname || host.ip || `host ${host.id || ""}`).trim();
+        const isServicesFilterActive = parseInt(workspaceState.servicesHostFilterId, 10) === parseInt(host.id, 10);
+        const filterLabel = isServicesFilterActive
+            ? `Clear services filter for ${hostLabel}`
+            : `Show services for ${hostLabel}`;
+        filterButton.title = filterLabel;
+        filterButton.setAttribute("aria-label", filterLabel);
+        filterButton.innerHTML = '<i class="fa-solid fa-filter" aria-hidden="true"></i>';
+        filterButton.classList.toggle("is-active", isServicesFilterActive);
+        filterButton.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            await setServicesHostFilterAction(host.id || 0, hostLabel);
+        });
+        filterCell.appendChild(filterButton);
+        tr.appendChild(filterCell);
         const ipCell = document.createElement("td");
         const ipWrap = document.createElement("span");
         const icon = document.createElement("i");
@@ -2081,6 +2112,58 @@ function setToolAuditStatus(text, isError = false) {
     node.style.color = isError ? "#ff9b9b" : "";
 }
 
+function setToolInstallStatus(text, isError = false) {
+    const node = document.getElementById("settings-tool-install-status");
+    if (!node) {
+        return;
+    }
+    node.textContent = text || "";
+    node.style.color = isError ? "#ff9b9b" : "";
+}
+
+function currentToolInstallPlatform() {
+    const select = document.getElementById("settings-tool-install-platform");
+    const value = String(select?.value || toolAuditState.recommendedPlatform || "kali").trim().toLowerCase();
+    return value === "ubuntu" ? "ubuntu" : "kali";
+}
+
+function syncToolInstallPlatformSelect(preferredPlatform = "") {
+    const select = document.getElementById("settings-tool-install-platform");
+    if (!select) {
+        return "kali";
+    }
+    const current = String(select.value || "").trim().toLowerCase();
+    const normalizedPreferred = String(preferredPlatform || toolAuditState.recommendedPlatform || "kali").trim().toLowerCase();
+    if (select.dataset.userSelected === "true" && (current === "kali" || current === "ubuntu")) {
+        return current;
+    }
+    if (normalizedPreferred === "ubuntu") {
+        select.value = "ubuntu";
+        return "ubuntu";
+    }
+    select.value = "kali";
+    return "kali";
+}
+
+function renderToolInstallPlan(plan) {
+    toolAuditState.plan = plan || null;
+    const resolvedPlan = plan || {};
+    const script = String(resolvedPlan?.script || "");
+    setValue("settings-tool-install-script", script);
+    const commandCount = Number(resolvedPlan?.command_count || 0);
+    const manualCount = Number(resolvedPlan?.manual_count || 0);
+    const platform = String(resolvedPlan?.platform || currentToolInstallPlatform() || "kali");
+    if (!commandCount && !manualCount) {
+        setToolInstallStatus(`No missing tool installs are queued for ${platform}.`);
+        return;
+    }
+    let text = `${commandCount} install command${commandCount === 1 ? "" : "s"} queued for ${platform}`;
+    if (manualCount > 0) {
+        text += `; ${manualCount} tool${manualCount === 1 ? "" : "s"} still require manual follow-up`;
+    }
+    setToolInstallStatus(text);
+}
+
 function renderToolAuditRows(rows) {
     const tbody = document.getElementById("settings-tool-audit-body");
     if (!tbody) {
@@ -2119,13 +2202,86 @@ async function refreshToolAuditAction() {
     try {
         const body = await fetchJson("/api/settings/tool-audit");
         renderToolAuditRows(body?.tools || []);
+        toolAuditState.recommendedPlatform = String(body?.recommended_platform || "kali").trim().toLowerCase() === "ubuntu"
+            ? "ubuntu"
+            : "kali";
+        toolAuditState.supportedPlatforms = Array.isArray(body?.supported_platforms) && body.supported_platforms.length
+            ? body.supported_platforms
+            : ["kali", "ubuntu"];
+        syncToolInstallPlatformSelect(toolAuditState.recommendedPlatform);
         const summary = body?.summary || {};
         setToolAuditStatus(
             `Installed ${summary.installed || 0}/${summary.total || 0}; missing ${summary.missing || 0}; configured missing ${summary.configured_missing || 0}`
         );
+        await refreshToolInstallPlanAction(false);
     } catch (err) {
         renderToolAuditRows([]);
+        renderToolInstallPlan(null);
         setToolAuditStatus(`Tool audit failed: ${err.message}`, true);
+        setToolInstallStatus(`Install plan unavailable: ${err.message}`, true);
+    }
+}
+
+async function refreshToolInstallPlanAction(showBusy = true) {
+    if (showBusy) {
+        setToolInstallStatus("Building install plan...");
+    }
+    const platform = currentToolInstallPlatform();
+    try {
+        const body = await fetchJson(`/api/settings/tool-audit/install-plan?platform=${encodeURIComponent(platform)}&scope=missing`);
+        renderToolInstallPlan(body || {});
+    } catch (err) {
+        renderToolInstallPlan(null);
+        setToolInstallStatus(`Install plan failed: ${err.message}`, true);
+    }
+}
+
+async function copyToolInstallScriptAction() {
+    let script = String(getValue("settings-tool-install-script") || "");
+    if (!script.trim()) {
+        await refreshToolInstallPlanAction(false);
+        script = String(getValue("settings-tool-install-script") || "");
+    }
+    if (!script.trim()) {
+        setToolInstallStatus("No install script is available to copy.", true);
+        return;
+    }
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(script);
+        } else {
+            const temp = document.createElement("textarea");
+            temp.value = script;
+            temp.setAttribute("readonly", "readonly");
+            temp.style.position = "absolute";
+            temp.style.left = "-9999px";
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand("copy");
+            document.body.removeChild(temp);
+        }
+        setToolInstallStatus("Install script copied to clipboard.");
+    } catch (err) {
+        setToolInstallStatus(`Copy failed: ${err.message}`, true);
+    }
+}
+
+async function startToolInstallAction() {
+    const platform = currentToolInstallPlatform();
+    setToolInstallStatus("Queueing install job...");
+    try {
+        const body = await postJson("/api/settings/tool-audit/install", {
+            platform,
+            scope: "missing",
+        });
+        const jobId = Number(body?.job?.id || 0);
+        setToolInstallStatus(
+            jobId > 0
+                ? `Install queued as job #${jobId}. Use Logging > Jobs to monitor progress.`
+                : "Install job queued. Use Logging > Jobs to monitor progress."
+        );
+    } catch (err) {
+        setToolInstallStatus(`Install failed to queue: ${err.message}`, true);
     }
 }
 
@@ -2326,6 +2482,15 @@ function currentHostFilterQuery() {
     return params.toString();
 }
 
+function currentServicesFilterQuery() {
+    const params = new URLSearchParams();
+    const hostId = parseInt(workspaceState.servicesHostFilterId, 10);
+    if (Number.isFinite(hostId) && hostId > 0) {
+        params.set("host_id", String(hostId));
+    }
+    return params.toString();
+}
+
 function exportHostsJsonAction() {
     closeRibbonMenus();
     window.location.assign(`/api/export/hosts-json?${currentHostFilterQuery()}&t=${Date.now()}`);
@@ -2342,6 +2507,8 @@ function syncHostFilterControls() {
     const resetButton = document.getElementById("hosts-reset-filter-button");
     const filter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase();
     const service = String(workspaceState.hostServiceFilter || "").trim();
+    const servicesHostFilterId = parseInt(workspaceState.servicesHostFilterId, 10);
+    const servicesHostFilterLabel = String(workspaceState.servicesHostFilterLabel || "").trim();
     if (showAll) {
         showAll.classList.toggle("is-active", filter === "show_all");
     }
@@ -2349,12 +2516,17 @@ function syncHostFilterControls() {
         hideDown.classList.toggle("is-active", filter !== "show_all");
     }
     if (resetButton) {
-        const atDefault = filter === "hide_down" && !service;
+        const atDefault = filter === "hide_down" && !service && (!Number.isFinite(servicesHostFilterId) || servicesHostFilterId <= 0);
         resetButton.disabled = atDefault;
         resetButton.classList.toggle("is-active", !atDefault);
-        const label = service
-            ? `Reset host filters (show only up hosts, clear service filter: ${service})`
-            : "Reset host filters (show only up hosts)";
+        let label = "Reset host filters (show only up hosts)";
+        if (service && servicesHostFilterLabel) {
+            label = `Reset host filters (show only up hosts, clear service filter: ${service}, clear services filter: ${servicesHostFilterLabel})`;
+        } else if (service) {
+            label = `Reset host filters (show only up hosts, clear service filter: ${service})`;
+        } else if (servicesHostFilterLabel) {
+            label = `Reset host filters (show only up hosts, clear services filter: ${servicesHostFilterLabel})`;
+        }
         resetButton.setAttribute("title", label);
         resetButton.setAttribute("aria-label", label);
     }
@@ -2372,18 +2544,52 @@ async function setHostFilterAction(filter) {
 
 async function setHostServiceFilterAction(service) {
     workspaceState.hostServiceFilter = String(service || "").trim();
+    workspaceState.servicesHostFilterId = 0;
+    workspaceState.servicesHostFilterLabel = "";
     syncHostFilterControls();
+    renderHosts(workspaceState.hosts);
     renderServices(workspaceState.services);
-    await loadWorkspaceHosts();
+    await Promise.all([
+        loadWorkspaceHosts(),
+        loadWorkspaceServices(),
+    ]);
+}
+
+async function setServicesHostFilterAction(hostId, hostLabel = "") {
+    const normalizedHostId = parseInt(hostId, 10);
+    const currentHostId = parseInt(workspaceState.servicesHostFilterId, 10);
+    if (Number.isFinite(normalizedHostId) && normalizedHostId > 0 && normalizedHostId === currentHostId) {
+        workspaceState.servicesHostFilterId = 0;
+        workspaceState.servicesHostFilterLabel = "";
+    } else if (Number.isFinite(normalizedHostId) && normalizedHostId > 0) {
+        workspaceState.servicesHostFilterId = normalizedHostId;
+        workspaceState.servicesHostFilterLabel = String(hostLabel || "").trim();
+    } else {
+        workspaceState.servicesHostFilterId = 0;
+        workspaceState.servicesHostFilterLabel = "";
+    }
+    workspaceState.hostServiceFilter = "";
+    syncHostFilterControls();
+    renderHosts(workspaceState.hosts);
+    await Promise.all([
+        loadWorkspaceHosts(),
+        loadWorkspaceServices(),
+    ]);
 }
 
 async function resetHostFiltersAction() {
     workspaceState.hostFilter = "hide_down";
     workspaceState.hostServiceFilter = "";
+    workspaceState.servicesHostFilterId = 0;
+    workspaceState.servicesHostFilterLabel = "";
     syncHostFilterControls();
+    renderHosts(workspaceState.hosts);
     renderServices(workspaceState.services);
     closeRibbonMenus();
-    await loadWorkspaceHosts();
+    await Promise.all([
+        loadWorkspaceHosts(),
+        loadWorkspaceServices(),
+    ]);
     await graphLoadSnapshot({background: false}).catch(() => {});
 }
 
@@ -7837,7 +8043,13 @@ async function loadWorkspaceHosts() {
 }
 
 async function loadWorkspaceServices() {
-    const body = await fetchJson("/api/workspace/services");
+    const query = currentServicesFilterQuery();
+    const body = await fetchJson(`/api/workspace/services${query ? `?${query}` : ""}`);
+    const returnedHostId = parseInt(body?.host_id, 10);
+    if (!Number.isFinite(returnedHostId) || returnedHostId <= 0) {
+        workspaceState.servicesHostFilterId = 0;
+        workspaceState.servicesHostFilterLabel = "";
+    }
     renderServices(body.services || []);
 }
 
@@ -8106,7 +8318,9 @@ function renderSnapshot(snapshot) {
         }
     }
     if (Array.isArray(snapshot.services)) {
-        renderServices(snapshot.services);
+        if (!(parseInt(workspaceState.servicesHostFilterId, 10) > 0)) {
+            renderServices(snapshot.services);
+        }
     }
     if (Array.isArray(snapshot.tools) && !workspaceState.toolsHydrated) {
         renderTools(snapshot.tools);
@@ -8221,6 +8435,9 @@ async function handleWorkspaceInvalidation(channels) {
     }
     if (needsHostRefresh) {
         tasks.push(loadWorkspaceHosts());
+        if (parseInt(workspaceState.servicesHostFilterId, 10) > 0 && !needsServiceRefresh) {
+            tasks.push(loadWorkspaceServices());
+        }
     } else if (needsServiceRefresh) {
         tasks.push(loadWorkspaceServices());
     }
@@ -9229,6 +9446,8 @@ function bindActionButtons() {
     bind("settings-config-refresh-button", refreshAppSettingsConfigAction);
     bind("settings-config-save-button", saveAppSettingsConfigAction);
     bind("settings-tool-audit-refresh-button", refreshToolAuditAction);
+    bind("settings-tool-install-copy-button", copyToolInstallScriptAction);
+    bind("settings-tool-install-run-button", startToolInstallAction);
     bind("nmap-scan-modal-close", closeNmapScanModalAction);
     bind("manual-scan-modal-close", closeManualScanModalAction);
     bind("host-selection-modal-close", closeHostSelectionModalAction);
@@ -9262,6 +9481,14 @@ function bindActionButtons() {
     const restoreZipInput = document.getElementById("project-restore-zip-file");
     if (restoreZipInput) {
         restoreZipInput.addEventListener("change", restoreWorkspaceBundleSelectedAction);
+    }
+
+    const toolInstallPlatformSelect = document.getElementById("settings-tool-install-platform");
+    if (toolInstallPlatformSelect) {
+        toolInstallPlatformSelect.addEventListener("change", async () => {
+            toolInstallPlatformSelect.dataset.userSelected = "true";
+            await refreshToolInstallPlanAction(false);
+        });
     }
 
     const ribbonMenuToggles = document.querySelectorAll("[data-ribbon-menu-toggle]");

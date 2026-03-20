@@ -654,6 +654,7 @@
             <table>
                 <thead>
                 <tr>
+                    <th></th>
                     <th>IP</th>
                     <th>Hostname</th>
                     <th>Status</th>
@@ -1536,9 +1537,25 @@
                 <p id="settings-tool-audit-status">Idle</p>
             </div>
             <p class="meta-note">Kali-first install hints for the external tools Legion currently launches or depends on.</p>
+            <div class="tool-install-controls">
+                <label>
+                    Install Platform
+                    <select id="settings-tool-install-platform">
+                        <option value="kali">Kali</option>
+                        <option value="ubuntu">Ubuntu</option>
+                    </select>
+                </label>
+                <p id="settings-tool-install-status" class="meta-note">Install plan not loaded yet.</p>
+            </div>
             <div class="modal-actions">
                 <button id="settings-tool-audit-refresh-button" type="button">Refresh Tool Audit</button>
+                <button id="settings-tool-install-copy-button" type="button">Copy Install Script</button>
+                <button id="settings-tool-install-run-button" type="button">Install Missing</button>
             </div>
+            <label class="tool-install-script-block">
+                Install Script Preview
+                <textarea id="settings-tool-install-script" rows="7" readonly></textarea>
+            </label>
             <div class="table-wrap modal-table-wrap tool-audit-table-wrap">
                 <table>
                     <thead>

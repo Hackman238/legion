@@ -49,10 +49,21 @@ def build_arg_parser():
     import argparse
 
     parser = argparse.ArgumentParser(description="Start Legion")
+    audit_group = parser.add_mutually_exclusive_group()
     parser.add_argument("--mcp-server", action="store_true", help="Start MCP server for AI integration")
     parser.add_argument("--headless", action="store_true", help="Run Legion in headless (CLI) mode")
     parser.add_argument("--web", action="store_true", help="Run Legion with the local Flask web interface")
-    parser.add_argument("--tool-audit", action="store_true", help="Print a tool availability audit and exit")
+    audit_group.add_argument("--tool-audit", action="store_true", help="Print a tool availability audit and exit")
+    audit_group.add_argument(
+        "--tool-install-plan",
+        choices=("kali", "ubuntu"),
+        help="Print the generated install script for missing tools on the selected platform and exit",
+    )
+    audit_group.add_argument(
+        "--tool-install",
+        choices=("kali", "ubuntu"),
+        help="Run the generated install plan for missing tools on the selected platform and exit",
+    )
     parser.add_argument("--web-port", type=int, default=5000, help="Local web interface port")
     parser.add_argument(
         "--web-bind-all",
@@ -119,6 +130,50 @@ if __name__ == "__main__":
         settings = Settings(AppSettings())
         entries = audit_legion_tools(settings)
         print(format_tool_audit_report(entries), end="")
+        sys.exit(0)
+
+    if args.tool_install_plan or args.tool_install:
+        from app.settings import AppSettings, Settings
+        from app.tooling import (
+            audit_legion_tools,
+            build_tool_install_plan,
+            execute_tool_install_plan,
+        )
+
+        settings = Settings(AppSettings())
+        entries = audit_legion_tools(settings)
+        selected_platform = str(args.tool_install_plan or args.tool_install or "kali")
+        plan = build_tool_install_plan(entries, platform=selected_platform)
+
+        if args.tool_install_plan:
+            print(str(plan.get("script", "") or ""), end="")
+            sys.exit(0)
+
+        commands = list(plan.get("commands", []) or [])
+        manual = list(plan.get("manual", []) or [])
+        if commands:
+            print(
+                f"LEGION tool install plan for {selected_platform}: "
+                f"{len(commands)} command{'s' if len(commands) != 1 else ''}"
+                + (f", {len(manual)} manual follow-up item{'s' if len(manual) != 1 else ''}" if manual else ""),
+                file=sys.stderr,
+            )
+            for item in commands:
+                print(f"  -> {item.get('command', '')}", file=sys.stderr)
+        else:
+            print(f"No installable missing tools matched the selected scope for {selected_platform}.", file=sys.stderr)
+            if manual:
+                for item in manual:
+                    print(f"  manual: {item.get('label', 'tool')} -> {item.get('hint', '')}", file=sys.stderr)
+            sys.exit(0)
+
+        try:
+            result = execute_tool_install_plan(plan)
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+
+        print(str(result.get("message", "Tool installation finished.")), file=sys.stderr)
         sys.exit(0)
 
     if args.web:

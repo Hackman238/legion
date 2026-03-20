@@ -19,7 +19,7 @@ from flask import (
 
 from app.ApplicationInfo import getConsoleLogo
 from app.settings import AppSettings, Settings
-from app.tooling import audit_legion_tools, tool_audit_summary
+from app.tooling import audit_legion_tools, build_tool_install_plan, tool_audit_summary
 
 web_bp = Blueprint("web", __name__)
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
@@ -408,6 +408,12 @@ def settings_legion_conf_save():
 @web_bp.get("/api/settings/tool-audit")
 def settings_tool_audit():
     runtime = current_app.extensions.get("legion_runtime")
+    runtime_getter = getattr(runtime, "get_tool_audit", None) if runtime is not None else None
+    if callable(runtime_getter):
+        try:
+            return jsonify(runtime_getter())
+        except Exception as exc:
+            return _json_error(str(exc), 500)
     settings = getattr(runtime, "settings", None) if runtime is not None else None
     if settings is None:
         settings = Settings(AppSettings())
@@ -415,7 +421,54 @@ def settings_tool_audit():
     return jsonify({
         "summary": tool_audit_summary(entries),
         "tools": [entry.to_dict() for entry in entries],
+        "supported_platforms": ["kali", "ubuntu"],
+        "recommended_platform": "kali",
     })
+
+
+@web_bp.get("/api/settings/tool-audit/install-plan")
+def settings_tool_audit_install_plan():
+    runtime = current_app.extensions.get("legion_runtime")
+    platform = str(request.args.get("platform", "kali"))
+    scope = str(request.args.get("scope", "missing"))
+    tool_keys = _split_query_tokens(request.args.get("tool_keys", ""))
+    runtime_getter = getattr(runtime, "get_tool_install_plan", None) if runtime is not None else None
+    if callable(runtime_getter):
+        try:
+            return jsonify(runtime_getter(platform=platform, scope=scope, tool_keys=tool_keys))
+        except Exception as exc:
+            return _json_error(str(exc), 500)
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if settings is None:
+        settings = Settings(AppSettings())
+    entries = audit_legion_tools(settings)
+    return jsonify(build_tool_install_plan(entries, platform=platform, scope=scope, tool_keys=tool_keys))
+
+
+@web_bp.post("/api/settings/tool-audit/install")
+def settings_tool_audit_install():
+    runtime = current_app.extensions.get("legion_runtime")
+    if runtime is None or not callable(getattr(runtime, "start_tool_install_job", None)):
+        return _json_error("Tool installation is unavailable in this runtime.", 501)
+
+    payload = request.get_json(silent=True) or {}
+    platform = str(payload.get("platform", "kali"))
+    scope = str(payload.get("scope", "missing"))
+    tool_keys = payload.get("tool_keys", [])
+    if tool_keys is None:
+        tool_keys = []
+    if not isinstance(tool_keys, list):
+        return _json_error("Field 'tool_keys' must be an array when provided.", 400)
+    normalized_tool_keys = [str(item or "").strip() for item in tool_keys if str(item or "").strip()]
+    try:
+        job = runtime.start_tool_install_job(
+            platform=platform,
+            scope=scope,
+            tool_keys=normalized_tool_keys,
+        )
+        return jsonify({"status": "accepted", "job": job}), 202
+    except Exception as exc:
+        return _json_error(str(exc), 500)
 
 
 @web_bp.get("/api/snapshot")
@@ -734,9 +787,13 @@ def workspace_services():
         limit = int(request.args.get("limit", 300))
     except (TypeError, ValueError):
         limit = 300
+    try:
+        host_id = int(request.args.get("host_id", 0))
+    except (TypeError, ValueError):
+        host_id = 0
     limit = max(1, min(limit, 2000))
     try:
-        return jsonify({"services": runtime.get_workspace_services(limit=limit)})
+        return jsonify({"services": runtime.get_workspace_services(limit=limit, host_id=host_id), "host_id": host_id})
     except Exception as exc:
         return _json_error(str(exc), 500)
 
