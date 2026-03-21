@@ -484,6 +484,7 @@ def rank_actions_with_provider(config: Dict[str, Any], goal_profile: str, servic
     prompt_profiles_enabled = True
     if isinstance(feature_flags, dict) and "scheduler_prompt_profiles" in feature_flags:
         prompt_profiles_enabled = bool(feature_flags.get("scheduler_prompt_profiles", True))
+    context_summary_enabled = _feature_flag_enabled(config, "context_summary_enabled", default=True)
     prompt_package = _build_ranking_prompt_package(
         goal_profile=goal_profile,
         service=service,
@@ -491,6 +492,7 @@ def rank_actions_with_provider(config: Dict[str, Any], goal_profile: str, servic
         candidates=candidates,
         context=context or {},
         prompt_profiles_enabled=prompt_profiles_enabled,
+        context_summary_enabled=context_summary_enabled,
     )
     prompt_metadata = dict(prompt_package.get("metadata", {}) or {})
 
@@ -560,6 +562,7 @@ def reflect_on_scheduler_progress(
         protocol=protocol,
         context=context or {},
         recent_rounds=recent_rounds or [],
+        context_summary_enabled=_feature_flag_enabled(config, "context_summary_enabled", default=True),
     )
     metadata = dict(prompt_package.get("metadata", {}) or {})
 
@@ -620,6 +623,7 @@ def select_web_followup_with_provider(
         protocol=protocol,
         candidates=candidates,
         context=context or {},
+        context_summary_enabled=_feature_flag_enabled(config, "context_summary_enabled", default=True),
     )
     metadata = dict(prompt_package.get("metadata", {}) or {})
 
@@ -696,6 +700,17 @@ def _normalize_tool_set(values: Any) -> set:
     return normalized
 
 
+def _feature_flag_enabled(config: Optional[Dict[str, Any]], flag_name: str, *, default: bool = True) -> bool:
+    if not isinstance(config, dict):
+        return bool(default)
+    feature_flags = config.get("feature_flags", {})
+    if not isinstance(feature_flags, dict):
+        return bool(default)
+    if flag_name not in feature_flags:
+        return bool(default)
+    return bool(feature_flags.get(flag_name, default))
+
+
 def _determine_scheduler_phase(
         *,
         goal_profile: str,
@@ -757,6 +772,7 @@ def _determine_scheduler_phase(
         "whatweb",
         "whatweb-http",
         "whatweb-https",
+        "httpx",
         "nikto",
         "web-content-discovery",
         "nuclei-cves",
@@ -816,6 +832,7 @@ def _build_prompt(
         protocol=protocol,
         candidates=candidates,
         context=context or {},
+        context_summary_enabled=True,
     ).get("user_prompt", "")
 
 
@@ -827,6 +844,7 @@ def _build_ranking_prompt_package(
         candidates: List[Dict[str, str]],
         context: Optional[Dict[str, Any]] = None,
         prompt_profiles_enabled: bool = True,
+        context_summary_enabled: bool = True,
 ) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
     current_phase = _determine_scheduler_phase(
@@ -834,7 +852,11 @@ def _build_ranking_prompt_package(
         service=service,
         context=ctx,
     )
-    context_block = _build_context_block(ctx, current_phase_override=current_phase)
+    context_block = _build_context_block(
+        ctx,
+        current_phase_override=current_phase,
+        include_summary=bool(context_summary_enabled),
+    )
     service_profile = _resolve_prompt_profile(service=service, context=ctx) if prompt_profiles_enabled else "generic"
     phase_profile = current_phase if prompt_profiles_enabled and current_phase in {"broad_vuln", "deep_web"} else "default"
     prompt_profile = service_profile if phase_profile == "default" else f"{service_profile}:{phase_profile}"
@@ -1478,6 +1500,7 @@ def _build_reflection_prompt_package(
         protocol: str,
         context: Optional[Dict[str, Any]] = None,
         recent_rounds: Optional[List[Dict[str, Any]]] = None,
+        context_summary_enabled: bool = True,
 ) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
     rounds = recent_rounds if isinstance(recent_rounds, list) else []
@@ -1487,7 +1510,11 @@ def _build_reflection_prompt_package(
         context=ctx,
     )
     service_profile = _resolve_prompt_profile(service=service, context=ctx)
-    context_block = _build_context_block(ctx, current_phase_override=current_phase)
+    context_block = _build_context_block(
+        ctx,
+        current_phase_override=current_phase,
+        include_summary=bool(context_summary_enabled),
+    )
     recent_rounds_payload = _build_recent_rounds_block(rounds)
     system_prompt = (
         "You are an execution monitor for a governed penetration-testing scheduler.\n"
@@ -1537,6 +1564,7 @@ def _build_web_followup_prompt_package(
         protocol: str,
         candidates: List[Dict[str, str]],
         context: Optional[Dict[str, Any]] = None,
+        context_summary_enabled: bool = True,
 ) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
     current_phase = _determine_scheduler_phase(
@@ -1544,7 +1572,11 @@ def _build_web_followup_prompt_package(
         service=service,
         context=ctx,
     )
-    context_block = _build_context_block(ctx, current_phase_override=current_phase)
+    context_block = _build_context_block(
+        ctx,
+        current_phase_override=current_phase,
+        include_summary=bool(context_summary_enabled),
+    )
     system_prompt = (
         "You are a specialist web follow-up advisor operating inside a governed penetration-testing scheduler.\n"
         "Return strict JSON only.\n"
@@ -2712,14 +2744,14 @@ def _truncate_block_text(value: str, max_chars: int) -> str:
     return text[:max_chars].rstrip() + "\n...[truncated]"
 
 
-def _build_context_block(context: Dict[str, Any], *, current_phase_override: str = "") -> str:
+def _build_context_block(context: Dict[str, Any], *, current_phase_override: str = "", include_summary: bool = True) -> str:
     if not isinstance(context, dict) or not context:
         return ""
 
     lines = []
     unavailable_tool_ids = set(_collect_unavailable_tool_ids(context))
     context_summary = context.get("context_summary", {})
-    if isinstance(context_summary, dict) and context_summary:
+    if include_summary and isinstance(context_summary, dict) and context_summary:
         summary_payload: Dict[str, Any] = {}
         focus = context_summary.get("focus", {})
         if isinstance(focus, dict):
@@ -2744,17 +2776,24 @@ def _build_context_block(context: Dict[str, Any], *, current_phase_override: str
         elif str(current_phase_override or "").strip():
             summary_payload["focus"] = {"current_phase": str(current_phase_override or "").strip()[:64]}
 
-        for key, limit, max_chars in (
-                ("coverage_missing", 8, 64),
-                ("recommended_tools", 8, 80),
-                ("active_signals", 10, 48),
-                ("known_technologies", 8, 96),
-                ("top_findings", 8, 120),
-                ("recent_attempts", 10, 80),
-                ("recent_failures", 6, 120),
-                ("manual_tests", 4, 140),
+        for output_key, source_keys, limit, max_chars in (
+                ("confirmed_facts", ("confirmed_facts",), 6, 140),
+                ("missing_coverage", ("missing_coverage", "coverage_missing"), 8, 64),
+                ("followup_candidates", ("followup_candidates", "recommended_tools"), 8, 80),
+                ("active_signals", ("active_signals",), 10, 48),
+                ("likely_technologies", ("likely_technologies", "known_technologies"), 8, 96),
+                ("important_findings", ("important_findings", "top_findings"), 8, 120),
+                ("attempted_families", ("attempted_families",), 8, 80),
+                ("recent_attempts", ("recent_attempts",), 10, 80),
+                ("recent_failures", ("recent_failures",), 6, 120),
+                ("manual_tests", ("manual_tests",), 4, 140),
         ):
-            values = context_summary.get(key, [])
+            values = []
+            for source_key in source_keys:
+                candidate_values = context_summary.get(source_key, [])
+                if isinstance(candidate_values, list) and candidate_values:
+                    values = candidate_values
+                    break
             if not isinstance(values, list):
                 continue
             compact_values = []
@@ -2762,13 +2801,13 @@ def _build_context_block(context: Dict[str, Any], *, current_phase_override: str
                 token = _normalize_prompt_text(str(item).strip(), max_chars)
                 if not token:
                     continue
-                if key == "manual_tests":
+                if output_key == "manual_tests":
                     primary_command = _shell_primary_command_token(token)
                     if primary_command and primary_command in unavailable_tool_ids:
                         continue
                 compact_values.append(token)
             if compact_values:
-                summary_payload[key] = compact_values
+                summary_payload[output_key] = compact_values
 
         reflection_posture = context_summary.get("reflection_posture", {})
         if isinstance(reflection_posture, dict) and reflection_posture:

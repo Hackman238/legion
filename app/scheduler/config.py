@@ -15,6 +15,7 @@ from app.scheduler.runners import normalize_runner_settings
 DEFAULT_FEATURE_FLAGS = {
     "graph_workspace": True,
     "optional_runners": True,
+    "context_summary_enabled": True,
     "scheduler_prompt_profiles": True,
     "scheduler_web_followup_sidecar": False,
 }

@@ -134,3 +134,4 @@ legion.code-workspace
 docs/
 -ut/
 LEGION_AI_PROMPT_IMPROVEMENT_PLAN.md
+.tmp/

@@ -168,6 +168,39 @@ class WebJobManagerTest(unittest.TestCase):
         self.assertEqual("cancelled", finished["status"])
         self.assertTrue(finished.get("cancel_requested"))
 
+    def test_list_jobs_prioritizes_active_jobs_above_recent_inactive_jobs(self):
+        from app.web.jobs import WebJobManager
+
+        manager = WebJobManager(max_jobs=20, worker_count=2)
+        release_gate = threading.Event()
+
+        def _running():
+            release_gate.wait(timeout=1.5)
+            return {"ok": True}
+
+        running_job = manager.start("long-running", _running)
+        self._wait_for_state(manager, running_job["id"], {"running"})
+
+        completed_ids = []
+        for index in range(4):
+            job = manager.start(f"quick-{index}", lambda idx=index: {"index": idx})
+            completed_ids.append(int(job["id"]))
+
+        self._wait_for_state(manager, completed_ids[-1], {"completed"})
+
+        listed = manager.list_jobs(limit=2)
+        listed_ids = [int(job.get("id") or 0) for job in listed]
+        listed_statuses = [str(job.get("status") or "") for job in listed]
+
+        self.assertEqual(int(running_job["id"]), listed_ids[0])
+        self.assertEqual("running", listed_statuses[0])
+        self.assertEqual(3, len(listed))
+        self.assertEqual(completed_ids[-1], listed_ids[1])
+        self.assertEqual(completed_ids[-2], listed_ids[2])
+
+        release_gate.set()
+        self._wait_for_state(manager, running_job["id"], {"completed"})
+
 
 if __name__ == "__main__":
     unittest.main()

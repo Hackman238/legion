@@ -59,6 +59,60 @@ class SchedulerProvidersTest(unittest.TestCase):
         )
 
     @patch("app.scheduler.providers.requests.post")
+    def test_ranking_prompt_can_disable_context_summary(self, mock_post):
+        from app.scheduler.providers import rank_actions_with_provider
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"actions":[{"tool_id":"nuclei-web","score":90,"rationale":"ok"}],'
+                            '"host_updates":{"hostname":"","hostname_confidence":0,"os":"","os_confidence":0,"technologies":[]},'
+                            '"findings":[],"manual_tests":[],"next_phase":"broad_vuln"}'
+                        )
+                    }
+                }
+            ]
+        }
+        mock_post.return_value = response
+
+        config = {
+            "provider": "openai",
+            "feature_flags": {
+                "context_summary_enabled": False,
+            },
+            "providers": {
+                "openai": {
+                    "enabled": True,
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-5-mini",
+                    "api_key": "x",
+                }
+            },
+        }
+        rank_actions_with_provider(
+            config,
+            "internal_asset_discovery",
+            "http",
+            "tcp",
+            [{"tool_id": "nuclei-web", "label": "nuclei", "command_template": "nuclei -u [IP]", "service_scope": "http"}],
+            context={
+                "context_summary": {
+                    "confirmed_facts": ["hostname: edge.local"],
+                    "important_findings": ["Open admin endpoint [medium]"],
+                },
+                "target": {"host_ip": "10.0.0.5", "service": "http"},
+            },
+        )
+
+        prompt = mock_post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertNotIn('"context_summary"', prompt)
+        self.assertIn('"target"', prompt)
+
+    @patch("app.scheduler.providers.requests.post")
     def test_openai_provider_parses_response(self, mock_post):
         from app.scheduler.providers import get_last_provider_payload, rank_actions_with_provider
 

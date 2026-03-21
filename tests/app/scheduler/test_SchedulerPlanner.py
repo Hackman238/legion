@@ -849,7 +849,7 @@ class SchedulerPlannerTest(unittest.TestCase):
                 portActions=[
                     ["Run enum4linux-ng", "enum4linux-ng", "enum4linux-ng -A -oJ [OUTPUT] [IP]", "smb"],
                     ["Run smbmap", "smbmap", "smbmap -H [IP] -P [PORT] --csv [OUTPUT].csv", "smb"],
-                    ["Run rpcclient enum", "rpcclient-enum", "rpcclient [IP] -p [PORT] -U% -c 'srvinfo;enumdomusers' > [OUTPUT].txt", "smb"],
+                    ["Run rpcclient enum", "rpcclient-enum", "rpcclient [IP] -p [PORT] -U '%' -c 'srvinfo;enumdomusers' > [OUTPUT].txt", "smb"],
                     ["Banner", "banner", "echo | nc -v [IP] [PORT]", "smb"],
                 ],
             )

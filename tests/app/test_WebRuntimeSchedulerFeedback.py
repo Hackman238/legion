@@ -144,7 +144,11 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
 
         summary = WebRuntime._build_scheduler_context_summary(
             target={
+                "hostname": "edge.local",
+                "os": "Linux",
                 "service": "https",
+                "port": "443",
+                "protocol": "tcp",
                 "service_product": "nginx",
                 "service_version": "1.25.3",
             },
@@ -160,6 +164,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 "wordpress_detected": False,
             },
             attempted_tool_ids={"banner", "whatweb"},
+            attempted_family_ids={"web:banner", "web:whatweb"},
             summary_technologies=[
                 {"name": "Jetty", "version": "10.0.13", "cpe": "cpe:/a:eclipse:jetty:10.0.13"},
                 {"name": "nginx", "version": "1.25.3", "cpe": "cpe:/a:nginx:nginx:1.25.3"},
@@ -189,11 +194,18 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
 
         self.assertEqual("dig_deeper", summary["focus"]["analysis_mode"])
         self.assertEqual("deep_web", summary["focus"]["current_phase"])
+        self.assertIn("hostname: edge.local", summary["confirmed_facts"])
+        self.assertIn("service: https on 443/tcp (nginx 1.25.3)", summary["confirmed_facts"])
         self.assertIn("missing_nmap_vuln", summary["coverage_missing"])
+        self.assertIn("missing_nmap_vuln", summary["missing_coverage"])
         self.assertIn("nmap-vuln.nse", summary["recommended_tools"])
+        self.assertIn("nmap-vuln.nse", summary["followup_candidates"])
         self.assertIn("tls_detected", summary["active_signals"])
         self.assertIn("Jetty 10.0.13", summary["known_technologies"])
+        self.assertIn("Jetty 10.0.13", summary["likely_technologies"])
         self.assertTrue(any("Admin console exposed" in item for item in summary["top_findings"]))
+        self.assertTrue(any("Admin console exposed" in item for item in summary["important_findings"]))
+        self.assertIn("web:banner", summary["attempted_families"])
         self.assertTrue(any(item.startswith("ffuf:") or item.startswith("feroxbuster:") for item in summary["recent_failures"]))
         self.assertIn("banner", summary["recent_attempts"])
         self.assertIn("curl -k https://10.0.0.5/admin", summary["manual_tests"])
@@ -279,6 +291,71 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertTrue(signals["smb_signing_disabled"])
         self.assertGreaterEqual(int(signals["vuln_hits"]), 2)
         self.assertIn("feroxbuster", signals["missing_tools"])
+
+    def test_scheduler_prompt_excerpt_preserves_high_signal_lines(self):
+        from app.web.runtime import WebRuntime
+
+        raw_output = "\n".join(
+            [
+                "HTTP/1.1 200 OK",
+                "Header check started",
+            ]
+            + [f"filler line {idx} with repeated body text" for idx in range(40)]
+            + [
+                "Server: Jetty/10.0.13",
+                "Allow: GET, POST, OPTIONS, PROPFIND",
+                "Interesting path: /api-docs (302)",
+                "timeout reached while checking redirect chain",
+            ]
+        )
+
+        excerpt = WebRuntime._build_scheduler_prompt_excerpt(raw_output, 220)
+
+        self.assertLessEqual(len(excerpt), 220)
+        self.assertIn("Server: Jetty/10.0.13", excerpt)
+        self.assertIn("PROPFIND", excerpt)
+        self.assertIn("/api-docs", excerpt)
+        self.assertIn("...[truncated]", excerpt)
+
+    def test_extract_scheduler_signals_prefers_analysis_excerpt(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        signals = runtime._extract_scheduler_signals(
+            service_name="http",
+            scripts=[],
+            recent_processes=[
+                {
+                    "tool_id": "curl-headers",
+                    "status": "Finished",
+                    "output_excerpt": "headers checked",
+                    "analysis_excerpt": "HTTP/1.1 200 OK\nAllow: GET, POST, OPTIONS, PROPFIND",
+                }
+            ],
+        )
+
+        self.assertTrue(signals["webdav_detected"])
+        self.assertIn("webdav", signals["observed_technologies"])
+
+    def test_infer_technologies_prefers_analysis_excerpt_when_prompt_excerpt_is_compact(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        technologies = runtime._infer_technologies_from_observations(
+            service_records=[],
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "curl-headers",
+                    "output_excerpt": "headers checked",
+                    "analysis_excerpt": "HTTP/1.1 200 OK\nServer: Jetty(10.0.13)\nAllow: GET, POST, OPTIONS",
+                }
+            ],
+            limit=16,
+        )
+
+        names = {str(item.get("name", "")).lower() for item in technologies}
+        self.assertIn("jetty", names)
 
     def test_extract_scheduler_signals_uses_target_metadata_for_vendor_fingerprint(self):
         from app.web.runtime import WebRuntime

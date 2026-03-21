@@ -307,6 +307,12 @@ class Logic:
                     command_template = AppSettings._ensure_nuclei_command(command_template, automatic_scan=False)
                 if str(request.tool_id or "").strip().lower() == "web-content-discovery":
                     command_template = AppSettings._ensure_web_content_discovery_command(command_template)
+                if normalized_tool == "httpx":
+                    command_template = AppSettings._ensure_httpx_command(command_template)
+                if normalized_tool == "nikto":
+                    command_template = AppSettings._ensure_nikto_command(command_template)
+                if normalized_tool == "wpscan":
+                    command_template = AppSettings._ensure_wpscan_command(command_template)
                 if "wapiti" in str(command_template).lower():
                     scheme = "https" if "https-wapiti" in normalized_tool else "http"
                     command_template = AppSettings._ensure_wapiti_command(command_template, scheme=scheme)
@@ -370,12 +376,18 @@ class Logic:
                     print(f"[{request.tool_id} STDOUT]\n{result.stdout}")
                     if result.stderr:
                         print(f"[{request.tool_id} STDERR]\n{result.stderr}")
+                    returncode = int(getattr(result, "returncode", 0) or 0)
+                    allowed_exit_codes = AppSettings.allowed_nonzero_exit_codes(str(request.tool_id or ""))
                     return RunnerExecutionResult(
-                        executed=True,
+                        executed=bool(returncode == 0 or returncode in allowed_exit_codes),
                         reason=(
                             "completed"
-                            if int(getattr(result, "returncode", 0) or 0) == 0 else
-                            f"completed (exit {int(getattr(result, 'returncode', 0) or 0)})"
+                            if returncode == 0 else
+                            (
+                                f"completed (allowed exit {returncode})"
+                                if returncode in allowed_exit_codes else
+                                f"completed (exit {returncode})"
+                            )
                         ),
                         runner_type=str(runner_type or "local"),
                         started_at=started_at,

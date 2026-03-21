@@ -26,13 +26,14 @@ ScheduledAction = PlanStep
 class SchedulerPlanner:
     WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
     WEB_AI_BASELINE_TOOL_IDS = ("nuclei-web", "nmap-vuln.nse", "screenshooter")
-    WEB_AI_DEEP_WEB_TOOL_IDS = ("whatweb", "whatweb-http", "whatweb-https", "nikto", "web-content-discovery", "dirsearch", "ffuf")
+    WEB_AI_DEEP_WEB_TOOL_IDS = ("whatweb", "whatweb-http", "whatweb-https", "httpx", "nikto", "web-content-discovery", "dirsearch", "ffuf")
     WEB_AI_TARGETED_NUCLEI_TOOL_IDS = ("nuclei-cves", "nuclei-exposures", "nuclei-wordpress")
     WEB_AI_GENERIC_HTTP_FOLLOWUP_TOOL_IDS = ("curl-headers", "curl-options", "curl-robots")
     WEB_AI_SPECIALIST_FOLLOWUP_TOOL_IDS = (
         "whatweb",
         "whatweb-http",
         "whatweb-https",
+        "httpx",
         "nikto",
         "web-content-discovery",
         "dirsearch",
@@ -71,7 +72,7 @@ class SchedulerPlanner:
         "enum", "enumerate", "discovery", "discover", "fingerprint",
         "banner", "title", "headers", "robots", "favicon", "version",
         "script", "scripts", "vuln", "vulnerability", "cve", "path", "default",
-        "nmap", "nse", "nuclei", "nikto", "whatweb", "wafw00f", "sslscan", "sslyze",
+        "nmap", "nse", "nuclei", "nikto", "whatweb", "httpx", "wafw00f", "sslscan", "sslyze",
         "feroxbuster", "gobuster", "dirsearch", "ffuf", "wordlist", "content",
         "port", "ports", "tcp", "udp", "open", "service", "status",
         "run", "quick", "full", "safe", "basic", "manual",

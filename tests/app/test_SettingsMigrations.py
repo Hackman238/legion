@@ -53,6 +53,25 @@ http-drupal-modules.nse="http,https", tcp
 http-vuln-zimbra-lfi.nse="http,https", tcp
 """
 
+LEGACY_SMB_ACTIONS_CONFIG = """[GeneralSettings]
+default-terminal=xterm
+
+[PortActions]
+smb-enum-admins=Enumerate domain admins (net), "net rpc group members \\"Domain Admins\\" -I [IP] -U% ", "netbios-ssn,microsoft-ds"
+smb-enum-users-rpc=Enumerate users (rpcclient), bash -c \\"echo 'enumdomusers' | rpcclient [IP] -U%\\", "netbios-ssn,microsoft-ds"
+smb-null-sessions=Check for null sessions (rpcclient), bash -c \\"echo 'srvinfo' | rpcclient [IP] -U%\\", "netbios-ssn,microsoft-ds"
+"""
+
+LEGACY_SHELL_WRAPPER_CONFIG = """[GeneralSettings]
+default-terminal=xterm
+
+[PortActions]
+snmp-brute=Bruteforce community strings (medusa), bash -c \\"medusa -h [IP] -u root -P ./wordlists/snmp-default.txt -M snmp | grep SUCCESS\\", "snmp,snmptrap"
+
+[PortTerminalActions]
+rpcclient=Open with rpcclient (NULL session), [term] rpcclient [IP] -p [PORT] -U%, "netbios-ssn,microsoft-ds"
+"""
+
 
 class SettingsMigrationTest(unittest.TestCase):
     def test_legacy_dirbuster_is_replaced_with_headless_tools(self):
@@ -83,6 +102,7 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("sslscan", port_action_ids)
                 self.assertIn("sslyze", port_action_ids)
                 self.assertIn("wpscan", port_action_ids)
+                self.assertIn("httpx", port_action_ids)
                 self.assertIn("whatweb", port_action_ids)
                 self.assertIn("whatweb-http", port_action_ids)
                 self.assertIn("whatweb-https", port_action_ids)
@@ -113,6 +133,7 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("nmap-vuln.nse", scheduler_ids)
                 self.assertIn("nuclei-web", scheduler_ids)
                 self.assertIn("screenshooter", scheduler_ids)
+                self.assertIn("httpx", scheduler_ids)
                 self.assertIn("whatweb", scheduler_ids)
                 self.assertIn("dirsearch", scheduler_ids)
                 self.assertIn("ffuf", scheduler_ids)
@@ -225,6 +246,40 @@ class SettingsMigrationTest(unittest.TestCase):
         self.assertIn("gobuster -m dir", normalized)
         self.assertIn("gobuster dir -q -u http://[IP]:[PORT]/", normalized)
         self.assertIn("feroxbuster -u https://[IP]:[PORT] -k", normalized)
+
+    def test_httpx_nikto_and_wpscan_normalization_use_parser_friendly_output(self):
+        from app.settings import AppSettings
+
+        httpx_normalized = AppSettings._ensure_httpx_command("httpx -u https://[IP]:[PORT]")
+        httpx_wrapped_normalized = AppSettings._ensure_httpx_command(
+            "(command -v httpx >/dev/null 2>&1 && httpx -silent -json -title -tech-detect "
+            "-web-server -status-code -content-type -u https://[IP]:[PORT]) || echo httpx not found"
+        )
+        nikto_normalized = AppSettings._ensure_nikto_command("nikto -h [IP] -p [PORT] -C all")
+        wpscan_normalized = AppSettings._ensure_wpscan_command(
+            "(command -v wpscan >/dev/null 2>&1 && "
+            "(wpscan --url https://[IP]:[PORT] --disable-tls-checks || wpscan --url http://[IP]:[PORT])) || "
+            "echo wpscan not found"
+        )
+
+        self.assertIn("httpx -silent -json -title -tech-detect -web-server -status-code -content-type", httpx_normalized)
+        self.assertIn("-u [WEB_URL]", httpx_normalized)
+        self.assertIn("-o [OUTPUT].jsonl", httpx_normalized)
+        self.assertIn("command -v httpx >/dev/null 2>&1 &&", httpx_wrapped_normalized)
+        self.assertIn("httpx -silent -json -title -tech-detect -web-server -status-code -content-type", httpx_wrapped_normalized)
+        self.assertIn("-u [WEB_URL] -o [OUTPUT].jsonl) || echo httpx not found", httpx_wrapped_normalized)
+        self.assertIn("nikto -nointeractive -Format txt -output [OUTPUT].txt", nikto_normalized)
+        self.assertIn("-h [WEB_URL]", nikto_normalized)
+        self.assertNotIn("-p [PORT]", nikto_normalized)
+        self.assertIn("wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json", wpscan_normalized)
+        self.assertIn("--url [WEB_URL]", wpscan_normalized)
+
+    def test_allowed_nonzero_exit_codes_include_cyberstrike_tool_metadata(self):
+        from app.settings import AppSettings
+
+        self.assertEqual({1}, AppSettings.allowed_nonzero_exit_codes("nikto"))
+        self.assertEqual({4}, AppSettings.allowed_nonzero_exit_codes("wpscan"))
+        self.assertEqual(set(), AppSettings.allowed_nonzero_exit_codes("nmap"))
 
     def test_existing_web_content_discovery_action_is_migrated_for_gobuster_v2(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -340,6 +395,58 @@ class SettingsMigrationTest(unittest.TestCase):
             "LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
             normalized,
         )
+
+    def test_legacy_smb_action_migrations_replace_broken_quote_wrappers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, ".local", "share", "legion")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "legion.conf")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write(LEGACY_SMB_ACTIONS_CONFIG)
+
+            with patch.dict(os.environ, {"HOME": tmpdir}, clear=False):
+                from app.settings import AppSettings
+
+                app_settings = AppSettings()
+                port_actions = {row[1]: row for row in app_settings.getPortActions()}
+
+                self.assertEqual(
+                    "net rpc group members 'Domain Admins' -I [IP] -U '%'",
+                    str(port_actions["smb-enum-admins"][2]),
+                )
+                self.assertEqual(
+                    "rpcclient [IP] -U '%' -c 'enumdomusers'",
+                    str(port_actions["smb-enum-users-rpc"][2]),
+                )
+                self.assertEqual(
+                    "rpcclient [IP] -U '%' -c 'srvinfo'",
+                    str(port_actions["smb-null-sessions"][2]),
+                )
+                self.assertIn("rpcclient [IP] -p [PORT] -U '%'", str(port_actions["rpcclient-enum"][2]))
+
+    def test_legacy_shell_wrapper_actions_are_normalized_for_port_and_terminal_actions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, ".local", "share", "legion")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "legion.conf")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write(LEGACY_SHELL_WRAPPER_CONFIG)
+
+            with patch.dict(os.environ, {"HOME": tmpdir}, clear=False):
+                from app.settings import AppSettings
+
+                app_settings = AppSettings()
+                port_actions = {row[1]: row for row in app_settings.getPortActions()}
+                terminal_actions = {row[1]: row for row in app_settings.getPortTerminalActions()}
+
+                self.assertEqual(
+                    "medusa -h [IP] -u root -P ./wordlists/snmp-default.txt -M snmp | grep SUCCESS",
+                    str(port_actions["snmp-brute"][2]),
+                )
+                self.assertEqual(
+                    "[term] rpcclient [IP] -p [PORT] -U '%'",
+                    str(terminal_actions["rpcclient"][2]),
+                )
 
     def test_disabled_broken_nse_actions_are_pruned_from_settings(self):
         with tempfile.TemporaryDirectory() as tmpdir:

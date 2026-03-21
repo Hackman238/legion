@@ -845,6 +845,27 @@ textarea:focus {
     padding: 0.6rem;
 }
 
+.scheduler-settings-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+    gap: 0.7rem;
+    align-content: start;
+    background: rgba(16, 20, 44, 0.45);
+}
+
+.scheduler-settings-group label {
+    margin-bottom: 0;
+}
+
+.scheduler-group-note,
+.scheduler-field-span-2 {
+    grid-column: 1 / -1;
+}
+
+.scheduler-group-note {
+    margin: 0;
+}
+
 .project-report-headers-label {
     grid-column: span 2;
 }
@@ -2390,6 +2411,15 @@ td button {
     .danger-group,
     .scheduler-actions,
     .project-report-headers-label {
+        grid-column: span 1;
+    }
+
+    .scheduler-settings-group {
+        grid-template-columns: 1fr;
+    }
+
+    .scheduler-group-note,
+    .scheduler-field-span-2 {
         grid-column: span 1;
     }
 

@@ -63,7 +63,10 @@ class WebJobManager:
     def list_jobs(self, limit: int = 80) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit), self.max_jobs))
         with self._lock:
-            selected = list(reversed(self._jobs[-limit:]))
+            active_statuses = {"queued", "running"}
+            active_jobs = [job for job in self._jobs if str(job.get("status", "") or "").strip().lower() in active_statuses]
+            inactive_jobs = [job for job in self._jobs if str(job.get("status", "") or "").strip().lower() not in active_statuses]
+            selected = list(reversed(active_jobs)) + list(reversed(inactive_jobs[-limit:]))
             return [self._copy_job(item) for item in selected]
 
     def ensure_worker_count(self, worker_count: int) -> Dict[str, Any]:

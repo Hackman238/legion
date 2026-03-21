@@ -380,7 +380,7 @@
                 </label>
                 <label class="graph-confidence-label">
                     Zoom
-                    <input id="graph-zoom-slider" type="range" min="10" max="200" step="10" value="70">
+                    <input id="graph-zoom-slider" type="range" min="10" max="400" step="10" value="70">
                     <span id="graph-zoom-value">70%</span>
                 </label>
                 <label class="checkbox graph-checkbox">
@@ -603,9 +603,9 @@
     <section class="panel panel-full graph-panel">
         <div class="panel-header">
             <h2>Graph Workspace</h2>
-            <p>Disabled by rollout flag.</p>
+            <p>Disabled in scheduler settings.</p>
         </div>
-        <p class="meta-note">Graph persistence and export remain available; the interactive workspace can be re-enabled from scheduler feature flags.</p>
+        <p class="meta-note">Graph persistence and export remain available; re-enable the interactive workspace when the engagement size is manageable enough for browser rendering.</p>
     </section>
     {% endif %}
     <section class="panel">
@@ -1278,163 +1278,183 @@
             </button>
         </div>
         <form id="scheduler-form" class="scheduler-form">
-            <label>
-                Mode
-                <select id="scheduler-mode-select" name="mode">
-                    <option value="deterministic">deterministic</option>
-                    <option value="ai">ai</option>
-                </select>
-            </label>
-            <label>
-                Engagement Preset
-                <select id="scheduler-goal-select" name="goal_profile">
-                    <option value="external_recon">external_recon</option>
-                    <option value="external_pentest">external_pentest</option>
-                    <option value="internal_recon">internal_recon</option>
-                    <option value="internal_pentest">internal_pentest</option>
-                    <option value="custom">custom</option>
-                </select>
-            </label>
-            <label>
-                Scope
-                <select id="engagement-scope-select" name="engagement_scope">
-                    <option value="internal">internal</option>
-                    <option value="external">external</option>
-                    <option value="mixed">mixed</option>
-                </select>
-            </label>
-            <label>
-                Intent
-                <select id="engagement-intent-select" name="engagement_intent">
-                    <option value="recon">recon</option>
-                    <option value="pentest">pentest</option>
-                </select>
-            </label>
-            <label class="checkbox">
-                <input id="engagement-allow-exploitation" type="checkbox" name="engagement_allow_exploitation">
-                Allow exploitation
-            </label>
-            <label class="checkbox">
-                <input id="engagement-allow-lateral" type="checkbox" name="engagement_allow_lateral">
-                Allow lateral movement
-            </label>
-            <label>
-                Credential attack mode
-                <select id="engagement-credential-mode" name="engagement_credential_mode">
-                    <option value="blocked">blocked</option>
-                    <option value="approval">approval</option>
-                    <option value="allowed">allowed</option>
-                </select>
-            </label>
-            <label>
-                Lockout risk mode
-                <select id="engagement-lockout-mode" name="engagement_lockout_mode">
-                    <option value="blocked">blocked</option>
-                    <option value="approval">approval</option>
-                    <option value="allowed">allowed</option>
-                </select>
-            </label>
-            <label>
-                Stability risk mode
-                <select id="engagement-stability-mode" name="engagement_stability_mode">
-                    <option value="blocked">blocked</option>
-                    <option value="approval">approval</option>
-                    <option value="allowed">allowed</option>
-                </select>
-            </label>
-            <label>
-                Detection tolerance
-                <select id="engagement-detection-mode" name="engagement_detection_mode">
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                </select>
-            </label>
-            <label>
-                Approval mode
-                <select id="engagement-approval-mode" name="engagement_approval_mode">
-                    <option value="never">never</option>
-                    <option value="risky">risky</option>
-                    <option value="always">always</option>
-                </select>
-            </label>
-            <label>
-                Runner preference
-                <select id="engagement-runner-preference" name="engagement_runner_preference">
-                    <option value="local">local</option>
-                    <option value="container">container</option>
-                    <option value="browser">browser</option>
-                    <option value="manual">manual</option>
-                    <option value="auto">auto</option>
-                </select>
-            </label>
-            <label>
-                Noise budget
-                <select id="engagement-noise-budget" name="engagement_noise_budget">
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                </select>
-            </label>
-            <label>
-                Provider
-                <select id="scheduler-provider-select" name="provider">
-                    <option value="none">none</option>
-                    <option value="lm_studio">lm_studio</option>
-                    <option value="openai">openai</option>
-                    <option value="claude">claude</option>
-                </select>
-            </label>
-            <p class="meta-note scheduler-provider-notice">{{ snapshot.scheduler.cloud_notice }}</p>
-            <label>
-                Max Concurrent Scheduler Tools
-                <input id="scheduler-concurrency-input" type="number" min="1" max="16" step="1" name="max_concurrency">
-            </label>
-            <label>
-                Max Jobs Retained
-                <input id="scheduler-max-jobs-input" type="number" min="20" max="2000" step="1" name="max_jobs">
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
-                LM Studio Base URL
-                <input id="provider-lmstudio-baseurl" type="text" name="lm_studio_base_url">
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
-                LM Studio Model
-                <input id="provider-lmstudio-model" type="text" name="lm_studio_model">
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
-                LM Studio API Key
-                <input id="provider-lmstudio-apikey" type="password" name="lm_studio_api_key">
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="openai">
-                OpenAI Base URL
-                <input id="provider-openai-baseurl" type="text" name="openai_base_url">
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="openai">
-                OpenAI Model
-                <input id="provider-openai-model" type="text" name="openai_model">
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="openai">
-                OpenAI API Key
-                <input id="provider-openai-apikey" type="password" name="openai_api_key">
-            </label>
-            <label class="checkbox scheduler-provider-field" data-scheduler-provider="openai">
-                <input id="provider-openai-structured-outputs" type="checkbox" name="openai_structured_outputs">
-                Use OpenAI structured outputs
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="claude">
-                Claude Base URL
-                <input id="provider-claude-baseurl" type="text" name="claude_base_url">
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="claude">
-                Claude Model
-                <input id="provider-claude-model" type="text" name="claude_model">
-            </label>
-            <label class="scheduler-provider-field" data-scheduler-provider="claude">
-                Claude API Key
-                <input id="provider-claude-apikey" type="password" name="claude_api_key">
-            </label>
-            <fieldset class="danger-group">
+            <fieldset class="danger-group scheduler-settings-group">
+                <legend>Engagement Profile</legend>
+                <label>
+                    Mode
+                    <select id="scheduler-mode-select" name="mode">
+                        <option value="deterministic">deterministic</option>
+                        <option value="ai">ai</option>
+                    </select>
+                </label>
+                <label>
+                    Engagement Preset
+                    <select id="scheduler-goal-select" name="goal_profile">
+                        <option value="external_recon">external_recon</option>
+                        <option value="external_pentest">external_pentest</option>
+                        <option value="internal_recon">internal_recon</option>
+                        <option value="internal_pentest">internal_pentest</option>
+                        <option value="custom">custom</option>
+                    </select>
+                </label>
+                <label>
+                    Scope
+                    <select id="engagement-scope-select" name="engagement_scope">
+                        <option value="internal">internal</option>
+                        <option value="external">external</option>
+                        <option value="mixed">mixed</option>
+                    </select>
+                </label>
+                <label>
+                    Intent
+                    <select id="engagement-intent-select" name="engagement_intent">
+                        <option value="recon">recon</option>
+                        <option value="pentest">pentest</option>
+                    </select>
+                </label>
+            </fieldset>
+            <fieldset class="danger-group scheduler-settings-group">
+                <legend>Risk And Permissions</legend>
+                <label class="checkbox">
+                    <input id="engagement-allow-exploitation" type="checkbox" name="engagement_allow_exploitation">
+                    Allow exploitation
+                </label>
+                <label class="checkbox">
+                    <input id="engagement-allow-lateral" type="checkbox" name="engagement_allow_lateral">
+                    Allow lateral movement
+                </label>
+                <label>
+                    Credential attack mode
+                    <select id="engagement-credential-mode" name="engagement_credential_mode">
+                        <option value="blocked">blocked</option>
+                        <option value="approval">approval</option>
+                        <option value="allowed">allowed</option>
+                    </select>
+                </label>
+                <label>
+                    Lockout risk mode
+                    <select id="engagement-lockout-mode" name="engagement_lockout_mode">
+                        <option value="blocked">blocked</option>
+                        <option value="approval">approval</option>
+                        <option value="allowed">allowed</option>
+                    </select>
+                </label>
+                <label>
+                    Stability risk mode
+                    <select id="engagement-stability-mode" name="engagement_stability_mode">
+                        <option value="blocked">blocked</option>
+                        <option value="approval">approval</option>
+                        <option value="allowed">allowed</option>
+                    </select>
+                </label>
+                <label>
+                    Detection tolerance
+                    <select id="engagement-detection-mode" name="engagement_detection_mode">
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                    </select>
+                </label>
+                <label>
+                    Approval mode
+                    <select id="engagement-approval-mode" name="engagement_approval_mode">
+                        <option value="never">never</option>
+                        <option value="risky">risky</option>
+                        <option value="always">always</option>
+                    </select>
+                </label>
+                <label>
+                    Noise budget
+                    <select id="engagement-noise-budget" name="engagement_noise_budget">
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                    </select>
+                </label>
+            </fieldset>
+            <fieldset class="danger-group scheduler-settings-group">
+                <legend>Execution Controls</legend>
+                <label>
+                    Runner preference
+                    <select id="engagement-runner-preference" name="engagement_runner_preference">
+                        <option value="local">local</option>
+                        <option value="container">container</option>
+                        <option value="browser">browser</option>
+                        <option value="manual">manual</option>
+                        <option value="auto">auto</option>
+                    </select>
+                </label>
+                <label>
+                    Max Concurrent Scheduler Tools
+                    <input id="scheduler-concurrency-input" type="number" min="1" max="16" step="1" name="max_concurrency">
+                </label>
+                <label>
+                    Max Jobs Retained
+                    <input id="scheduler-max-jobs-input" type="number" min="20" max="2000" step="1" name="max_jobs">
+                </label>
+            </fieldset>
+            <fieldset class="danger-group scheduler-settings-group">
+                <legend>Workspace Features</legend>
+                <label class="checkbox scheduler-field-span-2">
+                    <input id="feature-graph-workspace-enabled" type="checkbox" value="graph_workspace">
+                    Enable graph workspace
+                </label>
+                <p class="meta-note scheduler-group-note">Disable this for exceptionally large scopes where graph rendering would add browser overhead without much operator value.</p>
+            </fieldset>
+            <fieldset class="danger-group scheduler-settings-group">
+                <legend>AI Provider</legend>
+                <label>
+                    Provider
+                    <select id="scheduler-provider-select" name="provider">
+                        <option value="none">none</option>
+                        <option value="lm_studio">lm_studio</option>
+                        <option value="openai">openai</option>
+                        <option value="claude">claude</option>
+                    </select>
+                </label>
+                <p class="meta-note scheduler-provider-notice scheduler-group-note">{{ snapshot.scheduler.cloud_notice }}</p>
+                <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
+                    LM Studio Base URL
+                    <input id="provider-lmstudio-baseurl" type="text" name="lm_studio_base_url">
+                </label>
+                <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
+                    LM Studio Model
+                    <input id="provider-lmstudio-model" type="text" name="lm_studio_model">
+                </label>
+                <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
+                    LM Studio API Key
+                    <input id="provider-lmstudio-apikey" type="password" name="lm_studio_api_key">
+                </label>
+                <label class="scheduler-provider-field" data-scheduler-provider="openai">
+                    OpenAI Base URL
+                    <input id="provider-openai-baseurl" type="text" name="openai_base_url">
+                </label>
+                <label class="scheduler-provider-field" data-scheduler-provider="openai">
+                    OpenAI Model
+                    <input id="provider-openai-model" type="text" name="openai_model">
+                </label>
+                <label class="scheduler-provider-field" data-scheduler-provider="openai">
+                    OpenAI API Key
+                    <input id="provider-openai-apikey" type="password" name="openai_api_key">
+                </label>
+                <label class="checkbox scheduler-provider-field scheduler-field-span-2" data-scheduler-provider="openai">
+                    <input id="provider-openai-structured-outputs" type="checkbox" name="openai_structured_outputs">
+                    Use OpenAI structured outputs
+                </label>
+                <label class="scheduler-provider-field" data-scheduler-provider="claude">
+                    Claude Base URL
+                    <input id="provider-claude-baseurl" type="text" name="claude_base_url">
+                </label>
+                <label class="scheduler-provider-field" data-scheduler-provider="claude">
+                    Claude Model
+                    <input id="provider-claude-model" type="text" name="claude_model">
+                </label>
+                <label class="scheduler-provider-field" data-scheduler-provider="claude">
+                    Claude API Key
+                    <input id="provider-claude-apikey" type="password" name="claude_api_key">
+                </label>
+            </fieldset>
+            <fieldset class="danger-group scheduler-settings-group">
                 <legend>AI Feedback Controls</legend>
                 <label class="checkbox">
                     <input id="scheduler-ai-feedback-enabled" type="checkbox" name="ai_feedback_enabled">
@@ -1469,7 +1489,7 @@
                     <input id="scheduler-ai-max-reflections" type="number" min="0" max="4" step="1" name="ai_feedback_max_reflections">
                 </label>
             </fieldset>
-            <fieldset class="danger-group">
+            <fieldset class="danger-group scheduler-settings-group">
                 <legend>Dangerous Categories</legend>
                 <label class="checkbox">
                     <input id="danger-exploit_execution" type="checkbox" value="exploit_execution">
@@ -1488,8 +1508,12 @@
                     destructive_write_actions
                 </label>
             </fieldset>
-            <fieldset class="danger-group">
+            <fieldset class="danger-group scheduler-settings-group">
                 <legend>Scheduler Prompt Controls</legend>
+                <label class="checkbox">
+                    <input id="feature-context-summary-enabled" type="checkbox" value="context_summary_enabled">
+                    Include deterministic context summary ahead of raw evidence
+                </label>
                 <label class="checkbox">
                     <input id="feature-scheduler-prompt-profiles" type="checkbox" value="scheduler_prompt_profiles">
                     Enable service and phase prompt overlays

@@ -45,6 +45,10 @@ class AppSettings():
         "LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] "
         "LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe"
     )
+    ALLOWED_NONZERO_EXIT_CODES = {
+        "nikto": {1},
+        "wpscan": {4},
+    }
     DISABLED_PORT_ACTION_IDS = {
         "http-drupal-modules.nse",
         "http-vuln-zimbra-lfi.nse",
@@ -117,7 +121,17 @@ class AppSettings():
         "curl --max-time 20 http://[IP]:[PORT]/robots.txt -o [OUTPUT].txt)) || "
         "echo curl not found"
     )
-    NIKTO_COMMAND = "nikto -o [OUTPUT].txt -p [PORT] -h [IP] -C all"
+    HTTPX_COMMAND = (
+        "(command -v httpx >/dev/null 2>&1 && "
+        "httpx -silent -json -title -tech-detect -web-server -status-code -content-type "
+        "-u [WEB_URL] -o [OUTPUT].jsonl) || "
+        "echo httpx not found"
+    )
+    NIKTO_COMMAND = (
+        "(command -v nikto >/dev/null 2>&1 && "
+        "nikto -h [WEB_URL] -nointeractive -Format txt -output [OUTPUT].txt -C all) || "
+        "echo nikto not found"
+    )
     WAFW00F_COMMAND = (
         "(command -v wafw00f >/dev/null 2>&1 && "
         "(wafw00f https://[IP]:[PORT] || wafw00f http://[IP]:[PORT])) || "
@@ -127,8 +141,7 @@ class AppSettings():
     SSLYZE_COMMAND = "sslyze --regular [IP]:[PORT]"
     WPSCAN_COMMAND = (
         "(command -v wpscan >/dev/null 2>&1 && "
-        "(wpscan --url https://[IP]:[PORT] --disable-tls-checks || "
-        "wpscan --url http://[IP]:[PORT])) || "
+        "wpscan --url [WEB_URL] --disable-tls-checks --no-update --format json --output [OUTPUT].json) || "
         "echo wpscan not found"
     )
     WAPITI_HTTP_COMMAND = (
@@ -169,10 +182,11 @@ class AppSettings():
     )
     RPCCLIENT_ENUM_COMMAND = (
         "(command -v rpcclient >/dev/null 2>&1 && "
-        "rpcclient [IP] -p [PORT] -U% -c 'srvinfo;enumdomusers;netshareenumall' > [OUTPUT].txt) || "
+        "rpcclient [IP] -p [PORT] -U '%' -c 'srvinfo;enumdomusers;netshareenumall' > [OUTPUT].txt) || "
         "echo rpcclient not found"
     )
     BASELINE_WEB_PORT_ACTIONS = {
+        "httpx": ("Run httpx", HTTPX_COMMAND, WEB_SERVICE_SCOPE),
         "whatweb": ("Run whatweb", WHATWEB_COMMAND, WEB_SERVICE_SCOPE),
         "whatweb-http": ("Run whatweb (http)", WHATWEB_COMMAND, "http,soap,http-proxy,http-alt"),
         "whatweb-https": ("Run whatweb (https)", WHATWEB_COMMAND, "https,ssl,https-alt"),
@@ -216,6 +230,7 @@ class AppSettings():
         changed = False
         changed = self._migrate_host_actions() or changed
         changed = self._migrate_port_actions() or changed
+        changed = self._migrate_port_terminal_actions() or changed
         changed = self._migrate_scheduler_settings() or changed
         if changed:
             self.actions.sync()
@@ -400,8 +415,14 @@ class AppSettings():
             normalized = cls._ensure_nuclei_command(normalized, automatic_scan=False)
         if normalized_tool == "web-content-discovery":
             normalized = cls._ensure_web_content_discovery_command(normalized)
+        if normalized_tool == "httpx":
+            normalized = cls._ensure_httpx_command(normalized)
         if normalized_tool in {"whatweb", "whatweb-http", "whatweb-https"}:
             normalized = cls._ensure_whatweb_command(normalized)
+        if normalized_tool == "nikto":
+            normalized = cls._ensure_nikto_command(normalized)
+        if normalized_tool == "wpscan":
+            normalized = cls._ensure_wpscan_command(normalized)
         if normalized_tool == "dirsearch":
             normalized = cls._ensure_dirsearch_command(normalized)
         if normalized_tool == "ffuf":
@@ -414,6 +435,16 @@ class AppSettings():
             normalized = cls._ensure_smbmap_command(normalized)
         if normalized_tool == "rpcclient-enum":
             normalized = cls._ensure_rpcclient_enum_command(normalized)
+        if normalized_tool == "smb-enum-users-rpc":
+            normalized = cls._canonicalize_legacy_rpcclient_action("enumdomusers")
+        if normalized_tool == "smb-null-sessions":
+            normalized = cls._canonicalize_legacy_rpcclient_action("srvinfo")
+        if normalized_tool == "smb-enum-admins":
+            normalized = cls._canonicalize_legacy_net_rpc_group_members_action("Domain Admins")
+        if normalized_tool == "snmp-brute":
+            normalized = cls._canonicalize_legacy_snmp_brute_action()
+        if normalized_tool == "rpcclient":
+            normalized = cls._ensure_terminal_rpcclient_command(normalized)
         if "wapiti" in normalized.lower():
             scheme = "https" if "https" in normalized_tool else "http"
             normalized = cls._ensure_wapiti_command(normalized, scheme=scheme)
@@ -448,6 +479,7 @@ class AppSettings():
 
             for tool_id, scope in (
                     ("whatweb", self.WEB_SERVICE_SCOPE),
+                    ("httpx", self.WEB_SERVICE_SCOPE),
                     ("whatweb-http", "http,soap,http-proxy,http-alt"),
                     ("whatweb-https", "https,ssl,https-alt"),
                     ("nikto", self.WEB_SERVICE_SCOPE),
@@ -492,6 +524,26 @@ class AppSettings():
                 )
                 if updated_scope != scope:
                     self.actions.setValue('screenshooter', [updated_scope, protocol])
+                    changed = True
+        finally:
+            self.actions.endGroup()
+        return changed
+
+    def _migrate_port_terminal_actions(self):
+        changed = False
+        self.actions.beginGroup('PortTerminalActions')
+        try:
+            keys = self.actions.childKeys()
+            for key in keys:
+                value = self.actions.value(key)
+                if not isinstance(value, (list, tuple)) or len(value) < 2:
+                    continue
+                label = str(value[0] or "")
+                command = str(value[1] or "")
+                scope = str(value[2] or "") if len(value) > 2 else ""
+                updated_command = self._normalize_action_command(str(key), command)
+                if updated_command != command:
+                    self.actions.setValue(str(key), [label, updated_command, scope])
                     changed = True
         finally:
             self.actions.endGroup()
@@ -769,6 +821,47 @@ class AppSettings():
         return raw
 
     @classmethod
+    def _ensure_httpx_command(cls, command: str) -> str:
+        raw = cls._canonicalize_web_target_placeholders(str(command or ""))
+        if "httpx" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_HTTPX_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+httpx", f"command -v {probe_marker}", raw)
+        fallback = ""
+        fallback_match = re.search(r"\)\s*\|\|\s*echo\s+httpx\s+not\s+found\s*$", normalized, flags=re.IGNORECASE)
+        if fallback_match:
+            fallback = fallback_match.group(0)
+            normalized = normalized[:fallback_match.start()]
+        httpx_match = re.search(r"(?i)\bhttpx\b", normalized)
+        if not httpx_match:
+            return re.sub(r"\s{2,}", " ", raw).strip()
+        prefix = normalized[: httpx_match.start()]
+        httpx_command = normalized[httpx_match.start() :]
+        httpx_command = re.sub(r"(?i)(?:^|\s)-(?:j|json)(?=\s|$)", " ", httpx_command)
+        httpx_command = re.sub(r"(?i)(?:^|\s)-silent(?=\s|$)", " ", httpx_command)
+        httpx_command = re.sub(r"(?i)(?:^|\s)-title(?=\s|$)", " ", httpx_command)
+        httpx_command = re.sub(r"(?i)(?:^|\s)-tech-detect(?=\s|$)", " ", httpx_command)
+        httpx_command = re.sub(r"(?i)(?:^|\s)-(?:web-server|server)(?=\s|$)", " ", httpx_command)
+        httpx_command = re.sub(r"(?i)(?:^|\s)-status-code(?=\s|$)", " ", httpx_command)
+        httpx_command = re.sub(r"(?i)(?:^|\s)-content-type(?=\s|$)", " ", httpx_command)
+        httpx_command = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", httpx_command)
+        httpx_command = re.sub(r"\s*>\s*\[OUTPUT\][^\s\)]*", " ", httpx_command)
+        if not re.search(r"(?i)(?:^|\s)-(?:u|target)(?:\s|$)", httpx_command):
+            httpx_command = re.sub(r"(?i)\bhttpx\b", "httpx -u [WEB_URL]", httpx_command, count=1)
+        else:
+            httpx_command = re.sub(r"(?i)(?:^|\s)-(?:u|target)\s+\S+", " -u [WEB_URL]", httpx_command, count=1)
+        httpx_command = re.sub(
+            r"(?i)\bhttpx\b",
+            "httpx -silent -json -title -tech-detect -web-server -status-code -content-type",
+            httpx_command,
+            count=1,
+        )
+        if not re.search(r"(?i)(?:^|\s)-o(?:\s|$)", httpx_command):
+            httpx_command += " -o [OUTPUT].jsonl"
+        combined = f"{prefix}{httpx_command}{fallback}"
+        return re.sub(r"\s{2,}", " ", combined).strip().replace(probe_marker, "httpx")
+
+    @classmethod
     def _ensure_whatweb_command(cls, command: str) -> str:
         raw = str(command or "")
         if "whatweb" not in raw.lower():
@@ -786,6 +879,43 @@ class AppSettings():
                 count=1,
             )
         return re.sub(r"\s{2,}", " ", normalized).strip()
+
+    @classmethod
+    def _ensure_nikto_command(cls, command: str) -> str:
+        raw = cls._canonicalize_web_target_placeholders(str(command or ""))
+        if "nikto" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_NIKTO_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+nikto", f"command -v {probe_marker}", raw)
+        normalized = re.sub(r"(?i)(?:^|\s)-p(?:ort)?\s+\[PORT\](?=\s|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-(?:h|host)\s+\S+", " -h [WEB_URL]", normalized, count=1)
+        normalized = re.sub(r"(?i)(?:^|\s)-(?:o|output)\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-format\s+\S+", " ", normalized)
+        if "-h [WEB_URL]" not in normalized:
+            normalized = re.sub(r"(?i)\bnikto\b", "nikto -h [WEB_URL]", normalized, count=1)
+        normalized = re.sub(r"(?i)\bnikto\b", "nikto -nointeractive -Format txt -output [OUTPUT].txt", normalized, count=1)
+        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "nikto")
+
+    @classmethod
+    def _ensure_wpscan_command(cls, command: str) -> str:
+        raw = cls._canonicalize_web_target_placeholders(str(command or ""))
+        if "wpscan" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_WPSCAN_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+wpscan", f"command -v {probe_marker}", raw)
+        normalized = re.sub(r"(?i)(?:^|\s)--url\s+\S+", " --url [WEB_URL]", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)--(?:no-)?update(?=\s|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)--disable-tls-checks(?=\s|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)--format\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)(?:-o|--output)\s+\S+", " ", normalized)
+        if "--url [WEB_URL]" not in normalized:
+            normalized = re.sub(r"(?i)\bwpscan\b", "wpscan --url [WEB_URL]", normalized)
+        normalized = re.sub(
+            r"(?i)\bwpscan\b",
+            "wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json",
+            normalized,
+        )
+        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "wpscan")
 
     @classmethod
     def _ensure_dirsearch_command(cls, command: str) -> str:
@@ -863,8 +993,15 @@ class AppSettings():
             return raw
         probe_marker = "__LEGION_RPCCLIENT_PROBE__"
         normalized = re.sub(r"(?i)command\s+-v\s+rpcclient", f"command -v {probe_marker}", raw)
-        if not re.search(r"(?i)(?:^|\s)-U%(?=\s|$)", normalized):
-            normalized = re.sub(r"(?i)\brpcclient\b", "rpcclient -U%", normalized, count=1)
+        if re.search(r"(?i)(^|\s)-U(?:\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s]+)", normalized):
+            normalized = re.sub(
+                r"(?i)(^|\s)-U(?:\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s]+)",
+                r"\1-U '%'",
+                normalized,
+                count=1,
+            )
+        else:
+            normalized = re.sub(r"(?i)\brpcclient\b", "rpcclient -U '%'", normalized, count=1)
         if not re.search(r"(?i)(?:^|\s)-c\s+", normalized):
             normalized = re.sub(
                 r"(?i)\brpcclient\b",
@@ -875,6 +1012,29 @@ class AppSettings():
         if "[OUTPUT]" not in normalized:
             normalized += " > [OUTPUT].txt"
         return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "rpcclient")
+
+    @staticmethod
+    def _canonicalize_legacy_rpcclient_action(rpc_command: str) -> str:
+        token = str(rpc_command or "").strip() or "srvinfo"
+        return f"rpcclient [IP] -U '%' -c '{token}'"
+
+    @staticmethod
+    def _canonicalize_legacy_net_rpc_group_members_action(group_name: str) -> str:
+        token = str(group_name or "").strip() or "Domain Admins"
+        safe_token = token.replace("'", "'\"'\"'")
+        return f"net rpc group members '{safe_token}' -I [IP] -U '%'"
+
+    @staticmethod
+    def _canonicalize_legacy_snmp_brute_action() -> str:
+        return "medusa -h [IP] -u root -P ./wordlists/snmp-default.txt -M snmp | grep SUCCESS"
+
+    @staticmethod
+    def _ensure_terminal_rpcclient_command(command: str) -> str:
+        raw = str(command or "")
+        if "rpcclient" not in raw.lower():
+            return raw
+        prefix = "[term] " if "[term]" in raw.lower() else ""
+        return f"{prefix}rpcclient [IP] -p [PORT] -U '%'"
 
     @staticmethod
     def _canonicalize_web_target_placeholders(command: str) -> str:
@@ -910,6 +1070,11 @@ class AppSettings():
             if not changed:
                 return updated
             normalized = updated
+
+    @classmethod
+    def allowed_nonzero_exit_codes(cls, tool_id: str):
+        normalized_tool = str(tool_id or "").strip().lower()
+        return {int(value) for value in cls.ALLOWED_NONZERO_EXIT_CODES.get(normalized_tool, set())}
 
     @staticmethod
     def _ensure_wapiti_command(command: str, scheme: str = "http") -> str:
@@ -1004,8 +1169,12 @@ class AppSettings():
         sortArray = []
         keys = self.actions.childKeys()
         for k in keys:
-            portactions.append([self.actions.value(k)[0], str(k), self.actions.value(k)[1], self.actions.value(k)[2]])
-            sortArray.append(self.actions.value(k)[0])
+            value = self.actions.value(k)
+            label = value[0]
+            command = self._normalize_action_command(str(k), value[1])
+            scope = value[2]
+            portactions.append([label, str(k), command, scope])
+            sortArray.append(label)
         self.actions.endGroup()
         sortArrayWithArray(sortArray, portactions)  # sort by label so that it appears nicely in the context menu
         return portactions

@@ -12,6 +12,9 @@ const workspaceState = {
     hostDetail: null,
 };
 
+const GRAPH_WORKSPACE_ZOOM_MIN_PERCENT = 10;
+const GRAPH_WORKSPACE_ZOOM_MAX_PERCENT = 400;
+
 const graphWorkspaceState = {
     viewId: "attack_surface",
     groupBy: "finding",
@@ -3615,7 +3618,7 @@ async function loadDecisionHistory() {
 }
 
 async function loadJobs() {
-    const body = await fetchJson("/api/jobs?limit=100");
+    const body = await fetchJson("/api/jobs?limit=20");
     renderJobs(body.jobs || []);
 }
 
@@ -3887,6 +3890,8 @@ function applySchedulerPreferences(prefs) {
     setValue("scheduler-ai-stall-rounds", String(aiFeedback.stall_rounds_without_progress || 2));
     setValue("scheduler-ai-repeat-threshold", String(aiFeedback.stall_repeat_selection_threshold || 2));
     setValue("scheduler-ai-max-reflections", String(aiFeedback.max_reflections_per_target || 1));
+    setChecked("feature-graph-workspace-enabled", featureFlags.graph_workspace !== false);
+    setChecked("feature-context-summary-enabled", featureFlags.context_summary_enabled !== false);
     setChecked("feature-scheduler-prompt-profiles", featureFlags.scheduler_prompt_profiles !== false);
     setChecked("feature-scheduler-web-followup-sidecar", Boolean(featureFlags.scheduler_web_followup_sidecar));
 
@@ -3922,6 +3927,7 @@ function normalizeSchedulerFeatureFlags(flags) {
     return {
         graph_workspace: provided.graph_workspace !== false,
         optional_runners: provided.optional_runners !== false,
+        context_summary_enabled: provided.context_summary_enabled !== false,
         scheduler_prompt_profiles: provided.scheduler_prompt_profiles !== false,
         scheduler_web_followup_sidecar: Boolean(provided.scheduler_web_followup_sidecar),
     };
@@ -4198,6 +4204,8 @@ function collectSchedulerPreferencesFromForm() {
         },
         dangerous_categories: dangerousCategories,
         feature_flags: {
+            graph_workspace: getChecked("feature-graph-workspace-enabled"),
+            context_summary_enabled: getChecked("feature-context-summary-enabled"),
             scheduler_prompt_profiles: getChecked("feature-scheduler-prompt-profiles"),
             scheduler_web_followup_sidecar: getChecked("feature-scheduler-web-followup-sidecar"),
         },
@@ -4583,7 +4591,13 @@ function graphUpdateConfidenceLabel() {
 }
 
 function graphUpdateZoomLabel() {
-    const value = Math.max(10, Math.min(200, parseInt(getValue("graph-zoom-slider"), 10) || graphWorkspaceState.zoomPercent || 70));
+    const value = Math.max(
+        GRAPH_WORKSPACE_ZOOM_MIN_PERCENT,
+        Math.min(
+            GRAPH_WORKSPACE_ZOOM_MAX_PERCENT,
+            parseInt(getValue("graph-zoom-slider"), 10) || graphWorkspaceState.zoomPercent || 70,
+        ),
+    );
     graphWorkspaceState.zoomPercent = value;
     setText("graph-zoom-value", `${value}%`);
 }
@@ -6086,7 +6100,10 @@ function graphNodeMatchesSelectedHost(node) {
 }
 
 function graphCurrentZoomPercent() {
-    return Math.max(10, Math.min(200, Number(graphWorkspaceState.zoomPercent || 70)));
+    return Math.max(
+        GRAPH_WORKSPACE_ZOOM_MIN_PERCENT,
+        Math.min(GRAPH_WORKSPACE_ZOOM_MAX_PERCENT, Number(graphWorkspaceState.zoomPercent || 70)),
+    );
 }
 
 function graphComputeViewportBase(boundsWidth, boundsHeight, containerWidth, containerHeight) {
@@ -8632,6 +8649,7 @@ async function saveSchedulerPreferences(event) {
     if (statusNode) {
         statusNode.textContent = "Saving...";
     }
+    const graphWorkspaceWasEnabled = graphWorkspaceEnabled();
     let payload;
     try {
         payload = collectSchedulerPreferencesFromForm();
@@ -8655,6 +8673,14 @@ async function saveSchedulerPreferences(event) {
         }
         const prefs = await response.json();
         applySchedulerPreferences(prefs);
+        const graphWorkspaceEnabledNext = normalizeSchedulerFeatureFlags(prefs.feature_flags).graph_workspace;
+        if (graphWorkspaceWasEnabled !== graphWorkspaceEnabledNext) {
+            if (statusNode) {
+                statusNode.textContent = "Saved. Reloading...";
+            }
+            window.setTimeout(() => window.location.reload(), 120);
+            return;
+        }
         if (statusNode) {
             statusNode.textContent = "Saved";
         }

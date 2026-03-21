@@ -178,6 +178,14 @@ _CPE22_TOKEN_RE = re.compile(r"\bcpe:/[aho]:[a-z0-9._:-]+\b", flags=re.IGNORECAS
 _CPE23_TOKEN_RE = re.compile(r"\bcpe:2\.3:[aho]:[a-z0-9._:-]+\b", flags=re.IGNORECASE)
 _CVE_TOKEN_RE = re.compile(r"\bcve-\d{4}-\d+\b", flags=re.IGNORECASE)
 _TECH_VERSION_RE = re.compile(r"\b(\d+(?:[._-][0-9a-z]+){0,4})\b", flags=re.IGNORECASE)
+_SCHEDULER_METHOD_PATH_RE = re.compile(
+    r"\b(?:get|post|head|options|put|delete|patch)\b[^\n]{0,96}\s/[a-z0-9._~!$&'()*+,;=:@%/\-?]*",
+    flags=re.IGNORECASE,
+)
+_SCHEDULER_STATUS_PATH_RE = re.compile(
+    r"\b\d{3}\b[^\n]{0,48}\s/[a-z0-9._~!$&'()*+,;=:@%/\-?]*",
+    flags=re.IGNORECASE,
+)
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _IPV4_LIKE_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _TECH_CPE_HINTS = (
@@ -5363,18 +5371,21 @@ class WebRuntime:
         port_banners: Dict[Tuple[str, str], str] = {}
         scripts = []
         target_scripts = []
+        analysis_output_chars = max(int(recent_output_chars) * 4, 1600)
         for row in script_rows:
             script_id = str(row[0] or "").strip()
-            output = self._truncate_scheduler_text(row[1], int(recent_output_chars))
+            output = self._build_scheduler_prompt_excerpt(row[1], int(recent_output_chars))
+            analysis_output = self._build_scheduler_analysis_excerpt(row[1], int(analysis_output_chars))
             script_port = str(row[2] or "").strip()
             script_protocol = str(row[3] or "tcp").strip().lower() or "tcp"
-            if not script_id and not output:
+            if not script_id and not output and not analysis_output:
                 continue
             item = {
                 "script_id": script_id,
                 "port": script_port,
                 "protocol": script_protocol,
                 "excerpt": output,
+                "analysis_excerpt": analysis_output,
             }
             scripts.append(item)
             if not script_port or (script_port == target_port_value and script_protocol == target_protocol_value):
@@ -5385,7 +5396,7 @@ class WebRuntime:
                 if script_id:
                     port_scripts.setdefault(key, []).append(script_id)
                 if key not in port_banners:
-                    candidate_banner = self._scheduler_banner_from_evidence(script_id, output)
+                    candidate_banner = self._scheduler_banner_from_evidence(script_id, analysis_output or output)
                     if candidate_banner:
                         port_banners[key] = candidate_banner
 
@@ -5395,10 +5406,11 @@ class WebRuntime:
             tool_id = str(row[0] or "").strip()
             status = str(row[1] or "").strip()
             command_text = self._truncate_scheduler_text(row[2], 220)
-            output_text = self._truncate_scheduler_text(row[3], int(recent_output_chars))
+            output_text = self._build_scheduler_prompt_excerpt(row[3], int(recent_output_chars))
+            analysis_output = self._build_scheduler_analysis_excerpt(row[3], int(analysis_output_chars))
             process_port = str(row[4] or "").strip()
             process_protocol = str(row[5] or "tcp").strip().lower() or "tcp"
-            if not tool_id and not output_text:
+            if not tool_id and not output_text and not analysis_output:
                 continue
             item = {
                 "tool_id": tool_id,
@@ -5407,6 +5419,7 @@ class WebRuntime:
                 "protocol": process_protocol,
                 "command_excerpt": command_text,
                 "output_excerpt": output_text,
+                "analysis_excerpt": analysis_output,
             }
             recent_processes.append(item)
             if process_port == target_port_value and process_protocol == target_protocol_value:
@@ -5415,7 +5428,7 @@ class WebRuntime:
             if process_port:
                 key = (process_port, process_protocol)
                 if key not in port_banners:
-                    candidate_banner = self._scheduler_banner_from_evidence(tool_id, output_text)
+                    candidate_banner = self._scheduler_banner_from_evidence(tool_id, analysis_output or output_text)
                     if candidate_banner:
                         port_banners[key] = candidate_banner
 
@@ -5717,6 +5730,7 @@ class WebRuntime:
             signals=signals,
             current_phase=current_phase,
             attempted_tool_ids=attempted_tool_ids,
+            attempted_family_ids=attempted_family_ids,
             summary_technologies=(
                 ai_context_state.get("technologies", [])
                 if isinstance(ai_context_state.get("technologies", []), list) and ai_context_state.get("technologies", [])
@@ -5771,6 +5785,7 @@ class WebRuntime:
             signals: Optional[Dict[str, Any]],
             current_phase: str = "",
             attempted_tool_ids: Any,
+            attempted_family_ids: Any = None,
             summary_technologies: Optional[List[Dict[str, Any]]] = None,
             host_cves: Optional[List[Dict[str, Any]]] = None,
             host_ai_state: Optional[Dict[str, Any]] = None,
@@ -5824,6 +5839,41 @@ class WebRuntime:
         if current_phase_value:
             focus["current_phase"] = current_phase_value[:64]
 
+        confirmed_facts = []
+        hostname_value = str(target_payload.get("hostname", "") or "").strip()
+        if hostname_value:
+            confirmed_facts.append(f"hostname: {hostname_value}")
+        os_value = str(target_payload.get("os", "") or "").strip()
+        if os_value:
+            confirmed_facts.append(f"os: {os_value}")
+        service_fact = str(target_payload.get("service", "") or "").strip()
+        port_value = str(target_payload.get("port", "") or "").strip()
+        protocol_value = str(target_payload.get("protocol", "") or "").strip().lower()
+        service_stack = " ".join(
+            part for part in [
+                str(target_payload.get("service_product", "") or "").strip(),
+                str(target_payload.get("service_version", "") or "").strip(),
+            ]
+            if part
+        ).strip()
+        service_location = ""
+        if port_value and protocol_value:
+            service_location = f"{port_value}/{protocol_value}"
+        elif port_value:
+            service_location = port_value
+        if service_fact:
+            detail_bits = []
+            if service_location:
+                detail_bits.append(f"on {service_location}")
+            if service_stack:
+                detail_bits.append(f"({service_stack})")
+            confirmed_facts.append(
+                " ".join(part for part in [f"service: {service_fact}", " ".join(detail_bits).strip()] if part).strip()
+            )
+        elif service_stack:
+            confirmed_facts.append(f"service stack: {service_stack}")
+        confirmed_facts = _unique_strings(confirmed_facts, limit=6, max_chars=140)
+
         coverage_missing = _unique_strings(
             coverage_payload.get("missing", []),
             limit=8,
@@ -5856,6 +5906,7 @@ class WebRuntime:
             if label:
                 technology_labels.append(label)
         known_technologies = _unique_strings(technology_labels, limit=8, max_chars=96)
+        likely_technologies = list(known_technologies)
 
         finding_labels = []
         ai_findings = ai_payload.get("findings", []) if isinstance(ai_payload.get("findings", []), list) else []
@@ -5885,6 +5936,7 @@ class WebRuntime:
             if label:
                 finding_labels.append(label)
         top_findings = _unique_strings(finding_labels, limit=8, max_chars=120)
+        important_findings = list(top_findings)
 
         attempted_values = sorted({
             str(item or "").strip().lower()
@@ -5892,6 +5944,16 @@ class WebRuntime:
             if str(item or "").strip()
         })
         recent_attempts = _unique_strings(attempted_values, limit=10, max_chars=80, lowercase=True)
+        attempted_families = _unique_strings(
+            sorted({
+                str(item or "").strip().lower()
+                for item in list(attempted_family_ids or set())
+                if str(item or "").strip()
+            }),
+            limit=8,
+            max_chars=80,
+            lowercase=True,
+        )
 
         def _failure_labels(process_rows: List[Dict[str, Any]]) -> List[str]:
             rows = []
@@ -5970,16 +6032,24 @@ class WebRuntime:
         summary = {}
         if focus:
             summary["focus"] = focus
+        if confirmed_facts:
+            summary["confirmed_facts"] = confirmed_facts
         if coverage_missing:
+            summary["missing_coverage"] = list(coverage_missing)
             summary["coverage_missing"] = coverage_missing
         if recommended_tools:
+            summary["followup_candidates"] = list(recommended_tools)
             summary["recommended_tools"] = recommended_tools
         if active_signals:
             summary["active_signals"] = active_signals
         if known_technologies:
+            summary["likely_technologies"] = list(likely_technologies)
             summary["known_technologies"] = known_technologies
         if top_findings:
+            summary["important_findings"] = list(important_findings)
             summary["top_findings"] = top_findings
+        if attempted_families:
+            summary["attempted_families"] = attempted_families
         if recent_attempts:
             summary["recent_attempts"] = recent_attempts
         if recent_failures:
@@ -6209,6 +6279,183 @@ class WebRuntime:
         return text_value[:int(max_chars)].rstrip() + "...[truncated]"
 
     @staticmethod
+    def _scheduler_output_lines(value: Any, *, max_line_chars: int = 240, max_lines: int = 320) -> List[str]:
+        raw_value = str(value or "").replace("\x00", " ").replace("\r\n", "\n").replace("\r", "\n")
+        lines: List[str] = []
+        for raw_line in raw_value.split("\n"):
+            cleaned = " ".join(str(raw_line or "").split()).strip()
+            if not cleaned:
+                continue
+            if len(cleaned) > int(max_line_chars):
+                cleaned = cleaned[:int(max_line_chars)].rstrip() + "...[truncated]"
+            lines.append(cleaned)
+            if len(lines) >= int(max_lines):
+                break
+        return lines
+
+    @staticmethod
+    def _scheduler_line_signal_score(value: Any) -> int:
+        line = str(value or "").strip()
+        if not line:
+            return 0
+        lowered = line.lower()
+        score = 0
+        if _CVE_TOKEN_RE.search(line):
+            score += 4
+        if _CPE22_TOKEN_RE.search(line) or _CPE23_TOKEN_RE.search(line):
+            score += 4
+        if "http://" in lowered or "https://" in lowered:
+            score += 2
+        if _SCHEDULER_METHOD_PATH_RE.search(line) or _SCHEDULER_STATUS_PATH_RE.search(line):
+            score += 3
+        for token in (
+                "server:",
+                "x-powered-by:",
+                "location:",
+                "allow:",
+                "title:",
+                "set-cookie:",
+                "content-type:",
+                "vulnerable",
+                "vulnerability",
+                "found",
+                "interesting",
+                "detected",
+                "warning",
+                "error",
+                "exception",
+                "traceback",
+                "timeout",
+                "redirect",
+                "wordpress",
+                "wp-content",
+                "wp-json",
+                "jetty",
+                "nginx",
+                "apache",
+                "traccar",
+                "pihole",
+                "pi-hole",
+                "webdav",
+                "propfind",
+                "tls",
+                "ssl",
+                "certificate",
+                "waf",
+                "plugin",
+                "theme",
+        ):
+            if token in lowered:
+                score += 1
+        return score
+
+    @classmethod
+    def _build_scheduler_excerpt(
+            cls,
+            value: Any,
+            max_chars: int,
+            *,
+            multiline: bool,
+            head_lines: int,
+            signal_lines: int,
+            tail_lines: int,
+            max_line_chars: int,
+    ) -> str:
+        lines = cls._scheduler_output_lines(
+            value,
+            max_line_chars=max_line_chars,
+            max_lines=400 if multiline else 260,
+        )
+        if not lines:
+            return ""
+        separator = "\n" if multiline else " | "
+        joined = separator.join(lines)
+        if len(joined) <= int(max_chars):
+            return joined
+
+        selected: List[str] = []
+        seen: Set[str] = set()
+
+        def _add(line: str) -> None:
+            token = str(line or "").strip()
+            key = token.lower()
+            if not token or key in seen:
+                return
+            seen.add(key)
+            selected.append(token)
+
+        for line in lines[:int(head_lines)]:
+            _add(line)
+
+        middle_start = int(head_lines)
+        middle_end = len(lines) - int(tail_lines) if int(tail_lines) > 0 else len(lines)
+        middle = lines[middle_start:middle_end]
+        scored_middle = [
+            (cls._scheduler_line_signal_score(line), index, line)
+            for index, line in enumerate(middle)
+        ]
+        scored_middle = [item for item in scored_middle if item[0] > 0]
+        scored_middle.sort(key=lambda item: (-item[0], item[1]))
+        for _, _, line in scored_middle[:int(signal_lines)]:
+            _add(line)
+
+        if len(selected) <= int(head_lines) and middle:
+            _add(middle[0])
+
+        if int(tail_lines) > 0:
+            for line in lines[-int(tail_lines):]:
+                _add(line)
+
+        rendered = separator.join(selected)
+        if not rendered:
+            rendered = joined
+
+        truncated = len(selected) < len(lines) or len(joined) > int(max_chars)
+        marker = "\n...[truncated]" if multiline else " ...[truncated]"
+        if truncated and len(rendered) + len(marker) <= int(max_chars):
+            return rendered + marker
+        if len(rendered) <= int(max_chars):
+            return rendered
+        budget = max(0, int(max_chars) - len(marker))
+        if budget <= 0:
+            return marker.strip()
+        if multiline and budget >= 80:
+            body_budget = max(0, budget - 1)
+            head_budget = max(40, body_budget // 2)
+            tail_budget = max(20, body_budget - head_budget)
+            return (
+                rendered[:head_budget].rstrip()
+                + marker
+                + "\n"
+                + rendered[-tail_budget:].lstrip()
+            )
+        return rendered[:budget].rstrip() + marker
+
+    @classmethod
+    def _build_scheduler_prompt_excerpt(cls, value: Any, max_chars: int) -> str:
+        return cls._build_scheduler_excerpt(
+            value,
+            max_chars,
+            multiline=False,
+            head_lines=2,
+            signal_lines=6,
+            tail_lines=1,
+            max_line_chars=220,
+        )
+
+    @classmethod
+    def _build_scheduler_analysis_excerpt(cls, value: Any, max_chars: int) -> str:
+        return cls._build_scheduler_excerpt(
+            value,
+            max_chars,
+            multiline=True,
+            head_lines=3,
+            signal_lines=10,
+            tail_lines=2,
+            max_line_chars=260,
+        )
+
+    @staticmethod
     def _scheduler_tool_alias_tokens(tool_id: Any) -> Set[str]:
         token = str(tool_id or "").strip().lower()
         if not token:
@@ -6266,7 +6513,7 @@ class WebRuntime:
                 str(item.get("script_id", "")).strip(),
                 self._observation_text_for_analysis(
                     item.get("script_id", ""),
-                    item.get("excerpt", ""),
+                    item.get("analysis_excerpt", "") or item.get("excerpt", ""),
                 ),
             ]).strip()
             for item in scripts
@@ -6277,7 +6524,7 @@ class WebRuntime:
                 str(item.get("status", "")).strip(),
                 self._observation_text_for_analysis(
                     item.get("tool_id", ""),
-                    item.get("output_excerpt", ""),
+                    item.get("analysis_excerpt", "") or item.get("output_excerpt", ""),
                 ),
             ]).strip()
             for item in recent_processes
@@ -6290,7 +6537,7 @@ class WebRuntime:
                 "\n".join(
                     self._observation_text_for_analysis(
                         item.get("script_id", ""),
-                        item.get("excerpt", ""),
+                        item.get("analysis_excerpt", "") or item.get("excerpt", ""),
                     )
                     for item in scripts
                     if isinstance(item, dict)
@@ -6298,7 +6545,7 @@ class WebRuntime:
                 "\n".join(
                     self._observation_text_for_analysis(
                         item.get("tool_id", ""),
-                        item.get("output_excerpt", ""),
+                        item.get("analysis_excerpt", "") or item.get("output_excerpt", ""),
                     )
                     for item in recent_processes
                     if isinstance(item, dict)
@@ -6872,7 +7119,11 @@ class WebRuntime:
             if not isinstance(record, dict):
                 continue
             source_id = str(record.get("script_id", "") or record.get("tool_id", "")).strip()
-            output = str(record.get("excerpt", "") or record.get("output_excerpt", "")).strip()
+            output = str(
+                record.get("analysis_excerpt", "")
+                or record.get("excerpt", "")
+                or record.get("output_excerpt", "")
+            ).strip()
             if not output:
                 continue
             analysis_output = self._technology_hint_source_text(source_id, output)
@@ -6919,6 +7170,7 @@ class WebRuntime:
         service_rows = []
         script_rows = []
         process_rows = []
+        analysis_output_chars = 2400
         try:
             service_result = session.execute(text(
                 "SELECT COALESCE(p.portId, '') AS port_id, "
@@ -6977,14 +7229,14 @@ class WebRuntime:
         for row in script_rows:
             script_records.append({
                 "script_id": str(row[0] or "").strip(),
-                "excerpt": str(row[1] or "").strip(),
+                "analysis_excerpt": self._build_scheduler_analysis_excerpt(row[1], int(analysis_output_chars)),
             })
 
         process_records = []
         for row in process_rows:
             process_records.append({
                 "tool_id": str(row[0] or "").strip(),
-                "output_excerpt": str(row[1] or "").strip(),
+                "analysis_excerpt": self._build_scheduler_analysis_excerpt(row[1], int(analysis_output_chars)),
             })
 
         return self._infer_technologies_from_observations(
@@ -7170,7 +7422,11 @@ class WebRuntime:
             if not isinstance(record, dict):
                 continue
             source_id = str(record.get("script_id", "") or record.get("tool_id", "")).strip()[:80]
-            excerpt = str(record.get("excerpt", "") or record.get("output_excerpt", "")).strip()
+            excerpt = str(
+                record.get("analysis_excerpt", "")
+                or record.get("excerpt", "")
+                or record.get("output_excerpt", "")
+            ).strip()
             if not excerpt:
                 continue
             cleaned_excerpt = self._observation_text_for_analysis(source_id, excerpt)
@@ -7225,6 +7481,7 @@ class WebRuntime:
         session = project.database.session()
         script_rows = []
         process_rows = []
+        analysis_output_chars = 2400
         try:
             script_result = session.execute(text(
                 "SELECT COALESCE(s.scriptId, '') AS script_id, "
@@ -7254,14 +7511,14 @@ class WebRuntime:
         script_records = [
             {
                 "script_id": str(row[0] or "").strip(),
-                "excerpt": str(row[1] or "").strip(),
+                "analysis_excerpt": self._build_scheduler_analysis_excerpt(row[1], int(analysis_output_chars)),
             }
             for row in script_rows
         ]
         process_records = [
             {
                 "tool_id": str(row[0] or "").strip(),
-                "output_excerpt": str(row[1] or "").strip(),
+                "analysis_excerpt": self._build_scheduler_analysis_excerpt(row[1], int(analysis_output_chars)),
             }
             for row in process_rows
         ]
@@ -7285,7 +7542,11 @@ class WebRuntime:
             if not isinstance(record, dict):
                 continue
             source_id = str(record.get("script_id", "") or record.get("tool_id", "")).strip()
-            output = str(record.get("excerpt", "") or record.get("output_excerpt", "")).strip()
+            output = str(
+                record.get("analysis_excerpt", "")
+                or record.get("excerpt", "")
+                or record.get("output_excerpt", "")
+            ).strip()
             if not output:
                 continue
             parsed = extract_tool_observations(
@@ -7319,6 +7580,7 @@ class WebRuntime:
         session = project.database.session()
         script_rows = []
         process_rows = []
+        analysis_output_chars = 2400
         try:
             script_result = session.execute(text(
                 "SELECT COALESCE(s.scriptId, '') AS script_id, "
@@ -7348,14 +7610,14 @@ class WebRuntime:
         script_records = [
             {
                 "script_id": str(row[0] or "").strip(),
-                "excerpt": str(row[1] or "").strip(),
+                "analysis_excerpt": self._build_scheduler_analysis_excerpt(row[1], int(analysis_output_chars)),
             }
             for row in script_rows
         ]
         process_records = [
             {
                 "tool_id": str(row[0] or "").strip(),
-                "output_excerpt": str(row[1] or "").strip(),
+                "analysis_excerpt": self._build_scheduler_analysis_excerpt(row[1], int(analysis_output_chars)),
             }
             for row in process_rows
         ]
@@ -9063,6 +9325,7 @@ class WebRuntime:
 
             combined_output = "".join(output_parts)
             runtime_seconds = max(0.0, float((process_exited_at or time.monotonic()) - started_at))
+            allowed_exit_codes = AppSettings.allowed_nonzero_exit_codes(str(tool_name or ""))
             if timed_out:
                 combined_output += f"\n[{timeout_reason}]"
                 process_repo.storeProcessProblemStatus(str(process_id))
@@ -9075,6 +9338,18 @@ class WebRuntime:
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
                 return _build_result(False, "killed", int(process_id))
+
+            if int(proc.returncode or 0) in allowed_exit_codes:
+                try:
+                    process_repo.storeProcessProgress(
+                        str(process_id),
+                        percent="100",
+                        estimated_remaining=None,
+                    )
+                except Exception:
+                    pass
+                process_repo.storeProcessOutput(str(process_id), combined_output)
+                return _build_result(True, f"completed (allowed exit {int(proc.returncode or 0)})", int(process_id))
 
             if int(proc.returncode or 0) != 0:
                 _store_failure_status(_classify_nonzero_exit(proc.returncode, runtime_seconds))
@@ -10382,6 +10657,12 @@ class WebRuntime:
             command = AppSettings._ensure_nuclei_command(command, automatic_scan=False)
         if str(tool_id or "").strip().lower() == "web-content-discovery":
             command = AppSettings._ensure_web_content_discovery_command(command)
+        if normalized_tool == "httpx":
+            command = AppSettings._ensure_httpx_command(command)
+        if normalized_tool == "nikto":
+            command = AppSettings._ensure_nikto_command(command)
+        if normalized_tool == "wpscan":
+            command = AppSettings._ensure_wpscan_command(command)
         if "wapiti" in str(command).lower():
             normalized_tool = str(tool_id or "").strip().lower()
             scheme = "https" if "https-wapiti" in normalized_tool else "http"

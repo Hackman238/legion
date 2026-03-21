@@ -54,6 +54,7 @@ class DummySchedulerConfig:
             "feature_flags": {
                 "graph_workspace": True,
                 "optional_runners": True,
+                "context_summary_enabled": True,
                 "scheduler_prompt_profiles": True,
                 "scheduler_web_followup_sidecar": False,
             },
@@ -1761,8 +1762,14 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
         self.assertIn("Graph Workspace", body)
-        self.assertIn("Disabled by rollout flag.", body)
+        self.assertIn("Disabled in scheduler settings.", body)
         self.assertNotIn("graph-workspace-canvas", body)
+
+    def test_index_renders_graph_workspace_scheduler_toggle(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('id="feature-graph-workspace-enabled"', body)
 
     def test_index_renders_hosts_panel_menu(self):
         response = self.client.get("/")
@@ -1874,6 +1881,8 @@ class WebAppTest(unittest.TestCase):
         response = self.client.get("/api/scheduler/preferences")
         self.assertEqual(200, response.status_code)
         self.assertEqual("deterministic", response.json["mode"])
+        self.assertTrue(response.json["feature_flags"]["graph_workspace"])
+        self.assertTrue(response.json["feature_flags"]["context_summary_enabled"])
         self.assertTrue(response.json["feature_flags"]["scheduler_prompt_profiles"])
         self.assertFalse(response.json["feature_flags"]["scheduler_web_followup_sidecar"])
         self.assertIn("openai", response.json["providers"])
@@ -1913,6 +1922,7 @@ class WebAppTest(unittest.TestCase):
                 "feature_flags": {
                     "graph_workspace": False,
                     "optional_runners": False,
+                    "context_summary_enabled": False,
                     "scheduler_prompt_profiles": False,
                     "scheduler_web_followup_sidecar": True,
                 }
@@ -1921,6 +1931,7 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertFalse(response.json["feature_flags"]["graph_workspace"])
         self.assertFalse(response.json["feature_flags"]["optional_runners"])
+        self.assertFalse(response.json["feature_flags"]["context_summary_enabled"])
         self.assertFalse(response.json["feature_flags"]["scheduler_prompt_profiles"])
         self.assertTrue(response.json["feature_flags"]["scheduler_web_followup_sidecar"])
 

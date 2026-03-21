@@ -298,6 +298,31 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         self.assertEqual(["1"], repo.problems)
         self.assertEqual([], repo.crashed)
 
+    def test_allowed_nonzero_exit_is_treated_as_completed(self):
+        from app.web.runtime import WebRuntime
+
+        repo = _DummyProcessRepo()
+        runtime = self._make_runtime(repo)
+
+        with patch("app.web.runtime.subprocess.Popen", return_value=_ExitCodeProc(1)):
+            executed, reason, process_id = WebRuntime._run_command_with_tracking(
+                runtime,
+                tool_name="nikto",
+                tab_title="Nikto",
+                host_ip="127.0.0.1",
+                port="443",
+                protocol="tcp",
+                command="nikto -h https://127.0.0.1/",
+                outputfile="/tmp/out",
+                timeout=30,
+            )
+
+        self.assertTrue(executed)
+        self.assertEqual("completed (allowed exit 1)", reason)
+        self.assertEqual(1, process_id)
+        self.assertEqual([], repo.problems)
+        self.assertEqual([], repo.crashed)
+
     def test_signal_exit_after_threshold_is_marked_crashed(self):
         from app.web.runtime import WebRuntime
 

@@ -42,6 +42,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertIn("feature_flags", defaults)
             self.assertTrue(defaults["feature_flags"]["graph_workspace"])
             self.assertTrue(defaults["feature_flags"]["optional_runners"])
+            self.assertTrue(defaults["feature_flags"]["context_summary_enabled"])
             self.assertTrue(defaults["feature_flags"]["scheduler_prompt_profiles"])
             self.assertFalse(defaults["feature_flags"]["scheduler_web_followup_sidecar"])
             self.assertIn("disabled_tool_ids", defaults)
@@ -168,16 +169,19 @@ class SchedulerConfigManagerTest(unittest.TestCase):
                 "feature_flags": {
                     "graph_workspace": False,
                     "optional_runners": False,
+                    "context_summary_enabled": False,
                     "scheduler_prompt_profiles": False,
                     "scheduler_web_followup_sidecar": True,
                 }
             })
             self.assertFalse(updated_flags["feature_flags"]["graph_workspace"])
             self.assertFalse(updated_flags["feature_flags"]["optional_runners"])
+            self.assertFalse(updated_flags["feature_flags"]["context_summary_enabled"])
             self.assertFalse(updated_flags["feature_flags"]["scheduler_prompt_profiles"])
             self.assertTrue(updated_flags["feature_flags"]["scheduler_web_followup_sidecar"])
             self.assertFalse(manager.is_feature_enabled("graph_workspace"))
             self.assertFalse(manager.is_feature_enabled("optional_runners"))
+            self.assertFalse(manager.is_feature_enabled("context_summary_enabled"))
             self.assertFalse(manager.is_feature_enabled("scheduler_prompt_profiles"))
             self.assertTrue(manager.is_feature_enabled("scheduler_web_followup_sidecar"))
 
