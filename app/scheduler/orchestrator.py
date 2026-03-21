@@ -65,6 +65,7 @@ class SchedulerDecisionDisposition:
 class SchedulerRunOptions:
     scheduler_mode: str = "deterministic"
     scheduler_concurrency: int = 1
+    host_concurrency: int = 1
     ai_feedback_enabled: bool = False
     max_rounds: int = 1
     max_actions_per_round: int = 0
@@ -107,6 +108,15 @@ class SchedulerOrchestrator:
         except (TypeError, ValueError):
             value = 1
         return max(1, min(value, 16))
+
+    @staticmethod
+    def _scheduler_max_host_concurrency(preferences: Optional[Dict[str, Any]] = None) -> int:
+        source = preferences if isinstance(preferences, dict) else {}
+        try:
+            value = int(source.get("max_host_concurrency", 1))
+        except (TypeError, ValueError):
+            value = 1
+        return max(1, min(value, 8))
 
     @staticmethod
     def _scheduler_feedback_config(preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -246,6 +256,7 @@ class SchedulerOrchestrator:
         prefs = preferences if isinstance(preferences, dict) else self.config_manager.load()
         scheduler_mode = str(prefs.get("mode", "deterministic") or "deterministic").strip().lower()
         scheduler_concurrency = self._scheduler_max_concurrency(prefs)
+        host_concurrency = self._scheduler_max_host_concurrency(prefs)
         ai_feedback_cfg = self._scheduler_feedback_config(prefs)
         ai_feedback_enabled = bool(ai_feedback_cfg.get("enabled", True))
         if enable_feedback is not None:
@@ -276,10 +287,12 @@ class SchedulerOrchestrator:
             resolved_max_actions = max(resolved_max_actions, 3)
             recent_output_chars = max(recent_output_chars, 1600)
             max_reflections_per_target = max(max_reflections_per_target, 1)
+            host_concurrency = 1
 
         return SchedulerRunOptions(
             scheduler_mode=scheduler_mode,
             scheduler_concurrency=scheduler_concurrency,
+            host_concurrency=max(1, min(int(host_concurrency or 1), 8)),
             ai_feedback_enabled=ai_feedback_enabled,
             max_rounds=max(1, min(int(resolved_max_rounds), 12)),
             max_actions_per_round=max(0, min(int(resolved_max_actions), 8)),

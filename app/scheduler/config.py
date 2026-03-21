@@ -109,6 +109,7 @@ DEFAULT_SCHEDULER_CONFIG = {
     ).to_dict(),
     "provider": "none",
     "max_concurrency": 1,
+    "max_host_concurrency": 1,
     "max_jobs": 200,
     "providers": {
         "lm_studio": {
@@ -433,6 +434,12 @@ class SchedulerConfigManager:
         except (TypeError, ValueError):
             max_concurrency = 1
         config["max_concurrency"] = max(1, min(max_concurrency, 16))
+
+        try:
+            max_host_concurrency = int(raw.get("max_host_concurrency", config.get("max_host_concurrency", 1)))
+        except (TypeError, ValueError):
+            max_host_concurrency = 1
+        config["max_host_concurrency"] = max(1, min(max_host_concurrency, 8))
 
         try:
             max_jobs = int(raw.get("max_jobs", config.get("max_jobs", 200)))

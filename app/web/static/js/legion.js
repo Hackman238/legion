@@ -3860,6 +3860,7 @@ function applySchedulerPreferences(prefs) {
     setValue("engagement-noise-budget", policy.noise_budget || "low");
     setValue("scheduler-provider-select", prefs.provider || "none");
     setValue("scheduler-concurrency-input", String(prefs.max_concurrency || 1));
+    setValue("scheduler-host-concurrency-input", String(prefs.max_host_concurrency || 1));
     setValue("scheduler-max-jobs-input", String(prefs.max_jobs || 200));
 
     const providers = prefs.providers || {};
@@ -4091,6 +4092,10 @@ function collectSchedulerPreferencesFromForm() {
     const maxConcurrency = Number.isFinite(rawConcurrency)
         ? Math.max(1, Math.min(16, rawConcurrency))
         : 1;
+    const rawHostConcurrency = parseInt(getValue("scheduler-host-concurrency-input"), 10);
+    const maxHostConcurrency = Number.isFinite(rawHostConcurrency)
+        ? Math.max(1, Math.min(8, rawHostConcurrency))
+        : 1;
     const rawMaxJobs = parseInt(getValue("scheduler-max-jobs-input"), 10);
     const maxJobs = Number.isFinite(rawMaxJobs)
         ? Math.max(20, Math.min(2000, rawMaxJobs))
@@ -4191,6 +4196,7 @@ function collectSchedulerPreferencesFromForm() {
         engagement_policy: engagementPolicy,
         provider: selectedProvider,
         max_concurrency: maxConcurrency,
+        max_host_concurrency: maxHostConcurrency,
         max_jobs: maxJobs,
         ai_feedback: {
             enabled: getChecked("scheduler-ai-feedback-enabled"),

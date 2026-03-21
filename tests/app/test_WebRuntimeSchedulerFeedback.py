@@ -262,6 +262,14 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertEqual(16, WebRuntime._scheduler_max_concurrency({"max_concurrency": 24}))
         self.assertEqual(6, WebRuntime._scheduler_max_concurrency({"max_concurrency": 6}))
 
+    def test_scheduler_max_host_concurrency_clamps_values(self):
+        from app.web.runtime import WebRuntime
+
+        self.assertEqual(1, WebRuntime._scheduler_max_host_concurrency({"max_host_concurrency": "x"}))
+        self.assertEqual(1, WebRuntime._scheduler_max_host_concurrency({"max_host_concurrency": 0}))
+        self.assertEqual(8, WebRuntime._scheduler_max_host_concurrency({"max_host_concurrency": 24}))
+        self.assertEqual(4, WebRuntime._scheduler_max_host_concurrency({"max_host_concurrency": 4}))
+
     def test_scheduler_max_jobs_clamps_values(self):
         from app.web.runtime import WebRuntime
 
@@ -269,6 +277,73 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertEqual(20, WebRuntime._scheduler_max_jobs({"max_jobs": 0}))
         self.assertEqual(2000, WebRuntime._scheduler_max_jobs({"max_jobs": 99999}))
         self.assertEqual(350, WebRuntime._scheduler_max_jobs({"max_jobs": 350}))
+
+    def test_group_scheduler_targets_by_host_preserves_host_order(self):
+        from app.web.runtime import WebRuntime
+
+        targets = [
+            SimpleNamespace(host_id=11, host_ip="10.0.0.5", hostname="host-a", port="80"),
+            SimpleNamespace(host_id=12, host_ip="10.0.0.6", hostname="host-b", port="22"),
+            SimpleNamespace(host_id=11, host_ip="10.0.0.5", hostname="host-a", port="443"),
+        ]
+
+        groups = WebRuntime._group_scheduler_targets_by_host(targets)
+
+        self.assertEqual(2, len(groups))
+        self.assertEqual(["80", "443"], [item.port for item in groups[0]])
+        self.assertEqual(["22"], [item.port for item in groups[1]])
+
+    def test_run_scheduler_targets_can_fan_out_by_host_for_easy_scan(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        barrier = threading.Barrier(2, timeout=1.0)
+        parallel_hits = []
+
+        def run_targets(**kwargs):
+            try:
+                barrier.wait()
+                parallel_hits.append(True)
+            except threading.BrokenBarrierError:
+                parallel_hits.append(False)
+            target_count = len(list(kwargs.get("targets", []) or []))
+            return {
+                "considered": target_count,
+                "approval_queued": 0,
+                "executed": target_count,
+                "skipped": 0,
+                "host_scope_count": target_count,
+                "dig_deeper": False,
+                "reflections": 0,
+                "reflection_stops": 0,
+            }
+
+        runtime.scheduler_orchestrator = SimpleNamespace(run_targets=run_targets)
+        targets = [
+            SimpleNamespace(host_id=11, host_ip="10.0.0.5", hostname="host-a", port="80"),
+            SimpleNamespace(host_id=12, host_ip="10.0.0.6", hostname="host-b", port="443"),
+        ]
+
+        summary = runtime._run_scheduler_targets(
+            settings=SimpleNamespace(),
+            targets=targets,
+            engagement_policy={},
+            options=SimpleNamespace(host_concurrency=2, dig_deeper=False),
+            should_cancel=None,
+            existing_attempts=None,
+            build_context=None,
+            on_ai_analysis=None,
+            reflect_progress=None,
+            on_reflection_analysis=None,
+            handle_blocked=None,
+            handle_approval=None,
+            execute_batch=None,
+            on_execution_result=None,
+        )
+
+        self.assertEqual([True, True], sorted(parallel_hits))
+        self.assertEqual(2, summary["considered"])
+        self.assertEqual(2, summary["executed"])
 
     def test_extract_scheduler_signals_detects_common_markers(self):
         from app.web.runtime import WebRuntime

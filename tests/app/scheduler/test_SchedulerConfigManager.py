@@ -28,6 +28,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual("internal_asset_discovery", defaults["goal_profile"])
             self.assertEqual("internal_recon", defaults["engagement_policy"]["preset"])
             self.assertEqual(1, int(defaults["max_concurrency"]))
+            self.assertEqual(1, int(defaults["max_host_concurrency"]))
             self.assertEqual(200, int(defaults["max_jobs"]))
             self.assertIn("ai_feedback", defaults)
             self.assertTrue(defaults["ai_feedback"]["enabled"])
@@ -78,6 +79,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual("external_pentest", updated["engagement_policy"]["preset"])
             self.assertEqual("openai", updated["provider"])
             self.assertEqual(1, int(updated["max_concurrency"]))
+            self.assertEqual(1, int(updated["max_host_concurrency"]))
             self.assertEqual("gpt-5-mini", updated["providers"]["openai"]["model"])
             self.assertTrue(updated["providers"]["openai"]["structured_outputs"])
             self.assertEqual(5, int(updated["ai_feedback"]["max_rounds_per_target"]))
@@ -95,6 +97,11 @@ class SchedulerConfigManagerTest(unittest.TestCase):
                 "max_concurrency": 99,
             })
             self.assertEqual(16, int(updated_concurrency["max_concurrency"]))
+
+            updated_host_concurrency = manager.update_preferences({
+                "max_host_concurrency": 99,
+            })
+            self.assertEqual(8, int(updated_host_concurrency["max_host_concurrency"]))
 
             updated_jobs = manager.update_preferences({
                 "max_jobs": 99999,

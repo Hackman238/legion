@@ -1389,9 +1389,14 @@
                     <input id="scheduler-concurrency-input" type="number" min="1" max="16" step="1" name="max_concurrency">
                 </label>
                 <label>
+                    Max Hosts In Parallel (Easy Scan)
+                    <input id="scheduler-host-concurrency-input" type="number" min="1" max="8" step="1" name="max_host_concurrency">
+                </label>
+                <label>
                     Max Jobs Retained
                     <input id="scheduler-max-jobs-input" type="number" min="20" max="2000" step="1" name="max_jobs">
                 </label>
+                <p class="meta-note scheduler-group-note">This only applies to normal scheduler runs. Dig Deeper stays single-host so AI follow-up remains bounded.</p>
             </fieldset>
             <fieldset class="danger-group scheduler-settings-group">
                 <legend>Workspace Features</legend>

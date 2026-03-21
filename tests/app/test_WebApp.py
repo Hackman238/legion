@@ -30,6 +30,9 @@ class DummySchedulerConfig:
                 "legacy_goal_profile": "internal_asset_discovery",
             },
             "provider": "none",
+            "max_concurrency": 1,
+            "max_host_concurrency": 1,
+            "max_jobs": 200,
             "providers": {
                 "openai": {
                     "enabled": False,
@@ -778,6 +781,9 @@ class DummyRuntime:
                 {"id": "custom", "name": "Custom"},
             ],
             "provider": self.scheduler_config.state["provider"],
+            "max_concurrency": self.scheduler_config.state["max_concurrency"],
+            "max_host_concurrency": self.scheduler_config.state["max_host_concurrency"],
+            "max_jobs": self.scheduler_config.state["max_jobs"],
             "providers": self.scheduler_config.state["providers"],
             "feature_flags": self.scheduler_config.state["feature_flags"],
             "ai_feedback": self.scheduler_config.state["ai_feedback"],
@@ -1885,6 +1891,7 @@ class WebAppTest(unittest.TestCase):
         self.assertTrue(response.json["feature_flags"]["context_summary_enabled"])
         self.assertTrue(response.json["feature_flags"]["scheduler_prompt_profiles"])
         self.assertFalse(response.json["feature_flags"]["scheduler_web_followup_sidecar"])
+        self.assertEqual(1, response.json["max_host_concurrency"])
         self.assertIn("openai", response.json["providers"])
         self.assertFalse(response.json["providers"]["openai"]["structured_outputs"])
         self.assertTrue(response.json["ai_feedback"]["enabled"])
@@ -1894,10 +1901,14 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(1, response.json["ai_feedback"]["max_reflections_per_target"])
 
     def test_scheduler_preferences_update_endpoint(self):
-        response = self.client.post("/api/scheduler/preferences", json={"mode": "ai", "goal_profile": "external_pentest"})
+        response = self.client.post(
+            "/api/scheduler/preferences",
+            json={"mode": "ai", "goal_profile": "external_pentest", "max_host_concurrency": 3},
+        )
         self.assertEqual(200, response.status_code)
         self.assertEqual("ai", response.json["mode"])
         self.assertEqual("external_pentest", response.json["goal_profile"])
+        self.assertEqual(3, response.json["max_host_concurrency"])
 
     def test_scheduler_preferences_update_accepts_engagement_policy(self):
         response = self.client.post(

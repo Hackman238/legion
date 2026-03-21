@@ -7,6 +7,7 @@ class _ConfigStub:
         self.state = {
             "mode": "deterministic",
             "max_concurrency": 2,
+            "max_host_concurrency": 1,
             "ai_feedback": {
                 "enabled": True,
                 "max_rounds_per_target": 4,
@@ -60,6 +61,7 @@ class SchedulerOrchestratorTest(unittest.TestCase):
             {
                 "mode": "ai",
                 "max_concurrency": 20,
+                "max_host_concurrency": 6,
                 "ai_feedback": {
                     "enabled": True,
                     "max_rounds_per_target": 99,
@@ -72,6 +74,7 @@ class SchedulerOrchestratorTest(unittest.TestCase):
 
         self.assertEqual("ai", options.scheduler_mode)
         self.assertEqual(16, options.scheduler_concurrency)
+        self.assertEqual(1, options.host_concurrency)
         self.assertTrue(options.ai_feedback_enabled)
         self.assertGreaterEqual(options.max_rounds, 4)
         self.assertGreaterEqual(options.max_actions_per_round, 3)
