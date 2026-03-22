@@ -1,5 +1,6 @@
 import unittest
 import threading
+import json
 from unittest import mock
 from types import SimpleNamespace
 
@@ -215,6 +216,131 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertEqual("stalled", summary["reflection_posture"]["state"])
         self.assertEqual("manual_validation", summary["reflection_posture"]["priority_shift"])
         self.assertEqual("phase_transition", summary["reflection_posture"]["trigger_reason"])
+
+    def test_build_scheduler_rationale_feed_items_summarizes_scores_and_outcomes(self):
+        from app.web.runtime import WebRuntime
+
+        provider_logs = [{
+            "timestamp": "2026-03-22T05:35:17+00:00",
+            "request_body": json.dumps({
+                "messages": [
+                    {"role": "system", "content": "Return strict JSON only."},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Context:\n"
+                            "{\"target\":{\"host_ip\":\"192.168.3.133\",\"port\":\"5357\",\"protocol\":\"tcp\",\"service\":\"http\"}}\n"
+                            "Candidates:\n"
+                            "{\"tool_id\":\"nmap-vuln.nse\"}\n"
+                            "{\"tool_id\":\"whatweb\"}\n"
+                            "{\"tool_id\":\"nikto\"}\n"
+                        ),
+                    },
+                ],
+            }),
+            "response_body": json.dumps({
+                "choices": [{
+                    "message": {
+                        "content": json.dumps({
+                            "actions": [
+                                {"tool_id": "nmap-vuln.nse", "score": 92, "rationale": "Best baseline gap filler for the confirmed HTTP service."},
+                                {"tool_id": "whatweb", "score": 84, "rationale": "Safe technology fingerprinting can refine Microsoft HTTPAPI evidence."},
+                                {"tool_id": "nikto", "score": 78, "rationale": "Broad HTTP validation remains explicitly missing."},
+                            ],
+                            "host_updates": {},
+                            "findings": [],
+                            "manual_tests": [],
+                            "next_phase": "protocol_checks",
+                        })
+                    }
+                }]
+            }),
+            "prompt_metadata": {
+                "prompt_type": "ranking",
+                "prompt_profile": "web:broad_vuln",
+                "current_phase": "broad_vuln",
+                "visible_candidate_tool_ids": ["nmap-vuln.nse", "whatweb", "nikto"],
+            },
+        }]
+        decisions = [{
+            "id": 41,
+            "timestamp": "22 Mar 2026 00:35:18.000000",
+            "host_ip": "192.168.3.133",
+            "port": "5357",
+            "protocol": "tcp",
+            "service": "http",
+            "tool_id": "nmap-vuln.nse",
+            "approved": "True",
+            "executed": "True",
+            "requires_approval": "False",
+            "reason": "approved & completed",
+            "rationale": "Best baseline gap filler for the confirmed HTTP service.",
+        }]
+        executions = [{
+            "execution_id": "exec-12",
+            "tool_id": "nmap-vuln.nse",
+            "host_ip": "192.168.3.133",
+            "port": "5357",
+            "protocol": "tcp",
+            "service": "http",
+            "started_at": "2026-03-22T05:35:18+00:00",
+            "exit_status": "0",
+        }]
+
+        feed = WebRuntime._build_scheduler_rationale_feed_items(provider_logs, decisions, executions, limit=10)
+
+        self.assertEqual(1, len(feed))
+        self.assertEqual("ranking", feed[0]["kind"])
+        self.assertEqual("192.168.3.133", feed[0]["host_ip"])
+        self.assertEqual("nmap-vuln.nse, whatweb, nikto", feed[0]["headline"])
+        self.assertIn("Ranking", feed[0]["tags"])
+        self.assertTrue(any("Scores: nmap-vuln.nse 92, whatweb 84, nikto 78" == line for line in feed[0]["details"]))
+        self.assertTrue(any("Outcome: nmap-vuln.nse executed [exec-12, exit 0]" == line for line in feed[0]["details"]))
+        self.assertTrue(any("Next phase: protocol_checks" == line for line in feed[0]["details"]))
+
+    def test_build_scheduler_rationale_feed_filters_non_visible_model_suggestions(self):
+        from app.web.runtime import WebRuntime
+
+        provider_logs = [{
+            "timestamp": "2026-03-22T05:35:09+00:00",
+            "request_body": json.dumps({
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "{\"target\":{\"host_ip\":\"192.168.3.133\",\"port\":\"5357\",\"protocol\":\"tcp\",\"service\":\"http\"}}\n"
+                            "Candidates:\n"
+                            "{\"tool_id\":\"curl-headers\"}\n"
+                            "{\"tool_id\":\"curl-options\"}\n"
+                        ),
+                    }
+                ],
+            }),
+            "response_body": json.dumps({
+                "choices": [{
+                    "message": {
+                        "content": json.dumps({
+                            "focus": "tech_validation",
+                            "selected_tool_ids": ["curl-headers", "nmap-vuln.nse"],
+                            "reason": "Validate the observed HTTP stack with bounded read-only checks.",
+                            "manual_tests": [],
+                        })
+                    }
+                }]
+            }),
+            "prompt_metadata": {
+                "prompt_type": "web_followup",
+                "prompt_profile": "web",
+                "current_phase": "broad_vuln",
+                "visible_candidate_tool_ids": ["curl-headers", "curl-options"],
+            },
+        }]
+
+        feed = WebRuntime._build_scheduler_rationale_feed_items(provider_logs, [], [], limit=10)
+
+        self.assertEqual(1, len(feed))
+        self.assertEqual("curl-headers", feed[0]["headline"])
+        self.assertTrue(any("Ignored out-of-scope suggestions: nmap-vuln.nse" == line for line in feed[0]["details"]))
 
     def test_tool_audit_availability_tracks_installed_and_missing_tools(self):
         from app.web.runtime import WebRuntime

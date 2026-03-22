@@ -489,7 +489,7 @@ def _normalize_screenshots(items: Any) -> List[Dict[str, Any]]:
         filename = str(item.get("filename", "") or "").strip()[:200]
         if not artifact_ref and not filename:
             continue
-        rows.append({
+        row = {
             "artifact_ref": artifact_ref,
             "filename": filename,
             "port": str(item.get("port", "") or "").strip()[:20],
@@ -497,7 +497,20 @@ def _normalize_screenshots(items: Any) -> List[Dict[str, Any]]:
             "confidence": _safe_float(item.get("confidence", 96.0)),
             "source_kind": _normalize_source_kind(item.get("source_kind", "observed"), "observed"),
             "observed": bool(item.get("observed", True)),
-        })
+        }
+        optional_fields = {
+            "target_url": 320,
+            "capture_engine": 80,
+            "capture_reason": 160,
+            "captured_at": 64,
+            "service_name": 64,
+            "hostname": 160,
+        }
+        for field, limit in optional_fields.items():
+            value = str(item.get(field, "") or "").strip()[:limit]
+            if value:
+                row[field] = value
+        rows.append(row)
     return _merge_rows([], rows, key_fields=["artifact_ref", "filename", "port", "protocol"], limit=160)
 
 

@@ -267,6 +267,26 @@ class DummyRuntime:
                 "status": "pending",
             }
         ]
+        self.scheduler_rationale_feed = [
+            {
+                "id": "provider:ranking:2026-02-17T00:00:00Z:10.0.0.5:445:smb-enum-users.nse",
+                "timestamp": "2026-02-17T00:00:00Z",
+                "host_ip": "10.0.0.5",
+                "port": "445",
+                "protocol": "tcp",
+                "service": "smb",
+                "kind": "ranking",
+                "headline": "smb-enum-users.nse, smbmap",
+                "summary": "Closed the safe SMB enumeration gap before deeper checks.",
+                "details": [
+                    "Selected: smb-enum-users.nse, smbmap",
+                    "Scores: smb-enum-users.nse 97, smbmap 84",
+                    "Outcome: smb-enum-users.nse executed [exec-1, exit 0]",
+                    "Next phase: service_fingerprint",
+                ],
+                "tags": ["Ranking", "Service Fingerprint", "SMB"],
+            }
+        ]
         self.graph_snapshot = {
             "nodes": [
                 {
@@ -453,9 +473,19 @@ class DummyRuntime:
             "processes": [],
             "scheduler": self.get_scheduler_preferences(),
             "scheduler_decisions": self.get_scheduler_decisions(),
+            "scheduler_rationale_feed": self.get_scheduler_rationale_feed(),
             "scheduler_approvals": list(self.scheduler_approvals),
             "scan_history": list(self.scan_history),
             "jobs": list(self.jobs),
+        }
+
+    def get_workspace_overview(self):
+        snapshot = self.get_snapshot()
+        return {
+            "project": snapshot["project"],
+            "summary": snapshot["summary"],
+            "scheduler": snapshot["scheduler"],
+            "scheduler_rationale_feed": snapshot["scheduler_rationale_feed"],
         }
 
     def get_project_details(self):
@@ -832,6 +862,9 @@ class DummyRuntime:
                 "command_family_id": "abc123",
             }
         ][:limit]
+
+    def get_scheduler_rationale_feed(self, limit=12):
+        return list(self.scheduler_rationale_feed)[:max(1, int(limit or 1))]
 
     def get_workspace_hosts(self, limit=None, include_down=False, service=""):
         rows = list(self.workspace_hosts)
@@ -1794,8 +1827,10 @@ class WebAppTest(unittest.TestCase):
         self.assertNotIn("<h2>Jobs</h2>", body)
         self.assertNotIn("<h2>Submitted Scans</h2>", body)
         self.assertNotIn("<h2>Scheduler Decisions</h2>", body)
+        self.assertIn("<h2>Decision Rationale</h2>", body)
         self.assertLess(body.index('id="ribbon-launch-wizard-button"'), body.index("<h2>Project</h2>"))
-        self.assertLess(body.index("<h2>Project</h2>"), body.index('id="stat-hosts"'))
+        self.assertLess(body.index("<h2>Project</h2>"), body.index("<h2>Decision Rationale</h2>"))
+        self.assertLess(body.index("<h2>Decision Rationale</h2>"), body.index('id="stat-hosts"'))
         self.assertLess(body.index('id="ribbon-logging-menu-button"'), body.index('id="ribbon-settings-menu-button"'))
         self.assertLess(body.index('id="ribbon-launch-wizard-button"'), body.index("<h2>Graph Workspace</h2>"))
         self.assertLess(body.index('id="graph-workspace-shell"'), body.index('id="graph-refresh-button"'))
@@ -1855,9 +1890,17 @@ class WebAppTest(unittest.TestCase):
         response = self.client.get("/api/snapshot")
         self.assertEqual(200, response.status_code)
         self.assertEqual("demo", response.json["project"]["name"])
+        self.assertEqual(1, len(response.json["scheduler_rationale_feed"]))
+        self.assertEqual("smb-enum-users.nse, smbmap", response.json["scheduler_rationale_feed"][0]["headline"])
         self.assertEqual("no-store, max-age=0, must-revalidate", response.headers.get("Cache-Control"))
         self.assertEqual("no-cache", response.headers.get("Pragma"))
         self.assertEqual("0", response.headers.get("Expires"))
+
+    def test_workspace_overview_endpoint_includes_rationale_feed(self):
+        response = self.client.get("/api/workspace/overview")
+        self.assertEqual(200, response.status_code)
+        self.assertIn("scheduler_rationale_feed", response.json)
+        self.assertEqual("10.0.0.5", response.json["scheduler_rationale_feed"][0]["host_ip"])
 
     def test_project_endpoints(self):
         details = self.client.get("/api/project")

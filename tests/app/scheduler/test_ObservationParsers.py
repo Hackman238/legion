@@ -462,6 +462,93 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertEqual(1, titles.count("TLSv1.0 supported"))
         self.assertEqual(1, titles.count("TLSv1.1 supported"))
 
+    def test_extract_tool_observations_parses_realistic_sslyze_posture_findings(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            " * TLS 1.0 Cipher Suites:\n"
+            "     Attempted to connect using 80 cipher suites.\n"
+            "     The server accepted the following 1 cipher suites:\n"
+            "         TLS_RSA_WITH_3DES_EDE_CBC_SHA             112\n"
+            " * TLS 1.1 Cipher Suites:\n"
+            "     Attempted to connect using 80 cipher suites.\n"
+            "     Accepted 1 cipher suites.\n"
+            "         TLS_RSA_WITH_AES_128_CBC_SHA             128\n"
+            " * Deflate Compression:\n"
+            "     VULNERABLE - Server supports Deflate compression\n"
+            " * Session Renegotiation:\n"
+            "     VULNERABLE - Secure renegotiation not supported\n"
+            " * Heartbleed:\n"
+            "     OK - Not vulnerable to Heartbleed\n"
+            " * Downgrade Attacks:\n"
+            "     TLS_FALLBACK_SCSV not supported\n"
+            " * Certificate Information:\n"
+            "     Subject:  demo.local\n"
+            "     Issuer:   demo.local\n"
+            "     Public Key Size: 1024\n"
+            "     Signature Algorithm: sha1WithRSAEncryption\n"
+        )
+
+        parsed = extract_tool_observations("sslyze", output)
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("TLSv1.0 supported", titles)
+        self.assertIn("TLSv1.1 supported", titles)
+        self.assertIn("Weak TLS cipher supported", titles)
+        self.assertIn("TLS compression enabled", titles)
+        self.assertIn("Insecure TLS renegotiation", titles)
+        self.assertIn("TLS downgrade protection missing", titles)
+        self.assertIn("Weak TLS certificate key size", titles)
+        self.assertIn("TLS certificate uses SHA-1", titles)
+        self.assertIn("Self-signed TLS certificate", titles)
+        self.assertNotIn("Heartbleed exposure", titles)
+
+    def test_extract_tool_observations_ignores_sslyze_zero_accepted_cipher_sections(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            " * TLS 1.0 Cipher Suites:\n"
+            "     Attempted to connect using 80 cipher suites.\n"
+            "     Accepted 0 cipher suites.\n"
+            " * TLS 1.1 Cipher Suites:\n"
+            "     Attempted to connect using 80 cipher suites.\n"
+            "     The server accepted the following 1 cipher suites:\n"
+            "         TLS_RSA_WITH_AES_128_CBC_SHA             128\n"
+        )
+
+        parsed = extract_tool_observations("sslyze", output)
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertNotIn("TLSv1.0 supported", titles)
+        self.assertIn("TLSv1.1 supported", titles)
+
+    def test_extract_tool_observations_handles_wafw00f_generic_and_negative_output(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        generic_output = (
+            "[*] Checking https://portal.example\n"
+            "[+] Generic Detection results:\n"
+            "[+] The site https://portal.example seems to be behind a WAF or some sort of security solution\n"
+        )
+        generic_parsed = extract_tool_observations("wafw00f", generic_output)
+
+        generic_titles = {str(item.get("title", "")).strip() for item in generic_parsed["findings"]}
+        generic_urls = {str(item.get("url", "")).strip() for item in generic_parsed["urls"]}
+
+        self.assertIn("WAF detected", generic_titles)
+        self.assertIn("https://portal.example", generic_urls)
+
+        no_waf_output = (
+            "[*] Checking https://portal.example\n"
+            "[-] No WAF detected by the generic detection\n"
+        )
+        no_waf_parsed = extract_tool_observations("wafw00f", no_waf_output)
+
+        self.assertEqual([], no_waf_parsed["findings"])
+        self.assertEqual([], no_waf_parsed["technologies"])
+
     def test_extract_tool_observations_parses_wpscan_plain_text_output(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -598,6 +685,79 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("https://portal.example/graphql", urls)
         self.assertIn("Interesting web paths discovered (3)", finding_titles)
 
+    def test_extract_tool_observations_parses_sqlmap_injection_and_dbms(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "[INFO] testing URL 'https://portal.example/item.php?id=1'\n"
+            "web application technology: Apache 2.4.57, PHP 8.2.15\n"
+            "Parameter: id (GET)\n"
+            "Type: boolean-based blind\n"
+            "Title: AND boolean-based blind - WHERE or HAVING clause\n"
+            "back-end DBMS: MySQL >= 5.0.12\n"
+            "current user is DBA: True\n"
+            "available databases [2]:\n"
+            "[*] information_schema\n"
+            "[*] acuart\n"
+        )
+
+        parsed = extract_tool_observations(
+            "sqlmap",
+            output,
+            port="443",
+            protocol="tcp",
+            service="https",
+        )
+
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip(): item for item in parsed["technologies"]}
+        findings = {str(item.get("title", "")).strip(): item for item in parsed["findings"]}
+
+        self.assertIn("https://portal.example/item.php?id=1", urls)
+        self.assertIn("Apache", technologies)
+        self.assertEqual("2.4.57", technologies["Apache"]["version"])
+        self.assertIn("PHP", technologies)
+        self.assertEqual("8.2.15", technologies["PHP"]["version"])
+        self.assertIn("MySQL", technologies)
+        self.assertEqual(">= 5.0.12", technologies["MySQL"]["version"])
+        self.assertIn("SQL injection: GET id parameter injectable", findings)
+        self.assertIn("SQLMap: current database user has DBA privileges", findings)
+        self.assertIn("SQLMap enumerated databases (2)", findings)
+        self.assertIn("acuart", findings["SQLMap enumerated databases (2)"]["evidence_items"])
+
+    def test_extract_tool_observations_parses_http_sqlmap_artifact_output(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "[INFO] testing URL 'http://legacy.example/list.asp?cat=2'\n"
+            "Parameter: cat (GET)\n"
+            "Type: time-based blind\n"
+            "Title: MySQL >= 5.0.12 AND time-based blind (query SLEEP)\n"
+            "the back-end DBMS is MySQL\n"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = os.path.join(tmpdir, "sqlmap-output.txt")
+            with open(artifact, "w", encoding="utf-8") as handle:
+                handle.write(output)
+
+            parsed = extract_tool_observations(
+                "http-sqlmap",
+                "",
+                artifact_refs=[artifact],
+                port="80",
+                protocol="tcp",
+                service="http",
+            )
+
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+        findings = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("http://legacy.example/list.asp?cat=2", urls)
+        self.assertIn("MySQL", technologies)
+        self.assertIn("SQL injection: GET cat parameter injectable", findings)
+
     def test_extract_tool_observations_parses_rpcclient_domain_users_and_shares(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -623,6 +783,181 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("SMB domain identified: CONTOSO", finding_titles)
         self.assertIn("SMB users enumerated (2)", finding_titles)
         self.assertIn("SMB shares enumerated (2)", finding_titles)
+
+    def test_extract_tool_observations_parses_enum4linux_share_tables(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "Domain Name: CONTOSO\n"
+            "user:[Administrator] rid:[0x1f4]\n"
+            "user:[HelpDesk] rid:[0x453]\n"
+            "\n"
+            "Sharename       Type      Comment\n"
+            "---------       ----      -------\n"
+            "ADMIN$          Disk      Remote Admin\n"
+            "IPC$            IPC       Remote IPC\n"
+        )
+
+        parsed = extract_tool_observations(
+            "enum4linux",
+            output,
+            port="445",
+            protocol="tcp",
+            service="smb",
+            host_ip="10.0.0.5",
+        )
+
+        finding_titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+        self.assertIn("SMB domain identified: CONTOSO", finding_titles)
+        self.assertIn("SMB users enumerated (2)", finding_titles)
+        self.assertIn("SMB shares enumerated (2)", finding_titles)
+
+    def test_extract_tool_observations_parses_samrdump_found_users(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "Found domain name: CONTOSO\n"
+            "Found user: Administrator, uid = 500\n"
+            "Found user: HelpDesk, uid = 1107\n"
+        )
+
+        parsed = extract_tool_observations(
+            "samrdump",
+            output,
+            port="445",
+            protocol="tcp",
+            service="smb",
+            host_ip="10.0.0.5",
+        )
+
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+        finding_titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+        self.assertIn("Active Directory", technologies)
+        self.assertIn("SMB domain identified: CONTOSO", finding_titles)
+        self.assertIn("SMB users enumerated (2)", finding_titles)
+
+    def test_extract_tool_observations_parses_nbtscan_verbose_output(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "NetBIOS Name Table for Host 192.168.1.123:\n"
+            "\n"
+            "Name             Service          Type\n"
+            "----------------------------------------\n"
+            "DPTSERVER        <00>             UNIQUE\n"
+            "DPTSERVER        <20>             UNIQUE\n"
+            "DEPARTMENT       <00>             GROUP\n"
+            "ADMINISTRATOR    <03>             UNIQUE\n"
+            "\n"
+            "Adapter address: 00-a0-c9-12-34-56\n"
+        )
+
+        parsed = extract_tool_observations("nbtscan", output)
+
+        findings = {str(item.get("title", "")).strip(): item for item in parsed["findings"]}
+        self.assertIn("NetBIOS hosts enumerated (1)", findings)
+        self.assertIn("NetBIOS workgroups/domains enumerated (1)", findings)
+        self.assertIn("NetBIOS users enumerated (1)", findings)
+        self.assertIn("NetBIOS file servers advertised (1)", findings)
+        self.assertIn("DPTSERVER", findings["NetBIOS hosts enumerated (1)"]["evidence_items"])
+        self.assertIn("DEPARTMENT", findings["NetBIOS workgroups/domains enumerated (1)"]["evidence_items"])
+        self.assertIn("ADMINISTRATOR", findings["NetBIOS users enumerated (1)"]["evidence_items"])
+        self.assertIn("192.168.1.123", findings["NetBIOS file servers advertised (1)"]["evidence_items"])
+
+    def test_extract_tool_observations_parses_nbtscan_summary_and_script_friendly_output(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        summary_output = (
+            "IP address     NetBIOS Name  Server    User           MAC address\n"
+            "-----------------------------------------------------------------------\n"
+            "192.168.1.2    MYCOMPUTER              JDOE           00-a0-c9-12-34-56\n"
+            "192.168.1.5    WIN98COMP     <server>  RROE           00-a0-c9-78-90-00\n"
+        )
+        script_output = (
+            "192.168.0.1:NT_SERVER:00U\n"
+            "192.168.0.1:MY_DOMAIN:00G\n"
+            "192.168.0.1:ADMINISTRATOR:03U\n"
+            "192.168.0.1:NT_SERVER:20U\n"
+        )
+
+        summary_parsed = extract_tool_observations("nbtscan", summary_output)
+        script_parsed = extract_tool_observations("nbtscan", script_output)
+
+        summary_titles = {str(item.get("title", "")).strip() for item in summary_parsed["findings"]}
+        script_titles = {str(item.get("title", "")).strip() for item in script_parsed["findings"]}
+
+        self.assertIn("NetBIOS hosts enumerated (2)", summary_titles)
+        self.assertIn("NetBIOS users enumerated (2)", summary_titles)
+        self.assertIn("NetBIOS file servers advertised (1)", summary_titles)
+        self.assertIn("NetBIOS hosts enumerated (1)", script_titles)
+        self.assertIn("NetBIOS workgroups/domains enumerated (1)", script_titles)
+        self.assertIn("NetBIOS users enumerated (1)", script_titles)
+        self.assertIn("NetBIOS file servers advertised (1)", script_titles)
+
+    def test_extract_tool_observations_parses_dnsmap_subdomains_and_internal_records(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "dnsmap 0.36 - DNS Network Mapper\n"
+            "\n"
+            "[+] searching (sub)domains for example.com using /tmp/wordlist.txt\n"
+            "www.example.com\n"
+            "IPv6 address #1: 2606:4700::6812:1b78\n"
+            "\n"
+            "www.example.com\n"
+            "IP address #1: 104.18.27.120\n"
+            "\n"
+            "intranet.example.com\n"
+            "IP address #1: 10.0.0.5\n"
+            "[+] warning: internal IP address disclosed\n"
+            "[+] 2 (sub)domains and 3 IP address(es) found\n"
+        )
+
+        parsed = extract_tool_observations("dnsmap", output)
+
+        findings = {str(item.get("title", "")).strip(): item for item in parsed["findings"]}
+
+        self.assertIn("DNS subdomains discovered (2)", findings)
+        self.assertIn("Internal DNS records disclosed", findings)
+        self.assertIn("Internal DNS records disclosed (1)", findings)
+        self.assertIn("www.example.com", findings["DNS subdomains discovered (2)"]["evidence_items"])
+        self.assertIn("intranet.example.com", findings["DNS subdomains discovered (2)"]["evidence_items"])
+        self.assertIn("intranet.example.com -> 10.0.0.5", findings["Internal DNS records disclosed (1)"]["evidence_items"])
+
+    def test_extract_tool_observations_parses_screenshot_metadata_artifact(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            metadata_path = os.path.join(temp_dir, "203.0.113.44-80-screenshot.png.json")
+            with open(metadata_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "tool_id": "screenshooter",
+                    "filename": "203.0.113.44-80-screenshot.png",
+                    "host_ip": "203.0.113.44",
+                    "hostname": "portal.example",
+                    "port": "80",
+                    "protocol": "tcp",
+                    "service_name": "http",
+                    "target_url": "http://portal.example:80",
+                    "capture_engine": "EyeWitness",
+                }, handle)
+
+            parsed = extract_tool_observations(
+                "screenshooter",
+                "",
+                port="80",
+                protocol="tcp",
+                service="http",
+                artifact_refs=[metadata_path],
+                host_ip="203.0.113.44",
+                hostname="portal.example",
+            )
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+
+        self.assertIn("Visual capture available for http://portal.example", titles)
+        self.assertIn("http://portal.example", urls)
 
 
 if __name__ == "__main__":

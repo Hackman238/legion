@@ -1,5 +1,6 @@
 import csv
 import io
+import ipaddress
 import json
 import os
 import re
@@ -124,7 +125,7 @@ _WPSCAN_VERSION_RE = re.compile(
 )
 _WPSCAN_LOCATION_RE = re.compile(r"^\|\s*Location:\s*(https?://\S+)", flags=re.IGNORECASE)
 _WAF_VENDOR_RE = re.compile(
-    r"\bbehind\s+(?:a\s+)?([A-Za-z0-9][A-Za-z0-9 ._()/+-]{1,80}?)(?:\s+\(|\s+waf\b|[.!]|\s*$)",
+    r"\b(?:behind|protected by|using)\s+(?:an?\s+)?([A-Za-z0-9][A-Za-z0-9 ._()/+-]{1,80}?)(?:\s+\(|\s+waf\b|\s+firewall\b|[.!]|\s*$)",
     flags=re.IGNORECASE,
 )
 _FEROX_LINE_RE = re.compile(
@@ -136,11 +137,36 @@ _GOBUSTER_LINE_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _TLS_WEAK_CIPHER_RE = re.compile(r"(?:RC4|3DES|DES-CBC|NULL|EXPORT|aNULL|anon)", flags=re.IGNORECASE)
-_TLS_SHA1_RE = re.compile(r"\bsha-?1\b", flags=re.IGNORECASE)
-_TLS_MD5_RE = re.compile(r"\bmd5\b", flags=re.IGNORECASE)
-_TLS_RSA_KEY_RE = re.compile(r"rsa key strength:\s*(\d+)", flags=re.IGNORECASE)
+_TLS_SHA1_RE = re.compile(r"(?:\bsha-?1\b|sha1with)", flags=re.IGNORECASE)
+_TLS_MD5_RE = re.compile(r"(?:\bmd5\b|md5with)", flags=re.IGNORECASE)
+_TLS_KEY_SIZE_RE = re.compile(r"(?:rsa key strength|public key size|rsa public key size|rsa public key)\s*:\s*(\d+)", flags=re.IGNORECASE)
 _TLS_SUBJECT_RE = re.compile(r"^subject:\s*(.+)$", flags=re.IGNORECASE)
 _TLS_ISSUER_RE = re.compile(r"^issuer:\s*(.+)$", flags=re.IGNORECASE)
+_TLS_PROTOCOL_SECTION_RE = re.compile(
+    r"^(?:[*-]\s*)?(?P<protocol>sslv?2(?:\.0)?|sslv?3(?:\.0)?|tlsv?1(?:\.0)?|tlsv?1\.1|ssl 2\.0|ssl 3\.0|tls 1\.0|tls 1\.1)\b.*cipher suites",
+    flags=re.IGNORECASE,
+)
+_TLS_ACCEPTED_CIPHER_COUNT_RE = re.compile(r"accepted\s+(?P<count>\d+)\s+cipher suites", flags=re.IGNORECASE)
+_NBTSCAN_TABLE_HEADER_RE = re.compile(r"^netbios name table for host\s+((?:\d{1,3}\.){3}\d{1,3})\s*:\s*$", flags=re.IGNORECASE)
+_NBTSCAN_VERBOSE_ROW_RE = re.compile(r"^\s*(.{1,32}?)\s+<([0-9A-Fa-f]{2})>\s+(UNIQUE|GROUP)\s*$")
+_NBTSCAN_SCRIPT_ROW_RE = re.compile(r"^((?:\d{1,3}\.){3}\d{1,3}):([^:]{1,64}):([0-9A-Fa-f]{2})([UG])$")
+_NBTSCAN_SUMMARY_IP_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_NBTSCAN_MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}$")
+_NBTSCAN_NAME_RE = re.compile(r"^[A-Za-z0-9_. $?-]{1,64}$")
+_DNSMAP_HOST_RE = re.compile(r"^(?:[A-Za-z0-9_-]{1,63}\.)+[A-Za-z0-9-]{2,63}$")
+_DNSMAP_IP_RE = re.compile(r"^(?:IPv6\s+address|IP\s+address)\s+#\d+\s*:\s*(\S+)\s*$", flags=re.IGNORECASE)
+_NAME_VERSION_RE = re.compile(
+    r"^\s*([A-Za-z][A-Za-z0-9+_.() /-]{0,79}?)(?:\s+v?((?:>=|<=|>|<)\s*[0-9][A-Za-z0-9._-]{0,31}|[0-9][A-Za-z0-9._-]{0,47}))?\s*$"
+)
+_SQLMAP_PARAMETER_RE = re.compile(r"^Parameter:\s*(.+?)\s*\(([^)]+)\)\s*$", flags=re.IGNORECASE)
+_SQLMAP_TYPE_RE = re.compile(r"^Type:\s*(.+?)\s*$", flags=re.IGNORECASE)
+_SQLMAP_TITLE_RE = re.compile(r"^Title:\s*(.+?)\s*$", flags=re.IGNORECASE)
+_SQLMAP_WEB_TECH_RE = re.compile(r"^web application technology:\s*(.+?)\s*$", flags=re.IGNORECASE)
+_SQLMAP_DBMS_RE = re.compile(r"^(?:the\s+back-end\s+DBMS\s+is|back-end DBMS:)\s*(.+?)\s*$", flags=re.IGNORECASE)
+_SQLMAP_BANNER_RE = re.compile(r"^banner:\s*['\"]?(.+?)['\"]?\s*$", flags=re.IGNORECASE)
+_SQLMAP_DBA_RE = re.compile(r"^current user is DBA:\s*(true|false|yes|no)\s*$", flags=re.IGNORECASE)
+_SQLMAP_AVAILABLE_DBS_RE = re.compile(r"^available databases\s*\[(\d+)\]\s*:\s*$", flags=re.IGNORECASE)
+_SQLMAP_LIST_ITEM_RE = re.compile(r"^\[\*\]\s+(.+?)\s*$")
 _IGNORED_PRODUCT_NAMES = {"http", "https", "tls", "ssl", "html", "json"}
 _IGNORED_DISCOVERY_URL_HOSTS = {"nmap.org", "www.nmap.org", "http", "https"}
 _SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
@@ -158,14 +184,25 @@ _SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
     "ffuf",
     "wpscan",
     "enum4linux-ng",
+    "enum4linux",
+    "smbenum",
+    "samrdump",
     "smbmap",
     "rpcclient-enum",
+    "nbtscan",
+    "dnsmap",
+    "screenshooter",
+    "sqlmap",
+    "http-sqlmap",
 )
 _DISCOVERY_PATH_RE = re.compile(r"(?i)(?:\"path\"|path|location|redirectlocation)\s*[:=]\s*['\"]?(/[^\"'\s,|]+)")
 _SMB_USER_RE = re.compile(r"(?i)(?:user(?:name)?|account)\s*[:=\[]\s*['\"]?([A-Za-z0-9_. $-]{1,96})")
 _SMB_RPC_USER_RE = re.compile(r"(?i)\buser:\[([^\]]{1,96})\]")
 _SMB_SHARE_RE = re.compile(r"(?i)(?:share(?:name)?|netname)\s*[:=\[]\s*['\"]?([A-Za-z0-9_. $-]{1,128})")
 _SMB_DOMAIN_RE = re.compile(r"(?i)(?:domain(?:\s+name)?|workgroup)\s*[:=]\s*['\"]?([A-Za-z0-9_.-]{1,96})")
+_SMB_FOUND_USER_RE = re.compile(r"(?im)\bfound user\s*:\s*([^,\r\n]{1,96})")
+_SMB_FOUND_DOMAIN_RE = re.compile(r"(?im)\bfound domain(?:\s+name)?\s*:\s*([^,\r\n]{1,96})")
+_SMB_SHARE_TABLE_RE = re.compile(r"(?im)^\s*([A-Za-z0-9_. $-]{1,128}?)\s{2,}(?:Disk|IPC|Printer|Device)\b")
 _HTTP_HEADER_RE = re.compile(r"^([A-Za-z0-9-]+):\s*(.+)$")
 _HTML_TITLE_RE = re.compile(r"<title>([^<]{1,200})</title>", flags=re.IGNORECASE)
 
@@ -188,6 +225,19 @@ def _clean_url(value: Any) -> str:
     except Exception:
         return ""
     return text[:320]
+
+
+def _normalize_tls_protocol_token(value: Any) -> str:
+    token = re.sub(r"[^a-z0-9.]+", "", str(value or "").strip().lower())
+    if token in {"ssl2", "ssl2.0", "sslv2", "sslv2.0"}:
+        return "sslv2"
+    if token in {"ssl3", "ssl3.0", "sslv3", "sslv3.0"}:
+        return "sslv3"
+    if token in {"tls1", "tls1.0", "tlsv1", "tlsv1.0"}:
+        return "tlsv1.0"
+    if token in {"tls1.1", "tlsv1.1"}:
+        return "tlsv1.1"
+    return token
 
 
 def _artifact_reader_supported(tool_id: str) -> bool:
@@ -213,6 +263,10 @@ def _select_artifact_refs_for_tool(tool_id: str, artifact_refs: Iterable[Any]) -
         preferred = _with_exts(".json")
         if preferred:
             return preferred + [ref for ref in refs if ref not in preferred]
+    if token == "screenshooter":
+        preferred = _with_exts(".json")
+        if preferred:
+            return preferred
     if token.startswith("httpx"):
         preferred = _with_exts(".jsonl")
         if preferred:
@@ -450,6 +504,21 @@ def _append_product_technology(rows: List[Dict[str, Any]], value: Any, *, eviden
         return
     match = _PRODUCT_TOKEN_RE.search(text)
     if not match:
+        return
+    name = _clean_text(match.group(1), 96)
+    if not name or name.lower() in _IGNORED_PRODUCT_NAMES:
+        return
+    version = _clean_text(match.group(2) or "", 80)
+    _append_technology(rows, name, version=version, evidence=evidence or text)
+
+
+def _append_named_version_technology(rows: List[Dict[str, Any]], value: Any, *, evidence: str = ""):
+    text = _clean_text(value, 160)
+    if not text:
+        return
+    match = _NAME_VERSION_RE.match(text)
+    if not match:
+        _append_technology(rows, text, evidence=evidence or text)
         return
     name = _clean_text(match.group(1), 96)
     if not name or name.lower() in _IGNORED_PRODUCT_NAMES:
@@ -931,12 +1000,60 @@ def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     subject_name = ""
     issuer_name = ""
     explicit_self_signed = False
-    seen_legacy_protocol_titles: Set[str] = set()
+    seen_legacy_protocol_titles = set()
+    seen_weak_cipher = False
+    current_protocol_title = ""
+    current_protocol_severity = ""
+    current_protocol_supported = False
+
+    def _mark_protocol_supported(evidence_line: str) -> None:
+        nonlocal current_protocol_supported
+        if not current_protocol_title:
+            return
+        current_protocol_supported = True
+        if current_protocol_title in seen_legacy_protocol_titles:
+            return
+        seen_legacy_protocol_titles.add(current_protocol_title)
+        _append_finding(findings, current_protocol_title, severity=current_protocol_severity, evidence=f"{tool_id}: {evidence_line}")
+
     for raw_line in str(output_text or "").splitlines():
         line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
         if not line:
             continue
         lowered = line.lower()
+
+        section_match = _TLS_PROTOCOL_SECTION_RE.match(line)
+        if section_match:
+            normalized_protocol = _normalize_tls_protocol_token(section_match.group("protocol"))
+            current_protocol_title = ""
+            current_protocol_severity = ""
+            current_protocol_supported = False
+            if normalized_protocol in _LEGACY_TLS_FINDINGS:
+                current_protocol_title, current_protocol_severity = _LEGACY_TLS_FINDINGS[normalized_protocol]
+            if any(marker in lowered for marker in ("enabled", "accepted", "offered", "supported")):
+                if "disabled" not in lowered and "not supported" not in lowered and "rejected" not in lowered:
+                    _mark_protocol_supported(line)
+        elif line.startswith("*") or line.startswith("-"):
+            current_protocol_title = ""
+            current_protocol_severity = ""
+            current_protocol_supported = False
+
+        if current_protocol_title:
+            accepted_match = _TLS_ACCEPTED_CIPHER_COUNT_RE.search(lowered)
+            if accepted_match:
+                try:
+                    accepted_count = int(accepted_match.group("count") or 0)
+                except (TypeError, ValueError):
+                    accepted_count = 0
+                if accepted_count > 0:
+                    _mark_protocol_supported(line)
+                else:
+                    current_protocol_supported = False
+            elif "accepted the following" in lowered or "server accepted" in lowered:
+                _mark_protocol_supported(line)
+            elif "not supported" in lowered or "rejected all cipher suites" in lowered:
+                current_protocol_supported = False
+
         subject_match = _TLS_SUBJECT_RE.match(line)
         if subject_match:
             subject_name = _clean_text(subject_match.group(1), 180)
@@ -947,10 +1064,9 @@ def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
             if protocol_token in lowered and any(marker in lowered for marker in ("enabled", "accepted", "offered", "supported")):
                 if "disabled" in lowered or "not supported" in lowered or "rejected" in lowered:
                     continue
-                if title in seen_legacy_protocol_titles:
-                    continue
-                seen_legacy_protocol_titles.add(title)
-                _append_finding(findings, title, severity=severity, evidence=f"{tool_id}: {line}")
+                current_protocol_title = title
+                current_protocol_severity = severity
+                _mark_protocol_supported(line)
         if "self-signed" in lowered or "self signed" in lowered:
             explicit_self_signed = True
             _append_finding(findings, "Self-signed TLS certificate", severity="low", evidence=f"{tool_id}: {line}")
@@ -959,11 +1075,16 @@ def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
         if "heartbleed" in lowered and "not vulnerable" not in lowered and any(token in lowered for token in ("vulnerable", "exploitable", "affected")):
             cve_id = "CVE-2014-0160" if "cve-2014-0160" in lowered or "heartbleed" in lowered else ""
             _append_finding(findings, "Heartbleed exposure", severity="high", cve=cve_id, evidence=f"{tool_id}: {line}")
-        if _TLS_WEAK_CIPHER_RE.search(line) and any(marker in lowered for marker in ("accepted", "offered", "supported", "preferred")):
+        if (
+                not seen_weak_cipher
+                and _TLS_WEAK_CIPHER_RE.search(line)
+                and (current_protocol_supported or any(marker in lowered for marker in ("accepted", "offered", "supported", "preferred")))
+        ):
+            seen_weak_cipher = True
             _append_finding(findings, "Weak TLS cipher supported", severity="medium", evidence=f"{tool_id}: {line}")
-        if "compression" in lowered and any(marker in lowered for marker in ("enabled", "supported", "available")) and "disabled" not in lowered:
+        if "compression" in lowered and any(marker in lowered for marker in ("enabled", "supported", "supports", "available")) and "disabled" not in lowered:
             _append_finding(findings, "TLS compression enabled", severity="medium", evidence=f"{tool_id}: {line}")
-        if "tls fallback scsv" in lowered and any(marker in lowered for marker in ("does not support", "not support", "unsupported")):
+        if any(token in lowered for token in ("tls fallback scsv", "tls_fallback_scsv")) and any(marker in lowered for marker in ("does not support", "not support", "unsupported")):
             _append_finding(findings, "TLS downgrade protection missing", severity="low", evidence=f"{tool_id}: {line}")
         if "renegotiation" in lowered and (
                 "insecure" in lowered
@@ -971,7 +1092,7 @@ def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
                 or ("secure" in lowered and "not supported" in lowered)
         ):
             _append_finding(findings, "Insecure TLS renegotiation", severity="medium", evidence=f"{tool_id}: {line}")
-        key_match = _TLS_RSA_KEY_RE.search(line)
+        key_match = _TLS_KEY_SIZE_RE.search(line)
         if key_match:
             try:
                 key_bits = int(key_match.group(1) or 0)
@@ -1450,6 +1571,166 @@ def _parse_wpscan_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     }
 
 
+def _parse_sqlmap_output(tool_id: str, output_text: str) -> Dict[str, Any]:
+    technologies: List[Dict[str, Any]] = []
+    findings: List[Dict[str, Any]] = []
+    urls: List[Dict[str, Any]] = []
+    current_parameter = ""
+    current_location = ""
+    current_types: List[str] = []
+    current_titles: List[str] = []
+    enumerated_databases: List[str] = []
+    collecting_databases = False
+    advertised_database_count = 0
+    dbms_name = ""
+
+    def _flush_parameter():
+        nonlocal current_parameter, current_location, current_types, current_titles
+        if not current_parameter:
+            return
+        location = _clean_text(current_location or "request", 64).upper()
+        title = f"SQL injection: {location} {current_parameter} parameter injectable"
+        evidence_parts = [f"{tool_id}: parameter {current_parameter} ({location}) injectable"]
+        if current_types:
+            evidence_parts.append(f"types: {', '.join(current_types[:4])}")
+        if current_titles:
+            evidence_parts.append(f"titles: {', '.join(current_titles[:3])}")
+        _append_finding(
+            findings,
+            title,
+            severity="high",
+            evidence=" | ".join(evidence_parts),
+            evidence_items=current_titles or current_types,
+        )
+        current_parameter = ""
+        current_location = ""
+        current_types = []
+        current_titles = []
+
+    def _parse_dbms_token(value: Any) -> Tuple[str, str]:
+        text = _clean_text(value, 160)
+        if not text:
+            return "", ""
+        match = _NAME_VERSION_RE.match(text)
+        if match:
+            return _clean_text(match.group(1), 96), _clean_text(match.group(2) or "", 80)
+        return text, ""
+
+    for raw_line in str(output_text or "").splitlines():
+        line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
+        if not line:
+            collecting_databases = False
+            continue
+
+        if line.startswith("[") and not line.startswith("[*]"):
+            bracket_parts = re.split(r"\]\s*", line, maxsplit=1)
+            if len(bracket_parts) == 2:
+                line = bracket_parts[1].strip()
+            else:
+                line = line.strip("[] ")
+        if not line:
+            continue
+
+        for url in _URL_RE.findall(line):
+            _append_url(urls, url, label=f"{tool_id} target")
+
+        if collecting_databases:
+            db_item_match = _SQLMAP_LIST_ITEM_RE.match(line)
+            if db_item_match:
+                database_name = _clean_text(db_item_match.group(1), 96)
+                if database_name:
+                    enumerated_databases.append(database_name)
+                continue
+            if line.lower().startswith(("database:", "table:", "current database:", "current user:")):
+                collecting_databases = False
+            elif not line.startswith("["):
+                collecting_databases = False
+
+        parameter_match = _SQLMAP_PARAMETER_RE.match(line)
+        if parameter_match:
+            _flush_parameter()
+            current_parameter = _clean_text(parameter_match.group(1), 96)
+            current_location = _clean_text(parameter_match.group(2), 48)
+            continue
+
+        type_match = _SQLMAP_TYPE_RE.match(line)
+        if type_match and current_parameter:
+            injection_type = _clean_text(type_match.group(1), 120)
+            if injection_type and injection_type.lower() not in {item.lower() for item in current_types}:
+                current_types.append(injection_type)
+            continue
+
+        title_match = _SQLMAP_TITLE_RE.match(line)
+        if title_match and current_parameter:
+            injection_title = _clean_text(title_match.group(1), 160)
+            if injection_title and injection_title.lower() not in {item.lower() for item in current_titles}:
+                current_titles.append(injection_title)
+            continue
+
+        web_tech_match = _SQLMAP_WEB_TECH_RE.match(line)
+        if web_tech_match:
+            for token in str(web_tech_match.group(1) or "").split(","):
+                _append_named_version_technology(technologies, token, evidence=f"{tool_id}: {line}")
+            continue
+
+        dbms_match = _SQLMAP_DBMS_RE.match(line)
+        if dbms_match:
+            dbms_name, dbms_version = _parse_dbms_token(dbms_match.group(1))
+            if dbms_name:
+                _append_technology(technologies, dbms_name, version=dbms_version, evidence=f"{tool_id}: {line}")
+            continue
+
+        banner_match = _SQLMAP_BANNER_RE.match(line)
+        if banner_match and dbms_name:
+            banner_value = _clean_text(banner_match.group(1), 80)
+            if banner_value:
+                _append_technology(technologies, dbms_name, version=banner_value, evidence=f"{tool_id}: {line}")
+            continue
+
+        dba_match = _SQLMAP_DBA_RE.match(line)
+        if dba_match:
+            dba_state = str(dba_match.group(1) or "").strip().lower()
+            if dba_state in {"true", "yes"}:
+                _append_finding(
+                    findings,
+                    "SQLMap: current database user has DBA privileges",
+                    severity="high",
+                    evidence=f"{tool_id}: {line}",
+                )
+            continue
+
+        available_dbs_match = _SQLMAP_AVAILABLE_DBS_RE.match(line)
+        if available_dbs_match:
+            collecting_databases = True
+            advertised_database_count = int(available_dbs_match.group(1) or 0)
+            continue
+
+    _flush_parameter()
+
+    deduped_databases = []
+    seen_databases = set()
+    for database_name in enumerated_databases:
+        lowered = str(database_name or "").strip().lower()
+        if not lowered or lowered in seen_databases:
+            continue
+        seen_databases.add(lowered)
+        deduped_databases.append(database_name)
+    if deduped_databases:
+        _append_finding(
+            findings,
+            f"SQLMap enumerated databases ({advertised_database_count or len(deduped_databases)})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(deduped_databases[:8])}",
+            evidence_items=deduped_databases,
+        )
+
+    return {
+        "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=32),
+        "findings": _dedupe_rows(findings, ("title", "cve", "evidence"), limit=32),
+        "urls": _dedupe_rows(urls, ("url",), limit=32),
+    }
+
+
 def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     technologies: List[Dict[str, Any]] = []
     findings: List[Dict[str, Any]] = []
@@ -1464,7 +1745,7 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
 
     domains = {
         _clean_text(match, 96)
-        for match in _SMB_DOMAIN_RE.findall(str(output_text or ""))
+        for match in list(_SMB_DOMAIN_RE.findall(str(output_text or ""))) + list(_SMB_FOUND_DOMAIN_RE.findall(str(output_text or "")))
         if _clean_text(match, 96) and _clean_text(match, 96).upper() not in {"WORKGROUP", "UNKNOWN"}
     }
     for domain in sorted(domains)[:4]:
@@ -1473,8 +1754,8 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
 
     share_names = {
         _clean_text(match, 96)
-        for match in _SMB_SHARE_RE.findall(str(output_text or ""))
-        if _clean_text(match, 96)
+        for match in list(_SMB_SHARE_RE.findall(str(output_text or ""))) + list(_SMB_SHARE_TABLE_RE.findall(str(output_text or "")))
+        if _clean_text(match, 96) and _clean_text(match, 96).lower() not in {"sharename", "name", "type", "comment"}
     }
     try:
         if "," in str(output_text or "") and "\n" in str(output_text or ""):
@@ -1491,7 +1772,11 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
 
     user_names = {
         _clean_text(match, 96)
-        for match in list(_SMB_RPC_USER_RE.findall(str(output_text or ""))) + list(_SMB_USER_RE.findall(str(output_text or "")))
+        for match in (
+            list(_SMB_RPC_USER_RE.findall(str(output_text or "")))
+            + list(_SMB_USER_RE.findall(str(output_text or "")))
+            + list(_SMB_FOUND_USER_RE.findall(str(output_text or "")))
+        )
         if _clean_text(match, 96) and _clean_text(match, 96).lower() not in {"user", "username", "account"}
     }
 
@@ -1513,6 +1798,268 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
         )
     return {
         "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=24),
+        "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
+        "urls": [],
+    }
+
+
+def _parse_nbtscan_output(tool_id: str, output_text: str) -> Dict[str, Any]:
+    findings: List[Dict[str, Any]] = []
+    host_names = set()
+    user_names = set()
+    domain_names = set()
+    file_servers = set()
+    current_host_ip = ""
+
+    for raw_line in str(output_text or "").splitlines():
+        line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        table_match = _NBTSCAN_TABLE_HEADER_RE.match(stripped)
+        if table_match:
+            current_host_ip = str(table_match.group(1) or "").strip()
+            continue
+        if lowered.startswith("adapter address:") or lowered.startswith("ip address") or set(stripped) == {"-"}:
+            continue
+
+        verbose_match = _NBTSCAN_VERBOSE_ROW_RE.match(line)
+        if verbose_match:
+            name = _clean_text(verbose_match.group(1), 96).strip("? ")
+            suffix = str(verbose_match.group(2) or "").strip().upper()
+            name_type = str(verbose_match.group(3) or "").strip().upper()
+            if not name:
+                continue
+            if suffix == "20" and name_type == "UNIQUE":
+                file_servers.add(current_host_ip or name)
+                host_names.add(name)
+            elif suffix == "03" and name_type == "UNIQUE":
+                user_names.add(name)
+            elif suffix == "00" and name_type == "GROUP":
+                domain_names.add(name)
+            elif suffix == "00" and name_type == "UNIQUE":
+                host_names.add(name)
+            continue
+
+        script_match = _NBTSCAN_SCRIPT_ROW_RE.match(stripped)
+        if script_match:
+            host_ip = str(script_match.group(1) or "").strip()
+            name = _clean_text(script_match.group(2), 96).strip("? ")
+            suffix = str(script_match.group(3) or "").strip().upper()
+            name_type = "GROUP" if str(script_match.group(4) or "").strip().upper() == "G" else "UNIQUE"
+            current_host_ip = host_ip
+            if not name:
+                continue
+            if suffix == "20" and name_type == "UNIQUE":
+                file_servers.add(host_ip or name)
+                host_names.add(name)
+            elif suffix == "03" and name_type == "UNIQUE":
+                user_names.add(name)
+            elif suffix == "00" and name_type == "GROUP":
+                domain_names.add(name)
+            elif suffix == "00" and name_type == "UNIQUE":
+                host_names.add(name)
+            continue
+
+        parts = re.split(r"\s{2,}", stripped)
+        if len(parts) >= 4 and _NBTSCAN_SUMMARY_IP_RE.match(parts[0]) and _NBTSCAN_NAME_RE.match(parts[1]):
+            host_ip = parts[0]
+            host_name = _clean_text(parts[1], 96)
+            current_host_ip = host_ip
+            if host_name:
+                host_names.add(host_name)
+            tail = parts[2:]
+            if tail and str(tail[0] or "").strip().lower() == "<server>":
+                file_servers.add(host_ip or host_name)
+                tail = tail[1:]
+            if tail:
+                last_token = str(tail[-1] or "").strip()
+                if _NBTSCAN_MAC_RE.match(last_token):
+                    tail = tail[:-1]
+            if tail:
+                user_name = _clean_text(tail[0], 96)
+                if user_name and user_name.lower() != host_name.lower():
+                    user_names.add(user_name)
+
+    if host_names:
+        _append_finding(
+            findings,
+            f"NetBIOS hosts enumerated ({len(host_names)})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(host_names)[:8])}",
+            evidence_items=sorted(host_names),
+        )
+    if domain_names:
+        _append_finding(
+            findings,
+            f"NetBIOS workgroups/domains enumerated ({len(domain_names)})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(domain_names)[:8])}",
+            evidence_items=sorted(domain_names),
+        )
+    if user_names:
+        _append_finding(
+            findings,
+            f"NetBIOS users enumerated ({len(user_names)})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(user_names)[:8])}",
+            evidence_items=sorted(user_names),
+        )
+    if file_servers:
+        _append_finding(
+            findings,
+            f"NetBIOS file servers advertised ({len(file_servers)})",
+            severity="info",
+            evidence=f"{tool_id}: file sharing/server service advertised",
+            evidence_items=sorted(file_servers),
+        )
+
+    return {
+        "technologies": [],
+        "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
+        "urls": [],
+    }
+
+
+def _parse_dnsmap_output(tool_id: str, output_text: str) -> Dict[str, Any]:
+    findings: List[Dict[str, Any]] = []
+    discovered_hosts = set()
+    internal_records = set()
+    current_host = ""
+
+    for raw_line in str(output_text or "").splitlines():
+        line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if line.startswith("[+]"):
+            if "warning: internal ip address disclosed" in lowered:
+                _append_finding(
+                    findings,
+                    "Internal DNS records disclosed",
+                    severity="low",
+                    evidence=f"{tool_id}: {line}",
+                )
+            continue
+        if _DNSMAP_HOST_RE.match(line) and " " not in line:
+            current_host = _clean_text(line, 160).rstrip(".")
+            if current_host:
+                discovered_hosts.add(current_host)
+            continue
+        ip_match = _DNSMAP_IP_RE.match(line)
+        if ip_match and current_host:
+            ip_token = str(ip_match.group(1) or "").strip()
+            try:
+                ip_obj = ipaddress.ip_address(ip_token)
+            except ValueError:
+                continue
+            if ip_obj.is_private:
+                internal_records.add(f"{current_host} -> {ip_token}")
+
+    if discovered_hosts:
+        _append_finding(
+            findings,
+            f"DNS subdomains discovered ({len(discovered_hosts)})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(discovered_hosts)[:8])}",
+            evidence_items=sorted(discovered_hosts),
+        )
+    if internal_records:
+        _append_finding(
+            findings,
+            f"Internal DNS records disclosed ({len(internal_records)})",
+            severity="low",
+            evidence=f"{tool_id}: {', '.join(sorted(internal_records)[:8])}",
+            evidence_items=sorted(internal_records),
+        )
+
+    return {
+        "technologies": [],
+        "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
+        "urls": [],
+    }
+
+
+def _parse_screenshot_output(
+        tool_id: str,
+        output_text: str,
+        *,
+        base_url: str = "",
+        port: str = "",
+        protocol: str = "tcp",
+        service: str = "",
+) -> Dict[str, Any]:
+    findings: List[Dict[str, Any]] = []
+    urls: List[Dict[str, Any]] = []
+    try:
+        payload = json.loads(str(output_text or ""))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {"technologies": [], "findings": [], "urls": []}
+
+    resolved_service = _clean_text(payload.get("service_name", "") or service, 64)
+    resolved_port = str(payload.get("port", "") or port or "").strip()
+    resolved_protocol = str(payload.get("protocol", "") or protocol or "tcp").strip().lower() or "tcp"
+    filename = _clean_text(payload.get("filename", ""), 160)
+    capture_engine = _clean_text(payload.get("capture_engine", ""), 80)
+    target_url = _clean_url(payload.get("target_url", "") or base_url)
+
+    evidence_items: List[str] = []
+    if filename:
+        evidence_items.append(filename)
+    if target_url:
+        _append_url(
+            urls,
+            target_url,
+            port=resolved_port,
+            protocol=resolved_protocol,
+            service=resolved_service,
+            label=tool_id,
+        )
+        evidence_items.append(target_url)
+        evidence = f"{tool_id}: screenshot captured"
+        if capture_engine:
+            evidence += f" via {capture_engine}"
+        if filename:
+            evidence += f" ({filename})"
+        _append_finding(
+            findings,
+            f"Visual capture available for {target_url}",
+            severity="info",
+            evidence=evidence,
+            evidence_items=evidence_items,
+        )
+        return {
+            "technologies": [],
+            "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
+            "urls": _dedupe_rows(urls, ("url",), limit=24),
+        }
+
+    target_label = ""
+    if resolved_service and resolved_port:
+        target_label = f"{resolved_service} on {resolved_port}/{resolved_protocol}"
+    elif resolved_port:
+        target_label = f"{resolved_port}/{resolved_protocol}"
+    elif resolved_service:
+        target_label = resolved_service
+    else:
+        target_label = "target"
+    evidence = f"{tool_id}: screenshot captured"
+    if capture_engine:
+        evidence += f" via {capture_engine}"
+    if filename:
+        evidence += f" ({filename})"
+    _append_finding(
+        findings,
+        f"Visual capture available for {target_label}",
+        severity="info",
+        evidence=evidence,
+        evidence_items=evidence_items,
+    )
+    return {
+        "technologies": [],
         "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
         "urls": [],
     }
@@ -1588,10 +2135,25 @@ def extract_tool_observations(
                 protocol=str(protocol or "tcp"),
                 service=str(service or ""),
             )
+        elif normalized_tool in {"sqlmap", "http-sqlmap"}:
+            current = _parse_sqlmap_output(normalized_tool, source)
         elif normalized_tool == "wpscan":
             current = _parse_wpscan_output(normalized_tool, source)
-        elif normalized_tool in {"enum4linux-ng", "smbmap", "rpcclient-enum"} or normalized_tool.startswith("rpcclient"):
+        elif normalized_tool in {"enum4linux-ng", "enum4linux", "smbenum", "samrdump", "smbmap", "rpcclient-enum"} or normalized_tool.startswith("rpcclient"):
             current = _parse_smb_enum_output(normalized_tool, source)
+        elif normalized_tool == "nbtscan":
+            current = _parse_nbtscan_output(normalized_tool, source)
+        elif normalized_tool == "dnsmap":
+            current = _parse_dnsmap_output(normalized_tool, source)
+        elif normalized_tool == "screenshooter":
+            current = _parse_screenshot_output(
+                normalized_tool,
+                source,
+                base_url=base_url,
+                port=str(port or ""),
+                protocol=str(protocol or "tcp"),
+                service=str(service or ""),
+            )
         result = _merge_results(result, current)
 
     # Generic URL harvesting helps the graph even when the tool-specific parser

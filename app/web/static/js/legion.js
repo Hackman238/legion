@@ -1102,6 +1102,7 @@ function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {})
         running_processes: 0,
         finished_processes: 0,
     });
+    renderDecisionRationaleFeed([]);
     renderHosts([]);
     renderServices([]);
     renderTools([]);
@@ -3635,6 +3636,109 @@ function renderSummary(summary) {
     setText("stat-finished", summary.finished_processes);
 }
 
+function formatFeedTimestamp(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+        return "";
+    }
+    const parsed = Date.parse(text);
+    if (!Number.isFinite(parsed)) {
+        return text;
+    }
+    return new Date(parsed).toLocaleString([], {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+    });
+}
+
+function renderDecisionRationaleFeed(entries) {
+    const body = document.getElementById("decision-rationale-body");
+    if (!body) {
+        return;
+    }
+    const items = Array.isArray(entries) ? entries : [];
+    body.innerHTML = "";
+    setText("decision-rationale-count", items.length);
+
+    if (!items.length) {
+        const empty = document.createElement("p");
+        empty.className = "meta-note rationale-empty";
+        empty.textContent = "Scheduler rationale will appear here as tools are ranked, suppressed, and executed.";
+        body.appendChild(empty);
+        return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    items.forEach((entry) => {
+        const article = document.createElement("article");
+        article.className = "rationale-entry";
+
+        const top = document.createElement("div");
+        top.className = "rationale-entry-top";
+
+        const heading = document.createElement("div");
+        heading.className = "rationale-entry-heading";
+
+        const prefix = document.createElement("p");
+        prefix.className = "rationale-entry-prefix";
+        prefix.textContent = formatTargetLabel(
+            entry?.host_ip || "Project-wide",
+            entry?.port || "",
+            entry?.protocol || "",
+        ) || "Project-wide";
+        heading.appendChild(prefix);
+
+        const title = document.createElement("strong");
+        title.className = "rationale-entry-title";
+        title.textContent = String(entry?.headline || entry?.kind || "Decision").trim();
+        heading.appendChild(title);
+
+        top.appendChild(heading);
+
+        const time = document.createElement("span");
+        time.className = "rationale-entry-time";
+        time.textContent = formatFeedTimestamp(entry?.timestamp || "");
+        top.appendChild(time);
+        article.appendChild(top);
+
+        const tags = Array.isArray(entry?.tags) ? entry.tags.filter((item) => String(item || "").trim()) : [];
+        if (tags.length) {
+            const tagsNode = document.createElement("div");
+            tagsNode.className = "rationale-entry-tags";
+            tags.forEach((tag) => {
+                const chip = document.createElement("span");
+                chip.className = "chip rationale-chip";
+                chip.textContent = String(tag || "").trim();
+                tagsNode.appendChild(chip);
+            });
+            article.appendChild(tagsNode);
+        }
+
+        const summary = document.createElement("p");
+        summary.className = "rationale-entry-summary";
+        summary.textContent = String(entry?.summary || "").trim() || "Scheduler decision recorded.";
+        article.appendChild(summary);
+
+        const details = Array.isArray(entry?.details) ? entry.details.filter((item) => String(item || "").trim()) : [];
+        if (details.length) {
+            const detailsNode = document.createElement("div");
+            detailsNode.className = "rationale-entry-details";
+            details.forEach((detail) => {
+                const line = document.createElement("div");
+                line.className = "rationale-entry-line";
+                line.textContent = String(detail || "").trim();
+                detailsNode.appendChild(line);
+            });
+            article.appendChild(detailsNode);
+        }
+
+        fragment.appendChild(article);
+    });
+    body.appendChild(fragment);
+}
+
 function applyWorkspaceOverview(overview) {
     if (!overview || typeof overview !== "object") {
         return;
@@ -3649,6 +3753,9 @@ function applyWorkspaceOverview(overview) {
         setText("scheduler-mode", overview.scheduler.mode || "");
         setText("scheduler-goal", overview.scheduler.goal_profile || "");
         setText("scheduler-families", overview.scheduler.preapproved_families_count || 0);
+    }
+    if (Array.isArray(overview.scheduler_rationale_feed)) {
+        renderDecisionRationaleFeed(overview.scheduler_rationale_feed);
     }
 }
 
@@ -8660,6 +8767,9 @@ function renderSnapshot(snapshot) {
         setText("scheduler-mode", snapshot.scheduler.mode || "");
         setText("scheduler-goal", snapshot.scheduler.goal_profile || "");
         setText("scheduler-families", snapshot.scheduler.preapproved_families_count || 0);
+    }
+    if (Array.isArray(snapshot.scheduler_rationale_feed)) {
+        renderDecisionRationaleFeed(snapshot.scheduler_rationale_feed);
     }
     if (Array.isArray(snapshot.scheduler_decisions)) {
         renderDecisions(snapshot.scheduler_decisions);

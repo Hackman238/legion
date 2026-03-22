@@ -29,6 +29,12 @@ import sys
 from app.Project import Project
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.logging.legionLog import getAppLogger
+from app.screenshot_metadata import (
+    build_screenshot_metadata,
+    build_screenshot_state_row,
+    load_screenshot_metadata,
+    write_screenshot_metadata,
+)
 from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_screenshot_host
 from app.tools.ToolCoordinator import ToolCoordinator
 from app.shell.Shell import Shell
@@ -190,6 +196,20 @@ class Logic:
                 ensure_scheduler_target_state_table(database)
                 service_inventory = load_observed_service_inventory(database, int(host_id or 0))
                 urls = build_target_urls(str(host_ip or ""), "", service_inventory)
+                screenshot_rows = []
+                for ref in list(artifact_refs or []):
+                    token = str(ref or "").strip()
+                    if not token.lower().endswith(".png"):
+                        continue
+                    row = build_screenshot_state_row(
+                        screenshot_path=token,
+                        artifact_ref=token,
+                        metadata=load_screenshot_metadata(token),
+                        port=str(host_port or ""),
+                        protocol=str(host_protocol or "tcp"),
+                    )
+                    if row:
+                        screenshot_rows.append(row)
                 upsert_target_state(database, int(host_id or 0), {
                     "host_ip": str(host_ip or ""),
                     "updated_at": getTimestamp(True),
@@ -231,18 +251,7 @@ class Logic:
                         for ref in list(artifact_refs or [])
                         if str(ref or "").strip()
                     ],
-                    "screenshots": [
-                        {
-                            "artifact_ref": str(ref or ""),
-                            "filename": os.path.basename(str(ref or "")),
-                            "port": str(host_port or ""),
-                            "protocol": str(host_protocol or "tcp"),
-                            "source_kind": "observed",
-                            "observed": True,
-                        }
-                        for ref in list(artifact_refs or [])
-                        if str(ref or "").strip().lower().endswith(".png")
-                    ],
+                    "screenshots": screenshot_rows,
                 }, merge=True)
                 if isinstance(observations, dict):
                     observation_updates = {}
@@ -464,6 +473,39 @@ class Logic:
                     deterministic_path = os.path.join(screenshots_dir, deterministic_name)
                     shutil.copy2(src_path, deterministic_path)
                     print(f"[screenshooter] Copied screenshot to {deterministic_path}")
+                    metadata_path = write_screenshot_metadata(
+                        deterministic_path,
+                        build_screenshot_metadata(
+                            screenshot_path=deterministic_path,
+                            host_ip=str(request.host_ip or ""),
+                            hostname=str(request.hostname or ""),
+                            port=str(request.port or ""),
+                            protocol=str(request.protocol or "tcp"),
+                            service_name=str(request.service_name or ""),
+                            target_url=url,
+                            capture_engine=str(capture.get("executable", "") or "eyewitness"),
+                            capture_reason=(
+                                f"completed (eyewitness exited {capture.get('returncode')})"
+                                if int(capture.get("returncode", 0) or 0) != 0 else
+                                "completed"
+                            ),
+                            captured_at=getTimestamp(True),
+                            capture_returncode=int(capture.get("returncode", 0) or 0),
+                        ),
+                    )
+                    artifact_refs = [deterministic_path]
+                    if metadata_path:
+                        artifact_refs.append(metadata_path)
+                    observations = extract_tool_observations(
+                        "screenshooter",
+                        "",
+                        port=str(request.port or ""),
+                        protocol=str(request.protocol or "tcp"),
+                        service=str(request.service_name or ""),
+                        artifact_refs=artifact_refs,
+                        host_ip=str(request.host_ip or ""),
+                        hostname=str(request.hostname or ""),
+                    )
                     exit_status = (
                         f"completed (eyewitness exited {capture.get('returncode')})"
                         if int(capture.get("returncode", 0) or 0) != 0 else
@@ -475,7 +517,8 @@ class Logic:
                         runner_type=str(runner_type or "browser"),
                         started_at=started_at,
                         finished_at=getTimestamp(True),
-                        artifact_refs=[deterministic_path],
+                        artifact_refs=artifact_refs,
+                        metadata={"observations": observations},
                     )
                 except Exception as exc:
                     print(f"[!] Error taking screenshot for {request.host_ip}:{request.port}: {exc}")

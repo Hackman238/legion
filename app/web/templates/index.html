@@ -184,6 +184,46 @@
                             </div>
                         </div>
                     </div>
+                    <div class="ribbon-group ribbon-rationale-group" aria-label="Scheduler decision rationale">
+                        <div class="ribbon-rationale-header">
+                            <div>
+                                <h2>Decision Rationale</h2>
+                                <p><span id="decision-rationale-count">{{ snapshot.scheduler_rationale_feed | length }}</span> recent items</p>
+                            </div>
+                        </div>
+                        <div class="ribbon-rationale-body" id="decision-rationale-body">
+                            {% if snapshot.scheduler_rationale_feed %}
+                                {% for entry in snapshot.scheduler_rationale_feed %}
+                                    <article class="rationale-entry">
+                                        <div class="rationale-entry-top">
+                                            <div class="rationale-entry-heading">
+                                                <p class="rationale-entry-prefix">{{ entry.host_ip if entry.host_ip else "Project-wide" }}{% if entry.port %}:{{ entry.port }}{% endif %}{% if entry.protocol %}/{{ entry.protocol }}{% endif %}</p>
+                                                <strong class="rationale-entry-title">{{ entry.headline }}</strong>
+                                            </div>
+                                            <span class="rationale-entry-time">{{ entry.timestamp }}</span>
+                                        </div>
+                                        {% if entry.tags %}
+                                            <div class="rationale-entry-tags">
+                                                {% for tag in entry.tags %}
+                                                    <span class="chip rationale-chip">{{ tag }}</span>
+                                                {% endfor %}
+                                            </div>
+                                        {% endif %}
+                                        <p class="rationale-entry-summary">{{ entry.summary }}</p>
+                                        {% if entry.details %}
+                                            <div class="rationale-entry-details">
+                                                {% for detail in entry.details %}
+                                                    <div class="rationale-entry-line">{{ detail }}</div>
+                                                {% endfor %}
+                                            </div>
+                                        {% endif %}
+                                    </article>
+                                {% endfor %}
+                            {% else %}
+                                <p class="meta-note rationale-empty">Scheduler rationale will appear here as tools are ranked, suppressed, and executed.</p>
+                            {% endif %}
+                        </div>
+                    </div>
                     <div class="ribbon-group ribbon-summary-group" aria-label="Workspace summary">
                         <div class="ribbon-stat-card">
                             <span class="ribbon-stat-label">Hosts</span>

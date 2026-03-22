@@ -50,7 +50,17 @@ class SchedulerTargetStateStoreTest(unittest.TestCase):
                 "attempted_actions": [{"tool_id": "nuclei-web", "status": "executed", "attempted_at": "2026-03-17T01:00:00Z", "port": "443", "protocol": "tcp", "service": "https"}],
                 "credentials": [{"username": "svc-web", "realm": "local", "type": "password", "evidence": "manual note"}],
                 "sessions": [{"session_type": "shell", "username": "svc-web", "host": "10.0.0.5", "port": "443", "protocol": "tcp"}],
-                "screenshots": [{"artifact_ref": "/tmp/10.0.0.5-443-screenshot.png", "filename": "10.0.0.5-443-screenshot.png", "port": "443", "protocol": "tcp"}],
+                "screenshots": [{
+                    "artifact_ref": "/tmp/10.0.0.5-443-screenshot.png",
+                    "filename": "10.0.0.5-443-screenshot.png",
+                    "port": "443",
+                    "protocol": "tcp",
+                    "target_url": "https://portal.local:443",
+                    "capture_engine": "EyeWitness",
+                    "captured_at": "2026-03-22T06:00:00+00:00",
+                    "service_name": "https",
+                    "hostname": "portal.local",
+                }],
                 "artifacts": [{"ref": "/tmp/scan.txt", "kind": "artifact", "tool_id": "nuclei-web", "port": "443", "protocol": "tcp"}],
                 "raw": {"source": "test"},
             })
@@ -68,6 +78,8 @@ class SchedulerTargetStateStoreTest(unittest.TestCase):
             self.assertEqual("nuclei-web", loaded["attempted_actions"][0]["tool_id"])
             self.assertEqual("svc-web", loaded["credentials"][0]["username"])
             self.assertEqual("shell", loaded["sessions"][0]["session_type"])
+            self.assertEqual("https://portal.local:443", loaded["screenshots"][0]["target_url"])
+            self.assertEqual("EyeWitness", loaded["screenshots"][0]["capture_engine"])
             self.assertEqual("/tmp/scan.txt", loaded["artifacts"][0]["ref"])
 
             deleted = delete_target_state(project.database, 11)
