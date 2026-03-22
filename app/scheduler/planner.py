@@ -17,6 +17,7 @@ from app.scheduler.providers import (
 )
 from app.scheduler.registry import ActionRegistry
 from app.scheduler.strategy_packs import evaluate_action_strategy, select_strategy_packs
+from app.scheduler.tool_prompt_registry import tool_ids_for_prompt_group
 
 logger = logging.getLogger(__name__)
 
@@ -25,32 +26,11 @@ ScheduledAction = PlanStep
 
 class SchedulerPlanner:
     WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
-    WEB_AI_BASELINE_TOOL_IDS = ("nuclei-web", "nmap-vuln.nse", "screenshooter")
-    WEB_AI_DEEP_WEB_TOOL_IDS = ("whatweb", "whatweb-http", "whatweb-https", "httpx", "nikto", "web-content-discovery", "dirsearch", "ffuf")
-    WEB_AI_TARGETED_NUCLEI_TOOL_IDS = ("nuclei-cves", "nuclei-exposures", "nuclei-wordpress")
-    WEB_AI_GENERIC_HTTP_FOLLOWUP_TOOL_IDS = ("curl-headers", "curl-options", "curl-robots")
-    WEB_AI_SPECIALIST_FOLLOWUP_TOOL_IDS = (
-        "whatweb",
-        "whatweb-http",
-        "whatweb-https",
-        "httpx",
-        "nikto",
-        "web-content-discovery",
-        "dirsearch",
-        "ffuf",
-        "feroxbuster",
-        "gobuster",
-        "nuclei-cves",
-        "nuclei-exposures",
-        "nuclei-wordpress",
-        "curl-headers",
-        "curl-options",
-        "curl-robots",
-        "wafw00f",
-        "wpscan",
-        "http-wapiti",
-        "https-wapiti",
-    )
+    WEB_AI_BASELINE_TOOL_IDS = tuple(tool_ids_for_prompt_group("web_baseline"))
+    WEB_AI_DEEP_WEB_TOOL_IDS = tuple(tool_ids_for_prompt_group("web_deep"))
+    WEB_AI_TARGETED_NUCLEI_TOOL_IDS = tuple(tool_ids_for_prompt_group("web_targeted_nuclei"))
+    WEB_AI_GENERIC_HTTP_FOLLOWUP_TOOL_IDS = tuple(tool_ids_for_prompt_group("web_http_followup"))
+    WEB_AI_SPECIALIST_FOLLOWUP_TOOL_IDS = tuple(tool_ids_for_prompt_group("web_specialist_followup"))
     WEB_AI_SPECIALIST_FOLLOWUP_BONUS = 18.0
     STRICT_COVERAGE_GAP_IDS = {
         "missing_discovery",

@@ -132,6 +132,7 @@ def upsert_host_ai_state(database, host_id: int, payload: Dict[str, Any]) -> Dic
     try:
         _ensure_table(session)
         now = _utc_now()
+        sync_target_state = bool(payload.get("_sync_target_state", True))
         row_payload = {
             "host_id": int(host_id),
             "host_ip": str(payload.get("host_ip", "")),
@@ -191,18 +192,19 @@ def upsert_host_ai_state(database, host_id: int, payload: Dict[str, Any]) -> Dic
             ), row_payload)
 
         session.commit()
-        try:
-            upsert_target_state(
-                database,
-                int(host_id or 0),
-                legacy_ai_payload_to_target_state(int(host_id or 0), {
-                    **dict(payload or {}),
-                    "updated_at": str(row_payload.get("updated_at", now) or now),
-                }),
-                merge=True,
-            )
-        except Exception:
-            pass
+        if sync_target_state:
+            try:
+                upsert_target_state(
+                    database,
+                    int(host_id or 0),
+                    legacy_ai_payload_to_target_state(int(host_id or 0), {
+                        **dict(payload or {}),
+                        "updated_at": str(row_payload.get("updated_at", now) or now),
+                    }),
+                    merge=True,
+                )
+            except Exception:
+                pass
         return row_payload
     except Exception:
         session.rollback()

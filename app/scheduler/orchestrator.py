@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 
 from app.scheduler.planner import SchedulerPlanner
+from app.scheduler.tool_prompt_registry import get_scheduler_tool_prompt_info
 from app.scheduler.policy import (
     ensure_scheduler_engagement_policy_table,
     get_project_engagement_policy,
@@ -24,6 +25,7 @@ DEFAULT_AI_FEEDBACK_CONFIG = {
 DIG_DEEPER_MAX_RUNTIME_SECONDS = 900
 DIG_DEEPER_MAX_TOTAL_ACTIONS = 24
 DIG_DEEPER_TASK_TIMEOUT_SECONDS = 180
+WEB_PARALLEL_FOLLOWUP_MAX_TOOLS = 3
 
 
 @dataclass(frozen=True)
@@ -347,6 +349,169 @@ class SchedulerOrchestrator:
         return "|".join(parts)[:240]
 
     @classmethod
+    def _context_current_phase(cls, context: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(context, dict):
+            return ""
+        context_summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        focus = context_summary.get("focus", {}) if isinstance(context_summary.get("focus", {}), dict) else {}
+        for value in (
+                focus.get("current_phase", ""),
+                context.get("current_phase", ""),
+                context.get("phase", ""),
+                context.get("next_phase", ""),
+        ):
+            token = cls._normalize_text_token(value)
+            if token:
+                return token[:64]
+        host_ai_state = context.get("host_ai_state", {}) if isinstance(context.get("host_ai_state", {}), dict) else {}
+        return cls._normalize_text_token(host_ai_state.get("next_phase", ""))[:64]
+
+    @classmethod
+    def _context_recent_failures(cls, context: Optional[Dict[str, Any]]) -> List[str]:
+        if not isinstance(context, dict):
+            return []
+        context_summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        summary_failures = [
+            cls._normalize_text_token(item)
+            for item in list(context_summary.get("recent_failures", []) or [])[:8]
+            if cls._normalize_text_token(item)
+        ]
+        if summary_failures:
+            return summary_failures[:8]
+
+        rows = context.get("target_recent_processes", []) if isinstance(context.get("target_recent_processes", []), list) else []
+        if not rows:
+            rows = context.get("recent_processes", []) if isinstance(context.get("recent_processes", []), list) else []
+        labels: List[str] = []
+        for item in rows[:32]:
+            if not isinstance(item, dict):
+                continue
+            tool_id = cls._normalize_text_token(item.get("tool_id", ""))
+            status = cls._normalize_text_token(item.get("status", ""))
+            output_excerpt = cls._normalize_text_token(item.get("output_excerpt", ""))
+            failure_reason = ""
+            if any(token in status for token in ("crash", "fail", "error", "timeout", "cancel", "kill", "missing")):
+                failure_reason = status[:80]
+            elif "command not found" in output_excerpt:
+                failure_reason = "command not found"
+            elif "no such file" in output_excerpt or "missing file" in output_excerpt:
+                failure_reason = "missing file"
+            elif "traceback" in output_excerpt or "exception" in output_excerpt:
+                failure_reason = "exception"
+            if not failure_reason:
+                continue
+            label = ": ".join(part for part in (tool_id[:80], failure_reason[:80]) if part)
+            if label and label not in labels:
+                labels.append(label)
+        return labels[:8]
+
+    @classmethod
+    def _reflection_trigger(
+            cls,
+            *,
+            recent_rounds: Sequence[Dict[str, Any]],
+            options: SchedulerRunOptions,
+            reflections_used: int,
+            context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not bool(options.reflection_enabled):
+            return None
+        if int(options.max_reflections_per_target or 0) <= 0:
+            return None
+        if int(reflections_used or 0) >= int(options.max_reflections_per_target or 0):
+            return None
+
+        rounds = [item for item in list(recent_rounds or []) if isinstance(item, dict)]
+        current_phase = cls._context_current_phase(context)
+        round_number = len(rounds) + 1
+        window_size = max(1, int(options.stall_rounds_without_progress or 1))
+        analysis_mode = cls._normalize_text_token((context or {}).get("analysis_mode", "")) if isinstance(context, dict) else ""
+
+        if not rounds:
+            if bool(options.dig_deeper) or analysis_mode == "dig_deeper":
+                return {
+                    "reason": "first_round",
+                    "round_number": round_number,
+                    "current_phase": current_phase,
+                }
+            return None
+
+        previous_phase = cls._normalize_text_token(rounds[-1].get("observed_phase", "") or rounds[-1].get("next_phase", ""))[:64]
+        if current_phase and previous_phase and current_phase != previous_phase:
+            return {
+                "reason": "phase_transition",
+                "round_number": round_number,
+                "current_phase": current_phase,
+                "previous_phase": previous_phase,
+            }
+
+        if len(rounds) < window_size:
+            return None
+
+        window = rounds[-window_size:]
+        if any(int(item.get("progress_score", 0) or 0) > 0 for item in window):
+            return None
+
+        stable_coverage = len({tuple(item.get("coverage_missing", []) or []) for item in window}) == 1
+        stable_signal = len({str(item.get("signal_key", "") or "") for item in window}) <= 1
+        if not (stable_coverage and stable_signal):
+            return None
+
+        failure_sets = []
+        for item in window:
+            values = {
+                cls._normalize_text_token(entry)
+                for entry in list(item.get("recent_failures", []) or [])[:8]
+                if cls._normalize_text_token(entry)
+            }
+            if not values:
+                failure_sets = []
+                break
+            failure_sets.append(values)
+        if len(failure_sets) >= 2:
+            shared_failures = sorted(set.intersection(*failure_sets))
+            if shared_failures:
+                return {
+                    "reason": "repeated_failures",
+                    "round_number": round_number,
+                    "current_phase": current_phase,
+                    "window_size": window_size,
+                    "recent_failures": shared_failures[:6],
+                }
+
+        repeated_threshold = max(1, int(options.stall_repeat_selection_threshold or 1))
+        repeated_selection_count = max(
+            int(item.get("repeated_selection_count", 0) or 0)
+            for item in window
+        )
+        if repeated_selection_count >= repeated_threshold:
+            return {
+                "reason": "repeated_selection_stagnation",
+                "round_number": round_number,
+                "current_phase": current_phase,
+                "window_size": window_size,
+                "repeated_selection_count": repeated_selection_count,
+            }
+
+        if window_size <= 2:
+            return {
+                "reason": "stalled_window",
+                "round_number": round_number,
+                "current_phase": current_phase,
+                "window_size": window_size,
+            }
+
+        empty_decisions = all(not list(item.get("decision_tool_ids", []) or []) for item in window)
+        if empty_decisions:
+            return {
+                "reason": "stalled_window",
+                "round_number": round_number,
+                "current_phase": current_phase,
+                "window_size": window_size,
+            }
+        return None
+
+    @classmethod
     def _round_repeated_selection_count(
             cls,
             *,
@@ -407,6 +572,8 @@ class SchedulerOrchestrator:
             "manual_tests_count": len(list(payload.get("manual_tests", []) or [])),
             "technologies_count": len(list(payload.get("technologies", []) or [])),
             "next_phase": str(payload.get("next_phase", "") or "")[:64],
+            "observed_phase": cls._context_current_phase(context),
+            "recent_failures": cls._context_recent_failures(context),
             "decision_tool_ids": tool_ids[:16],
             "decision_family_ids": family_ids[:16],
             "signal_key": cls._context_signal_key(context),
@@ -458,32 +625,16 @@ class SchedulerOrchestrator:
             recent_rounds: Sequence[Dict[str, Any]],
             options: SchedulerRunOptions,
             reflections_used: int,
+            context: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        if not bool(options.reflection_enabled):
-            return False
-        if int(options.max_reflections_per_target or 0) <= 0:
-            return False
-        if int(reflections_used or 0) >= int(options.max_reflections_per_target or 0):
-            return False
-
-        window_size = max(1, int(options.stall_rounds_without_progress or 1))
-        rounds = [item for item in list(recent_rounds or []) if isinstance(item, dict)]
-        if len(rounds) < window_size:
-            return False
-
-        window = rounds[-window_size:]
-        if any(int(item.get("progress_score", 0) or 0) > 0 for item in window):
-            return False
-
-        repeated_threshold = max(1, int(options.stall_repeat_selection_threshold or 1))
-        stable_coverage = len({tuple(item.get("coverage_missing", []) or []) for item in window}) == 1
-        stable_signal = len({str(item.get("signal_key", "") or "") for item in window}) <= 1
-        repeated_selection = any(
-            int(item.get("repeated_selection_count", 0) or 0) >= repeated_threshold
-            for item in window
+        return bool(
+            SchedulerOrchestrator._reflection_trigger(
+                recent_rounds=recent_rounds,
+                options=options,
+                reflections_used=reflections_used,
+                context=context,
+            )
         )
-        empty_decisions = all(not list(item.get("decision_tool_ids", []) or []) for item in window)
-        return bool(stable_coverage and stable_signal and (repeated_selection or empty_decisions or window_size <= 2))
 
     def load_project_engagement_policy(
             self,
@@ -607,6 +758,69 @@ class SchedulerOrchestrator:
                 return str(action[2])
         return ""
 
+    @classmethod
+    def _web_parallel_followup_wave_tool_ids(
+            cls,
+            *,
+            target: SchedulerTarget,
+            decisions: Sequence[Any],
+            provider_payload: Optional[Dict[str, Any]],
+            options: SchedulerRunOptions,
+    ) -> List[str]:
+        service_name = cls._normalize_text_token(getattr(target, "service_name", ""))
+        if service_name not in SchedulerPlanner.WEB_SERVICE_IDS:
+            return []
+
+        payload = provider_payload if isinstance(provider_payload, dict) else {}
+        specialist_sidecars = payload.get("specialist_sidecars", [])
+        if not isinstance(specialist_sidecars, list) or not specialist_sidecars:
+            return []
+
+        wave_cap = min(
+            int(WEB_PARALLEL_FOLLOWUP_MAX_TOOLS),
+            max(1, int(options.scheduler_concurrency or 1)),
+            max(1, int(options.max_actions_per_round or 0) or int(WEB_PARALLEL_FOLLOWUP_MAX_TOOLS)),
+        )
+        if wave_cap < 2:
+            return []
+
+        decision_tool_ids = {
+            cls._normalize_text_token(getattr(item, "tool_id", ""))
+            for item in list(decisions or [])
+            if cls._normalize_text_token(getattr(item, "tool_id", ""))
+        }
+        if not decision_tool_ids:
+            return []
+
+        selected_tool_ids: List[str] = []
+        seen: Set[str] = set()
+        for sidecar in reversed(specialist_sidecars):
+            if not isinstance(sidecar, dict):
+                continue
+            for item in list(sidecar.get("selected_tool_ids", []) or []):
+                tool_id = cls._normalize_text_token(item)
+                if not tool_id or tool_id in seen:
+                    continue
+                seen.add(tool_id)
+                selected_tool_ids.append(tool_id)
+
+        if not selected_tool_ids:
+            return []
+
+        wave_tool_ids: List[str] = []
+        for tool_id in selected_tool_ids:
+            if tool_id not in decision_tool_ids:
+                continue
+            if not bool(get_scheduler_tool_prompt_info(tool_id).safe_parallel):
+                continue
+            wave_tool_ids.append(tool_id)
+            if len(wave_tool_ids) >= wave_cap:
+                break
+
+        if len(wave_tool_ids) < 2:
+            return []
+        return wave_tool_ids
+
     def run_targets(
             self,
             *,
@@ -689,21 +903,28 @@ class SchedulerOrchestrator:
                         analysis_mode=resolved_options.analysis_mode,
                     )
 
-                if (
-                        use_feedback_loop
-                        and reflect_progress
-                        and context is not None
-                        and self._should_trigger_reflection(recent_rounds, resolved_options, reflections_used)
-                ):
+                reflection_trigger = None
+                if use_feedback_loop and reflect_progress and context is not None:
+                    reflection_trigger = self._reflection_trigger(
+                        recent_rounds=recent_rounds,
+                        options=resolved_options,
+                        reflections_used=reflections_used,
+                        context=context,
+                    )
+
+                if reflection_trigger:
                     try:
                         reflection_payload = reflect_progress(
                             target=target,
                             context=context,
                             recent_rounds=list(recent_rounds),
+                            trigger=reflection_trigger,
                         )
                     except Exception:
                         reflection_payload = {}
                     if isinstance(reflection_payload, dict) and reflection_payload:
+                        reflection_payload.setdefault("trigger_reason", str(reflection_trigger.get("reason", "") or "").strip().lower())
+                        reflection_payload.setdefault("trigger_context", dict(reflection_trigger))
                         reflections_used += 1
                         summary["reflections"] += 1
                         if on_reflection_analysis:
@@ -756,6 +977,29 @@ class SchedulerOrchestrator:
                         list(decisions),
                         key=lambda item: (
                             0 if self._normalize_text_token(getattr(item, "tool_id", "")) in promoted_set else 1,
+                        ),
+                    )
+
+                parallel_wave_tool_ids = self._web_parallel_followup_wave_tool_ids(
+                    target=target,
+                    decisions=decisions,
+                    provider_payload=provider_payload if isinstance(locals().get("provider_payload"), dict) else {},
+                    options=resolved_options,
+                )
+                if parallel_wave_tool_ids:
+                    wave_order = {
+                        tool_id: index
+                        for index, tool_id in enumerate(parallel_wave_tool_ids)
+                        if tool_id
+                    }
+                    decisions = sorted(
+                        [
+                            item for item in list(decisions)
+                            if self._normalize_text_token(getattr(item, "tool_id", "")) in wave_order
+                        ],
+                        key=lambda item: wave_order.get(
+                            self._normalize_text_token(getattr(item, "tool_id", "")),
+                            len(wave_order),
                         ),
                     )
 

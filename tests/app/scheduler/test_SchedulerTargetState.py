@@ -112,6 +112,102 @@ class SchedulerTargetStateStoreTest(unittest.TestCase):
         finally:
             project_manager.closeProject(project)
 
+    def test_upsert_target_state_filters_reference_titles_and_placeholder_findings(self):
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_target_state_table(project.database)
+            upsert_target_state(project.database, 33, {
+                "host_ip": "10.0.0.33",
+                "last_port": "443",
+                "last_protocol": "tcp",
+                "last_service": "https",
+                "findings": [
+                    {
+                        "title": "//cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2011-3192",
+                        "severity": "medium",
+                        "cve": "CVE-2011-3192",
+                        "evidence": "//cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2011-3192",
+                    },
+                    {
+                        "title": "Slowloris DOS attack",
+                        "severity": "medium",
+                        "cve": "CVE-2007-6750",
+                        "evidence": "previous scan result",
+                    },
+                    {
+                        "title": "Apache byterange filter DoS",
+                        "severity": "medium",
+                        "cve": "CVE-2011-3192",
+                        "evidence": "IDs: CVE:CVE-2011-3192",
+                    },
+                ],
+            })
+
+            loaded = get_target_state(project.database, 33)
+            titles = {str(item.get("title", "")).strip() for item in loaded.get("findings", [])}
+
+            self.assertIn("Apache byterange filter DoS", titles)
+            self.assertNotIn("//cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2011-3192", titles)
+            self.assertNotIn("Slowloris DOS attack", titles)
+        finally:
+            project_manager.closeProject(project)
+
+    def test_upsert_target_state_preserves_nuclei_quality_metadata_and_merges_quality_events(self):
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_target_state_table(project.database)
+            upsert_target_state(project.database, 44, {
+                "host_ip": "10.0.0.44",
+                "last_port": "443",
+                "last_protocol": "tcp",
+                "last_service": "https",
+                "raw": {"source": "initial-observation"},
+            })
+
+            upsert_target_state(project.database, 44, {
+                "host_ip": "10.0.0.44",
+                "last_port": "443",
+                "last_protocol": "tcp",
+                "last_service": "https",
+                "findings": [
+                    {
+                        "title": "Reflected debug endpoint",
+                        "severity": "info",
+                        "evidence": "request payload reflected in response",
+                        "quality_action": "downgraded",
+                        "quality_reason": "reflection_only_response",
+                        "severity_before": "high",
+                    }
+                ],
+                "finding_quality_events": [
+                    {
+                        "title": "CVE-2026-2222",
+                        "cve": "CVE-2026-2222",
+                        "action": "suppressed",
+                        "reason": "waf_block_page",
+                        "severity_before": "critical",
+                        "evidence": "Attention Required! Cloudflare - Sorry, you have been blocked",
+                        "matched_url": "https://portal.example/login",
+                    }
+                ],
+            })
+
+            loaded = get_target_state(project.database, 44)
+            self.assertEqual("initial-observation", loaded["raw"]["source"])
+            finding = loaded["findings"][0]
+            self.assertEqual("downgraded", finding["quality_action"])
+            self.assertEqual("reflection_only_response", finding["quality_reason"])
+            self.assertEqual("high", finding["severity_before"])
+
+            quality_events = loaded.get("finding_quality_events", [])
+            self.assertEqual(1, len(quality_events))
+            self.assertEqual("suppressed", quality_events[0]["action"])
+            self.assertEqual("waf_block_page", quality_events[0]["reason"])
+            self.assertEqual("https://portal.example/login", quality_events[0]["matched_url"])
+            self.assertEqual("waf_block_page", loaded["raw"]["finding_quality_events"][0]["reason"])
+        finally:
+            project_manager.closeProject(project)
+
 
 if __name__ == "__main__":
     unittest.main()

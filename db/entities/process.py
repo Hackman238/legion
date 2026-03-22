@@ -41,6 +41,9 @@ class process(Base):
     status = Column(String)
     closed = Column(String)
     percent = Column(String)  # New: percent complete for nmap scans
+    progressMessage = Column(String)
+    progressSource = Column(String)
+    progressUpdatedAt = Column(String)
 
     def __init__(
         self,
@@ -59,6 +62,9 @@ class process(Base):
         estimatedRemaining=None,
         elapsed=0,
         percent=None,
+        progressMessage='',
+        progressSource='',
+        progressUpdatedAt='',
         **kwargs
     ):
         self.display = 'True'
@@ -86,3 +92,6 @@ class process(Base):
                 self.estimatedRemaining = None
         self.elapsed = kwargs.get('elapsed', elapsed) or 0
         self.percent = kwargs.get('percent', percent)
+        self.progressMessage = kwargs.get('progressMessage', progressMessage) or ''
+        self.progressSource = kwargs.get('progressSource', progressSource) or ''
+        self.progressUpdatedAt = kwargs.get('progressUpdatedAt', progressUpdatedAt) or ''

@@ -171,19 +171,19 @@ class AppSettings():
         "echo ffuf not found"
     )
     ENUM4LINUX_NG_COMMAND = (
-        "(command -v enum4linux-ng >/dev/null 2>&1 && "
-        "enum4linux-ng -A -oJ [OUTPUT] [IP]) || "
-        "echo enum4linux-ng not found"
+        "if command -v enum4linux-ng >/dev/null 2>&1; then "
+        "enum4linux-ng -A -oJ [OUTPUT] [IP]; "
+        "else echo enum4linux-ng not found; fi"
     )
     SMBMAP_COMMAND = (
-        "(command -v smbmap >/dev/null 2>&1 && "
-        "smbmap -H [IP] -P [PORT] --no-banner --no-color --csv [OUTPUT].csv) || "
-        "echo smbmap not found"
+        "if command -v smbmap >/dev/null 2>&1; then "
+        "smbmap -H [IP] -P [PORT] --no-write-check -q | tee [OUTPUT].txt; "
+        "else echo smbmap not found; fi"
     )
     RPCCLIENT_ENUM_COMMAND = (
-        "(command -v rpcclient >/dev/null 2>&1 && "
-        "rpcclient [IP] -p [PORT] -U '%' -c 'srvinfo;enumdomusers;netshareenumall' > [OUTPUT].txt) || "
-        "echo rpcclient not found"
+        "if command -v rpcclient >/dev/null 2>&1; then "
+        "rpcclient [IP] -p [PORT] -U '%' -c 'srvinfo;enumdomusers;netshareenumall' > [OUTPUT].txt; "
+        "else echo rpcclient not found; fi"
     )
     BASELINE_WEB_PORT_ACTIONS = {
         "httpx": ("Run httpx", HTTPX_COMMAND, WEB_SERVICE_SCOPE),
@@ -806,6 +806,33 @@ class AppSettings():
         return ",".join(existing) if changed else str(scope)
 
     @classmethod
+    def _wrap_command_presence_probe(cls, command: str, binary: str) -> str:
+        raw = str(command or "")
+        tool = str(binary or "").strip()
+        if not raw.strip() or not tool:
+            return raw
+        probe_marker = f"__LEGION_{re.sub(r'[^A-Za-z0-9]+', '_', tool).upper()}_PROBE__"
+        normalized = re.sub(
+            rf"(?i)command\s+-v\s+{re.escape(tool)}",
+            f"command -v {probe_marker}",
+            raw,
+        )
+        normalized = re.sub(
+            rf"(?is)^\s*\(\s*command\s+-v\s+{re.escape(probe_marker)}\s*>/dev/null\s+2>&1\s*&&\s*",
+            "",
+            normalized,
+            count=1,
+        )
+        normalized = re.sub(
+            rf"(?is)\)\s*\|\|\s*echo\s+{re.escape(tool)}\s+not\s+found\s*$",
+            "",
+            normalized,
+            count=1,
+        )
+        normalized = normalized.strip()
+        return f"if command -v {tool} >/dev/null 2>&1; then {normalized}; else echo {tool} not found; fi"
+
+    @classmethod
     def _ensure_web_content_discovery_command(cls, command: str) -> str:
         raw = str(command or "")
         if "gobuster" not in raw.lower():
@@ -827,15 +854,29 @@ class AppSettings():
             return raw
         probe_marker = "__LEGION_HTTPX_PROBE__"
         normalized = re.sub(r"(?i)command\s+-v\s+httpx", f"command -v {probe_marker}", raw)
+        wrapped_prefix = re.search(
+            rf"(?i)^\s*\(\s*command\s+-v\s+{re.escape(probe_marker)}\s*>/dev/null\s+2>&1\s*&&\s*",
+            normalized,
+        )
         fallback = ""
-        fallback_match = re.search(r"\)\s*\|\|\s*echo\s+httpx\s+not\s+found\s*$", normalized, flags=re.IGNORECASE)
+        fallback_match = re.search(
+            r"(?i)\s*\|\|\s*echo\s+httpx\s+not\s+found(?:\s+-o\s+\S+)?\s*$",
+            normalized,
+        )
         if fallback_match:
-            fallback = fallback_match.group(0)
+            fallback = " || echo httpx not found"
             normalized = normalized[:fallback_match.start()]
+        if wrapped_prefix:
+            normalized = normalized[wrapped_prefix.end():]
+            normalized = re.sub(r"\)\s*$", "", normalized)
+            prefix = f"(command -v {probe_marker} >/dev/null 2>&1 && "
+        else:
+            prefix = ""
         httpx_match = re.search(r"(?i)\bhttpx\b", normalized)
         if not httpx_match:
             return re.sub(r"\s{2,}", " ", raw).strip()
-        prefix = normalized[: httpx_match.start()]
+        if not wrapped_prefix:
+            prefix = normalized[: httpx_match.start()]
         httpx_command = normalized[httpx_match.start() :]
         httpx_command = re.sub(r"(?i)(?:^|\s)-(?:j|json)(?=\s|$)", " ", httpx_command)
         httpx_command = re.sub(r"(?i)(?:^|\s)-silent(?=\s|$)", " ", httpx_command)
@@ -858,7 +899,10 @@ class AppSettings():
         )
         if not re.search(r"(?i)(?:^|\s)-o(?:\s|$)", httpx_command):
             httpx_command += " -o [OUTPUT].jsonl"
-        combined = f"{prefix}{httpx_command}{fallback}"
+        if wrapped_prefix:
+            combined = f"{prefix}{httpx_command}){fallback or ' || echo httpx not found'}"
+        else:
+            combined = f"{prefix}{httpx_command}{fallback}"
         return re.sub(r"\s{2,}", " ", combined).strip().replace(probe_marker, "httpx")
 
     @classmethod
@@ -964,54 +1008,21 @@ class AppSettings():
         raw = str(command or "")
         if "enum4linux-ng" not in raw.lower():
             return raw
-        probe_marker = "__LEGION_ENUM4LINUX_NG_PROBE__"
-        normalized = re.sub(r"(?i)command\s+-v\s+enum4linux-ng", f"command -v {probe_marker}", raw)
-        if not re.search(r"(?i)\s-A(?:\s|$)", normalized):
-            normalized = re.sub(r"(?i)\benum4linux-ng\b", "enum4linux-ng -A", normalized, count=1)
-        if not re.search(r"(?i)-oJ(?:=|\s)", normalized):
-            normalized = re.sub(r"(?i)\benum4linux-ng\b", "enum4linux-ng -oJ [OUTPUT]", normalized, count=1)
-        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "enum4linux-ng")
+        return AppSettings.ENUM4LINUX_NG_COMMAND
 
     @staticmethod
     def _ensure_smbmap_command(command: str) -> str:
         raw = str(command or "")
         if "smbmap" not in raw.lower():
             return raw
-        probe_marker = "__LEGION_SMBMAP_PROBE__"
-        normalized = re.sub(r"(?i)command\s+-v\s+smbmap", f"command -v {probe_marker}", raw)
-        for token in ("--no-banner", "--no-color"):
-            if token.lower() not in normalized.lower():
-                normalized = re.sub(r"(?i)\bsmbmap\b", f"smbmap {token}", normalized, count=1)
-        if not re.search(r"(?i)--csv(?:=|\s)", normalized):
-            normalized = re.sub(r"(?i)\bsmbmap\b", "smbmap --csv [OUTPUT].csv", normalized, count=1)
-        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "smbmap")
+        return AppSettings.SMBMAP_COMMAND
 
     @staticmethod
     def _ensure_rpcclient_enum_command(command: str) -> str:
         raw = str(command or "")
         if "rpcclient" not in raw.lower():
             return raw
-        probe_marker = "__LEGION_RPCCLIENT_PROBE__"
-        normalized = re.sub(r"(?i)command\s+-v\s+rpcclient", f"command -v {probe_marker}", raw)
-        if re.search(r"(?i)(^|\s)-U(?:\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s]+)", normalized):
-            normalized = re.sub(
-                r"(?i)(^|\s)-U(?:\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s]+)",
-                r"\1-U '%'",
-                normalized,
-                count=1,
-            )
-        else:
-            normalized = re.sub(r"(?i)\brpcclient\b", "rpcclient -U '%'", normalized, count=1)
-        if not re.search(r"(?i)(?:^|\s)-c\s+", normalized):
-            normalized = re.sub(
-                r"(?i)\brpcclient\b",
-                "rpcclient -c 'srvinfo;enumdomusers;netshareenumall'",
-                normalized,
-                count=1,
-            )
-        if "[OUTPUT]" not in normalized:
-            normalized += " > [OUTPUT].txt"
-        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "rpcclient")
+        return AppSettings.RPCCLIENT_ENUM_COMMAND
 
     @staticmethod
     def _canonicalize_legacy_rpcclient_action(rpc_command: str) -> str:

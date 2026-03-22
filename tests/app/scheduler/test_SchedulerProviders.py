@@ -1039,6 +1039,13 @@ class SchedulerProvidersTest(unittest.TestCase):
                 {"round": 1, "decision_tool_ids": ["nuclei-web"], "coverage_missing": ["missing_nmap_vuln"], "progress_score": 0},
                 {"round": 2, "decision_tool_ids": ["nikto"], "coverage_missing": ["missing_nmap_vuln"], "progress_score": 0},
             ],
+            trigger_reason="phase_transition",
+            trigger_context={
+                "reason": "phase_transition",
+                "round_number": 3,
+                "previous_phase": "service_fingerprint",
+                "current_phase": "broad_vuln",
+            },
         )
 
         self.assertEqual("stalled", payload["state"])
@@ -1046,13 +1053,17 @@ class SchedulerProvidersTest(unittest.TestCase):
         self.assertEqual(["whatweb"], payload["promote_tool_ids"])
         self.assertEqual(["nikto"], payload["suppress_tool_ids"])
         self.assertIn("curl -k", payload["manual_tests"][0]["command"])
+        self.assertEqual("phase_transition", payload["trigger_reason"])
         request_payload = mock_post.call_args.kwargs["json"]
         self.assertIn("Assess whether recent rounds are still productive", request_payload["messages"][0]["content"])
         self.assertIn("Prompt version: scheduler-reflection-v1", request_payload["messages"][1]["content"])
+        self.assertIn("Reflection trigger:", request_payload["messages"][1]["content"])
+        self.assertIn('"previous_phase":"service_fingerprint"', request_payload["messages"][1]["content"])
         self.assertIn("Recent rounds:", request_payload["messages"][1]["content"])
         logs = get_provider_logs(limit=10)
         self.assertEqual("reflection", logs[-1]["prompt_metadata"].get("prompt_type"))
         self.assertEqual("scheduler-reflection-v1", logs[-1]["prompt_metadata"].get("prompt_version"))
+        self.assertEqual("phase_transition", logs[-1]["prompt_metadata"].get("trigger_reason"))
 
     @patch("app.scheduler.providers.requests.post")
     def test_openai_web_followup_sidecar_parses_response(self, mock_post):
@@ -1529,6 +1540,102 @@ class SchedulerProvidersTest(unittest.TestCase):
         self.assertIn("jetty", prompt.lower())
         metadata = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
         self.assertIn("Prefer closing baseline coverage gaps", metadata)
+
+    def test_ranking_prompt_keeps_multiple_visible_candidates_under_large_context(self):
+        from app.scheduler.providers import _build_candidate_block
+
+        candidates = []
+        for i in range(12):
+            candidates.append({
+                "tool_id": f"tool-{i}",
+                "label": f"Tool Label {i}",
+                "command_template": "very-long-command " + ("x" * 500),
+                "service_scope": "http,https,ssl",
+            })
+
+        block, omitted, visible = _build_candidate_block(
+            candidates,
+            "x" * 11000,
+            context={
+                "coverage": {
+                    "missing": ["missing_nmap_vuln", "missing_nuclei_auto"],
+                    "recommended_tool_ids": ["tool-0", "tool-1", "tool-2"],
+                },
+                "signals": {"web_service": True},
+            },
+            prompt_type="ranking",
+        )
+
+        self.assertTrue(block)
+        self.assertGreaterEqual(len(visible), 4)
+        self.assertLessEqual(len(visible), len(candidates))
+        self.assertGreaterEqual(omitted, 0)
+
+    @patch("app.scheduler.providers.requests.post")
+    def test_web_followup_filters_selected_tools_to_visible_candidates_under_budget_pressure(self, mock_post):
+        from app.scheduler.providers import select_web_followup_with_provider
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"focus":"coverage_gap",'
+                            '"selected_tool_ids":["tool-0","tool-11"],'
+                            '"reason":"pick the visible and omitted candidates",'
+                            '"manual_tests":[]}'
+                        )
+                    }
+                }
+            ]
+        }
+        mock_post.return_value = response
+
+        candidates = []
+        for i in range(12):
+            candidates.append({
+                "tool_id": f"tool-{i}",
+                "label": f"Tool Label {i}",
+                "command_template": "tool-runner " + ("x" * 500),
+                "service_scope": "http",
+            })
+
+        config = {
+            "provider": "openai",
+            "providers": {
+                "openai": {
+                    "enabled": True,
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-5-mini",
+                    "api_key": "x",
+                }
+            },
+        }
+        payload = select_web_followup_with_provider(
+            config,
+            "internal_asset_discovery",
+            "http",
+            "tcp",
+            candidates,
+            context={
+                "context_summary": {
+                    "confirmed_facts": [" | ".join(f"fact-{i}" for i in range(1200))],
+                    "missing_coverage": ["missing_nmap_vuln", "missing_nuclei_auto"],
+                },
+                "coverage": {
+                    "missing": ["missing_nmap_vuln", "missing_nuclei_auto"],
+                    "recommended_tool_ids": ["tool-0", "tool-1", "tool-2", "tool-3"],
+                },
+                "signals": {"web_service": True},
+            },
+        )
+
+        self.assertGreaterEqual(payload["visible_candidate_count"], 4)
+        self.assertLess(payload["visible_candidate_count"], len(candidates))
+        self.assertNotIn("tool-11", list(payload.get("visible_candidate_tool_ids", []) or []))
+        self.assertEqual(["tool-0"], payload["selected_tool_ids"])
 
     def test_determine_phase_uses_cpe_cve_enrichment_gap(self):
         from app.scheduler.providers import _determine_scheduler_phase

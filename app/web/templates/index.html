@@ -696,6 +696,7 @@
                     <th>Hosts</th>
                     <th>Ports</th>
                     <th>Protocols</th>
+                    <th>Actions</th>
                 </tr>
                 </thead>
                 <tbody id="services-body"></tbody>
@@ -870,6 +871,12 @@
                 </button>
             </div>
             <div id="process-output-command" class="process-command-text"></div>
+        </div>
+        <div class="process-command-block">
+            <div class="process-command-header">
+                <span>Progress</span>
+            </div>
+            <div id="process-output-progress" class="process-command-text">No structured progress reported</div>
         </div>
         <label>
             Output
@@ -1166,6 +1173,11 @@
             </button>
         </div>
         <div class="action-block">
+            <label id="workspace-tool-target-wrapper" hidden>
+                Target
+                <select id="workspace-tool-target-select"></select>
+            </label>
+            <p id="workspace-tool-context" class="meta-note"></p>
             <label>
                 Target Host IP
                 <input id="workspace-tool-host-ip" type="text" placeholder="10.0.0.10">

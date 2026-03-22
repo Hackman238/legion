@@ -247,7 +247,7 @@ class SettingsMigrationTest(unittest.TestCase):
         self.assertIn("gobuster dir -q -u http://[IP]:[PORT]/", normalized)
         self.assertIn("feroxbuster -u https://[IP]:[PORT] -k", normalized)
 
-    def test_httpx_nikto_and_wpscan_normalization_use_parser_friendly_output(self):
+    def test_httpx_nikto_wpscan_and_smb_family_normalization_use_parser_friendly_output(self):
         from app.settings import AppSettings
 
         httpx_normalized = AppSettings._ensure_httpx_command("httpx -u https://[IP]:[PORT]")
@@ -261,6 +261,26 @@ class SettingsMigrationTest(unittest.TestCase):
             "(wpscan --url https://[IP]:[PORT] --disable-tls-checks || wpscan --url http://[IP]:[PORT])) || "
             "echo wpscan not found"
         )
+        enum4linux_ng_normalized = AppSettings._ensure_enum4linux_ng_command(
+            "(command -v enum4linux-ng >/dev/null 2>&1 && enum4linux-ng -A -oJ [OUTPUT] [IP]) || "
+            "echo enum4linux-ng not found"
+        )
+        smbmap_normalized = AppSettings._ensure_smbmap_command(
+            "(command -v smbmap >/dev/null 2>&1 && smbmap -H [IP] -P [PORT] --no-banner --no-color --csv [OUTPUT].csv) || "
+            "echo smbmap not found"
+        )
+        rpcclient_normalized = AppSettings._ensure_rpcclient_enum_command(
+            "(command -v rpcclient >/dev/null 2>&1 && rpcclient [IP] -p [PORT] -U '%' -c 'srvinfo;enumdomusers;netshareenumall' > [OUTPUT].txt) || "
+            "echo rpcclient not found"
+        )
+        httpx_malformed_fallback = AppSettings._ensure_httpx_command(
+            "(command -v httpx >/dev/null 2>&1 && httpx -silent -json -title -tech-detect "
+            "-web-server -status-code -content-type -u http://[IP]:[PORT]) || echo httpx not found -o [OUTPUT].jsonl"
+        )
+        httpx_malformed_missing_paren = AppSettings._ensure_httpx_command(
+            "(command -v httpx >/dev/null 2>&1 && httpx -silent -json -title -tech-detect "
+            "-web-server -status-code -content-type -u http://[IP]:[PORT] || echo httpx not found -o [OUTPUT].jsonl"
+        )
 
         self.assertIn("httpx -silent -json -title -tech-detect -web-server -status-code -content-type", httpx_normalized)
         self.assertIn("-u [WEB_URL]", httpx_normalized)
@@ -268,11 +288,38 @@ class SettingsMigrationTest(unittest.TestCase):
         self.assertIn("command -v httpx >/dev/null 2>&1 &&", httpx_wrapped_normalized)
         self.assertIn("httpx -silent -json -title -tech-detect -web-server -status-code -content-type", httpx_wrapped_normalized)
         self.assertIn("-u [WEB_URL] -o [OUTPUT].jsonl) || echo httpx not found", httpx_wrapped_normalized)
+        self.assertIn("-u [WEB_URL] -o [OUTPUT].jsonl) || echo httpx not found", httpx_malformed_fallback)
+        self.assertIn("-u [WEB_URL] -o [OUTPUT].jsonl) || echo httpx not found", httpx_malformed_missing_paren)
         self.assertIn("nikto -nointeractive -Format txt -output [OUTPUT].txt", nikto_normalized)
         self.assertIn("-h [WEB_URL]", nikto_normalized)
         self.assertNotIn("-p [PORT]", nikto_normalized)
         self.assertIn("wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json", wpscan_normalized)
         self.assertIn("--url [WEB_URL]", wpscan_normalized)
+        self.assertEqual(
+            "if command -v enum4linux-ng >/dev/null 2>&1; then enum4linux-ng -A -oJ [OUTPUT] [IP]; else echo enum4linux-ng not found; fi",
+            enum4linux_ng_normalized,
+        )
+        self.assertEqual(
+            "if command -v smbmap >/dev/null 2>&1; then smbmap -H [IP] -P [PORT] --no-write-check -q | tee [OUTPUT].txt; else echo smbmap not found; fi",
+            smbmap_normalized,
+        )
+        self.assertEqual(
+            "if command -v rpcclient >/dev/null 2>&1; then rpcclient [IP] -p [PORT] -U '%' -c 'srvinfo;enumdomusers;netshareenumall' > [OUTPUT].txt; else echo rpcclient not found; fi",
+            rpcclient_normalized,
+        )
+
+        self.assertEqual(
+            enum4linux_ng_normalized,
+            AppSettings._ensure_enum4linux_ng_command(enum4linux_ng_normalized),
+        )
+        self.assertEqual(
+            smbmap_normalized,
+            AppSettings._ensure_smbmap_command(smbmap_normalized),
+        )
+        self.assertEqual(
+            rpcclient_normalized,
+            AppSettings._ensure_rpcclient_enum_command(rpcclient_normalized),
+        )
 
     def test_allowed_nonzero_exit_codes_include_cyberstrike_tool_metadata(self):
         from app.settings import AppSettings

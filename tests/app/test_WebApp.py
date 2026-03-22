@@ -182,15 +182,27 @@ class DummyRuntime:
         self.tool_install_requests = []
         self.workspace_tools = [
             {
-                "label": "SMB Enum Users",
-                "tool_id": "smb-enum-users.nse",
-                "command_template": "nmap --script=smb-enum-users [IP] -p [PORT]",
+                "label": "Run smbmap",
+                "tool_id": "smbmap",
+                "command_template": "smbmap -H [IP] -P [PORT] -q --no-write-check | tee [OUTPUT].txt",
                 "service_scope": ["smb"],
                 "danger_categories": [],
                 "run_count": 1,
                 "last_status": "Finished",
                 "last_start": "2026-02-17T00:00:00Z",
-            }
+                "runnable": True,
+            },
+            {
+                "label": "Run whatweb (http)",
+                "tool_id": "whatweb-http",
+                "command_template": "whatweb http://[IP]:[PORT] --log-brief=[OUTPUT].txt",
+                "service_scope": ["http"],
+                "danger_categories": [],
+                "run_count": 0,
+                "last_status": "",
+                "last_start": "",
+                "runnable": True,
+            },
         ]
         self.workspace_host_detail = {
             "host": {"id": 11, "ip": "10.0.0.5", "hostname": "dc01.local", "status": "up", "os": "windows"},
@@ -858,8 +870,16 @@ class DummyRuntime:
         return self.workspace_tools[:limit]
 
     def get_workspace_tools_page(self, service="", limit=300, offset=0):
-        _ = service
+        normalized_service = str(service or "").strip().lower()
         rows = list(self.workspace_tools)
+        if normalized_service:
+            rows = [
+                row for row in rows
+                if normalized_service in {
+                    str(item or "").strip().lower()
+                    for item in list(row.get("service_scope", []) or [])
+                }
+            ]
         safe_limit = max(1, min(int(limit or 300), 500))
         safe_offset = max(0, int(offset or 0))
         page = rows[safe_offset:safe_offset + safe_limit]
@@ -873,6 +893,50 @@ class DummyRuntime:
             "has_more": has_more,
             "next_offset": next_offset if has_more else None,
         }
+
+    def get_workspace_tool_targets(self, host_id=0, service="", limit=500):
+        targets = [
+            {
+                "host_id": 11,
+                "host_ip": "10.0.0.5",
+                "hostname": "dc01.local",
+                "port": "445",
+                "protocol": "tcp",
+                "service": "smb",
+                "service_product": "samba",
+                "service_version": "4.x",
+                "label": "10.0.0.5 | dc01.local | smb | 445/tcp",
+            },
+            {
+                "host_id": 13,
+                "host_ip": "10.0.0.7",
+                "hostname": "web01.local",
+                "port": "80",
+                "protocol": "tcp",
+                "service": "http",
+                "service_product": "nginx",
+                "service_version": "",
+                "label": "10.0.0.7 | web01.local | http | 80/tcp",
+            },
+            {
+                "host_id": 13,
+                "host_ip": "10.0.0.7",
+                "hostname": "web01.local",
+                "port": "443",
+                "protocol": "tcp",
+                "service": "https",
+                "service_product": "nginx",
+                "service_version": "",
+                "label": "10.0.0.7 | web01.local | https | 443/tcp",
+            },
+        ]
+        normalized_host_id = int(host_id or 0)
+        normalized_service = str(service or "").strip().lower()
+        if normalized_host_id > 0:
+            targets = [row for row in targets if int(row.get("host_id", 0) or 0) == normalized_host_id]
+        if normalized_service:
+            targets = [row for row in targets if str(row.get("service", "")).strip().lower() == normalized_service]
+        return targets[: max(1, min(int(limit or 500), 5000))]
 
     def get_host_workspace(self, host_id):
         if int(host_id) != 11:
@@ -2275,7 +2339,21 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, tools.status_code)
         self.assertIn("total", tools.json)
         self.assertIn("has_more", tools.json)
-        self.assertEqual("smb-enum-users.nse", tools.json["tools"][0]["tool_id"])
+        self.assertEqual("smbmap", tools.json["tools"][0]["tool_id"])
+
+        http_tools = self.client.get("/api/workspace/tools?service=http")
+        self.assertEqual(200, http_tools.status_code)
+        self.assertEqual(["whatweb-http"], [item["tool_id"] for item in http_tools.json["tools"]])
+
+        tool_targets = self.client.get("/api/workspace/tool-targets?host_id=11")
+        self.assertEqual(200, tool_targets.status_code)
+        self.assertEqual(11, tool_targets.json["host_id"])
+        self.assertEqual("445", tool_targets.json["targets"][0]["port"])
+
+        service_targets = self.client.get("/api/workspace/tool-targets?service=http")
+        self.assertEqual(200, service_targets.status_code)
+        self.assertEqual("http", service_targets.json["service"])
+        self.assertEqual("10.0.0.7", service_targets.json["targets"][0]["host_ip"])
 
         detail = self.client.get("/api/workspace/hosts/11")
         self.assertEqual(200, detail.status_code)
@@ -2452,7 +2530,7 @@ class WebAppTest(unittest.TestCase):
 
         tool_run = self.client.post(
             "/api/workspace/tools/run",
-            json={"host_ip": "10.0.0.5", "port": "445", "protocol": "tcp", "tool_id": "smb-enum-users.nse"},
+            json={"host_ip": "10.0.0.5", "port": "445", "protocol": "tcp", "tool_id": "smbmap"},
         )
         self.assertEqual(202, tool_run.status_code)
         self.assertEqual("accepted", tool_run.json["status"])

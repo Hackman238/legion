@@ -10,6 +10,7 @@ const workspaceState = {
     toolsLoading: false,
     selectedHostId: null,
     hostDetail: null,
+    manualToolTargets: [],
 };
 
 const GRAPH_WORKSPACE_ZOOM_MIN_PERCENT = 10;
@@ -362,6 +363,16 @@ function makeCell(value) {
     return td;
 }
 
+function buildLaunchToolButton(title = "Run supported tool") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "icon-btn";
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    button.innerHTML = '<i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i>';
+    return button;
+}
+
 function buildHostActionButton(action, hostId) {
     const button = document.createElement("button");
     button.type = "button";
@@ -522,14 +533,16 @@ function closeGraphActionMenus() {
 }
 
 async function graphGetApplicableTools(serviceName) {
-    const key = String(serviceName || "").trim().toLowerCase();
-    if (!key) {
-        return [];
-    }
+    const key = String(serviceName || "").trim().toLowerCase() || "__all__";
     if (Array.isArray(graphWorkspaceState.toolMenuCache[key])) {
         return graphWorkspaceState.toolMenuCache[key];
     }
-    const body = await fetchJson(`/api/workspace/tools?service=${encodeURIComponent(key)}&limit=500`);
+    const params = new URLSearchParams();
+    params.set("limit", "500");
+    if (key !== "__all__") {
+        params.set("service", key);
+    }
+    const body = await fetchJson(`/api/workspace/tools?${params.toString()}`);
     const tools = Array.isArray(body?.tools) ? body.tools.filter((item) => Boolean(item?.runnable)) : [];
     graphWorkspaceState.toolMenuCache[key] = tools;
     return tools;
@@ -574,16 +587,6 @@ function buildGraphToolMenu(context) {
     menu.appendChild(submenu);
 
     const serviceKey = String(context?.serviceName || "").trim();
-    if (!serviceKey) {
-        toggle.disabled = true;
-        toggle.title = "No applicable service-specific actions";
-        toggle.setAttribute("aria-label", "No applicable service-specific actions");
-        const empty = document.createElement("div");
-        empty.className = "graph-action-menu-status";
-        empty.textContent = "No applicable service-specific actions.";
-        submenu.appendChild(empty);
-        return menu;
-    }
 
     let loaded = false;
     toggle.addEventListener("click", async (event) => {
@@ -610,7 +613,7 @@ function buildGraphToolMenu(context) {
             if (!tools.length) {
                 const empty = document.createElement("div");
                 empty.className = "graph-action-menu-status";
-                empty.textContent = "No applicable actions.";
+                empty.textContent = "No supported actions.";
                 submenu.appendChild(empty);
             } else {
                 tools.forEach((tool) => {
@@ -1252,6 +1255,15 @@ function renderHosts(hosts) {
         tr.appendChild(makeCell(host.open_ports));
         const actionsCell = document.createElement("td");
         actionsCell.className = "host-actions";
+        const launchButton = buildLaunchToolButton(`Run supported tool for ${hostLabel}`);
+        launchButton.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            await openManualToolPicker({
+                hostId: Number(host.id) || 0,
+                contextLabel: `Supported tools for ${hostLabel}`,
+            });
+        });
+        actionsCell.appendChild(launchButton);
         ["rescan", "refresh-screenshots", "dig-deeper", "remove"].forEach((action) => {
             actionsCell.appendChild(buildHostActionButton(action, host.id || ""));
         });
@@ -1303,6 +1315,19 @@ function renderServices(services) {
         tr.appendChild(makeCell(service.host_count || 0));
         tr.appendChild(makeCell(service.port_count || 0));
         tr.appendChild(makeCell(Array.isArray(service.protocols) ? service.protocols.join(",") : ""));
+        const actionsCell = document.createElement("td");
+        const launchButton = buildLaunchToolButton(`Run supported tool for ${service.service || "service"}`);
+        launchButton.addEventListener("click", async () => {
+            await openManualToolPicker({
+                hostId: Number(workspaceState.servicesHostFilterId) || 0,
+                service: String(service.service || "").trim(),
+                contextLabel: workspaceState.servicesHostFilterId
+                    ? `Supported tools for ${service.service || "service"} on ${workspaceState.servicesHostFilterLabel || "selected host"}`
+                    : `Supported tools for ${service.service || "service"}`,
+            });
+        });
+        actionsCell.appendChild(launchButton);
+        tr.appendChild(actionsCell);
         body.appendChild(tr);
     });
     setText("service-count", workspaceState.services.length);
@@ -1392,21 +1417,8 @@ function renderTools(tools) {
         });
     }
 
-    const toolSelect = document.getElementById("workspace-tool-select");
-    if (toolSelect) {
-        const current = toolSelect.value;
-        toolSelect.innerHTML = "";
-        workspaceState.tools
-            .filter((tool) => tool.runnable !== false)
-            .forEach((tool) => {
-            const option = document.createElement("option");
-            option.value = String(tool.tool_id || "");
-            option.textContent = `${tool.label || tool.tool_id} (${tool.tool_id || ""})`;
-            toolSelect.appendChild(option);
-        });
-        if (current && workspaceState.tools.some((tool) => String(tool.tool_id) === current && tool.runnable !== false)) {
-            toolSelect.value = current;
-        }
+    if (!workspaceState.manualToolTargets.length) {
+        populateManualToolSelect(workspaceState.tools);
     }
 
     setText("tool-count", workspaceState.tools.length);
@@ -1514,6 +1526,10 @@ function setProcessOutputText(text) {
 
 function setProcessOutputCommand(text) {
     setText("process-output-command", text || "");
+}
+
+function setProcessOutputProgress(text) {
+    setText("process-output-progress", text || "No structured progress reported");
 }
 
 function setScriptOutputMeta(text) {
@@ -1947,6 +1963,20 @@ function closeNmapScanModalAction() {
 }
 
 function closeManualScanModalAction() {
+    workspaceState.manualToolTargets = [];
+    const targetWrapper = document.getElementById("workspace-tool-target-wrapper");
+    const targetSelect = document.getElementById("workspace-tool-target-select");
+    if (targetWrapper) {
+        targetWrapper.hidden = true;
+    }
+    if (targetSelect) {
+        targetSelect.innerHTML = "";
+    }
+    setText("workspace-tool-context", "");
+    setManualScanModalOpen(false);
+}
+
+function dismissManualScanModalAction() {
     setManualScanModalOpen(false);
 }
 
@@ -2002,6 +2032,179 @@ function prefillManualScanFromSelection() {
     }
 }
 
+function manualToolTargetKey(target) {
+    return [
+        String(target?.host_id || ""),
+        String(target?.host_ip || ""),
+        String(target?.port || ""),
+        String(target?.protocol || "tcp"),
+        String(target?.service || ""),
+    ].join("|");
+}
+
+function populateManualToolSelect(tools, preferredToolId = "") {
+    const toolSelect = document.getElementById("workspace-tool-select");
+    if (!toolSelect) {
+        return;
+    }
+    const current = String(preferredToolId || toolSelect.value || "").trim();
+    toolSelect.innerHTML = "";
+    (Array.isArray(tools) ? tools : [])
+        .filter((tool) => tool?.runnable !== false)
+        .forEach((tool) => {
+            const option = document.createElement("option");
+            option.value = String(tool.tool_id || "");
+            option.textContent = `${tool.label || tool.tool_id} (${tool.tool_id || ""})`;
+            toolSelect.appendChild(option);
+        });
+    if (current && Array.from(toolSelect.options).some((option) => option.value === current)) {
+        toolSelect.value = current;
+    }
+}
+
+async function fetchWorkspaceToolsPage({service = "", limit = 500, offset = 0} = {}) {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+    if (service) {
+        params.set("service", String(service));
+    }
+    return fetchJson(`/api/workspace/tools?${params.toString()}`);
+}
+
+async function fetchWorkspaceToolsAll({service = ""} = {}) {
+    const allTools = [];
+    let offset = 0;
+    let pageGuard = 0;
+    const pageLimit = 500;
+
+    while (pageGuard < 200) {
+        const body = await fetchWorkspaceToolsPage({service, limit: pageLimit, offset});
+        const tools = Array.isArray(body?.tools) ? body.tools : [];
+        allTools.push(...tools);
+        if (!body?.has_more) {
+            break;
+        }
+        const nextOffset = Number(body.next_offset);
+        if (!Number.isFinite(nextOffset) || nextOffset <= offset) {
+            break;
+        }
+        offset = nextOffset;
+        pageGuard += 1;
+    }
+
+    return allTools;
+}
+
+async function fetchWorkspaceToolTargets({hostId = 0, service = "", limit = 500} = {}) {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    if (hostId) {
+        params.set("host_id", String(hostId));
+    }
+    if (service) {
+        params.set("service", String(service));
+    }
+    const body = await fetchJson(`/api/workspace/tool-targets?${params.toString()}`);
+    return Array.isArray(body?.targets) ? body.targets : [];
+}
+
+async function loadManualToolOptionsForService(service = "", preferredToolId = "") {
+    const tools = await fetchWorkspaceToolsAll({service});
+    populateManualToolSelect(tools, preferredToolId);
+    return tools;
+}
+
+async function applyManualToolTarget(target, {preferredToolId = ""} = {}) {
+    const resolvedTarget = target && typeof target === "object" ? target : {};
+    setValue("workspace-tool-host-ip", resolvedTarget.host_ip || "");
+    setValue("workspace-tool-port", resolvedTarget.port || "");
+    setValue("workspace-tool-protocol", resolvedTarget.protocol || "tcp");
+    await loadManualToolOptionsForService(String(resolvedTarget.service || "").trim(), preferredToolId);
+}
+
+async function renderManualToolTargets(targets, {preferredTargetKey = "", preferredToolId = ""} = {}) {
+    workspaceState.manualToolTargets = Array.isArray(targets) ? targets : [];
+    const wrapper = document.getElementById("workspace-tool-target-wrapper");
+    const select = document.getElementById("workspace-tool-target-select");
+    if (!wrapper || !select) {
+        return;
+    }
+    select.innerHTML = "";
+    if (!workspaceState.manualToolTargets.length) {
+        wrapper.hidden = true;
+        return;
+    }
+    workspaceState.manualToolTargets.forEach((target) => {
+        const option = document.createElement("option");
+        option.value = manualToolTargetKey(target);
+        option.textContent = String(target?.label || `${target?.host_ip || ""}:${target?.port || ""}/${target?.protocol || "tcp"}`);
+        select.appendChild(option);
+    });
+    wrapper.hidden = false;
+    const selectedKey = preferredTargetKey && Array.from(select.options).some((option) => option.value === preferredTargetKey)
+        ? preferredTargetKey
+        : String(select.options[0]?.value || "");
+    if (selectedKey) {
+        select.value = selectedKey;
+    }
+    const selectedTarget = workspaceState.manualToolTargets.find((target) => manualToolTargetKey(target) === String(select.value || ""));
+    await applyManualToolTarget(selectedTarget, {preferredToolId});
+}
+
+async function openManualToolPicker({
+    contextLabel = "",
+    targets = null,
+    hostId = 0,
+    service = "",
+    preferredToolId = "",
+} = {}) {
+    closeRibbonMenus();
+    setManualScanModalOpen(true);
+    setText("workspace-tool-context", contextLabel || "");
+    try {
+        let resolvedTargets = Array.isArray(targets) ? targets : [];
+        if (!resolvedTargets.length && (Number(hostId) > 0 || String(service || "").trim())) {
+            resolvedTargets = await fetchWorkspaceToolTargets({
+                hostId: Number(hostId) || 0,
+                service: String(service || "").trim(),
+                limit: 2000,
+            });
+        }
+        if (resolvedTargets.length) {
+            await renderManualToolTargets(resolvedTargets, {preferredToolId});
+            return;
+        }
+    } catch (err) {
+        setWorkspaceStatus(`Load tool targets failed: ${err.message}`, true);
+    }
+    workspaceState.manualToolTargets = [];
+    const wrapper = document.getElementById("workspace-tool-target-wrapper");
+    const select = document.getElementById("workspace-tool-target-select");
+    if (wrapper) {
+        wrapper.hidden = true;
+    }
+    if (select) {
+        select.innerHTML = "";
+    }
+    prefillManualScanFromSelection();
+    populateManualToolSelect(workspaceState.tools, preferredToolId);
+}
+
+async function handleManualToolTargetChange() {
+    const select = document.getElementById("workspace-tool-target-select");
+    if (!select) {
+        return;
+    }
+    const selectedTarget = workspaceState.manualToolTargets.find((target) => {
+        return manualToolTargetKey(target) === String(select.value || "");
+    });
+    if (!selectedTarget) {
+        return;
+    }
+    await applyManualToolTarget(selectedTarget);
+}
+
 function openAddScanAction() {
     closeRibbonMenus();
     setNmapScanModalOpen(true);
@@ -2009,9 +2212,7 @@ function openAddScanAction() {
 }
 
 function openManualScanAction() {
-    closeRibbonMenus();
-    setManualScanModalOpen(true);
-    prefillManualScanFromSelection();
+    openManualToolPicker({});
 }
 
 function openHostSelectionAction() {
@@ -2768,6 +2969,7 @@ function closeProcessOutputModal(resetSelection = true) {
         processOutputState.text = "";
         setProcessOutputMeta("No process selected");
         setProcessOutputCommand("");
+        setProcessOutputProgress("");
         setProcessOutputText("");
     }
 }
@@ -2812,6 +3014,7 @@ async function openProcessOutputModal(processId) {
     setProcessOutputModalOpen(true);
     setProcessOutputMeta(`Process ${pid} | loading...`);
     setProcessOutputCommand("");
+    setProcessOutputProgress("");
     setProcessOutputText("");
     processOutputState.processId = pid;
     processOutputState.offset = 0;
@@ -2822,6 +3025,7 @@ async function openProcessOutputModal(processId) {
         await refreshProcessOutputAction(true, true);
     } catch (err) {
         setProcessOutputMeta(`Process ${pid} | load failed`);
+        setProcessOutputProgress("No structured progress reported");
         setProcessOutputText(`Failed to load process output: ${err.message || err}`);
     }
 }
@@ -3314,6 +3518,7 @@ async function loadProcessOutput(processId, reset = true) {
         processOutputState.complete = false;
         processOutputState.status = "";
         setProcessOutputText("");
+        setProcessOutputProgress("");
     }
 
     const query = new URLSearchParams({
@@ -3333,6 +3538,22 @@ async function loadProcessOutput(processId, reset = true) {
     processOutputState.offset = nextOffset;
     processOutputState.complete = Boolean(payload.completed);
     processOutputState.status = String(payload.status || "");
+    const progress = payload.progress || {};
+    const progressLines = [];
+    if (progress.summary) {
+        progressLines.push(progress.summary);
+    }
+    if (progress.source || progress.updated_at) {
+        const metaBits = [];
+        if (progress.source) {
+            metaBits.push(String(progress.source));
+        }
+        if (progress.updated_at) {
+            metaBits.push(`updated ${progress.updated_at}`);
+        }
+        progressLines.push(metaBits.join(" | "));
+    }
+    setProcessOutputProgress(progressLines.join("\n"));
     setProcessOutputMeta(
         `Process ${payload.id} | ${payload.status || ""} | bytes ${processOutputState.offset}/${payload.output_length || 0}`
     );
@@ -6564,7 +6785,23 @@ function graphRenderSelectionDetail() {
         badgesNode.appendChild(badge);
     }
 
-    const evidence = Array.isArray(entity.evidence_refs) ? entity.evidence_refs : [];
+    const evidence = [];
+    const seenEvidence = new Set();
+    const appendEvidence = (value) => {
+        const cleaned = String(value || "").trim();
+        if (!cleaned) {
+            return;
+        }
+        const key = cleaned.toLowerCase();
+        if (seenEvidence.has(key)) {
+            return;
+        }
+        seenEvidence.add(key);
+        evidence.push(cleaned);
+    };
+    appendEvidence(entity?.properties?.evidence || "");
+    (Array.isArray(entity?.evidence_refs) ? entity.evidence_refs : []).forEach(appendEvidence);
+    (Array.isArray(entity?.properties?.evidence_items) ? entity.properties.evidence_items : []).forEach(appendEvidence);
     if (!evidence.length) {
         const li = document.createElement("li");
         li.textContent = "No explicit evidence refs";
@@ -6611,6 +6848,14 @@ function graphRenderSelectionDetail() {
 
     if (kind === "node" && entityType === "host" && relatedHostId > 0) {
         hostActionsBlock.hidden = false;
+        const hostToolButton = buildLaunchToolButton("Run supported tool");
+        hostToolButton.addEventListener("click", async () => {
+            await openManualToolPicker({
+                hostId: Number(relatedHostId) || 0,
+                contextLabel: `Supported tools for ${String(entity.label || "host").trim()}`,
+            });
+        });
+        hostActionsNode.appendChild(hostToolButton);
         ["rescan", "refresh-screenshots", "dig-deeper", "remove"].forEach((action) => {
             const button = buildHostActionButton(action, relatedHostId);
             button.addEventListener("click", async () => {
@@ -8157,34 +8402,7 @@ async function loadWorkspaceTools({service = "", force = false} = {}) {
 
     workspaceState.toolsLoading = true;
     try {
-        const allTools = [];
-        let offset = 0;
-        let pageGuard = 0;
-        const pageLimit = 500;
-
-        while (pageGuard < 200) {
-            const params = new URLSearchParams();
-            params.set("limit", String(pageLimit));
-            params.set("offset", String(offset));
-            if (service) {
-                params.set("service", String(service));
-            }
-            const body = await fetchJson(`/api/workspace/tools?${params.toString()}`);
-            const tools = Array.isArray(body.tools) ? body.tools : [];
-            allTools.push(...tools);
-
-            if (!body.has_more) {
-                break;
-            }
-
-            const nextOffset = Number(body.next_offset);
-            if (!Number.isFinite(nextOffset) || nextOffset <= offset) {
-                break;
-            }
-            offset = nextOffset;
-            pageGuard += 1;
-        }
-
+        const allTools = await fetchWorkspaceToolsAll({service});
         workspaceState.toolsHydrated = true;
         renderTools(allTools);
     } finally {
@@ -8245,6 +8463,7 @@ async function runManualTool() {
         setWorkspaceStatus("host ip, port and tool are required", true);
         return;
     }
+    dismissManualScanModalAction();
     setWorkspaceStatus("Queueing tool run...");
     try {
         const body = await postJson("/api/workspace/tools/run", {
@@ -8261,6 +8480,9 @@ async function runManualTool() {
 }
 
 async function runSchedulerNow() {
+    if (uiModalState.manualScanOpen) {
+        dismissManualScanModalAction();
+    }
     setWorkspaceStatus("Queueing scheduler run...");
     try {
         const body = await postJson("/api/scheduler/run", {});
@@ -9394,6 +9616,13 @@ function bindActionButtons() {
     if (hostSelect) {
         hostSelect.addEventListener("change", async (event) => {
             await selectHost(event.target.value, {syncGraph: true, preserveGraphDetail: true});
+        });
+    }
+
+    const manualTargetSelect = document.getElementById("workspace-tool-target-select");
+    if (manualTargetSelect) {
+        manualTargetSelect.addEventListener("change", async () => {
+            await handleManualToolTargetChange();
         });
     }
 

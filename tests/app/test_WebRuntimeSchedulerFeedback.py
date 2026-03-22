@@ -123,6 +123,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 "reflection": {
                     "state": "stalled",
                     "priority_shift": "manual_validation",
+                    "trigger_reason": "repeated_failures",
                     "reason": "Coverage has stopped moving.",
                     "promote_tool_ids": ["whatweb"],
                     "suppress_tool_ids": ["nikto"],
@@ -137,6 +138,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertEqual("openai", loaded["provider"])
         self.assertEqual("stalled", loaded["reflection"]["state"])
         self.assertEqual("manual_validation", loaded["reflection"]["priority_shift"])
+        self.assertEqual("repeated_failures", loaded["reflection"]["trigger_reason"])
         self.assertEqual(["nikto"], loaded["reflection"]["suppress_tool_ids"])
 
     def test_build_scheduler_context_summary_prioritizes_focus_failures_and_reflection(self):
@@ -179,6 +181,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 "reflection": {
                     "state": "stalled",
                     "priority_shift": "manual_validation",
+                    "trigger_reason": "phase_transition",
                     "reason": "Coverage plateaued",
                     "suppress_tool_ids": ["nikto"],
                     "promote_tool_ids": ["whatweb"],
@@ -211,6 +214,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertIn("curl -k https://10.0.0.5/admin", summary["manual_tests"])
         self.assertEqual("stalled", summary["reflection_posture"]["state"])
         self.assertEqual("manual_validation", summary["reflection_posture"]["priority_shift"])
+        self.assertEqual("phase_transition", summary["reflection_posture"]["trigger_reason"])
 
     def test_tool_audit_availability_tracks_installed_and_missing_tools(self):
         from app.web.runtime import WebRuntime
@@ -366,6 +370,138 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertTrue(signals["smb_signing_disabled"])
         self.assertGreaterEqual(int(signals["vuln_hits"]), 2)
         self.assertIn("feroxbuster", signals["missing_tools"])
+
+    def test_extract_scheduler_signals_marks_missing_nse_scripts_unavailable(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        signals = runtime._extract_scheduler_signals(
+            service_name="http",
+            scripts=[],
+            recent_processes=[
+                {
+                    "tool_id": "http-wordpress-plugins.nse",
+                    "status": "Problem",
+                    "output_excerpt": (
+                        "NSE: failed to initialize the script engine:\n"
+                        "/usr/bin/../share/nmap/nse_main.lua:818: "
+                        "'http-wordpress-plugins.nse' did not match a category, filename, or directory"
+                    ),
+                }
+            ],
+        )
+
+        self.assertIn("http-wordpress-plugins.nse", signals["missing_tools"])
+
+    def test_extract_scheduler_signals_marks_tool_dependency_tracebacks_unavailable(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        signals = runtime._extract_scheduler_signals(
+            service_name="https",
+            scripts=[],
+            recent_processes=[
+                {
+                    "tool_id": "sslyze",
+                    "status": "Problem",
+                    "output_excerpt": (
+                        "Traceback (most recent call last):\n"
+                        "  File \"/usr/local/bin/sslyze\", line 3, in <module>\n"
+                        "    from sslyze.__main__ import main\n"
+                        "ModuleNotFoundError: No module named 'cryptography.hazmat.backends.openssl.ocsp'"
+                    ),
+                },
+                {
+                    "tool_id": "wafw00f",
+                    "status": "Problem",
+                    "output_excerpt": (
+                        "Traceback (most recent call last):\n"
+                        "  File \"/usr/bin/wafw00f\", line 4, in <module>\n"
+                        "    from wafw00f import main\n"
+                        "ImportError: cannot import name 'MutableMapping' from 'collections'"
+                    ),
+                },
+            ],
+        )
+
+        self.assertIn("sslyze", signals["missing_tools"])
+        self.assertIn("wafw00f", signals["missing_tools"])
+
+    def test_persist_scheduler_ai_analysis_keeps_target_state_scoped_to_current_payload(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        runtime.logic = SimpleNamespace(activeProject=SimpleNamespace(database=object()))
+        runtime._normalize_ai_technologies = lambda items: list(items or [])
+        runtime._normalize_ai_findings = lambda items: list(items or [])
+        runtime._normalize_ai_manual_tests = lambda items: list(items or [])
+        runtime._sanitize_ai_hostname = lambda value: str(value or "").strip()
+        runtime._ai_confidence_value = lambda value: float(value or 0.0)
+        runtime._load_cves_for_host = lambda project, host_id: []
+        runtime._infer_host_technologies = lambda project, host_id, host_ip: [
+            {"name": "OpenSSH", "version": "9.0", "cpe": "cpe:/a:openbsd:openssh:9.0", "evidence": "22/tcp"}
+        ]
+        runtime._merge_technologies = lambda existing, incoming, limit=220: list(incoming or []) + list(existing or [])
+        runtime._infer_host_findings = lambda project, host_id, host_ip, host_cves_raw: [
+            {"title": "Host wide stale finding", "severity": "medium", "cve": "", "evidence": "host scope"}
+        ]
+        runtime._merge_ai_items = lambda existing, incoming, key_fields=None, limit=0: list(incoming or []) + list(existing or [])
+        runtime._apply_ai_host_updates = lambda **kwargs: None
+
+        captured = {}
+        runtime._persist_shared_target_state = lambda **kwargs: captured.update(kwargs)
+
+        existing_state = {
+            "provider": "openai",
+            "goal_profile": "internal_asset_discovery",
+            "engagement_preset": "internal_recon",
+            "findings": [{"title": "Older host finding", "severity": "medium", "cve": "", "evidence": "older"}],
+            "technologies": [{"name": "OpenSSH", "version": "9.0", "cpe": "cpe:/a:openbsd:openssh:9.0", "evidence": "22/tcp"}],
+            "manual_tests": [{"why": "host check", "command": "echo host", "scope_note": ""}],
+            "raw": {},
+        }
+
+        with mock.patch("app.web.runtime.ensure_scheduler_ai_state_table"), \
+                mock.patch("app.web.runtime.get_host_ai_state", return_value=existing_state), \
+                mock.patch("app.web.runtime.upsert_host_ai_state") as upsert_host_state:
+            runtime._persist_scheduler_ai_analysis(
+                host_id=11,
+                host_ip="10.0.0.5",
+                port="443",
+                protocol="tcp",
+                service_name="https",
+                goal_profile="internal_asset_discovery",
+                provider_payload={
+                    "provider": "openai",
+                    "host_updates": {
+                        "hostname": "portal.local",
+                        "hostname_confidence": 90,
+                        "os": "Linux",
+                        "os_confidence": 75,
+                    },
+                    "technologies": [
+                        {"name": "nginx", "version": "1.25", "cpe": "cpe:/a:nginx:nginx:1.25", "evidence": "443/tcp"}
+                    ],
+                    "findings": [
+                        {"title": "Target-specific web finding", "severity": "medium", "cve": "", "evidence": "/admin"}
+                    ],
+                    "manual_tests": [
+                        {"why": "validate web", "command": "curl -k https://10.0.0.5/admin", "scope_note": "safe"}
+                    ],
+                    "next_phase": "targeted_checks",
+                },
+            )
+
+        persisted_titles = {str(item.get("title", "")).strip() for item in list(captured.get("findings", []) or [])}
+        persisted_technologies = {str(item.get("name", "")).strip() for item in list(captured.get("technologies", []) or [])}
+        persisted_commands = {str(item.get("command", "")).strip() for item in list(captured.get("manual_tests", []) or [])}
+        host_state_payload = dict(upsert_host_state.call_args.args[2] or {})
+
+        self.assertEqual({"Target-specific web finding"}, persisted_titles)
+        self.assertEqual({"nginx"}, persisted_technologies)
+        self.assertEqual({"curl -k https://10.0.0.5/admin"}, persisted_commands)
+        self.assertFalse(bool(host_state_payload.get("_sync_target_state", True)))
 
     def test_scheduler_prompt_excerpt_preserves_high_signal_lines(self):
         from app.web.runtime import WebRuntime
@@ -893,6 +1029,27 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertIn("Self-signed TLS certificate", finding_titles)
         self.assertNotIn("WRN", finding_titles)
         self.assertNotIn("0:00:05", finding_titles)
+
+    def test_infer_findings_filters_suppressed_nuclei_rate_limited_matches(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        findings = runtime._infer_findings_from_observations(
+            host_cves_raw=[],
+            script_records=[],
+            process_records=[
+                {
+                    "tool_id": "nuclei-cves",
+                    "output_excerpt": (
+                        "[CVE-2026-1111] [http] [critical] https://portal.example/admin "
+                        "429 Too Many Requests Retry-After: 120"
+                    ),
+                }
+            ],
+            limit=32,
+        )
+
+        self.assertEqual([], findings)
 
     def test_infer_findings_uses_line_level_cve_evidence_for_nmap_output(self):
         from app.web.runtime import WebRuntime

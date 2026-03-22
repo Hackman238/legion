@@ -830,6 +830,26 @@ def workspace_tools():
         return _json_error(str(exc), 500)
 
 
+@web_bp.get("/api/workspace/tool-targets")
+def workspace_tool_targets():
+    runtime = current_app.extensions["legion_runtime"]
+    service = str(request.args.get("service", "")).strip()
+    try:
+        host_id = int(request.args.get("host_id", 0))
+    except (TypeError, ValueError):
+        host_id = 0
+    try:
+        limit = int(request.args.get("limit", 300))
+    except (TypeError, ValueError):
+        limit = 300
+    limit = max(1, min(limit, 5000))
+    try:
+        targets = runtime.get_workspace_tool_targets(host_id=host_id, service=service, limit=limit)
+        return jsonify({"targets": targets, "host_id": host_id, "service": service})
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
 @web_bp.get("/api/workspace/hosts/<int:host_id>")
 def workspace_host_detail(host_id):
     runtime = current_app.extensions["legion_runtime"]

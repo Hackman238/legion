@@ -98,6 +98,35 @@ class ToolingEnvTest(unittest.TestCase):
         self.assertEqual("custom", by_key["customscan"].category)
         self.assertEqual("missing", by_key["customscan"].status)
 
+    def test_audit_legion_tools_discovers_direct_command_tools_without_command_v(self):
+        from app.tooling import audit_legion_tools
+
+        class StubSettings:
+            tools_path_nmap = ""
+            tools_path_hydra = ""
+            tools_path_texteditor = ""
+            tools_path_responder = ""
+            tools_path_ntlmrelay = ""
+            hostActions = []
+            portTerminalActions = []
+            portActions = [
+                ["Ping timestamp", "hping3-check", "hping3 -V -C 13 -c 1 [IP]", ""],
+                ["SMTP enum", "smtp-enum", "smtp-user-enum -M VRFY -t [IP] -p [PORT]", "smtp"],
+            ]
+
+        rows = audit_legion_tools(StubSettings(), base_env={
+            "HOME": "/tmp/legion-home",
+            "PATH": "/usr/bin",
+            "GOBIN": "",
+            "GOPATH": "",
+        })
+        by_key = {row.key: row for row in rows}
+        self.assertIn("hping3", by_key)
+        self.assertEqual("legacy", by_key["hping3"].category)
+        self.assertEqual("missing", by_key["hping3"].status)
+        self.assertIn("smtp-user-enum", by_key)
+        self.assertIn("pipx install --force smtp-user-enum", by_key["smtp-user-enum"].ubuntu_install)
+
     def test_audit_legion_tools_detects_user_local_impacket_entry_points(self):
         from app.tooling import audit_legion_tools
 
@@ -157,6 +186,10 @@ class ToolingEnvTest(unittest.TestCase):
         self.assertIn("github.com/CiscoCXSecurity/enum4linux.git", by_key["enum4linux"].ubuntu_install)
         self.assertIn("pipx install --force", by_key["theHarvester"].ubuntu_install)
         self.assertIn("does not mix Kali repositories into Ubuntu", by_key["snmpcheck"].ubuntu_install)
+        self.assertEqual("sudo apt install testssl.sh", by_key["testssl.sh"].ubuntu_install)
+        self.assertIn("github.com/Pennyw0rth/NetExec.git", by_key["netexec"].ubuntu_install)
+        self.assertEqual("python3 -m pipx install --force sslyze", by_key["sslyze"].ubuntu_install)
+        self.assertEqual("python3 -m pipx install --force wafw00f", by_key["wafw00f"].ubuntu_install)
 
     def test_build_tool_install_plan_rewrites_kali_apt_commands(self):
         from app.tooling import ToolAuditEntry, build_tool_install_plan

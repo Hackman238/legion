@@ -338,12 +338,165 @@ class SchedulerOrchestratorTest(unittest.TestCase):
         self.assertEqual(2, len(reflections[0]["recent_rounds"]))
         self.assertEqual(["tool-a"], reflections[0]["recent_rounds"][0]["decision_tool_ids"])
         self.assertEqual(["tool-b"], reflections[0]["recent_rounds"][1]["decision_tool_ids"])
+        self.assertEqual("stalled_window", reflections[0]["trigger"]["reason"])
         self.assertEqual(1, len(persisted_reflections))
         self.assertEqual(["tool-c"], persisted_reflections[0]["suppress_tool_ids"])
         self.assertEqual(["tool-d"], persisted_reflections[0]["promote_tool_ids"])
+        self.assertEqual("stalled_window", persisted_reflections[0]["trigger_reason"])
         self.assertEqual(3, summary["executed"])
         self.assertEqual(1, summary["reflections"])
         self.assertEqual(0, summary["reflection_stops"])
+
+    def test_reflection_trigger_detects_first_round_for_dig_deeper(self):
+        from app.scheduler.orchestrator import SchedulerOrchestrator, SchedulerRunOptions
+
+        trigger = SchedulerOrchestrator._reflection_trigger(
+            recent_rounds=[],
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                ai_feedback_enabled=True,
+                reflection_enabled=True,
+                dig_deeper=True,
+                max_reflections_per_target=2,
+            ),
+            reflections_used=0,
+            context={
+                "analysis_mode": "dig_deeper",
+                "context_summary": {
+                    "focus": {
+                        "current_phase": "service_fingerprint",
+                    }
+                },
+            },
+        )
+
+        self.assertIsNotNone(trigger)
+        self.assertEqual("first_round", trigger["reason"])
+        self.assertEqual("service_fingerprint", trigger["current_phase"])
+
+    def test_reflection_trigger_detects_phase_transition(self):
+        from app.scheduler.orchestrator import SchedulerOrchestrator, SchedulerRunOptions
+
+        trigger = SchedulerOrchestrator._reflection_trigger(
+            recent_rounds=[
+                {
+                    "round": 1,
+                    "observed_phase": "service_fingerprint",
+                    "coverage_missing": ["missing_nmap_vuln"],
+                    "signal_key": "stage:baseline|web_service",
+                    "progress_score": 1,
+                }
+            ],
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                ai_feedback_enabled=True,
+                reflection_enabled=True,
+                stall_rounds_without_progress=2,
+                stall_repeat_selection_threshold=2,
+                max_reflections_per_target=2,
+            ),
+            reflections_used=0,
+            context={
+                "context_summary": {
+                    "focus": {
+                        "current_phase": "broad_vuln",
+                    }
+                }
+            },
+        )
+
+        self.assertIsNotNone(trigger)
+        self.assertEqual("phase_transition", trigger["reason"])
+        self.assertEqual("service_fingerprint", trigger["previous_phase"])
+        self.assertEqual("broad_vuln", trigger["current_phase"])
+
+    def test_reflection_trigger_detects_repeated_failures(self):
+        from app.scheduler.orchestrator import SchedulerOrchestrator, SchedulerRunOptions
+
+        trigger = SchedulerOrchestrator._reflection_trigger(
+            recent_rounds=[
+                {
+                    "round": 1,
+                    "observed_phase": "service_fingerprint",
+                    "coverage_missing": ["missing_internal_safe_enum"],
+                    "signal_key": "stage:post_baseline|shodan_enabled|tech:microsoft-ds",
+                    "recent_failures": ["samrdump: missing file", "smbenum: missing file"],
+                    "progress_score": 0,
+                },
+                {
+                    "round": 2,
+                    "observed_phase": "service_fingerprint",
+                    "coverage_missing": ["missing_internal_safe_enum"],
+                    "signal_key": "stage:post_baseline|shodan_enabled|tech:microsoft-ds",
+                    "recent_failures": ["samrdump: missing file", "smbenum: missing file"],
+                    "progress_score": 0,
+                },
+            ],
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                ai_feedback_enabled=True,
+                reflection_enabled=True,
+                stall_rounds_without_progress=2,
+                stall_repeat_selection_threshold=2,
+                max_reflections_per_target=2,
+            ),
+            reflections_used=0,
+            context={
+                "context_summary": {
+                    "focus": {
+                        "current_phase": "service_fingerprint",
+                    }
+                }
+            },
+        )
+
+        self.assertIsNotNone(trigger)
+        self.assertEqual("repeated_failures", trigger["reason"])
+        self.assertIn("samrdump: missing file", trigger["recent_failures"])
+
+    def test_reflection_trigger_detects_repeated_selection_stagnation(self):
+        from app.scheduler.orchestrator import SchedulerOrchestrator, SchedulerRunOptions
+
+        trigger = SchedulerOrchestrator._reflection_trigger(
+            recent_rounds=[
+                {
+                    "round": 1,
+                    "observed_phase": "service_fingerprint",
+                    "coverage_missing": ["missing_internal_safe_enum"],
+                    "signal_key": "stage:post_baseline|shodan_enabled|tech:microsoft-ds",
+                    "repeated_selection_count": 2,
+                    "progress_score": 0,
+                },
+                {
+                    "round": 2,
+                    "observed_phase": "service_fingerprint",
+                    "coverage_missing": ["missing_internal_safe_enum"],
+                    "signal_key": "stage:post_baseline|shodan_enabled|tech:microsoft-ds",
+                    "repeated_selection_count": 3,
+                    "progress_score": 0,
+                },
+            ],
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                ai_feedback_enabled=True,
+                reflection_enabled=True,
+                stall_rounds_without_progress=2,
+                stall_repeat_selection_threshold=2,
+                max_reflections_per_target=2,
+            ),
+            reflections_used=0,
+            context={
+                "context_summary": {
+                    "focus": {
+                        "current_phase": "service_fingerprint",
+                    }
+                }
+            },
+        )
+
+        self.assertIsNotNone(trigger)
+        self.assertEqual("repeated_selection_stagnation", trigger["reason"])
+        self.assertEqual(3, trigger["repeated_selection_count"])
 
     def test_run_targets_expands_whatweb_reflection_suppression_only_after_real_attempt(self):
         from app.scheduler.models import PlanStep
@@ -475,6 +628,320 @@ class SchedulerOrchestratorTest(unittest.TestCase):
 
         self.assertEqual([["whatweb-http"], ["tool-b"], ["tool-d"]], executed_batches)
         self.assertEqual(3, summary["executed"])
+
+    def test_run_targets_executes_only_safe_web_followup_wave_tools(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerExecutionTask, SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        curl_headers = PlanStep.from_legacy_fields(
+            tool_id="curl-headers",
+            label="HTTP Headers",
+            command_template="curl -k -I https://[IP]:[PORT]",
+            protocol="tcp",
+            score=90,
+            rationale="safe headers follow-up",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-headers",
+        )
+        curl_options = PlanStep.from_legacy_fields(
+            tool_id="curl-options",
+            label="HTTP OPTIONS",
+            command_template="curl -k -X OPTIONS -i https://[IP]:[PORT]",
+            protocol="tcp",
+            score=88,
+            rationale="safe options follow-up",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-options",
+        )
+        dirsearch = PlanStep.from_legacy_fields(
+            tool_id="dirsearch",
+            label="Dirsearch",
+            command_template="dirsearch -u https://[IP]:[PORT]",
+            protocol="tcp",
+            score=86,
+            rationale="content discovery follow-up",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-dirsearch",
+        )
+
+        planner = _PlannerStub(
+            [[curl_headers, curl_options, dirsearch]],
+            provider_payloads=[
+                {
+                    "provider": "openai",
+                    "specialist_sidecars": [
+                        {
+                            "focus": "coverage_gap",
+                            "selected_tool_ids": ["curl-headers", "curl-options", "dirsearch"],
+                            "reason": "Bounded passive validation should run first.",
+                            "manual_tests": [],
+                        }
+                    ],
+                    "findings": [],
+                    "manual_tests": [],
+                    "technologies": [],
+                    "next_phase": "protocol_checks",
+                }
+            ],
+        )
+        orchestrator = SchedulerOrchestrator(_ConfigStub(), planner=planner)
+        target = SchedulerTarget(host_id=70, host_ip="10.0.0.30", hostname="web", port="5357", protocol="tcp", service_name="http")
+
+        executed_batches = []
+
+        def execute_batch(tasks, max_concurrency):
+            self.assertEqual(4, max_concurrency)
+            executed_batches.append([task.tool_id for task in tasks])
+            for item in tasks:
+                self.assertIsInstance(item, SchedulerExecutionTask)
+            return [
+                {
+                    "decision": task.decision,
+                    "tool_id": task.tool_id,
+                    "executed": True,
+                    "reason": "queued",
+                    "process_id": 0,
+                    "execution_record": None,
+                    "approval_id": int(task.approval_id or 0),
+                }
+                for task in tasks
+            ]
+
+        summary = orchestrator.run_targets(
+            settings=SimpleNamespace(portActions=[]),
+            targets=[target],
+            engagement_policy={"preset": "external_pentest"},
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                scheduler_concurrency=4,
+                ai_feedback_enabled=True,
+                max_rounds=1,
+                max_actions_per_round=3,
+                recent_output_chars=900,
+                reflection_enabled=False,
+            ),
+            execute_batch=execute_batch,
+        )
+
+        self.assertEqual([["curl-headers", "curl-options"]], executed_batches)
+        self.assertEqual(2, summary["executed"])
+        self.assertEqual(0, summary["reflections"])
+
+    def test_run_targets_caps_safe_web_followup_wave_at_three_tools_and_sidecar_order(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerExecutionTask, SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        whatweb_http = PlanStep.from_legacy_fields(
+            tool_id="whatweb-http",
+            label="WhatWeb HTTP",
+            command_template="whatweb http://[IP]:[PORT]",
+            protocol="tcp",
+            score=91,
+            rationale="stack fingerprinting",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-whatweb-http",
+        )
+        curl_headers = PlanStep.from_legacy_fields(
+            tool_id="curl-headers",
+            label="HTTP Headers",
+            command_template="curl -k -I https://[IP]:[PORT]",
+            protocol="tcp",
+            score=90,
+            rationale="header capture",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-headers",
+        )
+        curl_options = PlanStep.from_legacy_fields(
+            tool_id="curl-options",
+            label="HTTP OPTIONS",
+            command_template="curl -k -X OPTIONS -i https://[IP]:[PORT]",
+            protocol="tcp",
+            score=89,
+            rationale="options capture",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-options",
+        )
+        curl_robots = PlanStep.from_legacy_fields(
+            tool_id="curl-robots",
+            label="Robots",
+            command_template="curl -k https://[IP]:[PORT]/robots.txt",
+            protocol="tcp",
+            score=87,
+            rationale="robots capture",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-robots",
+        )
+
+        planner = _PlannerStub(
+            [[curl_robots, curl_options, whatweb_http, curl_headers]],
+            provider_payloads=[
+                {
+                    "provider": "openai",
+                    "specialist_sidecars": [
+                        {
+                            "focus": "coverage_gap",
+                            "selected_tool_ids": ["whatweb-http", "curl-headers", "curl-options", "curl-robots"],
+                            "reason": "Run the passive follow-up set together before broader scans.",
+                            "manual_tests": [],
+                        }
+                    ],
+                    "findings": [],
+                    "manual_tests": [],
+                    "technologies": [],
+                    "next_phase": "protocol_checks",
+                }
+            ],
+        )
+        orchestrator = SchedulerOrchestrator(_ConfigStub(), planner=planner)
+        target = SchedulerTarget(host_id=71, host_ip="10.0.0.31", hostname="web", port="443", protocol="tcp", service_name="https")
+
+        executed_batches = []
+
+        def execute_batch(tasks, max_concurrency):
+            self.assertEqual(6, max_concurrency)
+            executed_batches.append([task.tool_id for task in tasks])
+            for item in tasks:
+                self.assertIsInstance(item, SchedulerExecutionTask)
+            return [
+                {
+                    "decision": task.decision,
+                    "tool_id": task.tool_id,
+                    "executed": True,
+                    "reason": "queued",
+                    "process_id": 0,
+                    "execution_record": None,
+                    "approval_id": int(task.approval_id or 0),
+                }
+                for task in tasks
+            ]
+
+        summary = orchestrator.run_targets(
+            settings=SimpleNamespace(portActions=[]),
+            targets=[target],
+            engagement_policy={"preset": "external_pentest"},
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                scheduler_concurrency=6,
+                ai_feedback_enabled=True,
+                max_rounds=1,
+                max_actions_per_round=5,
+                recent_output_chars=900,
+                reflection_enabled=False,
+            ),
+            execute_batch=execute_batch,
+        )
+
+        self.assertEqual([["whatweb-http", "curl-headers", "curl-options"]], executed_batches)
+        self.assertEqual(3, summary["executed"])
+        self.assertEqual(0, summary["reflections"])
+
+    def test_run_targets_ignores_nonvisible_sidecar_drift_for_web_followup_wave(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerExecutionTask, SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        whatweb_http = PlanStep.from_legacy_fields(
+            tool_id="whatweb-http",
+            label="WhatWeb HTTP",
+            command_template="whatweb http://[IP]:[PORT]",
+            protocol="tcp",
+            score=91,
+            rationale="stack fingerprinting",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-whatweb-http",
+        )
+        curl_headers = PlanStep.from_legacy_fields(
+            tool_id="curl-headers",
+            label="HTTP Headers",
+            command_template="curl -k -I https://[IP]:[PORT]",
+            protocol="tcp",
+            score=90,
+            rationale="header capture",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-headers",
+        )
+        curl_options = PlanStep.from_legacy_fields(
+            tool_id="curl-options",
+            label="HTTP OPTIONS",
+            command_template="curl -k -X OPTIONS -i https://[IP]:[PORT]",
+            protocol="tcp",
+            score=89,
+            rationale="options capture",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-options",
+        )
+
+        planner = _PlannerStub(
+            [[whatweb_http, curl_headers, curl_options]],
+            provider_payloads=[
+                {
+                    "provider": "openai",
+                    "specialist_sidecars": [
+                        {
+                            "focus": "coverage_gap",
+                            "selected_tool_ids": ["nmap-vuln.nse", "curl-options", "nikto"],
+                            "reason": "Raw response drifted outside the visible candidate set.",
+                            "manual_tests": [],
+                        }
+                    ],
+                    "findings": [],
+                    "manual_tests": [],
+                    "technologies": [],
+                    "next_phase": "protocol_checks",
+                }
+            ],
+        )
+        orchestrator = SchedulerOrchestrator(_ConfigStub(), planner=planner)
+        target = SchedulerTarget(host_id=72, host_ip="10.0.0.32", hostname="web", port="5357", protocol="tcp", service_name="http")
+
+        executed_batches = []
+
+        def execute_batch(tasks, max_concurrency):
+            self.assertEqual(4, max_concurrency)
+            executed_batches.append([task.tool_id for task in tasks])
+            for item in tasks:
+                self.assertIsInstance(item, SchedulerExecutionTask)
+            return [
+                {
+                    "decision": task.decision,
+                    "tool_id": task.tool_id,
+                    "executed": True,
+                    "reason": "queued",
+                    "process_id": 0,
+                    "execution_record": None,
+                    "approval_id": int(task.approval_id or 0),
+                }
+                for task in tasks
+            ]
+
+        summary = orchestrator.run_targets(
+            settings=SimpleNamespace(portActions=[]),
+            targets=[target],
+            engagement_policy={"preset": "external_pentest"},
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                scheduler_concurrency=4,
+                ai_feedback_enabled=True,
+                max_rounds=1,
+                max_actions_per_round=3,
+                recent_output_chars=900,
+                reflection_enabled=False,
+            ),
+            execute_batch=execute_batch,
+        )
+
+        self.assertEqual([["whatweb-http", "curl-headers", "curl-options"]], executed_batches)
+        self.assertEqual(3, summary["executed"])
+        self.assertEqual(0, summary["reflections"])
 
 
 if __name__ == "__main__":

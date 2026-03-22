@@ -79,7 +79,14 @@ class SchedulerEvidenceGraphTest(unittest.TestCase):
                 "os_match": "Linux",
                 "os_confidence": 82,
                 "technologies": [{"name": "nginx", "version": "1.25", "cpe": "cpe:/a:nginx:nginx:1.25", "evidence": "server header"}],
-                "findings": [{"title": "Admin panel exposed", "severity": "medium", "cvss": 5.0, "cve": "", "evidence": "/admin"}],
+                "findings": [{
+                    "title": "Admin panel exposed",
+                    "severity": "medium",
+                    "cvss": 5.0,
+                    "cve": "",
+                    "evidence": "/admin",
+                    "evidence_items": ["/admin", "/admin/login"],
+                }],
                 "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https", "service_product": "nginx", "service_version": "1.25"}],
                 "urls": [{"url": "https://portal.local", "port": "443", "protocol": "tcp", "service": "https"}],
                 "attempted_actions": [{
@@ -115,6 +122,16 @@ class SchedulerEvidenceGraphTest(unittest.TestCase):
             self.assertTrue(any(item["type"] == "technology" and item["source_kind"] == "observed" for item in snapshot["nodes"]))
             self.assertTrue(any(item["type"] == "finding" and item["evidence_refs"] for item in snapshot["nodes"]))
             self.assertTrue(any(str(item["source_ref"]).startswith("note:") for item in snapshot["annotations"]))
+            finding_node = next(
+                item for item in snapshot["nodes"]
+                if item["type"] == "finding" and item["label"] == "Admin panel exposed"
+            )
+            self.assertIn("/admin/login", list(finding_node.get("evidence_refs", []) or []))
+            evidence_node = next(
+                item for item in snapshot["nodes"]
+                if item["type"] == "evidence_record" and item.get("properties", {}).get("evidence") == "/admin"
+            )
+            self.assertIn("/admin/login", list(evidence_node.get("evidence_refs", []) or []))
 
             exported_json = export_evidence_graph_json(project.database)
             exported_graphml = export_evidence_graph_graphml(project.database)

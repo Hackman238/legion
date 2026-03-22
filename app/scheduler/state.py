@@ -1,5 +1,6 @@
 import datetime
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -10,6 +11,15 @@ from app.url_normalization import normalize_discovered_url
 
 WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
 TARGET_SOURCE_KINDS = {"observed", "inferred", "ai_suggested", "user_entered"}
+_REFERENCE_ONLY_FINDING_RE = re.compile(
+    r"^(?:https?://|//|bid:\d+\s+cve:cve-\d{4}-\d+|cve:cve-\d{4}-\d+)",
+    flags=re.IGNORECASE,
+)
+_LOW_SIGNAL_FINDING_EVIDENCE = {
+    "previous scan result",
+    "previous tls scan result",
+}
+_FINDING_QUALITY_ACTIONS = {"suppressed", "downgraded"}
 
 
 def _utc_now() -> str:
@@ -181,11 +191,18 @@ def _normalize_findings(items: Any, default_source: str = "observed") -> List[Di
         evidence = str(item.get("evidence", "") or "").strip()[:320]
         if not title and not cve:
             continue
+        if _REFERENCE_ONLY_FINDING_RE.match(title) or str(evidence or "").strip().lower() in _LOW_SIGNAL_FINDING_EVIDENCE:
+            continue
         try:
             cvss_value = float(item.get("cvss", 0.0) or 0.0)
         except (TypeError, ValueError):
             cvss_value = 0.0
-        rows.append({
+        evidence_items = [
+            str(token or "").strip()[:160]
+            for token in list(item.get("evidence_items", []) or [])
+            if str(token or "").strip()
+        ][:16]
+        row = {
             "title": title,
             "severity": severity,
             "cvss": cvss_value,
@@ -194,8 +211,53 @@ def _normalize_findings(items: Any, default_source: str = "observed") -> List[Di
             "confidence": _safe_float(item.get("confidence", 88.0 if cve else 72.0)),
             "source_kind": _normalize_source_kind(item.get("source_kind", default_source), default_source),
             "observed": bool(item.get("observed", _normalize_source_kind(item.get("source_kind", default_source), default_source) == "observed")),
-        })
+        }
+        if evidence_items:
+            row["evidence_items"] = evidence_items
+        quality_action = str(item.get("quality_action", "") or "").strip().lower()[:16]
+        quality_reason = str(item.get("quality_reason", "") or "").strip().lower()[:96]
+        if quality_action in _FINDING_QUALITY_ACTIONS and quality_reason:
+            row["quality_action"] = quality_action
+            row["quality_reason"] = quality_reason
+            severity_before = str(item.get("severity_before", "") or "").strip().lower()[:16]
+            if quality_action == "downgraded" and severity_before:
+                row["severity_before"] = severity_before
+        rows.append(row)
     return _merge_rows([], rows, key_fields=["title", "cve", "severity"], limit=260)
+
+
+def _normalize_finding_quality_events(items: Any, default_source: str = "observed") -> List[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    rows = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action", item.get("quality_action", "")) or "").strip().lower()[:16]
+        reason = str(item.get("reason", item.get("quality_reason", "")) or "").strip().lower()[:96]
+        title = str(item.get("title", "") or "").strip()[:220]
+        cve = str(item.get("cve", "") or "").strip()[:64]
+        evidence = str(item.get("evidence", "") or "").strip()[:320]
+        matched_url = normalize_discovered_url(item.get("matched_url", ""))[:320]
+        if action not in _FINDING_QUALITY_ACTIONS or not reason:
+            continue
+        if not any([title, cve, evidence, matched_url]):
+            continue
+        row = {
+            "title": title,
+            "cve": cve,
+            "action": action,
+            "reason": reason,
+            "severity_before": str(item.get("severity_before", "") or "").strip().lower()[:16],
+            "severity_after": str(item.get("severity_after", "") or "").strip().lower()[:16],
+            "evidence": evidence,
+            "matched_url": matched_url,
+            "confidence": _safe_float(item.get("confidence", 82.0)),
+            "source_kind": _normalize_source_kind(item.get("source_kind", default_source), default_source),
+            "observed": bool(item.get("observed", _normalize_source_kind(item.get("source_kind", default_source), default_source) == "observed")),
+        }
+        rows.append(row)
+    return _merge_rows([], rows, key_fields=["title", "cve", "action", "reason", "evidence", "matched_url"], limit=260)
 
 
 def _normalize_manual_tests(items: Any, default_source: str = "ai_suggested") -> List[Dict[str, Any]]:
@@ -616,6 +678,8 @@ def _fetch_target_state_row(database, host_id: int) -> Optional[Dict[str, Any]]:
         payload["screenshots"] = _from_json(payload.get("screenshots_json"), [])
         payload["artifacts"] = _from_json(payload.get("artifacts_json"), [])
         payload["raw"] = _from_json(payload.get("raw_json"), {})
+        raw_quality_events = payload["raw"].get("finding_quality_events", []) if isinstance(payload.get("raw", {}), dict) else []
+        payload["finding_quality_events"] = _normalize_finding_quality_events(raw_quality_events, default_source="observed")
         return payload
     finally:
         session.close()
@@ -640,6 +704,7 @@ def target_state_to_legacy_ai_state(target_state: Optional[Dict[str, Any]]) -> O
         "next_phase": str(target_state.get("next_phase", "") or ""),
         "technologies": _normalize_technologies(target_state.get("technologies", []), default_source="observed"),
         "findings": _normalize_findings(target_state.get("findings", []), default_source="observed"),
+        "finding_quality_events": _normalize_finding_quality_events(target_state.get("finding_quality_events", []), default_source="observed"),
         "manual_tests": _normalize_manual_tests(target_state.get("manual_tests", []), default_source="ai_suggested"),
         "raw": target_state.get("raw", {}) if isinstance(target_state.get("raw", {}), dict) else {},
     }
@@ -657,6 +722,14 @@ def legacy_ai_payload_to_target_state(host_id: int, payload: Dict[str, Any]) -> 
             engagement_preset = preset_from_legacy_goal_profile(goal_profile)
         except Exception:
             engagement_preset = ""
+    raw_payload = payload.get("raw", {}) if isinstance(payload.get("raw", {}), dict) else {}
+    finding_quality_events = _normalize_finding_quality_events(
+        payload.get("finding_quality_events", raw_payload.get("finding_quality_events", [])),
+        default_source=default_source,
+    )
+    if finding_quality_events:
+        raw_payload = dict(raw_payload)
+        raw_payload["finding_quality_events"] = finding_quality_events
     return {
         "host_id": int(host_id or 0),
         "host_ip": str(payload.get("host_ip", "") or ""),
@@ -693,7 +766,7 @@ def legacy_ai_payload_to_target_state(host_id: int, payload: Dict[str, Any]) -> 
         "sessions": _normalize_sessions(payload.get("sessions", [])),
         "screenshots": _normalize_screenshots(payload.get("screenshots", [])),
         "artifacts": _normalize_artifacts(payload.get("artifacts", [])),
-        "raw": payload.get("raw", {}) if isinstance(payload.get("raw", {}), dict) else {},
+        "raw": raw_payload,
     }
 
 
@@ -928,9 +1001,25 @@ def upsert_target_state(database, host_id: int, payload: Dict[str, Any], *, merg
     merged["urls"] = incoming_urls or _normalize_urls(merged.get("urls", []))
     incoming_gaps = _normalize_coverage_gaps(normalized.get("coverage_gaps", []))
     merged["coverage_gaps"] = incoming_gaps or _normalize_coverage_gaps(merged.get("coverage_gaps", []))
-    merged["raw"] = normalized.get("raw", {}) if isinstance(normalized.get("raw", {}), dict) and normalized.get("raw") else (
-        merged.get("raw", {}) if isinstance(merged.get("raw", {}), dict) else {}
+    existing_raw = merged.get("raw", {}) if isinstance(merged.get("raw", {}), dict) else {}
+    incoming_raw = normalized.get("raw", {}) if isinstance(normalized.get("raw", {}), dict) else {}
+    merged_raw = dict(existing_raw)
+    for key, value in incoming_raw.items():
+        if str(key or "") == "finding_quality_events":
+            continue
+        merged_raw[str(key)] = value
+    merged_quality_events = _merge_rows(
+        _normalize_finding_quality_events(existing_raw.get("finding_quality_events", []), default_source="observed"),
+        _normalize_finding_quality_events(incoming_raw.get("finding_quality_events", []), default_source="observed"),
+        key_fields=["title", "cve", "action", "reason", "evidence", "matched_url"],
+        limit=260,
     )
+    if merged_quality_events:
+        merged_raw["finding_quality_events"] = merged_quality_events
+    elif "finding_quality_events" in merged_raw:
+        merged_raw.pop("finding_quality_events", None)
+    merged["raw"] = merged_raw
+    merged["finding_quality_events"] = merged_quality_events
 
     session = database.session()
     try:

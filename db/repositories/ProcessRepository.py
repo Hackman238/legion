@@ -99,6 +99,9 @@ class ProcessRepository:
                     'COALESCE(process.elapsed, 0) AS elapsed, '
                     'process.estimatedRemaining AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
+                    'COALESCE(process.progressMessage, "") AS progressMessage, '
+                    'COALESCE(process.progressSource, "") AS progressSource, '
+                    'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
                     'COALESCE(process.tabTitle, "") AS tabTitle, '
@@ -126,6 +129,9 @@ class ProcessRepository:
                     'COALESCE(process.elapsed, 0) AS elapsed, '
                     'process.estimatedRemaining AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
+                    'COALESCE(process.progressMessage, "") AS progressMessage, '
+                    'COALESCE(process.progressSource, "") AS progressSource, '
+                    'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
                     'COALESCE(process.tabTitle, "") AS tabTitle, '
@@ -155,6 +161,9 @@ class ProcessRepository:
                     'COALESCE(process.elapsed, 0) AS elapsed, '
                     'process.estimatedRemaining AS estimatedRemaining, '
                     'COALESCE(process.percent, "") AS percent, '
+                    'COALESCE(process.progressMessage, "") AS progressMessage, '
+                    'COALESCE(process.progressSource, "") AS progressSource, '
+                    'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
                     'COALESCE(process.pid, "") AS pid, '
                     'COALESCE(process.name, "") AS name, '
                     'COALESCE(process.tabTitle, "") AS tabTitle, '
@@ -293,6 +302,9 @@ class ProcessRepository:
                 'COALESCE(process.elapsed, 0) AS elapsed, '
                 'process.estimatedRemaining AS estimatedRemaining, '
                 'COALESCE(process.percent, "") AS percent, '
+                'COALESCE(process.progressMessage, "") AS progressMessage, '
+                'COALESCE(process.progressSource, "") AS progressSource, '
+                'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
                 'COALESCE(process.pid, "") AS pid, '
                 'COALESCE(process.name, "") AS name, '
                 'COALESCE(process.tabTitle, "") AS tabTitle, '
@@ -320,6 +332,9 @@ class ProcessRepository:
                 'COALESCE(process.elapsed, 0) AS elapsed, '
                 'process.estimatedRemaining AS estimatedRemaining, '
                 'COALESCE(process.percent, "") AS percent, '
+                'COALESCE(process.progressMessage, "") AS progressMessage, '
+                'COALESCE(process.progressSource, "") AS progressSource, '
+                'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
                 'COALESCE(process.pid, "") AS pid, '
                 'COALESCE(process.name, "") AS name, '
                 'COALESCE(process.tabTitle, "") AS tabTitle, '
@@ -458,7 +473,15 @@ class ProcessRepository:
     def storeProcessEstimatedRemaining(self, processId: str, estimated_remaining):
         self.storeProcessProgress(processId, estimated_remaining=estimated_remaining)
 
-    def storeProcessProgress(self, processId: str, percent=Ellipsis, estimated_remaining=Ellipsis):
+    def storeProcessProgress(
+            self,
+            processId: str,
+            percent=Ellipsis,
+            estimated_remaining=Ellipsis,
+            progress_message=Ellipsis,
+            progress_source=Ellipsis,
+            progress_updated_at=Ellipsis,
+    ):
         session = self.dbAdapter.session()
         try:
             proc = session.query(process).filter_by(id=processId).first()
@@ -476,6 +499,15 @@ class ProcessRepository:
                         proc.estimatedRemaining = max(0, int(float(estimated_remaining)))
                     except Exception:
                         proc.estimatedRemaining = None
+
+            if progress_message is not Ellipsis:
+                proc.progressMessage = '' if progress_message in (None, '') else str(progress_message)
+
+            if progress_source is not Ellipsis:
+                proc.progressSource = '' if progress_source in (None, '') else str(progress_source)
+
+            if progress_updated_at is not Ellipsis:
+                proc.progressUpdatedAt = '' if progress_updated_at in (None, '') else str(progress_updated_at)
 
             session.add(proc)
             session.commit()

@@ -17,6 +17,56 @@ _SEVERITY_LEVELS = {"critical", "high", "medium", "low", "info", "informational"
 _NUCLEI_PROTOCOL_TOKENS = {"http", "https", "dns", "tcp", "ssl", "tls", "network", "headless", "file"}
 _NUCLEI_STATS_RE = re.compile(r"^\[[0-9:]+\]\s*\|\s*templates:\s*\d+\s*\|\s*hosts:\s*\d+\s*\|", flags=re.IGNORECASE)
 _NUCLEI_LOG_LEVELS = {"wrn", "inf", "err", "dbg", "ftl"}
+_NUCLEI_QUALITY_ACTIONS = {"suppressed", "downgraded"}
+_NUCLEI_RATE_LIMIT_STATUS_MARKERS = (
+    "[429]",
+    "status: 429",
+    "status code 429",
+    "http 429",
+    "http/1.1 429",
+    "http/2 429",
+    "retry-after",
+)
+_NUCLEI_RATE_LIMIT_PHRASES = (
+    "too many requests",
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "retry later",
+    "quota exceeded",
+    "request quota",
+    "throttled",
+    "throttle limit",
+)
+_NUCLEI_WAF_VENDOR_MARKERS = (
+    "cloudflare",
+    "akamai",
+    "imperva",
+    "incapsula",
+    "sucuri",
+    "f5",
+    "big-ip",
+)
+_NUCLEI_WAF_BLOCK_MARKERS = (
+    "attention required",
+    "sorry, you have been blocked",
+    "request blocked",
+    "blocked by security",
+    "security challenge",
+    "security check",
+    "web application firewall",
+    "captcha",
+)
+_NUCLEI_REFLECTION_MARKERS = (
+    "payload reflected",
+    "payload is reflected",
+    "input is reflected",
+    "reflected in response",
+    "reflection-only",
+    "echoed back",
+    "echo endpoint",
+    "debug echo",
+)
 _WHATWEB_PAIR_RE = re.compile(r"([A-Za-z][A-Za-z0-9+_. -]{1,48})\[([^\]]{1,180})\]")
 _WHATWEB_IGNORED_NAMES = {
     "cache-control",
@@ -88,6 +138,9 @@ _GOBUSTER_LINE_RE = re.compile(
 _TLS_WEAK_CIPHER_RE = re.compile(r"(?:RC4|3DES|DES-CBC|NULL|EXPORT|aNULL|anon)", flags=re.IGNORECASE)
 _TLS_SHA1_RE = re.compile(r"\bsha-?1\b", flags=re.IGNORECASE)
 _TLS_MD5_RE = re.compile(r"\bmd5\b", flags=re.IGNORECASE)
+_TLS_RSA_KEY_RE = re.compile(r"rsa key strength:\s*(\d+)", flags=re.IGNORECASE)
+_TLS_SUBJECT_RE = re.compile(r"^subject:\s*(.+)$", flags=re.IGNORECASE)
+_TLS_ISSUER_RE = re.compile(r"^issuer:\s*(.+)$", flags=re.IGNORECASE)
 _IGNORED_PRODUCT_NAMES = {"http", "https", "tls", "ssl", "html", "json"}
 _IGNORED_DISCOVERY_URL_HOSTS = {"nmap.org", "www.nmap.org", "http", "https"}
 _SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
@@ -192,6 +245,7 @@ def _merge_results(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any
         "technologies": list(left.get("technologies", []) or []) + list(right.get("technologies", []) or []),
         "findings": list(left.get("findings", []) or []) + list(right.get("findings", []) or []),
         "urls": list(left.get("urls", []) or []) + list(right.get("urls", []) or []),
+        "finding_quality_events": list(left.get("finding_quality_events", []) or []) + list(right.get("finding_quality_events", []) or []),
     }
 
 
@@ -281,13 +335,24 @@ def _append_technology(rows: List[Dict[str, Any]], name: str, *, version: str = 
     })
 
 
-def _append_finding(rows: List[Dict[str, Any]], title: str, *, severity: str = "info", cve: str = "", evidence: str = ""):
+def _append_finding(
+        rows: List[Dict[str, Any]],
+        title: str,
+        *,
+        severity: str = "info",
+        cve: str = "",
+        evidence: str = "",
+        evidence_items: Any = None,
+        quality_action: str = "",
+        quality_reason: str = "",
+        severity_before: str = "",
+):
     finding_title = _clean_text(title, 260)
     finding_cve = _clean_text(cve, 64).upper()
     finding_evidence = _clean_text(evidence, 640)
     if not finding_title and not finding_cve:
         return
-    rows.append({
+    row = {
         "title": finding_title or finding_cve,
         "severity": _severity_token(severity, "info"),
         "cvss": 0.0,
@@ -295,7 +360,30 @@ def _append_finding(rows: List[Dict[str, Any]], title: str, *, severity: str = "
         "evidence": finding_evidence or finding_title or finding_cve,
         "source_kind": "observed",
         "observed": True,
-    })
+    }
+    normalized_items: List[str] = []
+    seen_items = set()
+    for token in list(evidence_items or []):
+        cleaned = _clean_text(token, 160)
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen_items:
+            continue
+        seen_items.add(lowered)
+        normalized_items.append(cleaned)
+        if len(normalized_items) >= 16:
+            break
+    if normalized_items:
+        row["evidence_items"] = normalized_items
+    quality_action_token = str(quality_action or "").strip().lower()
+    quality_reason_token = str(quality_reason or "").strip().lower()[:96]
+    if quality_action_token in _NUCLEI_QUALITY_ACTIONS and quality_reason_token:
+        row["quality_action"] = quality_action_token
+        row["quality_reason"] = quality_reason_token
+        if quality_action_token == "downgraded":
+            row["severity_before"] = _severity_token(severity_before or "info", "info")
+    rows.append(row)
 
 
 def _dedupe_rows(rows: List[Dict[str, Any]], key_fields: Tuple[str, ...], limit: int) -> List[Dict[str, Any]]:
@@ -314,6 +402,46 @@ def _dedupe_rows(rows: List[Dict[str, Any]], key_fields: Tuple[str, ...], limit:
         if len(deduped) >= int(limit):
             break
     return deduped
+
+
+def _append_finding_quality_event(
+        rows: List[Dict[str, Any]],
+        title: str,
+        *,
+        action: str,
+        reason: str,
+        severity_before: str = "",
+        severity_after: str = "",
+        cve: str = "",
+        evidence: str = "",
+        matched_url: str = "",
+):
+    action_token = str(action or "").strip().lower()
+    reason_token = str(reason or "").strip().lower()[:96]
+    if action_token not in _NUCLEI_QUALITY_ACTIONS or not reason_token:
+        return
+    finding_title = _clean_text(title, 260)
+    finding_cve = _clean_text(cve, 64).upper()
+    finding_evidence = _clean_text(evidence, 640)
+    matched_url_value = _clean_url(matched_url)
+    if not any([finding_title, finding_cve, finding_evidence, matched_url_value]):
+        return
+    row = {
+        "title": finding_title or finding_cve,
+        "cve": finding_cve,
+        "action": action_token,
+        "reason": reason_token,
+        "severity_before": _severity_token(severity_before or "info", "info"),
+        "evidence": finding_evidence or finding_title or finding_cve,
+        "source_kind": "observed",
+        "observed": True,
+    }
+    severity_after_token = str(severity_after or "").strip().lower()
+    if severity_after_token:
+        row["severity_after"] = _severity_token(severity_after_token, "info")
+    if matched_url_value:
+        row["matched_url"] = matched_url_value
+    rows.append(row)
 
 
 def _append_product_technology(rows: List[Dict[str, Any]], value: Any, *, evidence: str = ""):
@@ -388,6 +516,70 @@ def _infer_finding_severity(value: Any, default: str = "info") -> str:
     if any(token in lowered for token in ("missing", "self-signed", "expired", "directory listing", "xml-rpc", "weak cipher", "compression")):
         return "low"
     return _severity_token(default, "info")
+
+
+def _nuclei_quality_text(*values: Any) -> str:
+    parts = []
+    for value in list(values or []):
+        cleaned = _clean_text(value, 320)
+        if cleaned:
+            parts.append(cleaned)
+    return " | ".join(parts)[:2400]
+
+
+def _evaluate_nuclei_finding_quality(
+        *,
+        title: str,
+        severity: str,
+        evidence: str,
+        matched_url: str = "",
+        evidence_items: Any = None,
+) -> Dict[str, str]:
+    evidence_tokens = [
+        _clean_text(token, 160)
+        for token in list(evidence_items or [])
+        if _clean_text(token, 160)
+    ][:16]
+    corpus = _nuclei_quality_text(title, evidence, matched_url, *evidence_tokens).lower()
+    title_token = _clean_text(title, 240).lower()
+    if not corpus:
+        return {}
+
+    has_rate_limit_status = any(marker in corpus for marker in _NUCLEI_RATE_LIMIT_STATUS_MARKERS) or bool(
+        re.search(r"(?:^|[^0-9])429(?:[^0-9]|$)", corpus)
+    )
+    has_rate_limit_phrase = any(marker in corpus for marker in _NUCLEI_RATE_LIMIT_PHRASES)
+    if has_rate_limit_phrase or (has_rate_limit_status and any(
+            marker in corpus for marker in ("retry", "too many requests", "rate", "throttl", "quota")
+    )):
+        return {
+            "action": "suppressed",
+            "reason": "rate_limited_response",
+            "severity_before": _severity_token(severity, "info"),
+        }
+
+    has_waf_vendor = any(marker in corpus for marker in _NUCLEI_WAF_VENDOR_MARKERS)
+    has_waf_block = any(marker in corpus for marker in _NUCLEI_WAF_BLOCK_MARKERS)
+    title_mentions_waf = "waf" in title_token or any(marker in title_token for marker in _NUCLEI_WAF_VENDOR_MARKERS)
+    if has_waf_block and (has_waf_vendor or "waf" in corpus or "captcha" in corpus or "blocked" in corpus):
+        if not title_mentions_waf:
+            return {
+                "action": "suppressed",
+                "reason": "waf_block_page",
+                "severity_before": _severity_token(severity, "info"),
+            }
+
+    if any(marker in corpus for marker in _NUCLEI_REFLECTION_MARKERS):
+        current_severity = _severity_token(severity, "info")
+        if current_severity != "info":
+            return {
+                "action": "downgraded",
+                "reason": "reflection_only_response",
+                "severity_before": current_severity,
+                "severity_after": "info",
+            }
+
+    return {}
 
 
 def _is_interesting_web_path(path: str) -> bool:
@@ -585,6 +777,7 @@ def _parse_nikto_output(
 def _parse_nuclei_output(tool_id: str, output_text: str, *, port: str = "", protocol: str = "tcp", service: str = "") -> Dict[str, Any]:
     findings: List[Dict[str, Any]] = []
     urls: List[Dict[str, Any]] = []
+    quality_events: List[Dict[str, Any]] = []
     for raw_line in str(output_text or "").splitlines():
         line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
         if not line:
@@ -605,14 +798,53 @@ def _parse_nuclei_output(tool_id: str, output_text: str, *, port: str = "", prot
             severity = _severity_token(info.get("severity", "") or parsed.get("severity", ""), "info")
             title = str(info.get("name", "") or parsed.get("template-id", "") or parsed.get("matcher-name", "") or cve_id).strip()
             matched_at = parsed.get("matched-at") or parsed.get("host") or parsed.get("matched") or ""
+            extracted_results = parsed.get("extracted-results", [])
+            evidence_items = extracted_results if isinstance(extracted_results, list) else [extracted_results]
             _append_url(urls, matched_at, port=port, protocol=protocol, service=service, label=title or cve_id)
+            quality = _evaluate_nuclei_finding_quality(
+                title=title or cve_id or "Nuclei match",
+                severity=severity,
+                evidence=line,
+                matched_url=matched_at,
+                evidence_items=evidence_items,
+            )
+            if str(quality.get("action", "") or "") == "suppressed":
+                _append_finding_quality_event(
+                    quality_events,
+                    title or cve_id or "Nuclei match",
+                    action=quality.get("action", ""),
+                    reason=quality.get("reason", ""),
+                    severity_before=quality.get("severity_before", severity),
+                    severity_after=quality.get("severity_after", ""),
+                    cve=cve_id,
+                    evidence=line,
+                    matched_url=matched_at,
+                )
+                continue
+            adjusted_severity = str(quality.get("severity_after", "") or severity)
             _append_finding(
                 findings,
                 title or cve_id or "Nuclei match",
-                severity=severity,
+                severity=adjusted_severity,
                 cve=cve_id,
                 evidence=line,
+                evidence_items=evidence_items,
+                quality_action=quality.get("action", ""),
+                quality_reason=quality.get("reason", ""),
+                severity_before=quality.get("severity_before", severity),
             )
+            if str(quality.get("action", "") or "") == "downgraded":
+                _append_finding_quality_event(
+                    quality_events,
+                    title or cve_id or "Nuclei match",
+                    action=quality.get("action", ""),
+                    reason=quality.get("reason", ""),
+                    severity_before=quality.get("severity_before", severity),
+                    severity_after=quality.get("severity_after", ""),
+                    cve=cve_id,
+                    evidence=line,
+                    matched_url=matched_at,
+                )
             continue
         brackets = [token.strip() for token in re.findall(r"\[([^\]]+)\]", line) if str(token or "").strip()]
         severity = "info"
@@ -645,33 +877,82 @@ def _parse_nuclei_output(tool_id: str, output_text: str, *, port: str = "", prot
             continue
         _append_url(urls, matched_url, port=port, protocol=protocol, service=service, label=title or cve_id or "nuclei")
         if cve_id or title or matched_url:
+            quality = _evaluate_nuclei_finding_quality(
+                title=cve_id or title or "Nuclei match",
+                severity=severity,
+                evidence=line,
+                matched_url=matched_url,
+            )
+            if str(quality.get("action", "") or "") == "suppressed":
+                _append_finding_quality_event(
+                    quality_events,
+                    cve_id or title or "Nuclei match",
+                    action=quality.get("action", ""),
+                    reason=quality.get("reason", ""),
+                    severity_before=quality.get("severity_before", severity),
+                    severity_after=quality.get("severity_after", ""),
+                    cve=cve_id,
+                    evidence=line,
+                    matched_url=matched_url,
+                )
+                continue
             _append_finding(
                 findings,
                 cve_id or title or "Nuclei match",
-                severity=severity,
+                severity=str(quality.get("severity_after", "") or severity),
                 cve=cve_id,
                 evidence=line,
+                quality_action=quality.get("action", ""),
+                quality_reason=quality.get("reason", ""),
+                severity_before=quality.get("severity_before", severity),
             )
+            if str(quality.get("action", "") or "") == "downgraded":
+                _append_finding_quality_event(
+                    quality_events,
+                    cve_id or title or "Nuclei match",
+                    action=quality.get("action", ""),
+                    reason=quality.get("reason", ""),
+                    severity_before=quality.get("severity_before", severity),
+                    severity_after=quality.get("severity_after", ""),
+                    cve=cve_id,
+                    evidence=line,
+                    matched_url=matched_url,
+                )
     return {
         "technologies": [],
         "findings": _dedupe_rows(findings, ("title", "cve", "evidence"), limit=64),
         "urls": _dedupe_rows(urls, ("url",), limit=64),
+        "finding_quality_events": _dedupe_rows(quality_events, ("title", "cve", "action", "reason", "evidence"), limit=96),
     }
 
 
 def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     findings: List[Dict[str, Any]] = []
+    subject_name = ""
+    issuer_name = ""
+    explicit_self_signed = False
+    seen_legacy_protocol_titles: Set[str] = set()
     for raw_line in str(output_text or "").splitlines():
         line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
         if not line:
             continue
         lowered = line.lower()
+        subject_match = _TLS_SUBJECT_RE.match(line)
+        if subject_match:
+            subject_name = _clean_text(subject_match.group(1), 180)
+        issuer_match = _TLS_ISSUER_RE.match(line)
+        if issuer_match:
+            issuer_name = _clean_text(issuer_match.group(1), 180)
         for protocol_token, (title, severity) in _LEGACY_TLS_FINDINGS.items():
             if protocol_token in lowered and any(marker in lowered for marker in ("enabled", "accepted", "offered", "supported")):
                 if "disabled" in lowered or "not supported" in lowered or "rejected" in lowered:
                     continue
+                if title in seen_legacy_protocol_titles:
+                    continue
+                seen_legacy_protocol_titles.add(title)
                 _append_finding(findings, title, severity=severity, evidence=f"{tool_id}: {line}")
         if "self-signed" in lowered or "self signed" in lowered:
+            explicit_self_signed = True
             _append_finding(findings, "Self-signed TLS certificate", severity="low", evidence=f"{tool_id}: {line}")
         if "certificate expired" in lowered or "expired certificate" in lowered:
             _append_finding(findings, "Expired TLS certificate", severity="medium", evidence=f"{tool_id}: {line}")
@@ -682,12 +963,27 @@ def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
             _append_finding(findings, "Weak TLS cipher supported", severity="medium", evidence=f"{tool_id}: {line}")
         if "compression" in lowered and any(marker in lowered for marker in ("enabled", "supported", "available")) and "disabled" not in lowered:
             _append_finding(findings, "TLS compression enabled", severity="medium", evidence=f"{tool_id}: {line}")
+        if "tls fallback scsv" in lowered and any(marker in lowered for marker in ("does not support", "not support", "unsupported")):
+            _append_finding(findings, "TLS downgrade protection missing", severity="low", evidence=f"{tool_id}: {line}")
         if "renegotiation" in lowered and (
                 "insecure" in lowered
                 or "vulnerable" in lowered
                 or ("secure" in lowered and "not supported" in lowered)
         ):
             _append_finding(findings, "Insecure TLS renegotiation", severity="medium", evidence=f"{tool_id}: {line}")
+        key_match = _TLS_RSA_KEY_RE.search(line)
+        if key_match:
+            try:
+                key_bits = int(key_match.group(1) or 0)
+            except (TypeError, ValueError):
+                key_bits = 0
+            if 0 < key_bits < 2048:
+                _append_finding(
+                    findings,
+                    "Weak TLS certificate key size",
+                    severity="medium",
+                    evidence=f"{tool_id}: {line}",
+                )
         if ("hostname mismatch" in lowered or "does not match" in lowered) and "certificate" in lowered:
             _append_finding(findings, "TLS certificate hostname mismatch", severity="medium", evidence=f"{tool_id}: {line}")
         if _TLS_SHA1_RE.search(line) and any(marker in lowered for marker in ("signature", "signed", "algorithm")):
@@ -696,6 +992,16 @@ def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
             _append_finding(findings, "TLS certificate uses MD5", severity="medium", evidence=f"{tool_id}: {line}")
         if any(token in lowered for token in ("untrusted", "not trusted", "failed chain validation", "unable to build verified chain")):
             _append_finding(findings, "Untrusted TLS certificate chain", severity="medium", evidence=f"{tool_id}: {line}")
+    if subject_name and issuer_name:
+        normalized_subject = re.sub(r"\s+", " ", subject_name).strip().lower()
+        normalized_issuer = re.sub(r"\s+", " ", issuer_name).strip().lower()
+        if normalized_subject and normalized_subject == normalized_issuer and not explicit_self_signed:
+            _append_finding(
+                findings,
+                "Self-signed TLS certificate",
+                severity="low",
+                evidence=f"{tool_id}: subject={subject_name}; issuer={issuer_name}",
+            )
     return {
         "technologies": [],
         "findings": _dedupe_rows(findings, ("title", "cve", "evidence"), limit=32),
@@ -1028,6 +1334,7 @@ def _parse_content_discovery_output(
             f"Interesting web paths discovered ({len(set(interesting_paths))})",
             severity="info",
             evidence=f"{tool_id}: {', '.join(sorted(set(interesting_paths))[:8])}",
+            evidence_items=sorted(set(interesting_paths)),
         )
     return {
         "technologies": [],
@@ -1194,6 +1501,7 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
             f"SMB shares enumerated ({len(share_names)})",
             severity="info",
             evidence=f"{tool_id}: {', '.join(sorted(share_names)[:8])}",
+            evidence_items=sorted(share_names),
         )
     if user_names:
         _append_finding(
@@ -1201,6 +1509,7 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
             f"SMB users enumerated ({len(user_names)})",
             severity="info",
             evidence=f"{tool_id}: {', '.join(sorted(user_names)[:8])}",
+            evidence_items=sorted(user_names),
         )
     return {
         "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=24),
@@ -1223,7 +1532,7 @@ def extract_tool_observations(
     normalized_tool = str(tool_id or "").strip().lower()
     text = str(output_text or "")
     if not normalized_tool or (not text.strip() and not list(artifact_refs or [])):
-        return {"technologies": [], "findings": [], "urls": []}
+        return {"technologies": [], "findings": [], "urls": [], "finding_quality_events": []}
 
     base_url = _build_base_web_url(
         host_ip=host_ip,
@@ -1235,12 +1544,12 @@ def extract_tool_observations(
     if _artifact_reader_supported(normalized_tool):
         sources.extend(_load_artifact_texts(_select_artifact_refs_for_tool(normalized_tool, artifact_refs or [])))
 
-    result = {"technologies": [], "findings": [], "urls": []}
+    result = {"technologies": [], "findings": [], "urls": [], "finding_quality_events": []}
     for source_text in sources:
         source = str(source_text or "")
         if not source.strip():
             continue
-        current = {"technologies": [], "findings": [], "urls": []}
+        current = {"technologies": [], "findings": [], "urls": [], "finding_quality_events": []}
         if normalized_tool.startswith("whatweb"):
             current = _parse_whatweb_output(normalized_tool, source)
         elif normalized_tool.startswith("httpx"):
@@ -1307,4 +1616,9 @@ def extract_tool_observations(
     result["technologies"] = _dedupe_rows(list(result.get("technologies", []) or []), ("name", "version", "cpe", "evidence"), limit=64)
     result["findings"] = _dedupe_rows(list(result.get("findings", []) or []), ("title", "cve", "evidence"), limit=64)
     result["urls"] = _dedupe_rows(extra_urls, ("url",), limit=96)
+    result["finding_quality_events"] = _dedupe_rows(
+        list(result.get("finding_quality_events", []) or []),
+        ("title", "cve", "action", "reason", "evidence"),
+        limit=96,
+    )
     return result

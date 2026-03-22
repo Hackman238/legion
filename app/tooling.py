@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -108,6 +109,7 @@ class ToolSpec:
     ubuntu_install: str = ""
     notes: str = ""
     optional: bool = True
+    file_candidates: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -491,6 +493,15 @@ def _tool_specs() -> List[ToolSpec]:
             ubuntu_install="sudo apt install hydra",
         ),
         ToolSpec(
+            "medusa",
+            "Medusa",
+            ("medusa",),
+            "credentials",
+            "Legacy credential brute-force workflows such as SNMP community validation.",
+            kali_install="sudo apt install medusa",
+            ubuntu_install="sudo apt install medusa",
+        ),
+        ToolSpec(
             "curl",
             "curl",
             ("curl",),
@@ -535,7 +546,8 @@ def _tool_specs() -> List[ToolSpec]:
             "web",
             "WAF detection and exposure fingerprinting.",
             kali_install="sudo apt install wafw00f",
-            ubuntu_install="sudo apt install wafw00f",
+            ubuntu_install="python3 -m pipx install --force wafw00f",
+            notes="Ubuntu installs prefer the upstream pipx path because distro package dependency drift has caused local import failures in recent runs.",
         ),
         ToolSpec(
             "sslscan",
@@ -553,7 +565,18 @@ def _tool_specs() -> List[ToolSpec]:
             "web",
             "TLS protocol, certificate, and cipher validation.",
             kali_install="sudo apt install sslyze",
-            ubuntu_install="sudo apt install sslyze",
+            ubuntu_install="python3 -m pipx install --force sslyze",
+            notes="Ubuntu installs prefer the upstream pipx path because distro package dependency skew has caused local import failures in recent runs.",
+        ),
+        ToolSpec(
+            "testssl.sh",
+            "testssl.sh",
+            ("testssl.sh", "testssl"),
+            "web",
+            "Alternative TLS posture, certificate, and cipher validation.",
+            kali_install="sudo apt install testssl.sh",
+            ubuntu_install="sudo apt install testssl.sh",
+            notes="Useful as a pragmatic TLS fallback when sslyze is unavailable or broken locally.",
         ),
         ToolSpec(
             "wpscan",
@@ -637,6 +660,21 @@ def _tool_specs() -> List[ToolSpec]:
             ubuntu_install="sudo apt install smbmap",
         ),
         ToolSpec(
+            "netexec",
+            "NetExec",
+            ("netexec", "nxc"),
+            "internal",
+            "Modern SMB/LDAP/WinRM-aware internal enumeration and credential validation.",
+            kali_install="sudo apt install netexec",
+            ubuntu_install=(
+                'tmpdir="$(mktemp -d)" && '
+                'git clone --depth 1 https://github.com/Pennyw0rth/NetExec.git "$tmpdir/NetExec" && '
+                'python3 -m pipx install --force "$tmpdir/NetExec" && '
+                'rm -rf "$tmpdir"'
+            ),
+            notes="Ubuntu support follows the upstream NetExec recommendation to clone the repository and install it with pipx.",
+        ),
+        ToolSpec(
             "rpcclient",
             "rpcclient",
             ("rpcclient",),
@@ -644,6 +682,15 @@ def _tool_specs() -> List[ToolSpec]:
             "SMB/RPC enumeration for internal workflows.",
             kali_install="sudo apt install samba-common-bin",
             ubuntu_install="sudo apt install samba-common-bin",
+        ),
+        ToolSpec(
+            "polenum",
+            "polenum",
+            ("polenum",),
+            "internal",
+            "Legacy Windows password policy enumeration.",
+            kali_install="sudo apt install polenum",
+            ubuntu_install="sudo apt install polenum",
         ),
         ToolSpec(
             "enum4linux",
@@ -752,6 +799,16 @@ def _tool_specs() -> List[ToolSpec]:
             notes="Ubuntu support uses the official Impacket pipx install path and detects the modern impacket-samrdump entry point.",
         ),
         ToolSpec(
+            "mssqlclient",
+            "mssqlclient",
+            ("impacket-mssqlclient", "mssqlclient.py", "mssqlclient"),
+            "internal",
+            "Legacy MSSQL client terminal support via Impacket.",
+            kali_install="sudo apt install impacket-scripts",
+            ubuntu_install="python3 -m pipx install --force impacket",
+            notes="Ubuntu support uses the official Impacket pipx install path and detects the modern impacket-mssqlclient entry point.",
+        ),
+        ToolSpec(
             "sqlmap",
             "sqlmap",
             ("sqlmap",),
@@ -759,6 +816,34 @@ def _tool_specs() -> List[ToolSpec]:
             "Legacy SQL injection validation path.",
             kali_install="sudo apt install sqlmap",
             ubuntu_install="sudo apt install sqlmap",
+        ),
+        ToolSpec(
+            "hping3",
+            "hping3",
+            ("hping3",),
+            "legacy",
+            "Low-level packet crafting and timestamp/ICMP probing.",
+            kali_install="sudo apt install hping3",
+            ubuntu_install="sudo apt install hping3",
+        ),
+        ToolSpec(
+            "unicornscan",
+            "Unicornscan",
+            ("unicornscan",),
+            "legacy",
+            "Legacy high-speed TCP/UDP scan path.",
+            kali_install="sudo apt install unicornscan",
+            ubuntu_install="Install from the upstream unicornscan project or use a Kali container/VM; Legion does not mix Kali repositories into Ubuntu.",
+        ),
+        ToolSpec(
+            "smtp-user-enum",
+            "smtp-user-enum",
+            ("smtp-user-enum",),
+            "legacy",
+            "Legacy SMTP user enumeration.",
+            kali_install="python3 -m pipx install --force smtp-user-enum",
+            ubuntu_install="python3 -m pipx install --force smtp-user-enum",
+            notes="The upstream Python package provides a more consistent cross-distro install path than relying on distro-specific packaging.",
         ),
         ToolSpec(
             "nc",
@@ -885,6 +970,15 @@ def _tool_specs() -> List[ToolSpec]:
             kali_install="sudo apt install xdg-utils",
             ubuntu_install="sudo apt install xdg-utils",
         ),
+        ToolSpec(
+            "rwho",
+            "rwho",
+            ("rwho",),
+            "legacy",
+            "Legacy remote user enumeration against rwhod services.",
+            kali_install="sudo apt install rwho",
+            ubuntu_install="sudo apt install rwho",
+        ),
     ]
 
 
@@ -895,11 +989,18 @@ _SHELL_BUILTINS = {
     "sh",
     "python",
     "python3",
+    "perl",
     "sudo",
+    "env",
     "if",
     "then",
     "else",
+    "elif",
     "fi",
+    "do",
+    "done",
+    "[",
+    "test",
     "true",
     "false",
 }
@@ -907,6 +1008,58 @@ _SHELL_BUILTINS = {
 
 def _extract_command_v_tools(command_text: str) -> List[str]:
     return list(dict.fromkeys(re.findall(r"(?i)\bcommand\s+-v\s+([A-Za-z0-9_.+-]+)\b", str(command_text or ""))))
+
+
+def _extract_direct_command_tools(command_text: str) -> List[str]:
+    text = str(command_text or "").strip()
+    if not text:
+        return []
+    try:
+        tokens = shlex.split(text, posix=True)
+    except Exception:
+        tokens = text.split()
+
+    boundary_tokens = {"||", "&&", ";", "|"}
+    wrapper_tokens = {"sudo", "env"}
+    interpreter_tokens = {"bash", "sh", "python", "python3", "perl"}
+    results: List[str] = []
+    seen = set()
+    expecting_command = True
+
+    for raw in tokens:
+        token = str(raw or "").strip()
+        normalized = token.strip().strip("()")
+        lowered = normalized.lower()
+        if not normalized:
+            continue
+        if normalized in boundary_tokens or lowered in {"then", "else", "elif", "do", "fi", "done"}:
+            expecting_command = True
+            continue
+        if not expecting_command:
+            continue
+        if normalized == "[term]":
+            continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", normalized):
+            continue
+        if normalized.startswith("-"):
+            continue
+        if lowered in wrapper_tokens:
+            continue
+        if lowered in interpreter_tokens:
+            expecting_command = False
+            continue
+        if lowered in _SHELL_BUILTINS:
+            expecting_command = False
+            continue
+        if normalized.startswith("./") or normalized.startswith("/") or normalized.startswith("["):
+            expecting_command = False
+            continue
+        if lowered not in seen:
+            seen.add(lowered)
+            results.append(normalized)
+        expecting_command = False
+
+    return results
 
 
 def _iter_configured_command_texts(settings: object) -> Iterable[str]:
@@ -939,7 +1092,8 @@ def _dynamic_specs_from_settings(settings: Optional[object]) -> List[ToolSpec]:
     dynamic: List[ToolSpec] = []
     seen = set()
     for command_text in _iter_configured_command_texts(settings):
-        for tool_name in _extract_command_v_tools(command_text):
+        discovered = list(_extract_command_v_tools(command_text)) + list(_extract_direct_command_tools(command_text))
+        for tool_name in discovered:
             key = str(tool_name or "").strip().lower()
             if not key or key in index or key in seen or key in _SHELL_BUILTINS:
                 continue
@@ -989,6 +1143,17 @@ def _resolve_tool_command(spec: ToolSpec, env: Dict[str, str]) -> Tuple[str, str
         resolved = shutil.which(command_name, path=env.get("PATH", ""))
         if resolved:
             return command_name, os.path.abspath(resolved)
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    for candidate in list(spec.file_candidates or ()):
+        raw = str(candidate or "").strip()
+        if not raw:
+            continue
+        resolved = raw
+        if not os.path.isabs(resolved):
+            resolved = os.path.join(repo_root, resolved)
+        resolved = os.path.abspath(os.path.expanduser(resolved))
+        if os.path.isfile(resolved):
+            return os.path.basename(resolved), resolved
     return "", ""
 
 

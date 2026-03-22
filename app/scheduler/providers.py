@@ -9,10 +9,16 @@ from copy import deepcopy
 from collections import deque
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from app.scheduler.tool_prompt_registry import get_scheduler_tool_prompt_info
+
 MAX_PROVIDER_PROMPT_CHARS = 5200
 MAX_PROVIDER_CANDIDATES = 24
 MAX_CANDIDATE_TEMPLATE_CHARS = 180
 MAX_CANDIDATE_LABEL_CHARS = 96
+MAX_CANDIDATE_PURPOSE_CHARS = 72
+MAX_CANDIDATE_WHEN_TO_USE_CHARS = 88
+MAX_CANDIDATE_ARG_SHAPE_CHARS = 24
+MIN_PROVIDER_CANDIDATE_BLOCK_CHARS = 1600
 MAX_PROVIDER_RESPONSE_TOKENS = 1000
 MAX_PROVIDER_REFLECTION_RESPONSE_TOKENS = 500
 MAX_PROVIDER_SPECIALIST_RESPONSE_TOKENS = 420
@@ -538,6 +544,8 @@ def reflect_on_scheduler_progress(
         *,
         context: Optional[Dict[str, Any]] = None,
         recent_rounds: Optional[List[Dict[str, Any]]] = None,
+        trigger_reason: str = "",
+        trigger_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     provider_name = str(config.get("provider", "none") or "none").strip().lower()
     providers_cfg = config.get("providers", {}) if isinstance(config, dict) else {}
@@ -562,6 +570,8 @@ def reflect_on_scheduler_progress(
         protocol=protocol,
         context=context or {},
         recent_rounds=recent_rounds or [],
+        trigger_reason=trigger_reason,
+        trigger_context=trigger_context or {},
         context_summary_enabled=_feature_flag_enabled(config, "context_summary_enabled", default=True),
     )
     metadata = dict(prompt_package.get("metadata", {}) or {})
@@ -647,6 +657,7 @@ def select_web_followup_with_provider(
 
     payload = _parse_web_followup_payload(
         content,
+        allowed_tool_ids=list(metadata.get("visible_candidate_tool_ids", []) or []),
         unavailable_tool_ids=_collect_unavailable_tool_ids(context or {}),
     )
     payload["provider"] = provider_name
@@ -1181,49 +1192,89 @@ def _build_candidate_block(
     candidate_lines = []
     visible_tool_ids = []
     omitted = 0
-    budget = max(800, MAX_PROVIDER_PROMPT_CHARS - len(prefix) - 120)
-    used = 0
+    budget = max(MIN_PROVIDER_CANDIDATE_BLOCK_CHARS, MAX_PROVIDER_PROMPT_CHARS - len(prefix) - 120)
+    target_visible = min(
+        len(ordered_candidates),
+        MAX_PROVIDER_CANDIDATES,
+        6 if prompt_type == "web_followup" else 8,
+    )
 
-    for index, candidate in enumerate(ordered_candidates):
-        if index >= MAX_PROVIDER_CANDIDATES:
-            omitted = len(ordered_candidates) - index
-            break
-
+    def _candidate_line(candidate: Dict[str, str], *, detail_level: int) -> Tuple[str, str]:
         tool_id = str(candidate.get("tool_id", "")).strip()[:120]
-        line = json.dumps({
+        prompt_info = get_scheduler_tool_prompt_info(
+            tool_id,
+            label=str(candidate.get("label", "")).strip(),
+            command_template=str(candidate.get("command_template", "")),
+            service_scope=str(candidate.get("service_scope", "")).strip(),
+        )
+        label_limit = 64 if detail_level <= 1 else MAX_CANDIDATE_LABEL_CHARS
+        purpose_limit = 56 if detail_level <= 1 else MAX_CANDIDATE_PURPOSE_CHARS
+        when_limit = 64 if detail_level == 2 else 0
+        template_limit = 96 if detail_level == 2 else 0
+        payload: Dict[str, Any] = {
             "tool_id": tool_id,
-            "label": str(candidate.get("label", "")).strip()[:MAX_CANDIDATE_LABEL_CHARS],
-            "service_scope": str(candidate.get("service_scope", "")).strip()[:120],
-            "command_template_excerpt": _normalize_prompt_text(
+            "label": str(candidate.get("label", "")).strip()[:label_limit],
+            "purpose": _normalize_prompt_text(prompt_info.purpose, purpose_limit),
+        }
+        arg_shape = str(prompt_info.arg_shape or "").strip()[:MAX_CANDIDATE_ARG_SHAPE_CHARS]
+        if arg_shape:
+            payload["arg_shape"] = arg_shape
+        phase_tags = list(prompt_info.phase_tags[:3 if detail_level <= 1 else 4])
+        if phase_tags:
+            payload["phase_tags"] = phase_tags
+        if bool(prompt_info.safe_parallel):
+            payload["safe_parallel"] = True
+        if detail_level >= 1:
+            service_scope = str(candidate.get("service_scope", "")).strip()[:72]
+            if service_scope:
+                payload["service_scope"] = service_scope
+        if when_limit > 0:
+            payload["when_to_use"] = _normalize_prompt_text(prompt_info.when_to_use, when_limit)
+        if template_limit > 0:
+            payload["command_template_excerpt"] = _normalize_prompt_text(
                 str(candidate.get("command_template", "")),
-                MAX_CANDIDATE_TEMPLATE_CHARS,
-            ),
-        }, separators=(",", ":"))
+                template_limit,
+            )
+        return json.dumps(payload, separators=(",", ":")), tool_id
 
-        projected = used + len(line) + 1
-        if projected > budget:
-            omitted = len(ordered_candidates) - index
+    best_lines: List[str] = []
+    best_visible_tool_ids: List[str] = []
+    best_omitted = max(0, len(ordered_candidates) - MAX_PROVIDER_CANDIDATES)
+
+    for detail_level in (2, 1, 0):
+        current_lines: List[str] = []
+        current_visible_tool_ids: List[str] = []
+        current_used = 0
+        current_omitted = 0
+        for index, candidate in enumerate(ordered_candidates):
+            if index >= MAX_PROVIDER_CANDIDATES:
+                current_omitted = len(ordered_candidates) - index
+                break
+            line, tool_id = _candidate_line(candidate, detail_level=detail_level)
+            projected = current_used + len(line) + 1
+            if projected > budget:
+                current_omitted = len(ordered_candidates) - index
+                break
+            current_lines.append(line)
+            if tool_id:
+                current_visible_tool_ids.append(tool_id)
+            current_used = projected
+
+        if current_lines:
+            best_lines = current_lines
+            best_visible_tool_ids = current_visible_tool_ids
+            best_omitted = current_omitted
+        if len(current_visible_tool_ids) >= target_visible:
             break
 
-        candidate_lines.append(line)
-        if tool_id:
-            visible_tool_ids.append(tool_id)
-        used = projected
+    candidate_lines = list(best_lines)
+    visible_tool_ids = list(best_visible_tool_ids)
+    omitted = int(best_omitted or 0)
 
     if not candidate_lines:
         first = ordered_candidates[0]
-        tool_id = str(first.get("tool_id", "")).strip()[:120]
-        candidate_lines.append(
-            json.dumps({
-                "tool_id": tool_id,
-                "label": str(first.get("label", "")).strip()[:MAX_CANDIDATE_LABEL_CHARS],
-                "service_scope": str(first.get("service_scope", "")).strip()[:120],
-                "command_template_excerpt": _normalize_prompt_text(
-                    str(first.get("command_template", "")),
-                    96,
-                ),
-            }, separators=(",", ":"))
-        )
+        line, tool_id = _candidate_line(first, detail_level=0)
+        candidate_lines.append(line)
         if tool_id:
             visible_tool_ids.append(tool_id)
         omitted = max(0, len(ordered_candidates) - 1)
@@ -1500,10 +1551,35 @@ def _build_reflection_prompt_package(
         protocol: str,
         context: Optional[Dict[str, Any]] = None,
         recent_rounds: Optional[List[Dict[str, Any]]] = None,
+        trigger_reason: str = "",
+        trigger_context: Optional[Dict[str, Any]] = None,
         context_summary_enabled: bool = True,
 ) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
     rounds = recent_rounds if isinstance(recent_rounds, list) else []
+    trigger_reason_token = str(trigger_reason or "").strip().lower()[:64]
+    trigger_payload = {}
+    if trigger_reason_token:
+        trigger_payload["reason"] = trigger_reason_token
+    if isinstance(trigger_context, dict):
+        for key in (
+                "round_number",
+                "current_phase",
+                "previous_phase",
+                "window_size",
+                "repeated_selection_count",
+        ):
+            value = trigger_context.get(key, "")
+            if value in ("", None):
+                continue
+            trigger_payload[key] = value
+        recent_failures = [
+            _normalize_prompt_text(str(item or "").strip(), 120)
+            for item in list(trigger_context.get("recent_failures", []) or [])[:6]
+            if str(item or "").strip()
+        ]
+        if recent_failures:
+            trigger_payload["recent_failures"] = recent_failures
     current_phase = _determine_scheduler_phase(
         goal_profile=goal_profile,
         service=service,
@@ -1516,6 +1592,10 @@ def _build_reflection_prompt_package(
         include_summary=bool(context_summary_enabled),
     )
     recent_rounds_payload = _build_recent_rounds_block(rounds)
+    trigger_block = ""
+    if trigger_payload:
+        rendered_trigger = json.dumps(trigger_payload, separators=(",", ":"))
+        trigger_block = f"Reflection trigger:\n{_truncate_block_text(rendered_trigger, 640)}\n"
     system_prompt = (
         "You are an execution monitor for a governed penetration-testing scheduler.\n"
         "Return strict JSON only.\n"
@@ -1540,6 +1620,7 @@ def _build_reflection_prompt_package(
         "\"promote_tool_ids\":[\"...\"],"
         "\"suppress_tool_ids\":[\"...\"],"
         "\"manual_tests\":[{\"why\":\"...\",\"command\":\"...\",\"scope_note\":\"...\"}]}\n"
+        f"{trigger_block}"
         f"{recent_rounds_payload}"
         f"{context_block}"
     )
@@ -1553,6 +1634,8 @@ def _build_reflection_prompt_package(
             "service_profile": service_profile,
             "recent_round_count": len(rounds[:8]),
             "context_chars": len(context_block),
+            "trigger_reason": trigger_reason_token,
+            "trigger_context": trigger_payload,
         },
     }
 
@@ -1621,6 +1704,8 @@ def _build_web_followup_prompt_package(
             "current_phase": current_phase,
             "service_profile": "web",
             "candidate_count": len(candidates or []),
+            "visible_candidate_count": len(_visible_candidate_tool_ids),
+            "visible_candidate_tool_ids": _visible_candidate_tool_ids,
             "omitted_candidate_count": int(omitted_count or 0),
             "context_chars": len(context_block),
         },
@@ -1643,6 +1728,12 @@ def _build_recent_rounds_block(rounds: List[Dict[str, Any]]) -> str:
             "manual_tests_count": int(item.get("manual_tests_count", 0) or 0),
             "technologies_count": int(item.get("technologies_count", 0) or 0),
             "next_phase": str(item.get("next_phase", "") or "")[:64],
+            "observed_phase": str(item.get("observed_phase", "") or "")[:64],
+            "recent_failures": [
+                str(entry).strip().lower()[:120]
+                for entry in list(item.get("recent_failures", []) or [])[:8]
+                if str(entry).strip()
+            ],
             "decision_tool_ids": [
                 str(entry).strip().lower()[:80]
                 for entry in list(item.get("decision_tool_ids", []) or [])[:16]
@@ -1695,6 +1786,7 @@ def _parse_reflection_payload(
 def _parse_web_followup_payload(
         content: str,
         *,
+        allowed_tool_ids: Optional[List[str]] = None,
         unavailable_tool_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     payload_obj = _extract_json(content)
@@ -1709,7 +1801,11 @@ def _parse_web_followup_payload(
         focus = ""
     return {
         "focus": focus,
-        "selected_tool_ids": _normalize_tool_id_list(payload_obj.get("selected_tool_ids", []), limit=6),
+        "selected_tool_ids": _normalize_tool_id_list(
+            payload_obj.get("selected_tool_ids", []),
+            limit=6,
+            allowed_tool_ids=allowed_tool_ids,
+        ),
         "reason": _normalize_prompt_text(str(payload_obj.get("reason", "") or "").strip(), 320),
         "manual_tests": _normalize_manual_tests(
             payload_obj.get("manual_tests", []),
@@ -1718,17 +1814,20 @@ def _parse_web_followup_payload(
     }
 
 
-def _normalize_tool_id_list(values: Any, *, limit: int) -> List[str]:
+def _normalize_tool_id_list(values: Any, *, limit: int, allowed_tool_ids: Optional[List[str]] = None) -> List[str]:
     if not isinstance(values, list):
         return []
+    allowed_tool_id_map = _normalized_tool_id_map(allowed_tool_ids)
     rows = []
     seen = set()
     for item in values:
         token = str(item or "").strip().lower()
         if not token or token in seen:
             continue
+        if allowed_tool_id_map and token not in allowed_tool_id_map:
+            continue
         seen.add(token)
-        rows.append(token[:120])
+        rows.append(str(allowed_tool_id_map.get(token, token))[:120])
         if len(rows) >= int(limit):
             break
     return rows

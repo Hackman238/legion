@@ -1,9 +1,89 @@
 import os
 import tempfile
 import unittest
+import json
 
 
 class ObservationParsersTest(unittest.TestCase):
+    def test_extract_tool_observations_suppresses_nuclei_rate_limited_matches(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = json.dumps({
+            "template-id": "generic-admin-panel",
+            "matched-at": "https://portal.example/admin",
+            "info": {
+                "name": "Authenticated admin panel exposure",
+                "severity": "high",
+                "classification": {"cve-id": ["CVE-2026-1111"]},
+            },
+            "extracted-results": ["429 Too Many Requests", "Retry-After: 120"],
+        })
+
+        parsed = extract_tool_observations(
+            "nuclei-cves",
+            output,
+            port="443",
+            protocol="tcp",
+            service="https",
+        )
+
+        self.assertEqual([], parsed["findings"])
+        quality_events = parsed["finding_quality_events"]
+        self.assertEqual(1, len(quality_events))
+        self.assertEqual("suppressed", quality_events[0]["action"])
+        self.assertEqual("rate_limited_response", quality_events[0]["reason"])
+        self.assertEqual("https://portal.example/admin", quality_events[0]["matched_url"])
+
+    def test_extract_tool_observations_suppresses_nuclei_waf_block_page_matches(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "[CVE-2026-2222] [http] [critical] https://portal.example/login "
+            "Attention Required! Cloudflare - Sorry, you have been blocked"
+        )
+
+        parsed = extract_tool_observations(
+            "nuclei-cves",
+            output,
+            port="443",
+            protocol="tcp",
+            service="https",
+        )
+
+        self.assertEqual([], parsed["findings"])
+        quality_events = parsed["finding_quality_events"]
+        self.assertEqual(1, len(quality_events))
+        self.assertEqual("suppressed", quality_events[0]["action"])
+        self.assertEqual("waf_block_page", quality_events[0]["reason"])
+
+    def test_extract_tool_observations_downgrades_nuclei_reflection_only_matches(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "[reflected-debug-endpoint] [http] [high] https://portal.example/debug "
+            "request payload reflected in response"
+        )
+
+        parsed = extract_tool_observations(
+            "nuclei-web",
+            output,
+            port="443",
+            protocol="tcp",
+            service="https",
+        )
+
+        self.assertEqual(1, len(parsed["findings"]))
+        finding = parsed["findings"][0]
+        self.assertEqual("info", finding["severity"])
+        self.assertEqual("downgraded", finding["quality_action"])
+        self.assertEqual("reflection_only_response", finding["quality_reason"])
+        self.assertEqual("high", finding["severity_before"])
+
+        quality_events = parsed["finding_quality_events"]
+        self.assertEqual(1, len(quality_events))
+        self.assertEqual("downgraded", quality_events[0]["action"])
+        self.assertEqual("info", quality_events[0]["severity_after"])
+
     def test_extract_tool_observations_parses_nikto_findings_urls_and_technologies(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -333,6 +413,54 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("TLSv1.0 supported", titles)
         self.assertNotIn("Heartbleed exposure", titles)
         self.assertNotIn("Insecure TLS renegotiation", titles)
+
+    def test_extract_tool_observations_parses_realistic_sslscan_posture_findings(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "SSL/TLS Protocols:\n"
+            "TLSv1.0   enabled\n"
+            "TLSv1.1   enabled\n"
+            "TLSv1.2   enabled\n"
+            "TLS Fallback SCSV:\n"
+            "Server does not support TLS Fallback SCSV\n"
+            "TLS renegotiation:\n"
+            "Secure session renegotiation supported\n"
+            "SSL Certificate:\n"
+            "RSA Key Strength:    1024\n"
+            "Subject:  UniFi\n"
+            "Issuer:   UniFi\n"
+        )
+
+        parsed = extract_tool_observations("sslscan", output)
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("TLSv1.0 supported", titles)
+        self.assertIn("TLSv1.1 supported", titles)
+        self.assertIn("TLS downgrade protection missing", titles)
+        self.assertIn("Weak TLS certificate key size", titles)
+        self.assertIn("Self-signed TLS certificate", titles)
+
+    def test_extract_tool_observations_dedupes_sslscan_legacy_protocol_findings_from_cipher_lines(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "SSL/TLS Protocols:\n"
+            "TLSv1.0   enabled\n"
+            "TLSv1.1   enabled\n"
+            "Accepted  TLSv1.1  128 bits  AES128-SHA\n"
+            "Accepted  TLSv1.1  256 bits  AES256-SHA\n"
+            "Accepted  TLSv1.0  128 bits  AES128-SHA\n"
+            "Accepted  TLSv1.0  256 bits  AES256-SHA\n"
+        )
+
+        parsed = extract_tool_observations("sslscan", output)
+
+        titles = [str(item.get("title", "")).strip() for item in parsed["findings"]]
+
+        self.assertEqual(1, titles.count("TLSv1.0 supported"))
+        self.assertEqual(1, titles.count("TLSv1.1 supported"))
 
     def test_extract_tool_observations_parses_wpscan_plain_text_output(self):
         from app.scheduler.observation_parsers import extract_tool_observations

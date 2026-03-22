@@ -1256,6 +1256,12 @@ def sync_target_state_to_evidence_graph(
             cve_id = _clean_text(item.get("cve", ""), limit=64, allow_unknown=True).upper()
             if not title and not cve_id:
                 continue
+            evidence_text = _clean_text(item.get("evidence", ""), limit=320, allow_unknown=True)
+            evidence_items = _dedupe_tokens(item.get("evidence_items", []) if isinstance(item.get("evidence_items", []), list) else [], limit=16, token_limit=160)
+            finding_evidence_refs = []
+            if evidence_text:
+                finding_evidence_refs.append(evidence_text)
+            finding_evidence_refs.extend(evidence_items)
             finding_node_id, changed = _upsert_node(
                 session,
                 node_key=f"finding:{resolved_host_id}:{title.lower()}:{cve_id.lower()}",
@@ -1270,8 +1276,9 @@ def sync_target_state_to_evidence_graph(
                     "severity": _clean_text(item.get("severity", "info"), limit=16, lower=True, allow_unknown=True),
                     "cvss": _safe_float(item.get("cvss", 0.0)),
                     "cve": cve_id,
+                    "evidence_items": evidence_items,
                 },
-                evidence_refs=[_clean_text(item.get("evidence", ""), limit=320, allow_unknown=True)],
+                evidence_refs=finding_evidence_refs,
             )
             if changed:
                 _remember_mutation(mutations, "node", finding_node_id)
@@ -1283,7 +1290,7 @@ def sync_target_state_to_evidence_graph(
                 confidence=_safe_float(item.get("confidence", 80.0), 80.0),
                 source_kind=_normalize_source_kind(item.get("source_kind", "observed"), "observed"),
                 source_ref=f"host:{resolved_host_id}:finding:{title or cve_id}",
-                evidence_refs=[_clean_text(item.get("evidence", ""), limit=320, allow_unknown=True)],
+                evidence_refs=finding_evidence_refs,
             )
             if changed:
                 _remember_mutation(mutations, "edge", edge_id)
@@ -1311,7 +1318,6 @@ def sync_target_state_to_evidence_graph(
                 )
                 if changed:
                     _remember_mutation(mutations, "edge", edge_id)
-            evidence_text = _clean_text(item.get("evidence", ""), limit=320, allow_unknown=True)
             if evidence_text:
                 evidence_node_id, changed = _upsert_node(
                     session,
@@ -1321,7 +1327,13 @@ def sync_target_state_to_evidence_graph(
                     confidence=100.0,
                     source_kind=_normalize_source_kind(item.get("source_kind", "observed"), "observed"),
                     source_ref=f"host:{resolved_host_id}:finding:evidence",
-                    properties={"host_id": resolved_host_id, "evidence": evidence_text, "entity_type": "finding"},
+                    properties={
+                        "host_id": resolved_host_id,
+                        "evidence": evidence_text,
+                        "entity_type": "finding",
+                        "evidence_items": evidence_items,
+                    },
+                    evidence_refs=finding_evidence_refs,
                 )
                 if changed:
                     _remember_mutation(mutations, "node", evidence_node_id)
