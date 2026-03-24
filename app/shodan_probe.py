@@ -44,7 +44,7 @@ def _search_query_for_target(hostname: str) -> str:
     exact = str(hostname or "").strip()
     if not exact:
         return ""
-    return f'hostname:"{exact}" OR ssl:"{exact}"'
+    return f'hostname:"{exact}"'
 
 
 def _trim_matches(matches: Any, limit: int) -> List[Dict[str, Any]]:
@@ -80,18 +80,41 @@ def run_shodan_probe(target: str, api_key: str, *, limit: int = 25, timeout: int
         },
         timeout=timeout,
     )
-    search_query = _search_query_for_target(exact_hostname)
-    search_payload = _perform_request(
-        "shodan/host/search",
+    dns_domain = _perform_request(
+        f"dns/domain/{root_domain}",
         api_key=api_key,
         params={
             "key": api_key,
-            "query": search_query,
-            "minify": "true",
             "page": 1,
         },
         timeout=timeout,
     )
+    search_query = _search_query_for_target(exact_hostname)
+    search_params = {
+        "key": api_key,
+        "query": search_query,
+        "minify": "true",
+        "page": 1,
+    }
+    try:
+        search_payload = _perform_request(
+            "shodan/host/search",
+            api_key=api_key,
+            params=search_params,
+            timeout=timeout,
+        )
+    except HTTPError as exc:
+        if int(getattr(exc, "code", 0) or 0) not in {400, 422}:
+            raise
+        fallback_query = f"hostname:{exact_hostname}"
+        search_params["query"] = fallback_query
+        search_payload = _perform_request(
+            "shodan/host/search",
+            api_key=api_key,
+            params=search_params,
+            timeout=timeout,
+        )
+        search_query = fallback_query
 
     matches = _trim_matches(search_payload.get("matches", []), limit)
     return {
@@ -100,6 +123,7 @@ def run_shodan_probe(target: str, api_key: str, *, limit: int = 25, timeout: int
         "root_domain": root_domain,
         "supported": True,
         "dns_resolve": dns_resolve if isinstance(dns_resolve, dict) else {},
+        "dns_domain": dns_domain if isinstance(dns_domain, dict) else {},
         "search_query": search_query,
         "total": int(search_payload.get("total", len(matches)) or 0),
         "matches": matches,

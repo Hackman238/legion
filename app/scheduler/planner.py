@@ -825,39 +825,55 @@ class SchedulerPlanner:
             value += 12.0
             if bool(signals.get("cloud_provider_detected")):
                 value += 10.0
+            if bool(signals.get("cloud_exposure_candidate")):
+                value += 18.0
         if tool_norm == "nuclei-aws-storage":
             if bool(signals.get("aws_storage_detected")):
-                value += 26.0
+                value += 18.0
+                if bool(signals.get("aws_storage_exposure_candidate")):
+                    value += 14.0
             else:
                 value -= 42.0
         if tool_norm == "nuclei-azure-storage":
             if bool(signals.get("azure_storage_detected")):
-                value += 26.0
+                value += 18.0
+                if bool(signals.get("azure_storage_exposure_candidate")):
+                    value += 14.0
             else:
                 value -= 42.0
         if tool_norm == "nuclei-gcp-storage":
             if bool(signals.get("gcp_storage_detected")):
-                value += 26.0
+                value += 18.0
+                if bool(signals.get("gcp_storage_exposure_candidate")):
+                    value += 14.0
             else:
                 value -= 42.0
         if tool_norm == "nuclei-aws-rds":
             if bool(signals.get("rds_detected")):
-                value += 26.0
+                value += 18.0
+                if bool(signals.get("rds_public_access_candidate")):
+                    value += 14.0
             else:
                 value -= 42.0
         if tool_norm == "nuclei-aws-aurora":
             if bool(signals.get("aurora_detected")):
-                value += 26.0
+                value += 18.0
+                if bool(signals.get("aurora_public_access_candidate")):
+                    value += 14.0
             else:
                 value -= 42.0
         if tool_norm == "nuclei-azure-cosmos":
             if bool(signals.get("cosmos_detected")):
-                value += 26.0
+                value += 18.0
+                if bool(signals.get("cosmos_exposure_candidate")):
+                    value += 14.0
             else:
                 value -= 42.0
         if tool_norm == "nuclei-gcp-cloudsql":
             if bool(signals.get("cloudsql_detected")):
-                value += 26.0
+                value += 18.0
+                if bool(signals.get("cloudsql_public_access_candidate")):
+                    value += 14.0
             else:
                 value -= 42.0
         if tool_norm == "mysql-info.nse":

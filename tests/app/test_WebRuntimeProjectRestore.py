@@ -521,6 +521,117 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
             if active_project is not None:
                 runtime._close_active_project()
 
+    def test_get_process_output_redacts_api_keys_in_command(self):
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+
+        try:
+            runtime._ensure_process_tables()
+            session = project.database.session()
+            try:
+                process_result = session.execute(text(
+                    "INSERT INTO process ("
+                    "pid, display, name, tabTitle, hostIp, port, protocol, command, startTime, endTime, "
+                    "estimatedRemaining, elapsed, outputfile, status, closed, percent"
+                    ") VALUES ("
+                    ":pid, :display, :name, :tabTitle, :hostIp, :port, :protocol, :command, :startTime, :endTime, "
+                    ":estimatedRemaining, :elapsed, :outputfile, :status, :closed, :percent"
+                    ")"
+                ), {
+                    "pid": "9101",
+                    "display": "True",
+                    "name": "shodan-enrichment",
+                    "tabTitle": "Shodan Enrichment",
+                    "hostIp": "connect.example.com",
+                    "port": "",
+                    "protocol": "tcp",
+                    "command": "python3 -m app.shodan_probe --target connect.example.com --api-key super-secret-key --output /tmp/out.json",
+                    "startTime": "2026-03-24T10:00:00Z",
+                    "endTime": "2026-03-24T10:00:05Z",
+                    "estimatedRemaining": 0,
+                    "elapsed": 5,
+                    "outputfile": "/tmp/out.json",
+                    "status": "Finished",
+                    "closed": "False",
+                    "percent": "100",
+                })
+                process_id = int(process_result.lastrowid or 0)
+                session.execute(text(
+                    "INSERT INTO process_output (processId, output) VALUES (:process_id, :output)"
+                ), {
+                    "process_id": process_id,
+                    "output": "ok",
+                })
+                session.commit()
+            finally:
+                session.close()
+
+            payload = runtime.get_process_output(process_id)
+
+            self.assertIn("--api-key ***redacted***", payload["command"])
+            self.assertNotIn("super-secret-key", payload["command"])
+        finally:
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
+
+    def test_project_bundle_process_history_redacts_api_keys_in_command(self):
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+
+        bundle_path = ""
+        try:
+            runtime._ensure_process_tables()
+            session = project.database.session()
+            try:
+                session.execute(text(
+                    "INSERT INTO process ("
+                    "pid, display, name, tabTitle, hostIp, port, protocol, command, startTime, endTime, "
+                    "estimatedRemaining, elapsed, outputfile, status, closed, percent"
+                    ") VALUES ("
+                    ":pid, :display, :name, :tabTitle, :hostIp, :port, :protocol, :command, :startTime, :endTime, "
+                    ":estimatedRemaining, :elapsed, :outputfile, :status, :closed, :percent"
+                    ")"
+                ), {
+                    "pid": "9102",
+                    "display": "False",
+                    "name": "grayhatwarfare",
+                    "tabTitle": "Grayhat Warfare",
+                    "hostIp": "tantalumlabs.io",
+                    "port": "",
+                    "protocol": "tcp",
+                    "command": "GRAYHAT_API_KEY='top-secret-token' python3 -m app.grayhatwarfare_probe --domain tantalumlabs.io --api-key top-secret-token --output /tmp/grayhat.json",
+                    "startTime": "2026-03-24T10:10:00Z",
+                    "endTime": "2026-03-24T10:10:07Z",
+                    "estimatedRemaining": 0,
+                    "elapsed": 7,
+                    "outputfile": "/tmp/grayhat.json",
+                    "status": "Finished",
+                    "closed": "True",
+                    "percent": "100",
+                })
+                session.commit()
+            finally:
+                session.close()
+
+            bundle_path, _bundle_name = runtime.build_project_bundle_zip()
+            with zipfile.ZipFile(bundle_path, "r") as archive:
+                process_history_name = next(
+                    name for name in archive.namelist() if str(name).endswith("/process-history.json")
+                )
+                payload = json.loads(archive.read(process_history_name).decode("utf-8"))
+
+            self.assertIn("***redacted***", payload[0]["command"])
+            self.assertNotIn("top-secret-token", payload[0]["command"])
+        finally:
+            if bundle_path and os.path.isfile(bundle_path):
+                os.remove(bundle_path)
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
+
     def test_graph_content_resolves_api_screenshot_refs_to_files(self):
         from app.scheduler.state import upsert_target_state
         from db.entities.host import hostObj

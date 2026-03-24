@@ -126,6 +126,22 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("Azure Cosmos DB", technologies)
         self.assertIn("Google Cloud SQL", technologies)
 
+    def test_extract_tool_observations_normalizes_cloud_exposure_findings_from_nuclei(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "[aws-public-bucket] [http] [medium] https://tenant-assets.s3.amazonaws.com public bucket listing exposed\n"
+            "[azure-cosmos-master-key] [http] [high] https://tenant.documents.azure.com Azure Cosmos DB master key exposed\n"
+            "[gcp-cloudsql-public] [tcp] [medium] cloudsql.googleapis.com public network access enabled"
+        )
+
+        parsed = extract_tool_observations("nuclei-cloud", output, port="443", protocol="tcp", service="https")
+        findings = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("Potential public Amazon S3 exposure", findings)
+        self.assertIn("Potential public Azure Cosmos DB exposure", findings)
+        self.assertIn("Potential public Google Cloud SQL exposure", findings)
+
     def test_extract_tool_observations_parses_nikto_findings_urls_and_technologies(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -1404,7 +1420,14 @@ class ObservationParsersTest(unittest.TestCase):
             "dns_resolve": {
                 "connect.example.com": "203.0.113.10",
             },
-            "search_query": 'hostname:"connect.example.com" OR ssl:"connect.example.com"',
+            "dns_domain": {
+                "domain": "example.com",
+                "data": [
+                    {"subdomain": "www", "type": "A", "value": "203.0.113.20"},
+                    {"subdomain": "admin", "type": "CNAME", "value": "edge.example.net"},
+                ],
+            },
+            "search_query": 'hostname:"connect.example.com"',
             "total": 2,
             "matches": [
                 {
@@ -1435,6 +1458,7 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("Shodan indexed matches (2)", finding_titles)
         self.assertIn("connect.example.com", discovered_hosts)
         self.assertIn("api.example.com", discovered_hosts)
+        self.assertIn("admin.example.com", discovered_hosts)
         self.assertIn("https://connect.example.com", urls)
         self.assertIn("http://api.example.com", urls)
         self.assertIn("nginx", technologies)

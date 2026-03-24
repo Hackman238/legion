@@ -373,6 +373,25 @@ def _get_requests_module():
 
 
 class WebRuntime:
+    _COMMAND_SECRET_PATTERNS = (
+        re.compile(
+            r"(?P<prefix>\b(?:[A-Z][A-Z0-9_]*API_KEY|[A-Z][A-Z0-9_]*TOKEN|AUTHORIZATION)=)"
+            r"(?P<value>(?:'[^']*'|\"[^\"]*\"|[^\s;&|)]+))"
+        ),
+        re.compile(
+            r"(?P<prefix>\B--api-key\s+)(?P<value>(?:'[^']*'|\"[^\"]*\"|[^\s;&|)]+))",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?P<prefix>\B--?(?:access-)?token\s+)(?P<value>(?:'[^']*'|\"[^\"]*\"|[^\s;&|)]+))",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?P<prefix>\bBearer\s+)(?P<value>[A-Za-z0-9._~+\\/-]+)",
+            re.IGNORECASE,
+        ),
+    )
+
     def __init__(self, logic):
         self.logic = logic
         self.scheduler_config = SchedulerConfigManager()
@@ -5113,6 +5132,7 @@ class WebRuntime:
         next_offset = offset_value + len(chunk)
         status = str(data.get("status", "") or "")
         completed = status not in {"Running", "Waiting"}
+        data["command"] = self._redact_command_secrets(data.get("command", ""))
         data["output_chunk"] = chunk
         data["output_length"] = output_length
         data["offset"] = offset_value
@@ -5196,7 +5216,7 @@ class WebRuntime:
             "source": "process" if has_process else "script-row",
             "process_id": int(process_data.get("process_id", 0) or 0),
             "outputfile": str(process_data.get("outputfile", "") or ""),
-            "command": str(process_data.get("command", "") or ""),
+            "command": self._redact_command_secrets(process_data.get("command", "")),
             "status": status if has_process else "Saved",
             "output": output_text,
             "output_chunk": chunk,
@@ -8240,8 +8260,67 @@ class WebRuntime:
             "gcs bucket",
             "x-goog-",
         ])
+        cloud_public_negation_detected = any(token in signal_evidence_blob for token in [
+            "not publicly accessible",
+            "public access disabled",
+            "anonymous access disabled",
+            "private bucket",
+            "private container",
+            "authentication required",
+        ])
+        public_exposure_markers_detected = any(token in signal_evidence_blob for token in [
+            "public bucket",
+            "bucket listing exposed",
+            "container listing exposed",
+            "blob listing exposed",
+            "publicly accessible",
+            "public access enabled",
+            "anonymous access",
+            "anonymous read",
+            "anonymous list",
+            "unauthenticated access",
+            "world-readable",
+            "world readable",
+            "allusers",
+            "authenticatedusers",
+            "public acl",
+        ]) and not cloud_public_negation_detected
+        managed_db_public_markers_detected = any(token in signal_evidence_blob for token in [
+            "publicly accessible",
+            "public access enabled",
+            "public endpoint",
+            "public network access",
+            "internet reachable",
+            "internet exposed",
+        ]) and not cloud_public_negation_detected
+        cosmos_risk_markers_detected = any(token in signal_evidence_blob for token in [
+            "master key",
+            "read-only key",
+            "readonly key",
+            "publicly accessible",
+            "public access enabled",
+            "public network access",
+            "anonymous access",
+        ]) and not cloud_public_negation_detected
+        aws_storage_exposure_candidate = bool(aws_storage_detected and public_exposure_markers_detected)
+        azure_storage_exposure_candidate = bool(azure_storage_detected and public_exposure_markers_detected)
+        gcp_storage_exposure_candidate = bool(gcp_storage_detected and public_exposure_markers_detected)
+        rds_public_access_candidate = bool(rds_detected and managed_db_public_markers_detected)
+        aurora_public_access_candidate = bool(aurora_detected and managed_db_public_markers_detected)
+        cosmos_exposure_candidate = bool(cosmos_detected and cosmos_risk_markers_detected)
+        cloudsql_public_access_candidate = bool(cloudsql_detected and managed_db_public_markers_detected)
         cloud_provider_detected = bool(aws_detected or azure_detected or gcp_detected)
         storage_service_detected = bool(aws_storage_detected or azure_storage_detected or gcp_storage_detected)
+        storage_exposure_candidate = bool(
+            aws_storage_exposure_candidate or azure_storage_exposure_candidate or gcp_storage_exposure_candidate
+        )
+        managed_db_exposure_candidate = bool(
+            rds_public_access_candidate
+            or aurora_public_access_candidate
+            or cosmos_exposure_candidate
+            or cloudsql_public_access_candidate
+        )
+        cloud_exposure_candidate = bool(storage_exposure_candidate or managed_db_exposure_candidate)
 
         observed_technologies = []
         for marker, present in (
@@ -8260,6 +8339,7 @@ class WebRuntime:
                 ("cosmos", cosmos_detected),
                 ("cloudsql", cloudsql_detected),
                 ("cloud_storage", storage_service_detected),
+                ("cloud_exposure", cloud_exposure_candidate),
                 ("mysql", mysql_detected),
                 ("postgresql", postgresql_detected),
                 ("mssql", mssql_detected),
@@ -8292,6 +8372,9 @@ class WebRuntime:
             "ubiquiti_detected": ubiquiti_detected,
             "cloud_provider_detected": cloud_provider_detected,
             "storage_service_detected": storage_service_detected,
+            "cloud_exposure_candidate": cloud_exposure_candidate,
+            "storage_exposure_candidate": storage_exposure_candidate,
+            "managed_db_exposure_candidate": managed_db_exposure_candidate,
             "aws_detected": aws_detected,
             "azure_detected": azure_detected,
             "gcp_detected": gcp_detected,
@@ -8302,6 +8385,13 @@ class WebRuntime:
             "aws_storage_detected": aws_storage_detected,
             "azure_storage_detected": azure_storage_detected,
             "gcp_storage_detected": gcp_storage_detected,
+            "aws_storage_exposure_candidate": aws_storage_exposure_candidate,
+            "azure_storage_exposure_candidate": azure_storage_exposure_candidate,
+            "gcp_storage_exposure_candidate": gcp_storage_exposure_candidate,
+            "rds_public_access_candidate": rds_public_access_candidate,
+            "aurora_public_access_candidate": aurora_public_access_candidate,
+            "cosmos_exposure_candidate": cosmos_exposure_candidate,
+            "cloudsql_public_access_candidate": cloudsql_public_access_candidate,
             "mysql_detected": mysql_detected,
             "postgresql_detected": postgresql_detected,
             "mssql_detected": mssql_detected,
@@ -12057,6 +12147,30 @@ class WebRuntime:
             return f"{hours}h {minutes:02d}m {seconds:02d}s"
         return f"{minutes}m {seconds:02d}s"
 
+    @classmethod
+    def _redact_command_secrets(cls, value: Any) -> str:
+        text_value = str(value or "")
+        if not text_value:
+            return ""
+
+        def _replace(match: re.Match) -> str:
+            prefix = str(match.group("prefix") or "")
+            secret_value = str(match.group("value") or "")
+            stripped = secret_value.strip()
+            lowered = stripped.lower()
+            if not stripped:
+                return match.group(0)
+            if "***redacted***" in lowered:
+                return match.group(0)
+            if stripped.startswith("[") and stripped.endswith("]"):
+                return match.group(0)
+            return f"{prefix}***redacted***"
+
+        redacted = text_value
+        for pattern in cls._COMMAND_SECRET_PATTERNS:
+            redacted = pattern.sub(_replace, redacted)
+        return redacted
+
     @staticmethod
     def _normalize_progress_source_label(value: Any) -> str:
         raw = str(value or "").strip()
@@ -12229,6 +12343,7 @@ class WebRuntime:
             records: List[Dict[str, Any]] = []
             for row in rows:
                 item = dict(zip(keys, row))
+                item["command"] = WebRuntime._redact_command_secrets(item.get("command", ""))
                 start_time_utc, end_time_utc, prefer_utc_naive = WebRuntime._normalize_process_time_range_to_utc(
                     item.get("startTime", ""),
                     item.get("endTime", ""),

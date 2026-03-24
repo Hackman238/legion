@@ -195,14 +195,14 @@ class AppSettings():
         "echo chaos not configured"
     )
     GRAYHATWARFARE_COMMAND = (
-        "(test -n [GRAYHAT_API_KEY] && "
-        "python3 -m app.grayhatwarfare_probe --domain [ROOT_DOMAIN] --api-key [GRAYHAT_API_KEY] --output [OUTPUT].json) || "
-        "echo grayhatwarfare not configured"
+        "(if test -n [GRAYHAT_API_KEY]; then "
+        "python3 -m app.grayhatwarfare_probe --domain [ROOT_DOMAIN] --api-key [GRAYHAT_API_KEY] --output [OUTPUT].json; "
+        "else echo grayhatwarfare not configured; fi)"
     )
     SHODAN_ENRICHMENT_COMMAND = (
-        "(test -n [SHODAN_API_KEY] && "
-        "python3 -m app.shodan_probe --target [IP] --api-key [SHODAN_API_KEY] --output [OUTPUT].json) || "
-        "echo shodan not configured"
+        "(if test -n [SHODAN_API_KEY]; then "
+        "python3 -m app.shodan_probe --target [IP] --api-key [SHODAN_API_KEY] --output [OUTPUT].json; "
+        "else echo shodan not configured; fi)"
     )
     NIKTO_COMMAND = (
         "(command -v nikto >/dev/null 2>&1 && "
@@ -538,6 +538,10 @@ class AppSettings():
             normalized = cls._ensure_subfinder_command(normalized)
         if normalized_tool == "chaos":
             normalized = cls.CHAOS_COMMAND
+        if normalized_tool == "grayhatwarfare":
+            normalized = cls.GRAYHATWARFARE_COMMAND
+        if normalized_tool == "shodan-enrichment":
+            normalized = cls.SHODAN_ENRICHMENT_COMMAND
         if normalized_tool in {"whatweb", "whatweb-http", "whatweb-https"}:
             normalized = cls._ensure_whatweb_command(normalized)
         if normalized_tool == "nikto":

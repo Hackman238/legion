@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import socket
 import sys
 from typing import Any, Dict, Tuple
 from urllib.error import HTTPError, URLError
@@ -34,7 +36,16 @@ def grayhat_domain_regex(domain: str) -> str:
     tokens = [token for token in keyword.replace("-", " ").split() if token]
     if not tokens:
         return ""
-    return ".*" + ".*".join(tokens) + ".*"
+    return ".*" + "[^a-z0-9]*".join(re.escape(token) for token in tokens) + ".*"
+
+
+def _fallback_file_params(keyword: str, limit: int) -> Dict[str, Any]:
+    return {
+        "keywords": keyword,
+        "full-path": "1",
+        "types": BUCKET_TYPES,
+        "limit": max(1, min(int(limit or 25), 1000)),
+    }
 
 
 def _perform_request(endpoint: str, *, api_key: str, params: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
@@ -52,7 +63,7 @@ def _perform_request(endpoint: str, *, api_key: str, params: Dict[str, Any], tim
     return json.loads(payload or "{}")
 
 
-def run_grayhatwarfare_probe(domain: str, api_key: str, *, limit: int = 25, timeout: int = 30) -> Dict[str, Any]:
+def run_grayhatwarfare_probe(domain: str, api_key: str, *, limit: int = 25, timeout: int = 45) -> Dict[str, Any]:
     root_domain = registrable_root_domain(domain)
     keyword = grayhat_root_keyword(domain)
     regex = grayhat_domain_regex(domain)
@@ -89,20 +100,36 @@ def run_grayhatwarfare_probe(domain: str, api_key: str, *, limit: int = 25, time
 
     buckets_payload = _perform_request("buckets", api_key=api_key, params=bucket_params, timeout=timeout)
     files_payload: Dict[str, Any]
+    file_fallback_keyword_query = ""
+    file_fallback_reason = ""
     try:
         files_payload = _perform_request("files", api_key=api_key, params=file_params, timeout=timeout)
     except HTTPError as exc:
         if int(getattr(exc, "code", 0) or 0) not in {400, 401, 402, 403, 422}:
             raise
-        fallback_file_params = {
-            "keywords": keyword,
-            "full-path": "1",
-            "types": BUCKET_TYPES,
-            "limit": max(1, min(int(limit or 25), 1000)),
-        }
+        file_fallback_reason = f"http-{int(getattr(exc, 'code', 0) or 0)}"
+        fallback_file_params = _fallback_file_params(keyword, limit)
         files_payload = _perform_request("files", api_key=api_key, params=fallback_file_params, timeout=timeout)
-        files_payload.setdefault("meta", {})
-        files_payload["meta"]["fallbackKeywordQuery"] = keyword
+        file_fallback_keyword_query = keyword
+    except (TimeoutError, socket.timeout):
+        file_fallback_reason = "timeout"
+        fallback_file_params = _fallback_file_params(keyword, limit)
+        files_payload = _perform_request("files", api_key=api_key, params=fallback_file_params, timeout=timeout)
+        file_fallback_keyword_query = keyword
+    except URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        if not isinstance(reason, (TimeoutError, socket.timeout)):
+            raise
+        file_fallback_reason = "timeout"
+        fallback_file_params = _fallback_file_params(keyword, limit)
+        files_payload = _perform_request("files", api_key=api_key, params=fallback_file_params, timeout=timeout)
+        file_fallback_keyword_query = keyword
+
+    files_payload.setdefault("meta", {})
+    if file_fallback_keyword_query:
+        files_payload["meta"]["fallbackKeywordQuery"] = file_fallback_keyword_query
+    if file_fallback_reason:
+        files_payload["meta"]["fallbackReason"] = file_fallback_reason
 
     return {
         "input_domain": str(domain or ""),
@@ -121,6 +148,7 @@ def run_grayhatwarfare_probe(domain: str, api_key: str, *, limit: int = 25, time
             "file_notice": str(((files_payload.get("meta", {}) if isinstance(files_payload.get("meta", {}), dict) else {}).get("notice", "")) or ""),
             "file_regex_notice": str(((files_payload.get("meta", {}) if isinstance(files_payload.get("meta", {}), dict) else {}).get("regexNotice", "")) or ""),
             "file_fallback_keyword_query": str(((files_payload.get("meta", {}) if isinstance(files_payload.get("meta", {}), dict) else {}).get("fallbackKeywordQuery", "")) or ""),
+            "file_fallback_reason": str(((files_payload.get("meta", {}) if isinstance(files_payload.get("meta", {}), dict) else {}).get("fallbackReason", "")) or ""),
         },
     }
 
@@ -131,7 +159,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key", required=True, help="Grayhat Warfare API key.")
     parser.add_argument("--output", required=True, help="Output JSON file path.")
     parser.add_argument("--limit", type=int, default=25, help="Max results to request from each endpoint.")
-    parser.add_argument("--timeout", type=int, default=30, help="HTTP timeout in seconds.")
+    parser.add_argument("--timeout", type=int, default=45, help="HTTP timeout in seconds.")
     return parser
 
 

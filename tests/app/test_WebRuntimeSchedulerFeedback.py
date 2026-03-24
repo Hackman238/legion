@@ -1103,6 +1103,47 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertFalse(signals["mssql_detected"])
         self.assertIn("mysql", signals["observed_technologies"])
 
+    def test_extract_scheduler_signals_distinguishes_cloud_detection_from_exposure_candidates(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        detected_only = runtime._extract_scheduler_signals(
+            service_name="https",
+            scripts=[],
+            recent_processes=[
+                {
+                    "tool_id": "nuclei-cloud",
+                    "status": "Finished",
+                    "output_excerpt": "[aws-endpoint] [http] [info] https://tenant-assets.s3.amazonaws.com Amazon S3 endpoint",
+                }
+            ],
+            target={"hostname": "tenant-assets.s3.amazonaws.com", "service": "https", "host_open_services": ["https"]},
+        )
+        exposure = runtime._extract_scheduler_signals(
+            service_name="https",
+            scripts=[],
+            recent_processes=[
+                {
+                    "tool_id": "nuclei-cloud",
+                    "status": "Finished",
+                    "output_excerpt": (
+                        "[aws-public-bucket] [http] [medium] https://tenant-assets.s3.amazonaws.com "
+                        "public bucket listing exposed anonymous access"
+                    ),
+                }
+            ],
+            target={"hostname": "tenant-assets.s3.amazonaws.com", "service": "https", "host_open_services": ["https"]},
+        )
+
+        self.assertTrue(detected_only["aws_storage_detected"])
+        self.assertFalse(detected_only["aws_storage_exposure_candidate"])
+        self.assertFalse(detected_only["cloud_exposure_candidate"])
+
+        self.assertTrue(exposure["aws_storage_detected"])
+        self.assertTrue(exposure["aws_storage_exposure_candidate"])
+        self.assertTrue(exposure["storage_exposure_candidate"])
+        self.assertTrue(exposure["cloud_exposure_candidate"])
+
     def test_extract_scheduler_signals_ignores_script_and_tool_names_without_positive_evidence(self):
         from app.web.runtime import WebRuntime
 

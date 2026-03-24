@@ -885,6 +885,58 @@ class SchedulerPlannerTest(unittest.TestCase):
         self.assertNotIn("nuclei-azure-cosmos", filtered_ids)
         self.assertNotIn("mysql-info.nse", filtered_ids)
 
+    def test_score_with_context_boosts_cloud_followup_when_exposure_candidate_is_present(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        base_context = {
+            "signals": {
+                "web_service": True,
+                "aws_storage_detected": True,
+                "rds_detected": True,
+            }
+        }
+        escalated_context = {
+            "signals": {
+                "web_service": True,
+                "aws_storage_detected": True,
+                "aws_storage_exposure_candidate": True,
+                "rds_detected": True,
+                "rds_public_access_candidate": True,
+            }
+        }
+
+        storage_base = SchedulerPlanner._score_with_context(
+            0.0,
+            tool_id="nuclei-aws-storage",
+            label="Run nuclei AWS storage follow-up",
+            command_template="nuclei -tags aws,s3,bucket,storage -u [WEB_URL]",
+            context=base_context,
+        )
+        storage_escalated = SchedulerPlanner._score_with_context(
+            0.0,
+            tool_id="nuclei-aws-storage",
+            label="Run nuclei AWS storage follow-up",
+            command_template="nuclei -tags aws,s3,bucket,storage -u [WEB_URL]",
+            context=escalated_context,
+        )
+        rds_base = SchedulerPlanner._score_with_context(
+            0.0,
+            tool_id="nuclei-aws-rds",
+            label="Run nuclei AWS RDS follow-up",
+            command_template="nuclei -tags aws,rds,database -target [IP]:[PORT]",
+            context=base_context,
+        )
+        rds_escalated = SchedulerPlanner._score_with_context(
+            0.0,
+            tool_id="nuclei-aws-rds",
+            label="Run nuclei AWS RDS follow-up",
+            command_template="nuclei -tags aws,rds,database -target [IP]:[PORT]",
+            context=escalated_context,
+        )
+
+        self.assertGreater(storage_escalated, storage_base)
+        self.assertGreater(rds_escalated, rds_base)
+
     def test_ai_candidate_filter_generalized_vendor_token_block_and_allow(self):
         from app.scheduler.planner import SchedulerPlanner
 
