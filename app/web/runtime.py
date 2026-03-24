@@ -284,6 +284,9 @@ _PSEUDO_TECH_NAME_TOKENS = {
     "x-frame-options",
     "x-powered-by",
     "x-xss-protection",
+    "true",
+    "false",
+    "truncated",
 }
 _GENERIC_TECH_NAME_TOKENS = {
     "unknown",
@@ -8152,6 +8155,9 @@ class WebRuntime:
             "aws ",
             " aws",
             "x-amz-",
+            "amazon rds",
+            "amazon aurora",
+            "rds.amazonaws.com",
         ])
         azure_detected = any(token in signal_evidence_blob for token in [
             "microsoft azure",
@@ -8159,6 +8165,9 @@ class WebRuntime:
             "blob.core.windows.net",
             "dfs.core.windows.net",
             "x-ms-",
+            "documents.azure.com",
+            "cosmos db",
+            "cosmosdb",
         ])
         gcp_detected = any(token in signal_evidence_blob for token in [
             "google cloud",
@@ -8167,7 +8176,46 @@ class WebRuntime:
             "googleapis.com",
             "x-goog-",
             " gcp ",
+            "cloudsql",
+            "google cloud sql",
         ])
+        rds_detected = any(token in signal_evidence_blob for token in [
+            "amazon rds",
+            "aws rds",
+            "rds.amazonaws.com",
+            "relational database service",
+        ])
+        aurora_detected = any(token in signal_evidence_blob for token in [
+            "amazon aurora",
+            "aws aurora",
+            "aurora mysql",
+            "aurora postgresql",
+        ]) or (
+            "rds.amazonaws.com" in signal_evidence_blob
+            and any(token in signal_evidence_blob for token in [".cluster-", ".cluster-ro-", "aurora"])
+        )
+        cosmos_detected = any(token in signal_evidence_blob for token in [
+            "azure cosmos",
+            "cosmos db",
+            "cosmosdb",
+            "documents.azure.com",
+            "mongo.cosmos.azure.com",
+            "cassandra.cosmos.azure.com",
+            "gremlin.cosmos.azure.com",
+            "table.cosmos.azure.com",
+        ])
+        cloudsql_detected = any(token in signal_evidence_blob for token in [
+            "google cloud sql",
+            "cloudsql",
+            "sqladmin.googleapis.com",
+        ])
+        mysql_detected = service_lower == "mysql" or any(token in signal_evidence_blob for token in ["mysql", "mariadb"])
+        postgresql_detected = service_lower in {"postgres", "postgresql"} or any(
+            token in signal_evidence_blob for token in ["postgresql", "postgres ", "pgsql"]
+        )
+        mssql_detected = service_lower in {"ms-sql", "ms-sql-s", "codasrv-se", "mssql"} or any(
+            token in signal_evidence_blob for token in ["microsoft sql server", "ms-sql", "mssql"]
+        )
         aws_storage_detected = any(token in signal_evidence_blob for token in [
             "s3.amazonaws.com",
             "amazon s3",
@@ -8207,7 +8255,14 @@ class WebRuntime:
                 ("aws", aws_detected),
                 ("azure", azure_detected),
                 ("gcp", gcp_detected),
+                ("rds", rds_detected),
+                ("aurora", aurora_detected),
+                ("cosmos", cosmos_detected),
+                ("cloudsql", cloudsql_detected),
                 ("cloud_storage", storage_service_detected),
+                ("mysql", mysql_detected),
+                ("postgresql", postgresql_detected),
+                ("mssql", mssql_detected),
                 ("nginx", "nginx" in signal_evidence_blob),
                 ("apache", "apache" in signal_evidence_blob),
         ):
@@ -8240,9 +8295,16 @@ class WebRuntime:
             "aws_detected": aws_detected,
             "azure_detected": azure_detected,
             "gcp_detected": gcp_detected,
+            "rds_detected": rds_detected,
+            "aurora_detected": aurora_detected,
+            "cosmos_detected": cosmos_detected,
+            "cloudsql_detected": cloudsql_detected,
             "aws_storage_detected": aws_storage_detected,
             "azure_storage_detected": azure_storage_detected,
             "gcp_storage_detected": gcp_storage_detected,
+            "mysql_detected": mysql_detected,
+            "postgresql_detected": postgresql_detected,
+            "mssql_detected": mssql_detected,
             "observed_technologies": observed_technologies[:12],
             "vuln_hits": len(cve_hits),
             "missing_tools": sorted(missing_tools),
@@ -8484,6 +8546,18 @@ class WebRuntime:
         if not token:
             return False
         return token in _WEAK_TECH_NAME_TOKENS or token in _GENERIC_TECH_NAME_TOKENS
+
+    @staticmethod
+    def _is_placeholder_scheduler_text(value: Any) -> bool:
+        token = str(value or "").strip().lower()
+        if not token:
+            return False
+        if token in {"true", "false", "null", "none", "nil", "truncated", "...", "[truncated]", "...[truncated]"}:
+            return True
+        if "[truncated]" in token:
+            trimmed = token.replace("...[truncated]", "").replace("[truncated]", "").strip(" .:-")
+            return not trimmed or trimmed == "truncated"
+        return token.endswith("...")
 
     @staticmethod
     def _technology_canonical_key(name: Any, cpe: Any) -> str:
@@ -8866,6 +8940,12 @@ class WebRuntime:
                 cpe=cpe,
                 evidence=evidence,
             )
+            if self._is_placeholder_scheduler_text(name) and not cpe:
+                continue
+            if self._is_placeholder_scheduler_text(version):
+                version = ""
+            if self._is_placeholder_scheduler_text(evidence):
+                evidence = ""
             if not name and not cpe:
                 continue
             if not name and cpe:
@@ -9256,6 +9336,10 @@ class WebRuntime:
             if cvss_value > 10.0:
                 cvss_value = 10.0
             evidence = self._truncate_scheduler_text(item.get("evidence", ""), 640)
+            if self._is_placeholder_scheduler_text(title) and not cve_id:
+                continue
+            if self._is_placeholder_scheduler_text(evidence):
+                evidence = ""
             if not title and not cve_id:
                 continue
             evidence_lower = str(evidence or "").strip().lower()
@@ -9266,11 +9350,11 @@ class WebRuntime:
                 continue
             seen.add(key)
             rows.append({
-                "title": title,
+                "title": title or cve_id,
                 "severity": severity,
                 "cvss": cvss_value,
                 "cve": cve_id,
-                "evidence": evidence,
+                "evidence": evidence or title or cve_id,
             })
             if len(rows) >= 220:
                 break

@@ -667,6 +667,47 @@ class SchedulerPlannerTest(unittest.TestCase):
         self.assertEqual(1, len(filtered))
         self.assertEqual("http-vmware-path-vuln.nse", filtered[0]["tool_id"])
 
+    def test_ai_candidate_filter_blocks_brute_and_wpscan_tools_for_external_recon(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        candidates = [
+            {
+                "tool_id": "nuclei-wordpress",
+                "label": "nuclei wordpress",
+                "command_template": "nuclei -tags wordpress -u [IP]",
+                "service_scope": "http",
+                "action": SimpleNamespace(risk_tags=[]),
+            },
+            {
+                "tool_id": "wpscan",
+                "label": "WPScan",
+                "command_template": "wpscan --url [IP]",
+                "service_scope": "http",
+                "action": SimpleNamespace(risk_tags=[]),
+            },
+            {
+                "tool_id": "http-form-brute.nse",
+                "label": "http form brute",
+                "command_template": "nmap --script http-form-brute [IP]",
+                "service_scope": "http",
+                "action": SimpleNamespace(risk_tags=["credential_bruteforce"]),
+            },
+        ]
+        context = {
+            "target": {"engagement_preset": "external_recon"},
+            "signals": {
+                "web_service": True,
+                "wordpress_detected": True,
+            },
+        }
+
+        filtered = SchedulerPlanner._filter_candidates_with_context(candidates, context)
+        filtered_ids = {item["tool_id"] for item in filtered}
+
+        self.assertIn("nuclei-wordpress", filtered_ids)
+        self.assertNotIn("wpscan", filtered_ids)
+        self.assertNotIn("http-form-brute.nse", filtered_ids)
+
     def test_ai_candidate_filter_blocks_subfinder_outside_initial_discovery(self):
         from app.scheduler.planner import SchedulerPlanner
 
@@ -799,6 +840,50 @@ class SchedulerPlannerTest(unittest.TestCase):
         filtered_with_signal_ids = {item["tool_id"] for item in filtered_with_signal}
         self.assertIn("nuclei-cloud", filtered_with_signal_ids)
         self.assertIn("nuclei-aws-storage", filtered_with_signal_ids)
+
+    def test_ai_candidate_filter_gates_managed_db_and_internal_db_info_tools_by_signals(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        candidates = [
+            {
+                "tool_id": "nuclei-aws-rds",
+                "label": "Run nuclei AWS RDS follow-up",
+                "command_template": "nuclei -tags aws,rds,database -target [IP]:[PORT]",
+                "service_scope": "postgresql",
+            },
+            {
+                "tool_id": "nuclei-azure-cosmos",
+                "label": "Run nuclei Azure Cosmos DB follow-up",
+                "command_template": "nuclei -tags azure,cosmos,cosmosdb,database -u [WEB_URL]",
+                "service_scope": "https",
+            },
+            {
+                "tool_id": "mysql-info.nse",
+                "label": "Run mysql-info.nse",
+                "command_template": "nmap -Pn [IP] -p [PORT] --script=mysql-info.nse",
+                "service_scope": "mysql",
+            },
+            {
+                "tool_id": "pgsql-info.nse",
+                "label": "Run pgsql-info.nse",
+                "command_template": "nmap -Pn [IP] -p [PORT] --script=pgsql-info.nse",
+                "service_scope": "postgresql",
+            },
+        ]
+
+        filtered = SchedulerPlanner._filter_candidates_with_context(
+            candidates,
+            {
+                "target": {"hostname": "db.example.com", "engagement_preset": "external_recon"},
+                "signals": {"rds_detected": True, "postgresql_detected": True},
+                "context_summary": {"focus": {"current_phase": "targeted_checks"}},
+            },
+        )
+        filtered_ids = {item["tool_id"] for item in filtered}
+        self.assertIn("nuclei-aws-rds", filtered_ids)
+        self.assertIn("pgsql-info.nse", filtered_ids)
+        self.assertNotIn("nuclei-azure-cosmos", filtered_ids)
+        self.assertNotIn("mysql-info.nse", filtered_ids)
 
     def test_ai_candidate_filter_generalized_vendor_token_block_and_allow(self):
         from app.scheduler.planner import SchedulerPlanner

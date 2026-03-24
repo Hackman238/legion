@@ -18,6 +18,12 @@ INTERNAL_SERVICE_IDS = {
     "winrm",
     "snmp",
     "rpcbind",
+    "mysql",
+    "postgres",
+    "postgresql",
+    "ms-sql",
+    "ms-sql-s",
+    "codasrv-se",
 }
 SPECIALIZED_ACTION_SIGNAL_TOKENS = {
     "wordpress_detected": ("wpscan", "wordpress", "wp-"),
@@ -158,6 +164,10 @@ DEFAULT_STRATEGY_PACKS: Tuple[StrategyPack, ...] = (
             "nuclei-aws-storage",
             "nuclei-azure-storage",
             "nuclei-gcp-storage",
+            "nuclei-aws-rds",
+            "nuclei-aws-aurora",
+            "nuclei-azure-cosmos",
+            "nuclei-gcp-cloudsql",
             "nuclei-cves",
             "nuclei-exposures",
             "whatweb",
@@ -176,7 +186,7 @@ DEFAULT_STRATEGY_PACKS: Tuple[StrategyPack, ...] = (
             "testssl.sh",
             "wafw00f",
         ],
-        preferred_tool_tokens=["http", "https", "web", "ssl", "tls", "headers", "title", "content", "favicon", "httpx", "subfinder", "chaos", "grayhat", "shodan", "cloud", "aws", "azure", "gcp", "storage", "s3", "blob", "gcs", "katana"],
+        preferred_tool_tokens=["http", "https", "web", "ssl", "tls", "headers", "title", "content", "favicon", "httpx", "subfinder", "chaos", "grayhat", "shodan", "cloud", "aws", "azure", "gcp", "storage", "s3", "blob", "gcs", "rds", "aurora", "cosmos", "cloudsql", "database", "katana"],
         blocked_tool_tokens=["smb", "ldap", "kerberos", "winrm", "msrpc", "relay", "responder", "spray", "hydra"],
         coverage_gap_tools={
             "missing_discovery": ["nmap", "banner"],
@@ -190,6 +200,29 @@ DEFAULT_STRATEGY_PACKS: Tuple[StrategyPack, ...] = (
             "missing_http_followup": ["curl-headers", "curl-options", "curl-robots"],
         },
         evidence_expectations=["service fingerprint", "screenshots", "TLS evidence", "validation artifacts"],
+    ),
+    StrategyPack(
+        pack_id="external_managed_data",
+        label="External Managed Data",
+        methodology_tags=["cloud", "validation", "enumeration"],
+        trigger_services=["http", "https", "ssl", "mysql", "postgres", "postgresql", "ms-sql", "ms-sql-s", "codasrv-se"],
+        trigger_signals=["rds_detected", "aurora_detected", "cosmos_detected", "cloudsql_detected"],
+        trigger_observed_technologies=["aws", "azure", "gcp", "rds", "aurora", "cosmos", "cloudsql"],
+        preferred_tool_ids=[
+            "banner",
+            "nmap",
+            "nuclei-cloud",
+            "nuclei-aws-rds",
+            "nuclei-aws-aurora",
+            "nuclei-azure-cosmos",
+            "nuclei-gcp-cloudsql",
+            "mysql-info.nse",
+            "pgsql-info.nse",
+            "ms-sql-info.nse",
+        ],
+        preferred_tool_tokens=["cloud", "aws", "azure", "gcp", "rds", "aurora", "cosmos", "cloudsql", "database", "mysql", "postgres", "pgsql", "mssql", "sql server"],
+        blocked_tool_tokens=["hydra", "spray", "dirsearch", "ffuf", "web-content-discovery", "wpscan"],
+        evidence_expectations=["managed database fingerprints", "database service banners", "cloud vendor validation"],
     ),
     StrategyPack(
         pack_id="web_app_api",
@@ -259,11 +292,11 @@ DEFAULT_STRATEGY_PACKS: Tuple[StrategyPack, ...] = (
         pack_id="internal_network",
         label="Internal Network",
         methodology_tags=["enumeration", "credential_access"],
-        trigger_services=["smb", "microsoft-ds", "netbios-ssn", "ldap", "kerberos", "msrpc", "rdp", "ms-wbt-server", "winrm", "snmp"],
-        trigger_signals=["smb_signing_disabled", "rdp_service", "vnc_service"],
-        trigger_observed_technologies=["active", "directory", "windows", "smb"],
-        preferred_tool_ids=["banner", "screenshooter", "smb-security-mode", "smb2-security-mode", "smb-enum-users.nse", "enum4linux-ng", "smbmap", "rpcclient-enum", "netexec"],
-        preferred_tool_tokens=["smb", "ldap", "kerberos", "rpc", "winrm", "rdp", "snmp", "enum", "banner", "screenshot", "enum4linux", "smbmap", "rpcclient", "netexec", "nxc"],
+        trigger_services=["smb", "microsoft-ds", "netbios-ssn", "ldap", "kerberos", "msrpc", "rdp", "ms-wbt-server", "winrm", "snmp", "mysql", "postgres", "postgresql", "ms-sql", "ms-sql-s", "codasrv-se"],
+        trigger_signals=["smb_signing_disabled", "rdp_service", "vnc_service", "mysql_detected", "postgresql_detected", "mssql_detected"],
+        trigger_observed_technologies=["active", "directory", "windows", "smb", "mysql", "postgresql", "microsoft sql server", "mariadb"],
+        preferred_tool_ids=["banner", "screenshooter", "smb-security-mode", "smb2-security-mode", "smb-enum-users.nse", "enum4linux-ng", "smbmap", "rpcclient-enum", "netexec", "mysql-info.nse", "pgsql-info.nse", "ms-sql-info.nse"],
+        preferred_tool_tokens=["smb", "ldap", "kerberos", "rpc", "winrm", "rdp", "snmp", "enum", "banner", "screenshot", "enum4linux", "smbmap", "rpcclient", "netexec", "nxc", "mysql", "mariadb", "postgres", "pgsql", "mssql", "sql server", "database"],
         blocked_tool_tokens=["nikto", "whatweb", "wpscan", "web-content-discovery", "dirsearch", "ffuf"],
         coverage_gap_tools={
             "missing_banner": ["banner"],
@@ -393,7 +426,7 @@ def select_strategy_packs(
         if protocol_lower == "tcp" and service_lower in WEB_SERVICE_IDS and pack.pack_id in {"external_surface", "web_app_api", "tls_and_exposure"}:
             score += 4.0
 
-        if str(getattr(policy, "scope", "") or "").strip().lower() == "external" and pack.pack_id == "external_surface":
+        if str(getattr(policy, "scope", "") or "").strip().lower() == "external" and pack.pack_id in {"external_surface", "external_managed_data"}:
             score += 14.0
             reasons.append("external scope")
         if str(getattr(policy, "scope", "") or "").strip().lower() == "internal" and pack.pack_id in {"internal_network", "credentials_and_relay"}:
@@ -402,7 +435,7 @@ def select_strategy_packs(
 
         if str(getattr(policy, "intent", "") or "").strip().lower() == "pentest" and pack.pack_id in {"vuln_validation", "credentials_and_relay"}:
             score += 8.0
-        if str(getattr(policy, "intent", "") or "").strip().lower() == "recon" and pack.pack_id in {"external_surface", "internal_network", "tls_and_exposure"}:
+        if str(getattr(policy, "intent", "") or "").strip().lower() == "recon" and pack.pack_id in {"external_surface", "external_managed_data", "internal_network", "tls_and_exposure"}:
             score += 6.0
 
         matched_signals = sorted(name for name in pack.trigger_signals if bool(signals.get(name)))
@@ -424,6 +457,8 @@ def select_strategy_packs(
         ):
             score += 12.0
         if pack.pack_id == "internal_network" and service_lower in INTERNAL_SERVICE_IDS:
+            score += 10.0
+        if pack.pack_id == "external_managed_data" and service_lower in {"http", "https", "ssl", "mysql", "postgres", "postgresql", "ms-sql", "ms-sql-s", "codasrv-se"}:
             score += 10.0
         if pack.pack_id == "credentials_and_relay":
             if service_lower in {"smb", "microsoft-ds", "netbios-ssn", "ldap", "kerberos", "winrm"}:

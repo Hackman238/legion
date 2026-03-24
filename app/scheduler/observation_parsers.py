@@ -194,6 +194,16 @@ _SMB_PASSWORD_POLICY_RE = re.compile(
 _SQLMAP_DBA_RE = re.compile(r"^current user is DBA:\s*(true|false|yes|no)\s*$", flags=re.IGNORECASE)
 _SQLMAP_AVAILABLE_DBS_RE = re.compile(r"^available databases\s*\[(\d+)\]\s*:\s*$", flags=re.IGNORECASE)
 _SQLMAP_LIST_ITEM_RE = re.compile(r"^\[\*\]\s+(.+?)\s*$")
+_MYSQL_INFO_VERSION_RE = re.compile(r"(?im)^\s*Version\s*:\s*(.+?)\s*$")
+_MYSQL_INFO_PROTOCOL_RE = re.compile(r"(?im)^\s*Protocol\s*:\s*(.+?)\s*$")
+_MYSQL_INFO_AUTH_PLUGIN_RE = re.compile(r"(?im)^\s*Authentication Plugin Name\s*:\s*(.+?)\s*$")
+_PGSQL_INFO_VERSION_RE = re.compile(r"(?im)^\s*(?:PostgreSQL server version|Server version)\s*:\s*(.+?)\s*$")
+_PGSQL_INFO_SSL_RE = re.compile(r"(?im)^\s*SSL\s*:\s*(.+?)\s*$")
+_PGSQL_INFO_AUTH_RE = re.compile(r"(?im)^\s*Auth(?:entication)? method\s*:\s*(.+?)\s*$")
+_MSSQL_INFO_PRODUCT_RE = re.compile(r"(?im)^\s*(?:Product|name)\s*:\s*(.+?)\s*$")
+_MSSQL_INFO_VERSION_RE = re.compile(r"(?im)^\s*number\s*:\s*([0-9][A-Za-z0-9._-]{0,31})\s*$")
+_MSSQL_INFO_CLUSTERED_RE = re.compile(r"(?im)^\s*Clustered\s*:\s*(true|false)\s*$")
+_MSSQL_INFO_NAMED_PIPE_RE = re.compile(r"(?im)^\s*Named pipe\s*:\s*(.+?)\s*$")
 _DISCOVERY_ADMIN_TOKENS = (
     "admin",
     "login",
@@ -269,6 +279,9 @@ _SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
     "sqlmap",
     "http-sqlmap",
     "netexec",
+    "mysql-info",
+    "pgsql-info",
+    "ms-sql-info",
     "curl-",
 )
 _DISCOVERY_PATH_RE = re.compile(r"(?i)(?:\"path\"|path|location|redirectlocation)\s*[:=]\s*['\"]?(/[^\"'\s,|]+)")
@@ -281,12 +294,38 @@ _SMB_FOUND_DOMAIN_RE = re.compile(r"(?im)\bfound domain(?:\s+name)?\s*:\s*([^,\r
 _SMB_SHARE_TABLE_RE = re.compile(r"(?im)^\s*([A-Za-z0-9_. $-]{1,128}?)\s{2,}(?:Disk|IPC|Printer|Device)\b")
 _HTTP_HEADER_RE = re.compile(r"^([A-Za-z0-9-]+):\s*(.+)$")
 _HTML_TITLE_RE = re.compile(r"<title>([^<]{1,200})</title>", flags=re.IGNORECASE)
+_PLACEHOLDER_VALUE_TOKENS = {
+    "true",
+    "false",
+    "null",
+    "none",
+    "nil",
+    "n/a",
+    "na",
+    "truncated",
+    "...",
+}
 
 
 def _clean_text(value: Any, limit: int = 320) -> str:
     text = _ANSI_ESCAPE_RE.sub("", str(value or ""))
     text = re.sub(r"\s+", " ", text).strip()
     return text[:int(limit)] if limit > 0 else text
+
+
+def _looks_placeholder_text(value: Any) -> bool:
+    text = _clean_text(value, 200)
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered in _PLACEHOLDER_VALUE_TOKENS:
+        return True
+    if "[truncated]" in lowered:
+        trimmed = lowered.replace("...[truncated]", "").replace("[truncated]", "").strip(" .:-")
+        return not trimmed or trimmed == "truncated"
+    if lowered.endswith("..."):
+        return True
+    return False
 
 
 def _clean_url(value: Any) -> str:
@@ -546,6 +585,12 @@ def _append_technology(rows: List[Dict[str, Any]], name: str, *, version: str = 
     tech_version = _clean_text(version, 80)
     tech_cpe = _clean_text(cpe, 220)
     tech_evidence = _clean_text(evidence, 520)
+    if _looks_placeholder_text(tech_name) and not tech_cpe:
+        return
+    if _looks_placeholder_text(tech_version):
+        tech_version = ""
+    if _looks_placeholder_text(tech_evidence):
+        tech_evidence = ""
     if not tech_name and not tech_cpe:
         return
     rows.append({
@@ -573,6 +618,10 @@ def _append_finding(
     finding_title = _clean_text(title, 260)
     finding_cve = _clean_text(cve, 64).upper()
     finding_evidence = _clean_text(evidence, 640)
+    if _looks_placeholder_text(finding_title) and not finding_cve:
+        return
+    if _looks_placeholder_text(finding_evidence):
+        finding_evidence = ""
     if not finding_title and not finding_cve:
         return
     row = {
@@ -683,7 +732,7 @@ def _append_product_technology(rows: List[Dict[str, Any]], value: Any, *, eviden
 
 def _append_named_version_technology(rows: List[Dict[str, Any]], value: Any, *, evidence: str = ""):
     text = _clean_text(value, 160)
-    if not text:
+    if not text or _looks_placeholder_text(text):
         return
     match = _NAME_VERSION_RE.match(text)
     if not match:
@@ -986,7 +1035,7 @@ def _parse_httpx_output(tool_id: str, output_text: str) -> Dict[str, Any]:
             tech_list = parsed.get("tech") if isinstance(parsed.get("tech"), list) else parsed.get("technologies", [])
             if isinstance(tech_list, list):
                 for item in tech_list[:24]:
-                    _append_named_version_technology(technologies, str(item or ""), evidence=f"{tool_id} fingerprint tech detect")
+                    _append_named_version_technology(technologies, item, evidence=f"{tool_id} fingerprint tech detect")
             webserver = _clean_text(parsed.get("webserver", "") or parsed.get("server", ""), 120)
             if webserver:
                 server_match = re.search(r"([A-Za-z][A-Za-z0-9+_.-]+)(?:/([0-9][A-Za-z0-9._-]*))?", webserver)
@@ -997,7 +1046,14 @@ def _parse_httpx_output(tool_id: str, output_text: str) -> Dict[str, Any]:
                         version=server_match.group(2) or "",
                         evidence=f"{tool_id} fingerprint webserver {webserver}",
                     )
-            cdn_name = _clean_text(parsed.get("cdn", "") or parsed.get("cdn-name", "") or parsed.get("cdn_name", ""), 96)
+            cdn_name = ""
+            for key in ("cdn-name", "cdn_name", "cdn"):
+                value = parsed.get(key)
+                if not isinstance(value, str):
+                    continue
+                cdn_name = _clean_text(value, 96)
+                if cdn_name:
+                    break
             if cdn_name:
                 _append_named_version_technology(technologies, cdn_name, evidence=f"{tool_id} fingerprint cdn {cdn_name}")
 
@@ -1165,6 +1221,25 @@ def _append_cloud_technologies_from_text(rows: List[Dict[str, Any]], value: Any,
         _append_technology(rows, "Google Cloud Platform", evidence=evidence or text)
     if any(token in lowered for token in ("storage.googleapis.com", "storage.cloud.google.com", "google cloud storage", "gcs bucket", "x-goog-")):
         _append_technology(rows, "Google Cloud Storage", evidence=evidence or text)
+    if any(token in lowered for token in ("rds.amazonaws.com", "amazon rds", "aws rds", "relational database service")):
+        _append_technology(rows, "Amazon RDS", evidence=evidence or text)
+    if any(token in lowered for token in ("amazon aurora", "aws aurora", "aurora mysql", "aurora postgresql")) or (
+            "rds.amazonaws.com" in lowered and any(token in lowered for token in (".cluster-", ".cluster-ro-", "aurora"))
+    ):
+        _append_technology(rows, "Amazon Aurora", evidence=evidence or text)
+    if any(token in lowered for token in (
+            "azure cosmos",
+            "cosmos db",
+            "cosmosdb",
+            "documents.azure.com",
+            "mongo.cosmos.azure.com",
+            "cassandra.cosmos.azure.com",
+            "gremlin.cosmos.azure.com",
+            "table.cosmos.azure.com",
+    )):
+        _append_technology(rows, "Azure Cosmos DB", evidence=evidence or text)
+    if any(token in lowered for token in ("google cloud sql", "cloudsql", "sqladmin.googleapis.com")):
+        _append_technology(rows, "Google Cloud SQL", evidence=evidence or text)
 
 
 def _parse_nuclei_output(tool_id: str, output_text: str, *, port: str = "", protocol: str = "tcp", service: str = "") -> Dict[str, Any]:
@@ -2439,6 +2514,82 @@ def _parse_sqlmap_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     }
 
 
+def _parse_database_info_output(tool_id: str, output_text: str) -> Dict[str, Any]:
+    technologies: List[Dict[str, Any]] = []
+    findings: List[Dict[str, Any]] = []
+    raw_text = _strip_nmap_preamble(output_text)
+    cleaned_text = "\n".join(
+        re.sub(r"^\s*\|_?\s*", "", _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).rstrip())
+        for raw_line in str(raw_text or "").splitlines()
+    )
+
+    if tool_id == "mysql-info.nse":
+        version_match = _MYSQL_INFO_VERSION_RE.search(cleaned_text)
+        protocol_match = _MYSQL_INFO_PROTOCOL_RE.search(cleaned_text)
+        auth_plugin_match = _MYSQL_INFO_AUTH_PLUGIN_RE.search(cleaned_text)
+        version = _clean_text(version_match.group(1) if version_match else "", 120)
+        protocol = _clean_text(protocol_match.group(1) if protocol_match else "", 48)
+        auth_plugin = _clean_text(auth_plugin_match.group(1) if auth_plugin_match else "", 96)
+        if version:
+            _append_cloud_technologies_from_text(technologies, version, evidence=f"{tool_id}: {version}")
+            if "mariadb" in version.lower():
+                _append_technology(technologies, "MariaDB", version=version, evidence=f"{tool_id}: {version}")
+                _append_technology(technologies, "MySQL", evidence=f"{tool_id}: {version}")
+            else:
+                _append_technology(technologies, "MySQL", version=version, evidence=f"{tool_id}: {version}")
+        else:
+            _append_technology(technologies, "MySQL", evidence=f"{tool_id} handshake metadata")
+        if protocol:
+            _append_finding(findings, f"MySQL protocol version identified: {protocol}", severity="info", evidence=f"{tool_id}: {protocol}")
+        if auth_plugin:
+            _append_finding(findings, f"MySQL authentication plugin exposed: {auth_plugin}", severity="info", evidence=f"{tool_id}: {auth_plugin}")
+
+    elif tool_id == "pgsql-info.nse":
+        version_match = _PGSQL_INFO_VERSION_RE.search(cleaned_text)
+        ssl_match = _PGSQL_INFO_SSL_RE.search(cleaned_text)
+        auth_method_match = _PGSQL_INFO_AUTH_RE.search(cleaned_text)
+        version = _clean_text(version_match.group(1) if version_match else "", 120)
+        ssl_state = _clean_text(ssl_match.group(1) if ssl_match else "", 64)
+        auth_method = _clean_text(auth_method_match.group(1) if auth_method_match else "", 96)
+        if version:
+            _append_cloud_technologies_from_text(technologies, version, evidence=f"{tool_id}: {version}")
+            _append_technology(technologies, "PostgreSQL", version=version, evidence=f"{tool_id}: {version}")
+        else:
+            _append_technology(technologies, "PostgreSQL", evidence=f"{tool_id} server metadata")
+        if ssl_state and any(token in ssl_state.lower() for token in ("support", "enable", "on", "yes", "true")):
+            _append_finding(findings, "PostgreSQL SSL supported", severity="info", evidence=f"{tool_id}: {ssl_state}")
+        if auth_method:
+            _append_finding(findings, f"PostgreSQL auth method exposed: {auth_method}", severity="info", evidence=f"{tool_id}: {auth_method}")
+
+    elif tool_id == "ms-sql-info.nse":
+        product_match = _MSSQL_INFO_PRODUCT_RE.search(cleaned_text)
+        version_match = _MSSQL_INFO_VERSION_RE.search(cleaned_text)
+        clustered_match = _MSSQL_INFO_CLUSTERED_RE.search(cleaned_text)
+        named_pipe_match = _MSSQL_INFO_NAMED_PIPE_RE.search(cleaned_text)
+        product = _clean_text(product_match.group(1) if product_match else "", 120)
+        version = _clean_text(version_match.group(1) if version_match else "", 64)
+        clustered = _clean_text(clustered_match.group(1) if clustered_match else "", 16).lower()
+        named_pipe = _clean_text(named_pipe_match.group(1) if named_pipe_match else "", 120)
+        if product:
+            _append_cloud_technologies_from_text(technologies, product, evidence=f"{tool_id}: {product}")
+            if product.lower().startswith("microsoft sql server"):
+                _append_technology(technologies, "Microsoft SQL Server", version=version, evidence=f"{tool_id}: {product}")
+            else:
+                _append_named_version_technology(technologies, product, evidence=f"{tool_id}: {product}")
+        else:
+            _append_technology(technologies, "Microsoft SQL Server", version=version, evidence=f"{tool_id} instance metadata")
+        if clustered == "true":
+            _append_finding(findings, "Microsoft SQL Server clustered deployment", severity="info", evidence=f"{tool_id}: clustered=true")
+        if named_pipe:
+            _append_finding(findings, f"Microsoft SQL Server named pipe exposed: {named_pipe}", severity="info", evidence=f"{tool_id}: {named_pipe}")
+
+    return {
+        "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=16),
+        "findings": _dedupe_rows(findings, ("title", "cve", "evidence"), limit=24),
+        "urls": [],
+    }
+
+
 def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     technologies: List[Dict[str, Any]] = []
     findings: List[Dict[str, Any]] = []
@@ -3168,6 +3319,8 @@ def extract_tool_observations(
             current = _parse_sqlmap_output(normalized_tool, source)
         elif normalized_tool == "wpscan":
             current = _parse_wpscan_output(normalized_tool, source)
+        elif normalized_tool in {"mysql-info.nse", "pgsql-info.nse", "ms-sql-info.nse"}:
+            current = _parse_database_info_output(normalized_tool, source)
         elif normalized_tool in {"enum4linux-ng", "enum4linux", "smbenum", "samrdump", "smbmap", "rpcclient-enum", "netexec"} or normalized_tool.startswith("rpcclient"):
             current = _parse_smb_enum_output(normalized_tool, source)
         elif normalized_tool == "nbtscan":

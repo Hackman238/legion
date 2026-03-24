@@ -11,7 +11,7 @@ class SchedulerToolPromptRegistryTest(unittest.TestCase):
             tool_ids_for_prompt_group("web_baseline"),
         )
         self.assertEqual(
-            ["whatweb", "whatweb-http", "whatweb-https", "httpx", "nikto", "web-content-discovery", "dirsearch", "ffuf"],
+            ["whatweb", "whatweb-http", "whatweb-https", "httpx", "nikto", "web-content-discovery", "katana", "dirsearch", "ffuf"],
             tool_ids_for_prompt_group("web_deep"),
         )
         self.assertIn("wafw00f", tool_ids_for_prompt_group("web_specialist_followup"))
@@ -116,6 +116,27 @@ class SchedulerToolPromptRegistryTest(unittest.TestCase):
         self.assertIn("storage", aws_storage_info.purpose.lower())
         self.assertEqual("web_url", aws_storage_info.arg_shape)
         self.assertIn("external_enrichment", aws_storage_info.phase_tags)
+
+        aws_rds_info = get_scheduler_tool_prompt_info(
+            "nuclei-aws-rds",
+            label="Run nuclei AWS RDS follow-up",
+            command_template="nuclei -tags aws,rds,database -target [IP]:[PORT]",
+            service_scope="postgresql",
+        )
+        self.assertIn("rds", aws_rds_info.purpose.lower())
+        self.assertEqual("host:port", aws_rds_info.arg_shape)
+        self.assertIn("external_enrichment", aws_rds_info.phase_tags)
+
+        mysql_info = get_scheduler_tool_prompt_info(
+            "mysql-info.nse",
+            label="Run mysql-info.nse",
+            command_template="nmap -Pn [IP] -p [PORT] --script=mysql-info.nse",
+            service_scope="mysql",
+        )
+        self.assertIn("mysql", mysql_info.purpose.lower())
+        self.assertEqual("host:port", mysql_info.arg_shape)
+        self.assertIn("service_fingerprint", mysql_info.phase_tags)
+        self.assertIn("internal_safe_enum", mysql_info.prompt_groups)
 
     def test_http_nse_tools_have_specific_prompt_metadata(self):
         from app.scheduler.tool_prompt_registry import get_scheduler_tool_prompt_info

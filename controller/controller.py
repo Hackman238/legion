@@ -24,6 +24,7 @@ import socket
 import re
 import ipaddress
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
 from PyQt6 import sip, QtWidgets
 
@@ -40,6 +41,7 @@ from app.scheduler.audit import log_scheduler_decision
 from app.scheduler.config import SchedulerConfigManager
 from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
 from app.scheduler.planner import SchedulerPlanner
+from app.scheduler.state import ensure_scheduler_target_state_table, upsert_target_state
 from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
 import os
@@ -2353,6 +2355,7 @@ class Controller:
         tool_name = str(getattr(qProcess, 'name', '') or '')
         default_source = str(getattr(qProcess, 'hostIp', '') or '')
         capture_context = {}
+        scheduler_captures = []
         for line in output_lines:
             stripped = line.strip()
             if not stripped:
@@ -2385,6 +2388,15 @@ class Controller:
                     )
                 except Exception:
                     log.exception("Failed to store credential capture entry")
+                scheduler_captures.append(dict(capture))
+        try:
+            self._persistCredentialCapturesToScheduler(
+                scheduler_captures,
+                tool_name=tool_name,
+                default_source=default_source,
+            )
+        except Exception:
+            log.exception("Failed to persist credential captures into scheduler state")
         try:
             self.view.updateResponderResultsTable()
         except Exception:
@@ -2511,6 +2523,170 @@ class Controller:
             username = left.split()[-1]
             hash_value = right.strip()
         return username, hash_value
+
+    @staticmethod
+    def _normalizeCredentialCaptureSource(source):
+        token = str(source or '').strip()
+        if not token:
+            return ''
+        try:
+            if '://' in token:
+                parsed = urlparse(token)
+                token = str(parsed.hostname or '').strip() or token
+        except Exception:
+            pass
+        token = token.strip().strip('[]')
+        if '/' in token and not re.match(r'^\d+\.\d+\.\d+\.\d+$', token):
+            token = token.rsplit('/', 1)[-1].strip()
+        return token
+
+    @staticmethod
+    def _splitCredentialPrincipal(value):
+        principal = str(value or '').strip()
+        if not principal:
+            return '', ''
+        if '\\' in principal:
+            realm, username = principal.split('\\', 1)
+            return realm.strip()[:160], username.strip()[:160]
+        if '/' in principal and not principal.startswith('/'):
+            realm, username = principal.split('/', 1)
+            return realm.strip()[:160], username.strip()[:160]
+        if '@' in principal:
+            username, realm = principal.split('@', 1)
+            return realm.strip()[:160], username.strip()[:160]
+        return '', principal[:160]
+
+    @staticmethod
+    def _extractCleartextPassword(details):
+        match = re.search(r"\bclear\s+text\s+password\s*:\s*(?P<password>.+)$", str(details or '').strip(), flags=re.IGNORECASE)
+        return str(match.group('password') or '').strip() if match else ''
+
+    @classmethod
+    def _buildSchedulerCredentialRow(cls, tool_name, capture):
+        if not isinstance(capture, dict):
+            return None
+        details = str(capture.get('details', '') or '').strip()
+        username_raw = str(capture.get('username', '') or '').strip()
+        hash_value = str(capture.get('hash_value', '') or '').strip()
+        realm, username = cls._splitCredentialPrincipal(username_raw)
+        secret_ref = ''
+        cred_type = ''
+        if hash_value:
+            secret_ref = hash_value[:240]
+            cred_type = 'ntlm_hash'
+        else:
+            cleartext = cls._extractCleartextPassword(details)
+            if cleartext:
+                secret_ref = cleartext[:240]
+                cred_type = 'cleartext_password'
+        if not username and not secret_ref:
+            return None
+        if not cred_type:
+            cred_type = 'captured_credential'
+        return {
+            'username': username,
+            'realm': realm,
+            'secret_ref': secret_ref,
+            'type': cred_type,
+            'evidence': details[:280],
+            'confidence': 88.0 if secret_ref else 72.0,
+            'source_kind': 'observed',
+            'observed': True,
+        }
+
+    @classmethod
+    def _buildSchedulerSessionRow(cls, tool_name, capture):
+        if not isinstance(capture, dict):
+            return None
+        lowered_tool = str(tool_name or '').strip().lower()
+        details = str(capture.get('details', '') or '').strip()
+        if lowered_tool != 'ntlmrelay' or 'authenticating against' not in details.lower():
+            return None
+        target = str(capture.get('source', '') or '').strip()
+        target_host = cls._normalizeCredentialCaptureSource(target)
+        realm, username = cls._splitCredentialPrincipal(capture.get('username', ''))
+        session_type = 'ntlm_relay_auth'
+        port = ''
+        protocol = 'tcp'
+        try:
+            parsed = urlparse(target)
+            if parsed.scheme.lower() == 'smb':
+                port = str(parsed.port or 445)
+            elif parsed.scheme.lower() in {'ldap', 'ldaps', 'http', 'https'}:
+                port = str(parsed.port or '')
+        except Exception:
+            pass
+        if not username and not target_host:
+            return None
+        return {
+            'session_type': session_type,
+            'username': username,
+            'host': target_host,
+            'port': port,
+            'protocol': protocol,
+            'evidence': details[:280],
+            'obtained_at': getTimestamp(True),
+            'confidence': 82.0,
+            'source_kind': 'observed',
+            'observed': True,
+            'realm': realm,
+        }
+
+    def _persistCredentialCapturesToScheduler(self, captures, *, tool_name='', default_source=''):
+        if not isinstance(captures, list) or not captures:
+            return
+        project = getattr(self.logic, 'activeProject', None)
+        if project is None:
+            return
+        database = getattr(project, 'database', None)
+        host_repo = getattr(getattr(project, 'repositoryContainer', None), 'hostRepository', None)
+        if database is None or host_repo is None:
+            return
+        ensure_scheduler_target_state_table(database)
+        default_source_token = self._normalizeCredentialCaptureSource(default_source)
+        grouped = {}
+
+        for capture in captures:
+            if not isinstance(capture, dict):
+                continue
+            source_token = self._normalizeCredentialCaptureSource(capture.get('source', '') or default_source_token)
+            host_obj = None
+            if source_token:
+                host_obj = host_repo.getHostByIP(source_token) or host_repo.getHostByHostname(source_token)
+            if host_obj is None and default_source_token:
+                host_obj = host_repo.getHostByIP(default_source_token) or host_repo.getHostByHostname(default_source_token)
+            if host_obj is None:
+                continue
+
+            host_id = int(getattr(host_obj, 'id', 0) or 0)
+            host_ip = str(getattr(host_obj, 'ip', '') or source_token or default_source_token).strip()
+            if host_id <= 0 or not host_ip:
+                continue
+
+            bucket = grouped.setdefault(host_id, {
+                'host_ip': host_ip,
+                'credentials': [],
+                'sessions': [],
+            })
+            credential_row = self._buildSchedulerCredentialRow(tool_name, capture)
+            if credential_row:
+                bucket['credentials'].append(credential_row)
+            session_row = self._buildSchedulerSessionRow(tool_name, capture)
+            if session_row:
+                bucket['sessions'].append(session_row)
+
+        updated_at = getTimestamp(True)
+        normalized_tool = str(tool_name or '').strip().lower()
+        for host_id, payload in grouped.items():
+            upsert_target_state(database, int(host_id), {
+                'host_ip': str(payload.get('host_ip', '') or ''),
+                'updated_at': updated_at,
+                'credentials': list(payload.get('credentials', []) or []),
+                'sessions': list(payload.get('sessions', []) or []),
+                'raw': {
+                    'credential_capture_tools': [normalized_tool] if normalized_tool else [],
+                },
+            }, merge=True)
 
     # this function parses nmap's output looking for open ports to run automated attacks on
     def scheduler(self, parser, isNmapImport):

@@ -88,6 +88,34 @@ class SchedulerPlanner:
             "required_signals": ("gcp_storage_detected",),
         },
         {
+            "tokens": ("nuclei-aws-rds", "amazon rds", "aws rds", "rds.amazonaws.com"),
+            "required_signals": ("rds_detected",),
+        },
+        {
+            "tokens": ("nuclei-aws-aurora", "amazon aurora", "aws aurora", "aurora"),
+            "required_signals": ("aurora_detected",),
+        },
+        {
+            "tokens": ("nuclei-azure-cosmos", "azure cosmos", "cosmos db", "documents.azure.com", "cosmosdb"),
+            "required_signals": ("cosmos_detected",),
+        },
+        {
+            "tokens": ("nuclei-gcp-cloudsql", "cloud sql", "cloudsql", "google cloud sql"),
+            "required_signals": ("cloudsql_detected",),
+        },
+        {
+            "tokens": ("mysql-info.nse", "mysql info", "mariadb"),
+            "required_signals": ("mysql_detected",),
+        },
+        {
+            "tokens": ("pgsql-info.nse", "pgsql info", "postgresql"),
+            "required_signals": ("postgresql_detected",),
+        },
+        {
+            "tokens": ("ms-sql-info.nse", "mssql", "ms-sql", "sql server"),
+            "required_signals": ("mssql_detected",),
+        },
+        {
             "tokens": ("vmware", "vsphere", "vcenter", "esxi"),
             "required_signals": ("vmware_detected",),
         },
@@ -108,6 +136,17 @@ class SchedulerPlanner:
             "required_signals": ("huawei_detected",),
         },
     )
+    RECON_HARD_BLOCK_RISK_TAGS = {
+        "credential_bruteforce",
+        "password_spray",
+        "account_lockout_risk",
+        "credential_capture_side_effect",
+        "exploit_execution",
+        "lateral_movement",
+        "destructive_write",
+        "persistence_action",
+        "data_exfiltration_risk",
+    }
 
     def __init__(self, config_manager):
         self.config_manager = config_manager
@@ -801,6 +840,41 @@ class SchedulerPlanner:
                 value += 26.0
             else:
                 value -= 42.0
+        if tool_norm == "nuclei-aws-rds":
+            if bool(signals.get("rds_detected")):
+                value += 26.0
+            else:
+                value -= 42.0
+        if tool_norm == "nuclei-aws-aurora":
+            if bool(signals.get("aurora_detected")):
+                value += 26.0
+            else:
+                value -= 42.0
+        if tool_norm == "nuclei-azure-cosmos":
+            if bool(signals.get("cosmos_detected")):
+                value += 26.0
+            else:
+                value -= 42.0
+        if tool_norm == "nuclei-gcp-cloudsql":
+            if bool(signals.get("cloudsql_detected")):
+                value += 26.0
+            else:
+                value -= 42.0
+        if tool_norm == "mysql-info.nse":
+            if bool(signals.get("mysql_detected")):
+                value += 28.0
+            else:
+                value -= 44.0
+        if tool_norm == "pgsql-info.nse":
+            if bool(signals.get("postgresql_detected")):
+                value += 28.0
+            else:
+                value -= 44.0
+        if tool_norm == "ms-sql-info.nse":
+            if bool(signals.get("mssql_detected")):
+                value += 28.0
+            else:
+                value -= 44.0
 
         if bool(signals.get("web_service")) and any(token in text for token in ["http", "https", "web", "nuclei", "waf"]):
             value += 7.0
@@ -891,6 +965,8 @@ class SchedulerPlanner:
         grayhat_enabled = cls._context_grayhatwarfare_enabled(context)
         shodan_enabled = cls._context_shodan_enabled(context)
         external_scope = cls._context_is_external_scope(context)
+        engagement_preset = cls._context_engagement_preset(context)
+        recon_preset = engagement_preset.endswith("_recon")
         current_phase = cls._context_current_phase(context)
 
         filtered: List[Dict[str, str]] = []
@@ -898,6 +974,12 @@ class SchedulerPlanner:
             tool_id = str(candidate.get("tool_id", "") or "")
             label = str(candidate.get("label", "") or "")
             command_template = str(candidate.get("command_template", "") or "")
+            action = candidate.get("action")
+            risk_tags = {
+                str(item or "").strip().lower()
+                for item in list(getattr(action, "risk_tags", []) or [])
+                if str(item or "").strip()
+            }
             tool_text = " ".join([
                 tool_id,
                 label,
@@ -950,6 +1032,13 @@ class SchedulerPlanner:
                     or normalized_tool_id in suppressed_tools
             ):
                 blocked = True
+            if recon_preset:
+                if risk_tags & cls.RECON_HARD_BLOCK_RISK_TAGS:
+                    blocked = True
+                if cls._matches_any_token(tool_text, ("brute", "spray", "hydra", "medusa", "ncrack", "patator")):
+                    blocked = True
+                if normalized_tool_id == "wpscan":
+                    blocked = True
             if cls._covered_web_followup_tool_already_satisfied(
                     tool_id=tool_id,
                     context=context,
@@ -1299,6 +1388,22 @@ class SchedulerPlanner:
         if goal_profile.startswith("external"):
             return True
         return False
+
+    @classmethod
+    def _context_engagement_preset(cls, context: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(context, dict):
+            return ""
+        target = context.get("target", {}) if isinstance(context.get("target", {}), dict) else {}
+        preset = str(target.get("engagement_preset", "") or "").strip().lower()
+        if preset:
+            return preset
+        host_ai_state = context.get("host_ai_state", {}) if isinstance(context.get("host_ai_state", {}), dict) else {}
+        preset = str(host_ai_state.get("engagement_preset", "") or "").strip().lower()
+        if preset:
+            return preset
+        summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        focus = summary.get("focus", {}) if isinstance(summary.get("focus", {}), dict) else {}
+        return str(focus.get("engagement_preset", "") or "").strip().lower()
 
     @staticmethod
     def _context_current_phase(context: Optional[Dict[str, Any]]) -> str:

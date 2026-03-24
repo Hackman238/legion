@@ -128,6 +128,38 @@ class AppSettings():
         "nuclei -tags gcp,gcs,bucket,storage -stats -si 15 -u [WEB_URL] -ni -o [OUTPUT].txt) || "
         "echo nuclei not found"
     )
+    NUCLEI_AWS_RDS_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "nuclei -tags aws,rds,database -stats -si 15 -target [IP]:[PORT] -ni -o [OUTPUT].txt) || "
+        "echo nuclei not found"
+    )
+    NUCLEI_AWS_AURORA_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "nuclei -tags aws,aurora,database -stats -si 15 -target [IP]:[PORT] -ni -o [OUTPUT].txt) || "
+        "echo nuclei not found"
+    )
+    NUCLEI_AZURE_COSMOS_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "nuclei -tags azure,cosmos,cosmosdb,database -stats -si 15 -u [WEB_URL] -ni -o [OUTPUT].txt) || "
+        "echo nuclei not found"
+    )
+    NUCLEI_GCP_CLOUDSQL_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "nuclei -tags gcp,cloudsql,database -stats -si 15 -target [IP]:[PORT] -ni -o [OUTPUT].txt) || "
+        "echo nuclei not found"
+    )
+    MYSQL_INFO_COMMAND = (
+        "nmap -Pn [IP] -p [PORT] --script=mysql-info.nse --script-args=unsafe=1 "
+        "--stats-every 15s -vv -oA [OUTPUT]"
+    )
+    PGSQL_INFO_COMMAND = (
+        "nmap -Pn [IP] -p [PORT] --script=pgsql-info.nse --script-args=unsafe=1 "
+        "--stats-every 15s -vv -oA [OUTPUT]"
+    )
+    MSSQL_INFO_COMMAND = (
+        "nmap -Pn [IP] -p [PORT] --script=ms-sql-info.nse --script-args=unsafe=1 "
+        "--stats-every 15s -vv -oA [OUTPUT]"
+    )
     CURL_HEADERS_COMMAND = (
         "(command -v curl >/dev/null 2>&1 && "
         "(curl -k -I --max-time 20 https://[IP]:[PORT] > [OUTPUT].txt || "
@@ -290,12 +322,19 @@ class AppSettings():
         "nuclei-aws-storage": ("Run nuclei AWS storage follow-up", NUCLEI_AWS_STORAGE_COMMAND, WEB_SERVICE_SCOPE),
         "nuclei-azure-storage": ("Run nuclei Azure storage follow-up", NUCLEI_AZURE_STORAGE_COMMAND, WEB_SERVICE_SCOPE),
         "nuclei-gcp-storage": ("Run nuclei GCP storage follow-up", NUCLEI_GCP_STORAGE_COMMAND, WEB_SERVICE_SCOPE),
+        "nuclei-aws-rds": ("Run nuclei AWS RDS follow-up", NUCLEI_AWS_RDS_COMMAND, "mysql,postgres,postgresql,ms-sql,ms-sql-s,codasrv-se"),
+        "nuclei-aws-aurora": ("Run nuclei AWS Aurora follow-up", NUCLEI_AWS_AURORA_COMMAND, "mysql,postgres,postgresql"),
+        "nuclei-azure-cosmos": ("Run nuclei Azure Cosmos DB follow-up", NUCLEI_AZURE_COSMOS_COMMAND, WEB_SERVICE_SCOPE),
+        "nuclei-gcp-cloudsql": ("Run nuclei GCP Cloud SQL follow-up", NUCLEI_GCP_CLOUDSQL_COMMAND, "mysql,postgres,postgresql,ms-sql,ms-sql-s,codasrv-se"),
     }
     BASELINE_INTERNAL_PORT_ACTIONS = {
         "enum4linux-ng": ("Run enum4linux-ng", ENUM4LINUX_NG_COMMAND, "netbios-ssn,microsoft-ds,smb"),
         "smbmap": ("Run smbmap", SMBMAP_COMMAND, "netbios-ssn,microsoft-ds,smb"),
         "rpcclient-enum": ("Run rpcclient SMB enumeration", RPCCLIENT_ENUM_COMMAND, "netbios-ssn,microsoft-ds,smb"),
         "netexec": ("Run netexec", NETEXEC_COMMAND, "netbios-ssn,microsoft-ds,smb"),
+        "mysql-info.nse": ("Run mysql-info.nse", MYSQL_INFO_COMMAND, "mysql"),
+        "pgsql-info.nse": ("Run pgsql-info.nse", PGSQL_INFO_COMMAND, "postgres,postgresql"),
+        "ms-sql-info.nse": ("Run ms-sql-info.nse", MSSQL_INFO_COMMAND, "ms-sql,ms-sql-s,codasrv-se"),
         "responder": (
             "Prepare Responder capture workflow",
             RESPONDER_COMMAND,
@@ -521,6 +560,12 @@ class AppSettings():
             normalized = cls._ensure_rpcclient_enum_command(normalized)
         if normalized_tool == "netexec":
             normalized = cls._ensure_netexec_command(normalized)
+        if normalized_tool == "mysql-info.nse":
+            normalized = cls.MYSQL_INFO_COMMAND
+        if normalized_tool == "pgsql-info.nse":
+            normalized = cls.PGSQL_INFO_COMMAND
+        if normalized_tool == "ms-sql-info.nse":
+            normalized = cls.MSSQL_INFO_COMMAND
         if normalized_tool == "responder":
             normalized = cls._ensure_responder_command(normalized)
         if normalized_tool == "ntlmrelayx":
@@ -592,6 +637,9 @@ class AppSettings():
                     ("smbmap", "netbios-ssn,microsoft-ds,smb"),
                     ("rpcclient-enum", "netbios-ssn,microsoft-ds,smb"),
                     ("netexec", "netbios-ssn,microsoft-ds,smb"),
+                    ("mysql-info.nse", "mysql"),
+                    ("pgsql-info.nse", "postgres,postgresql"),
+                    ("ms-sql-info.nse", "ms-sql,ms-sql-s,codasrv-se"),
             ):
                 if self.actions.value(tool_id) is None:
                     self.actions.setValue(tool_id, [scope, 'tcp'])

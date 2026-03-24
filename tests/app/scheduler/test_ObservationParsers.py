@@ -108,6 +108,24 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("Microsoft Azure", technologies)
         self.assertIn("Azure Blob Storage", technologies)
 
+    def test_extract_tool_observations_parses_managed_database_technologies_from_nuclei(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "[aws-rds-endpoint] [tcp] [info] db-prod.cluster-abcdefghijkl.us-east-1.rds.amazonaws.com Amazon RDS endpoint\n"
+            "[aws-aurora-endpoint] [tcp] [info] db-ro.cluster-ro-abcdefghijkl.us-east-1.rds.amazonaws.com Amazon Aurora PostgreSQL endpoint\n"
+            "[azure-cosmos-endpoint] [http] [info] https://tenant.documents.azure.com Azure Cosmos DB endpoint\n"
+            "[gcp-cloudsql-endpoint] [tcp] [info] cloudsql.googleapis.com Google Cloud SQL instance"
+        )
+
+        parsed = extract_tool_observations("nuclei-cloud", output, port="443", protocol="tcp", service="https")
+        technologies = {str(item.get("name", "") or "").strip() for item in parsed["technologies"]}
+
+        self.assertIn("Amazon RDS", technologies)
+        self.assertIn("Amazon Aurora", technologies)
+        self.assertIn("Azure Cosmos DB", technologies)
+        self.assertIn("Google Cloud SQL", technologies)
+
     def test_extract_tool_observations_parses_nikto_findings_urls_and_technologies(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -337,6 +355,26 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("cloudflare", {name.lower() for name in technologies})
         self.assertIn("Directory listing observed", findings)
         self.assertIn("API/diagnostic web page observed", findings)
+
+    def test_extract_tool_observations_ignores_httpx_boolean_cdn_placeholder(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            '{"url":"https://portal.example/","title":"Portal",'
+            '"status-code":200,"content-type":"text/html","cdn":true,'
+            '"tech":["HSTS", true, "Cloudflare"]}'
+        )
+
+        parsed = extract_tool_observations("httpx", output)
+
+        technology_names = {
+            str(item.get("name", "")).strip().lower()
+            for item in parsed["technologies"]
+        }
+
+        self.assertIn("cloudflare", technology_names)
+        self.assertIn("hsts", technology_names)
+        self.assertNotIn("true", technology_names)
 
     def test_extract_tool_observations_parses_nmap_vuln_and_http_vuln_blocks(self):
         from app.scheduler.observation_parsers import extract_tool_observations
@@ -1436,6 +1474,49 @@ class ObservationParsersTest(unittest.TestCase):
 
         self.assertIn("Visual capture available for http://portal.example", titles)
         self.assertIn("http://portal.example", urls)
+
+    def test_extract_tool_observations_parses_internal_database_info_scripts(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        mysql_output = (
+            "| mysql-info:\n"
+            "|   Protocol: 10\n"
+            "|   Version: 10.6.18-MariaDB-1:10.6.18+maria~ubu2204\n"
+            "|_  Authentication Plugin Name: mysql_native_password\n"
+        )
+        pgsql_output = (
+            "| pgsql-info:\n"
+            "|   PostgreSQL server version: 14.11 (Ubuntu 14.11-0ubuntu0.22.04.1)\n"
+            "|   SSL: supported\n"
+            "|_  Auth method: scram-sha-256\n"
+        )
+        mssql_output = (
+            "| ms-sql-info:\n"
+            "|   10.0.0.5:1433:\n"
+            "|     Version:\n"
+            "|       Product: Microsoft SQL Server 2019\n"
+            "|       number: 15.0.2000.5\n"
+            "|     Clustered: true\n"
+            "|_    Named pipe: \\\\sql\\\\query\n"
+        )
+
+        mysql_parsed = extract_tool_observations("mysql-info.nse", mysql_output, port="3306", protocol="tcp", service="mysql")
+        pgsql_parsed = extract_tool_observations("pgsql-info.nse", pgsql_output, port="5432", protocol="tcp", service="postgresql")
+        mssql_parsed = extract_tool_observations("ms-sql-info.nse", mssql_output, port="1433", protocol="tcp", service="ms-sql-s")
+
+        mysql_tech = {str(item.get("name", "")).strip() for item in mysql_parsed["technologies"]}
+        mysql_findings = {str(item.get("title", "")).strip() for item in mysql_parsed["findings"]}
+        pgsql_tech = {str(item.get("name", "")).strip() for item in pgsql_parsed["technologies"]}
+        pgsql_findings = {str(item.get("title", "")).strip() for item in pgsql_parsed["findings"]}
+        mssql_tech = {str(item.get("name", "")).strip() for item in mssql_parsed["technologies"]}
+        mssql_findings = {str(item.get("title", "")).strip() for item in mssql_parsed["findings"]}
+
+        self.assertIn("MariaDB", mysql_tech)
+        self.assertIn("MySQL authentication plugin exposed: mysql_native_password", mysql_findings)
+        self.assertIn("PostgreSQL", pgsql_tech)
+        self.assertIn("PostgreSQL SSL supported", pgsql_findings)
+        self.assertIn("Microsoft SQL Server", mssql_tech)
+        self.assertIn("Microsoft SQL Server clustered deployment", mssql_findings)
 
 
 if __name__ == "__main__":

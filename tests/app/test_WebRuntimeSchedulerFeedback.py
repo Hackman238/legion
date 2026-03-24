@@ -1037,6 +1037,72 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertIn("aws", signals["observed_technologies"])
         self.assertIn("cloud_storage", signals["observed_technologies"])
 
+    def test_extract_scheduler_signals_detects_managed_db_markers(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        signals = runtime._extract_scheduler_signals(
+            service_name="postgresql",
+            scripts=[],
+            recent_processes=[
+                {
+                    "tool_id": "nuclei-cloud",
+                    "status": "Finished",
+                    "output_excerpt": (
+                        "[aws-rds-endpoint] [tcp] [info] db-prod.cluster-abcdefghijkl.us-east-1.rds.amazonaws.com "
+                        "Amazon Aurora PostgreSQL endpoint"
+                    ),
+                },
+                {
+                    "tool_id": "nuclei-cloud",
+                    "status": "Finished",
+                    "output_excerpt": (
+                        "[azure-cosmos-endpoint] [http] [info] https://tenant.documents.azure.com "
+                        "Azure Cosmos DB endpoint"
+                    ),
+                },
+            ],
+            target={
+                "hostname": "db-prod.cluster-abcdefghijkl.us-east-1.rds.amazonaws.com",
+                "service": "postgresql",
+                "host_open_services": ["postgresql"],
+            },
+        )
+
+        self.assertTrue(signals["cloud_provider_detected"])
+        self.assertTrue(signals["rds_detected"])
+        self.assertTrue(signals["aurora_detected"])
+        self.assertTrue(signals["cosmos_detected"])
+        self.assertTrue(signals["postgresql_detected"])
+        self.assertIn("aurora", signals["observed_technologies"])
+        self.assertIn("cosmos", signals["observed_technologies"])
+
+    def test_extract_scheduler_signals_detects_internal_database_services(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        signals = runtime._extract_scheduler_signals(
+            service_name="mysql",
+            scripts=[],
+            recent_processes=[
+                {
+                    "tool_id": "mysql-info.nse",
+                    "status": "Finished",
+                    "output_excerpt": "Version: 10.6.18-MariaDB Authentication Plugin Name: mysql_native_password",
+                }
+            ],
+            target={
+                "hostname": "db.internal.example",
+                "service": "mysql",
+                "host_open_services": ["mysql"],
+            },
+        )
+
+        self.assertTrue(signals["mysql_detected"])
+        self.assertFalse(signals["postgresql_detected"])
+        self.assertFalse(signals["mssql_detected"])
+        self.assertIn("mysql", signals["observed_technologies"])
+
     def test_extract_scheduler_signals_ignores_script_and_tool_names_without_positive_evidence(self):
         from app.web.runtime import WebRuntime
 
@@ -1443,6 +1509,58 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertEqual("cpe:/a:nginx:nginx", str(by_name["nginx"].get("cpe", "")).strip())
         self.assertEqual("", str(by_name["apache http server"].get("version", "")).strip())
         self.assertEqual("cpe:/a:apache:http_server", str(by_name["apache http server"].get("cpe", "")).strip())
+
+    def test_normalize_ai_technologies_drops_placeholder_names_and_truncated_evidence(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        technologies = runtime._normalize_ai_technologies([
+            {
+                "name": "True",
+                "version": "",
+                "cpe": "",
+                "evidence": "httpx fingerprint cdn True",
+            },
+            {
+                "name": "Cloudflare",
+                "version": "",
+                "cpe": "",
+                "evidence": "whatweb-http fingerprint ...[truncated]",
+            },
+        ])
+
+        by_name = {
+            str(item.get("name", "")).strip().lower(): item
+            for item in technologies
+        }
+        self.assertNotIn("true", by_name)
+        self.assertIn("cloudflare", by_name)
+        self.assertIn("whatweb-http fingerprint", str(by_name["cloudflare"].get("evidence", "")).strip())
+
+    def test_normalize_ai_findings_drops_truncation_placeholder_titles(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        findings = runtime._normalize_ai_findings([
+            {
+                "title": "truncated",
+                "severity": "info",
+                "cvss": 0.0,
+                "cve": "",
+                "evidence": "...[truncated]",
+            },
+            {
+                "title": "Directory listing observed",
+                "severity": "low",
+                "cvss": 0.0,
+                "cve": "",
+                "evidence": "...[truncated]",
+            },
+        ])
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual("Directory listing observed", findings[0]["title"])
+        self.assertEqual("Directory listing observed", findings[0]["evidence"])
 
     def test_infer_findings_uses_tool_specific_nuclei_and_tls_parsers(self):
         from app.web.runtime import WebRuntime

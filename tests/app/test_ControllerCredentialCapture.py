@@ -104,3 +104,56 @@ class ControllerCredentialCaptureTest(unittest.TestCase):
         self.assertEqual("192.168.3.44", entries[0]["source"])
         self.assertEqual("CORP\\bob", entries[0]["username"])
         self.assertEqual("", entries[0]["hash_value"])
+
+    def test_build_scheduler_credential_row_from_ntlmrelay_hash(self):
+        row = Controller._buildSchedulerCredentialRow(
+            "ntlmrelay",
+            {
+                "source": "192.168.3.50",
+                "details": "Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::",
+                "username": "Administrator",
+                "hash_value": "aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0",
+            },
+        )
+
+        self.assertIsNotNone(row)
+        self.assertEqual("Administrator", row["username"])
+        self.assertEqual("ntlm_hash", row["type"])
+        self.assertEqual(
+            "aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0",
+            row["secret_ref"],
+        )
+
+    def test_build_scheduler_credential_row_from_responder_cleartext(self):
+        row = Controller._buildSchedulerCredentialRow(
+            "responder",
+            {
+                "source": "192.168.3.44",
+                "details": "[FTP] Clear Text Password : Password123!",
+                "username": "CORP\\bob",
+                "hash_value": "",
+            },
+        )
+
+        self.assertIsNotNone(row)
+        self.assertEqual("bob", row["username"])
+        self.assertEqual("CORP", row["realm"])
+        self.assertEqual("cleartext_password", row["type"])
+        self.assertEqual("Password123!", row["secret_ref"])
+
+    def test_build_scheduler_session_row_from_ntlmrelay_auth_success(self):
+        row = Controller._buildSchedulerSessionRow(
+            "ntlmrelay",
+            {
+                "source": "smb://192.168.3.50",
+                "details": "[*] Authenticating against smb://192.168.3.50 as CORP/jdoe SUCCEED",
+                "username": "CORP/jdoe",
+                "hash_value": "",
+            },
+        )
+
+        self.assertIsNotNone(row)
+        self.assertEqual("ntlm_relay_auth", row["session_type"])
+        self.assertEqual("jdoe", row["username"])
+        self.assertEqual("192.168.3.50", row["host"])
+        self.assertEqual("445", row["port"])
