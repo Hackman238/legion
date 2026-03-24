@@ -832,6 +832,20 @@ class AppSettings():
         return normalized.strip()
 
     @staticmethod
+    def _scheduler_target_input_error(tool_id: str, command_template: str, *, port: str = "") -> str:
+        normalized_tool = str(tool_id or "").strip().lower()
+        normalized_port = str(port or "").strip()
+        command_text = str(command_template or "")
+        requires_port = (
+            normalized_tool in {"banner", "nmap"}
+            or "[PORT]" in command_text
+            or "LEGION_BANNER_PORT" in command_text
+        )
+        if requires_port and not normalized_port:
+            return f"skipped: {normalized_tool or 'tool'} requires target port"
+        return ""
+
+    @staticmethod
     def _ensure_nmap_vuln_command(command: str) -> str:
         raw = str(command or "").strip()
         if "nmap" not in raw.lower() or "--script" not in raw.lower():
@@ -1115,29 +1129,61 @@ class AppSettings():
         if "katana" not in raw.lower():
             return raw
         probe_marker = "__LEGION_KATANA_PROBE__"
-        normalized = re.sub(r"(?i)command\s+-v\s+katana", f"command -v {probe_marker}", raw)
-        normalized = re.sub(r"(?i)(?:^|\s)-jsonl\b", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-silent\b", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-jc\b", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-kf\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-d\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-c\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-p\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-rl\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-u\s+\S+", " -u [WEB_URL]", normalized, count=1)
-        if not re.search(r"(?i)(?:^|\s)-u(?:\s|$)", normalized):
-            normalized = re.sub(r"(?i)\bkatana\b", "katana -u [WEB_URL]", normalized, count=1)
         normalized = re.sub(
+            r"(?i)command\s+-v\s+katana(?:\s+\S+)*?\s*>/dev/null\s+2>&1",
+            f"command -v {probe_marker} >/dev/null 2>&1",
+            raw,
+        )
+        wrapped_prefix = re.search(
+            rf"(?i)^\s*\(\s*command\s+-v\s+{re.escape(probe_marker)}\s*>/dev/null\s+2>&1\s*&&\s*",
+            normalized,
+        )
+        fallback = ""
+        fallback_match = re.search(
+            r"(?i)\s*\|\|\s*echo\s+katana\s+not\s+found(?:\s+-o\s+\S+)?\s*$",
+            normalized,
+        )
+        if fallback_match:
+            fallback = " || echo katana not found"
+            normalized = normalized[:fallback_match.start()]
+        if wrapped_prefix:
+            normalized = normalized[wrapped_prefix.end():]
+            normalized = re.sub(r"\)\s*$", "", normalized)
+            prefix = f"(command -v {probe_marker} >/dev/null 2>&1 && "
+        else:
+            prefix = ""
+
+        katana_match = re.search(r"(?i)\bkatana\b", normalized)
+        if not katana_match:
+            return re.sub(r"\s{2,}", " ", raw).strip()
+        if not wrapped_prefix:
+            prefix = normalized[: katana_match.start()]
+        katana_command = normalized[katana_match.start():]
+        katana_command = re.sub(r"(?i)(?:^|\s)-jsonl\b", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-silent\b", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-jc\b", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-kf\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-d\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-c\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-p\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-rl\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-u\s+\S+", " -u [WEB_URL]", katana_command, count=1)
+        if not re.search(r"(?i)(?:^|\s)-u(?:\s|$)", katana_command):
+            katana_command = re.sub(r"(?i)\bkatana\b", "katana -u [WEB_URL]", katana_command, count=1)
+        katana_command = re.sub(
             r"(?i)\bkatana\b",
             "katana -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5",
-            normalized,
+            katana_command,
             count=1,
         )
-        if not re.search(r"(?i)(?:^|\s)-o(?:\s|$)", normalized):
-            normalized += " -o [OUTPUT].jsonl"
-        normalized = re.sub(r"\s{2,}", " ", normalized).strip()
-        return normalized.replace(probe_marker, "katana")
+        if not re.search(r"(?i)(?:^|\s)-o(?:\s|$)", katana_command):
+            katana_command += " -o [OUTPUT].jsonl"
+        if wrapped_prefix:
+            combined = f"{prefix}{katana_command}){fallback or ' || echo katana not found'}"
+        else:
+            combined = f"{prefix}{katana_command}{fallback}"
+        return re.sub(r"\s{2,}", " ", combined).strip().replace(probe_marker, "katana")
 
     @classmethod
     def _ensure_whatweb_command(cls, command: str) -> str:

@@ -45,6 +45,8 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual("", defaults["integrations"]["grayhatwarfare"]["api_key"])
             self.assertIn("shodan", defaults["integrations"])
             self.assertEqual("", defaults["integrations"]["shodan"]["api_key"])
+            self.assertIn("device_categories", defaults)
+            self.assertEqual([], defaults["device_categories"])
             self.assertIn("feature_flags", defaults)
             self.assertTrue(defaults["feature_flags"]["graph_workspace"])
             self.assertTrue(defaults["feature_flags"]["optional_runners"])
@@ -93,6 +95,14 @@ class SchedulerConfigManagerTest(unittest.TestCase):
                         "api_key": "test-shodan-key",
                     }
                 },
+                "device_categories": [
+                    {
+                        "name": "OT",
+                        "ports": ["502", "20000"],
+                        "fingerprint_fragments": ["modbus", "dnp3"],
+                        "cpe": ["schneider"],
+                    }
+                ],
             })
             self.assertEqual("ai", updated["mode"])
             self.assertEqual("external_pentest", updated["goal_profile"])
@@ -104,6 +114,8 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertTrue(updated["providers"]["openai"]["structured_outputs"])
             self.assertEqual("test-grayhat-key", updated["integrations"]["grayhatwarfare"]["api_key"])
             self.assertEqual("test-shodan-key", updated["integrations"]["shodan"]["api_key"])
+            self.assertEqual("OT", updated["device_categories"][0]["name"])
+            self.assertEqual([502, 20000], updated["device_categories"][0]["ports"])
             self.assertEqual(5, int(updated["ai_feedback"]["max_rounds_per_target"]))
 
             normalized_openai_model = manager.update_preferences({

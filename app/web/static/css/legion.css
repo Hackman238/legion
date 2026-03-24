@@ -17,6 +17,10 @@
     box-sizing: border-box;
 }
 
+[hidden] {
+    display: none !important;
+}
+
 body {
     margin: 0;
     min-height: 100vh;
@@ -469,15 +473,67 @@ body.opaque-ui .ribbon-submenu-item {
     border: 1px solid rgba(173, 181, 227, 0.12);
     border-radius: 10px;
     background: rgba(10, 7, 24, 0.38);
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 .ribbon-process-table-wrap table {
     font-size: 0.8rem;
+    table-layout: fixed;
 }
 
 .ribbon-process-table-wrap th,
 .ribbon-process-table-wrap td {
     padding: 0.42rem 0.38rem;
+}
+
+.ribbon-process-table-wrap th:nth-child(1),
+.ribbon-process-table-wrap td:nth-child(1) {
+    width: 4.2rem;
+}
+
+.ribbon-process-table-wrap th:nth-child(2),
+.ribbon-process-table-wrap td:nth-child(2) {
+    width: 19%;
+}
+
+.ribbon-process-table-wrap th:nth-child(4),
+.ribbon-process-table-wrap td:nth-child(4) {
+    width: 7.4rem;
+}
+
+.ribbon-process-table-wrap th:nth-child(5),
+.ribbon-process-table-wrap td:nth-child(5) {
+    width: 4rem;
+}
+
+.ribbon-process-table-wrap th:nth-child(6),
+.ribbon-process-table-wrap td:nth-child(6) {
+    width: 4.8rem;
+}
+
+.ribbon-process-table-wrap th:nth-child(7),
+.ribbon-process-table-wrap td:nth-child(7) {
+    width: 8.8rem;
+}
+
+.ribbon-process-table-wrap .process-name-cell,
+.ribbon-process-table-wrap .process-target-cell {
+    min-width: 0;
+}
+
+.ribbon-process-table-wrap .process-status-cell,
+.ribbon-process-table-wrap .process-percent-cell,
+.ribbon-process-table-wrap .process-eta-cell {
+    white-space: nowrap;
+}
+
+.cell-truncate {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .ribbon-panel:has(.ribbon-menu.is-open) {
@@ -632,6 +688,18 @@ body.opaque-ui .ribbon-submenu-item {
     display: flex;
     align-items: center;
     gap: 0.65rem;
+}
+
+.panel-inline-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+}
+
+.panel-inline-select select {
+    min-width: 10rem;
 }
 
 .panel-header-actions .icon-btn {
@@ -907,6 +975,38 @@ textarea:focus {
     word-break: break-all;
 }
 
+.output-modal {
+    width: min(980px, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.output-modal .modal-header,
+.output-modal .modal-actions,
+.output-modal .process-command-block {
+    flex: 0 0 auto;
+}
+
+.output-modal .process-command-text {
+    max-height: min(18vh, 8rem);
+    overflow: auto;
+}
+
+.process-output-block {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    margin-bottom: 0;
+}
+
+.process-output-block .ansi-output-view {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
 .action-grid {
     margin-top: 0.8rem;
     display: grid;
@@ -979,6 +1079,30 @@ textarea:focus {
 
 .scheduler-group-note {
     margin: 0;
+}
+
+.scheduler-policy-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.scheduler-policy-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.6rem;
+    border: 1px solid rgba(173, 181, 227, 0.18);
+    border-radius: 999px;
+    background: rgba(10, 14, 32, 0.5);
+    color: var(--text-muted);
+    font-size: 0.82rem;
+}
+
+.scheduler-policy-chip strong {
+    color: var(--text-main);
+    font-weight: 600;
 }
 
 .project-report-headers-label {
@@ -1147,6 +1271,10 @@ button:hover {
 
 .mode-options h4 {
     margin-bottom: 0.45rem;
+}
+
+#nmap-easy-preset-note {
+    margin-bottom: 0.55rem;
 }
 
 .wizard-nav {
@@ -1858,12 +1986,27 @@ td button {
     gap: 0.25rem;
 }
 
+.ribbon-process-table-wrap td.process-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    white-space: nowrap;
+}
+
 .process-bulk-actions {
     margin-bottom: 0.85rem;
 }
 
 .process-actions .icon-btn {
     margin-right: 0;
+}
+
+.ribbon-process-table-wrap .process-actions .icon-btn {
+    flex: 0 0 auto;
+    width: 1.9rem;
+    height: 1.8rem;
 }
 
 .process-status {
@@ -1902,6 +2045,41 @@ td button {
 
 .host-actions {
     white-space: nowrap;
+}
+
+.category-chip-list {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.6rem;
+}
+
+.category-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.75rem;
+    padding: 0.2rem 0.62rem;
+    border-radius: 999px;
+    border: 1px solid rgba(126, 227, 203, 0.26);
+    background: rgba(21, 12, 37, 0.76);
+    color: #d8fff4;
+    font-size: 0.8rem;
+    line-height: 1.1;
+}
+
+.category-chip-empty {
+    border-style: dashed;
+    color: var(--text-muted);
+}
+
+.category-cell {
+    min-width: 12rem;
+}
+
+.category-cell .category-chip-list,
+.category-cell .category-chip {
+    margin-bottom: 0;
 }
 
 .icon-btn {
@@ -1990,6 +2168,31 @@ td button {
 
 .scheduler-modal {
     width: min(1180px, 97vw);
+}
+
+.device-category-modal {
+    width: min(1220px, 97vw);
+}
+
+.device-category-modal-body {
+    display: grid;
+    grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.9fr);
+    gap: 1rem;
+}
+
+.device-category-panel {
+    border: 1px solid rgba(160, 180, 255, 0.14);
+    border-radius: 12px;
+    padding: 0.9rem;
+    background: rgba(16, 12, 34, 0.42);
+}
+
+.device-category-panel table input {
+    width: 100%;
+}
+
+.device-category-panel .table-wrap {
+    max-height: 46vh;
 }
 
 .report-provider-modal {
@@ -2218,10 +2421,10 @@ td button {
     max-height: min(60vh, 720px);
 }
 
-.legion-modal #process-output-text,
-.legion-modal #script-output-text {
-    min-height: 50vh;
-    max-height: 68vh;
+.output-modal #process-output-text,
+.output-modal #script-output-text {
+    min-height: 0;
+    max-height: none;
 }
 
 .ansi-segment {
@@ -2589,6 +2792,11 @@ td button {
         width: 100%;
         max-height: 92vh;
         padding: 0.8rem;
+    }
+
+    .output-modal {
+        width: 100%;
+        max-height: calc(100vh - 2rem);
     }
 
     .modal-actions {

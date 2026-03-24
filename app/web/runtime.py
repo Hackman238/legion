@@ -26,6 +26,12 @@ from sqlalchemy import text
 
 from app.cli_utils import import_targets, import_targets_from_textfile, is_wsl, to_windows_path
 from app.core.common import getTempFolder
+from app.device_categories import (
+    category_names,
+    classify_device_categories,
+    merge_effective_device_categories,
+    normalize_manual_device_categories,
+)
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.hostsfile import add_temporary_host_alias, registrable_root_domain
 from app.httputil.isHttps import isHttps
@@ -114,6 +120,7 @@ from app.screenshot_metadata import (
 from app.scheduler.config import (
     DEFAULT_TOOL_EXECUTION_PROFILES,
     SchedulerConfigManager,
+    normalize_device_categories,
     normalize_tool_execution_profiles,
 )
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
@@ -373,6 +380,7 @@ def _get_requests_module():
 
 
 class WebRuntime:
+    INTERNAL_QUICK_RECON_TCP_PORTS = "80,81,88,111,135,139,443,445,515,591,593,623,631,2049,8000,8008,8010,8080,8081,8088,8443,8888,9000,9090,9100,9443,10443"
     _COMMAND_SECRET_PATTERNS = (
         re.compile(
             r"(?P<prefix>\b(?:[A-Z][A-Z0-9_]*API_KEY|[A-Z][A-Z0-9_]*TOKEN|AUTHORIZATION)=)"
@@ -2908,14 +2916,16 @@ class WebRuntime:
             hostname = str(getattr(host, "hostname", "") or "").strip()
             if not host_ip:
                 raise ValueError(f"Host {host_id} does not have a valid IP.")
+            engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
 
         scan_target = choose_preferred_command_host(hostname, host_ip, "nmap")
         uses_hostname_target = scan_target != host_ip
-        default_scan_options = {
+        default_scan_options = self._apply_engagement_scan_profile({
             "discovery": True,
             "skip_dns": not uses_hostname_target,
             "timing": "T3",
             "top_ports": 1000,
+            "explicit_ports": "",
             "service_detection": True,
             "default_scripts": True,
             "os_detection": False,
@@ -2924,7 +2934,7 @@ class WebRuntime:
             "vuln_scripts": False,
             "host_discovery_only": False,
             "arp_ping": False,
-        }
+        }, engagement_policy=engagement_policy)
         return self.start_nmap_scan_job(
             targets=[scan_target],
             discovery=True,
@@ -2955,6 +2965,7 @@ class WebRuntime:
                     existing_copy["existing"] = True
                     return existing_copy
             template = self._best_scan_submission_for_subnet(normalized_subnet, self.get_scan_history(limit=400))
+            engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
 
         if isinstance(template, dict):
             return self.start_nmap_scan_job(
@@ -2968,11 +2979,12 @@ class WebRuntime:
                 scan_options=dict(template.get("scan_options", {}) or {}),
             )
 
-        default_scan_options = {
+        default_scan_options = self._apply_engagement_scan_profile({
             "discovery": True,
             "skip_dns": True,
             "timing": "T3",
             "top_ports": 1000,
+            "explicit_ports": "",
             "service_detection": True,
             "default_scripts": True,
             "os_detection": False,
@@ -2981,7 +2993,7 @@ class WebRuntime:
             "vuln_scripts": False,
             "host_discovery_only": False,
             "arp_ping": False,
-        }
+        }, engagement_policy=engagement_policy)
         return self.start_nmap_scan_job(
             targets=[normalized_subnet],
             discovery=True,
@@ -2992,6 +3004,20 @@ class WebRuntime:
             scan_mode="easy",
             scan_options=default_scan_options,
         )
+
+    @classmethod
+    def _apply_engagement_scan_profile(
+            cls,
+            scan_options: Dict[str, Any],
+            *,
+            engagement_policy: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        options = dict(scan_options or {})
+        preset = str((engagement_policy or {}).get("preset", "") or "").strip().lower()
+        if preset == "internal_quick_recon":
+            options["explicit_ports"] = cls.INTERNAL_QUICK_RECON_TCP_PORTS
+            options["top_ports"] = 0
+        return options
 
     def start_host_dig_deeper_job(self, host_id: int) -> Dict[str, Any]:
         with self._lock:
@@ -3579,10 +3605,67 @@ class WebRuntime:
                 services.append(service_name)
         return sorted({item for item in services if item})
 
-    def _build_workspace_host_row(self, host: Any, port_repo: Any, service_repo: Any) -> Dict[str, Any]:
+    def _resolve_host_device_categories(
+            self,
+            project: Any,
+            host: Any,
+            *,
+            target_state: Optional[Dict[str, Any]] = None,
+            service_inventory: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        state = dict(target_state or {})
+        effective = list(state.get("device_categories", []) or [])
+        manual = list(state.get("manual_device_categories", []) or [])
+        override_auto = bool(state.get("device_category_override", False))
+        if effective:
+            return {
+                "device_categories": list(effective),
+                "manual_device_categories": list(manual),
+                "device_category_override": override_auto,
+            }
+        resolved_inventory = list(service_inventory or state.get("service_inventory", []) or [])
+        if not resolved_inventory:
+            try:
+                resolved_inventory = load_observed_service_inventory(project.database, int(getattr(host, "id", 0) or 0))
+            except Exception:
+                resolved_inventory = []
+        manual = normalize_manual_device_categories(
+            manual or (
+                state.get("raw", {}).get("manual_device_categories", [])
+                if isinstance(state.get("raw", {}), dict)
+                else []
+            )
+        )
+        override_auto = bool(
+            state.get("device_category_override", False)
+            or (
+                state.get("raw", {}).get("device_category_override", False)
+                if isinstance(state.get("raw", {}), dict)
+                else False
+            )
+        )
+        auto = classify_device_categories(
+            {
+                "hostname": str(getattr(host, "hostname", "") or state.get("hostname", "") or ""),
+                "os_match": str(getattr(host, "osMatch", "") or state.get("os_match", "") or ""),
+                "service_inventory": resolved_inventory,
+                "technologies": list(state.get("technologies", []) or []),
+                "findings": list(state.get("findings", []) or []),
+            },
+            custom_rules=self.scheduler_config.get_device_categories(),
+        )
+        return {
+            "device_categories": merge_effective_device_categories(auto, manual, override_auto=override_auto),
+            "manual_device_categories": manual,
+            "device_category_override": override_auto,
+        }
+
+    def _build_workspace_host_row(self, host: Any, port_repo: Any, service_repo: Any, project: Any) -> Dict[str, Any]:
         ports = list(port_repo.getPortsByHostId(host.id) or [])
         open_ports = [p for p in ports if str(getattr(p, "state", "")) in {"open", "open|filtered"}]
         services = self._workspace_host_services(ports, service_repo)
+        target_state = get_target_state(project.database, int(getattr(host, "id", 0) or 0)) or {}
+        category_state = self._resolve_host_device_categories(project, host, target_state=target_state)
         return {
             "id": int(host.id),
             "ip": str(getattr(host, "ip", "") or ""),
@@ -3592,9 +3675,17 @@ class WebRuntime:
             "open_ports": len(open_ports),
             "total_ports": len(ports),
             "services": services,
+            "categories": category_names(category_state.get("device_categories", [])),
+            "category_override": bool(category_state.get("device_category_override", False)),
         }
 
-    def get_workspace_hosts(self, limit: Optional[int] = None, include_down: bool = False, service: str = "") -> List[Dict[str, Any]]:
+    def get_workspace_hosts(
+            self,
+            limit: Optional[int] = None,
+            include_down: bool = False,
+            service: str = "",
+            category: str = "",
+    ) -> List[Dict[str, Any]]:
         with self._lock:
             project = self._require_active_project()
             repo_container = project.repositoryContainer
@@ -3605,11 +3696,17 @@ class WebRuntime:
             if not bool(include_down):
                 hosts = [host for host in hosts if not self._host_is_down(getattr(host, "status", ""))]
             service_filter = str(service or "").strip().lower()
-            rows = [self._build_workspace_host_row(host, port_repo, service_repo) for host in hosts]
+            category_filter = str(category or "").strip().lower()
+            rows = [self._build_workspace_host_row(host, port_repo, service_repo, project) for host in hosts]
             if service_filter:
                 rows = [
                     row for row in rows
                     if any(str(item or "").strip().lower() == service_filter for item in list(row.get("services", []) or []))
+                ]
+            if category_filter:
+                rows = [
+                    row for row in rows
+                    if any(str(item or "").strip().lower() == category_filter for item in list(row.get("categories", []) or []))
                 ]
             if limit is not None:
                 try:
@@ -3620,40 +3717,64 @@ class WebRuntime:
                     rows = rows[:normalized_limit]
             return rows
 
-    def get_workspace_services(self, limit: int = 300, host_id: int = 0) -> List[Dict[str, Any]]:
+    def get_workspace_services(self, limit: int = 300, host_id: int = 0, category: str = "") -> List[Dict[str, Any]]:
         with self._lock:
             project = getattr(self.logic, "activeProject", None)
             if not project:
                 return []
-            session = project.database.session()
+            repo_container = project.repositoryContainer
+            host_repo = repo_container.hostRepository
+            port_repo = repo_container.portRepository
+            service_repo = getattr(repo_container, "serviceRepository", None)
             try:
-                try:
-                    normalized_host_id = int(host_id or 0)
-                except (TypeError, ValueError):
-                    normalized_host_id = 0
-                result = session.execute(text(
-                    "SELECT COALESCE(services.name, 'unknown') AS service, "
-                    "COUNT(*) AS port_count, "
-                    "COUNT(DISTINCT hosts.ip) AS host_count, "
-                    "GROUP_CONCAT(DISTINCT ports.protocol) AS protocols "
-                    "FROM portObj AS ports "
-                    "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
-                    "LEFT OUTER JOIN serviceObj AS services ON services.id = ports.serviceId "
-                    "WHERE ports.state IN ('open', 'open|filtered') "
-                    "AND (:host_id <= 0 OR hosts.id = :host_id) "
-                    "GROUP BY COALESCE(services.name, 'unknown') "
-                    "ORDER BY host_count DESC, port_count DESC, service ASC "
-                    "LIMIT :limit"
-                ), {"limit": max(1, min(int(limit), 2000)), "host_id": normalized_host_id})
-                rows = result.fetchall()
-                keys = result.keys()
-                data = [dict(zip(keys, row)) for row in rows]
-                for row in data:
-                    protocols = str(row.get("protocols", "") or "")
-                    row["protocols"] = [item for item in protocols.split(",") if item]
-                return data
-            finally:
-                session.close()
+                normalized_host_id = int(host_id or 0)
+            except (TypeError, ValueError):
+                normalized_host_id = 0
+            category_filter = str(category or "").strip().lower()
+            grouped: Dict[str, Dict[str, Any]] = {}
+            for host in list(host_repo.getAllHostObjs() or []):
+                current_host_id = int(getattr(host, "id", 0) or 0)
+                if normalized_host_id > 0 and current_host_id != normalized_host_id:
+                    continue
+                category_state = self._resolve_host_device_categories(project, host)
+                host_categories = category_names(category_state.get("device_categories", []))
+                if category_filter and not any(str(item or "").strip().lower() == category_filter for item in host_categories):
+                    continue
+                for port in list(port_repo.getPortsByHostId(current_host_id) or []):
+                    if str(getattr(port, "state", "") or "") not in {"open", "open|filtered"}:
+                        continue
+                    service_obj = None
+                    service_id = getattr(port, "serviceId", None)
+                    if service_id and service_repo is not None:
+                        try:
+                            service_obj = service_repo.getServiceById(service_id)
+                        except Exception:
+                            service_obj = None
+                    service_name = str(getattr(service_obj, "name", "") or getattr(port, "serviceName", "") or "unknown").strip() or "unknown"
+                    key = service_name.lower()
+                    row = grouped.setdefault(key, {
+                        "service": service_name,
+                        "port_count": 0,
+                        "host_ids": set(),
+                        "protocols": set(),
+                        "categories": set(),
+                    })
+                    row["port_count"] += 1
+                    row["host_ids"].add(current_host_id)
+                    row["protocols"].add(str(getattr(port, "protocol", "") or "").strip().lower())
+                    for item in host_categories:
+                        row["categories"].add(str(item or "").strip())
+            rows = []
+            for item in grouped.values():
+                rows.append({
+                    "service": str(item.get("service", "") or ""),
+                    "port_count": int(item.get("port_count", 0) or 0),
+                    "host_count": len(item.get("host_ids", set()) or set()),
+                    "protocols": sorted([entry for entry in list(item.get("protocols", set()) or set()) if entry]),
+                    "categories": sorted([entry for entry in list(item.get("categories", set()) or set()) if entry]),
+                })
+            rows.sort(key=lambda row: (-int(row.get("host_count", 0) or 0), -int(row.get("port_count", 0) or 0), str(row.get("service", "") or "").lower()))
+            return rows[: max(1, min(int(limit), 2000))]
 
     def _workspace_tools_rows(self, service: str = "") -> List[Dict[str, Any]]:
         with self._lock:
@@ -4555,6 +4676,33 @@ class WebRuntime:
             return {
                 "host_id": int(host.id),
                 "saved": bool(ok),
+            }
+
+    def update_host_categories(
+            self,
+            host_id: int,
+            *,
+            manual_categories: Any = None,
+            override_auto: bool = False,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            project = self._require_active_project()
+            host = self._resolve_host(host_id)
+            if host is None:
+                raise KeyError(f"Unknown host id: {host_id}")
+
+            updated_state = upsert_target_state(project.database, int(host.id), {
+                "host_ip": str(getattr(host, "ip", "") or ""),
+                "hostname": str(getattr(host, "hostname", "") or ""),
+                "os_match": str(getattr(host, "osMatch", "") or ""),
+                "manual_device_categories": normalize_manual_device_categories(manual_categories),
+                "device_category_override": bool(override_auto),
+            }, merge=True)
+            return {
+                "host_id": int(host.id),
+                "device_categories": category_names(updated_state.get("device_categories", [])),
+                "manual_device_categories": category_names(updated_state.get("manual_device_categories", [])),
+                "device_category_override": bool(updated_state.get("device_category_override", False)),
             }
 
     def delete_host_workspace(self, host_id: int) -> Dict[str, Any]:
@@ -10272,6 +10420,31 @@ class WebRuntime:
     ) -> Any:
         normalized_runner_settings = normalize_runner_settings(runner_settings or {})
         project = self._require_active_project()
+        input_error = AppSettings._scheduler_target_input_error(
+            str(decision.tool_id or ""),
+            str(command_template or ""),
+            port=str(port or ""),
+        )
+        if not isinstance(input_error, str):
+            input_error = ""
+        if input_error:
+            if not capture_metadata:
+                return False, input_error, 0
+            fallback_timestamp = getTimestamp(True)
+            execution_record = ExecutionRecord.from_plan_step(
+                decision,
+                started_at=fallback_timestamp,
+                finished_at=fallback_timestamp,
+                exit_status=input_error,
+                runner_type="local",
+                approval_id=str(approval_id or ""),
+            )
+            return {
+                "executed": False,
+                "reason": input_error,
+                "process_id": 0,
+                "execution_record": execution_record,
+            }
         request = RunnerExecutionRequest(
             decision=decision,
             tool_id=str(decision.tool_id or ""),
@@ -12123,7 +12296,7 @@ class WebRuntime:
                 normalized_limit = 0
             if normalized_limit > 0:
                 hosts = hosts[:normalized_limit]
-        return [self._build_workspace_host_row(host, port_repo, service_repo) for host in hosts]
+        return [self._build_workspace_host_row(host, port_repo, service_repo, project) for host in hosts]
 
     @staticmethod
     def _coerce_float(value: Any) -> Optional[float]:
@@ -12541,6 +12714,8 @@ class WebRuntime:
             "job_max": int(getattr(self.jobs, "max_jobs", 200) or 200),
             "providers": sanitized_providers,
             "integrations": sanitized_integrations,
+            "device_categories": normalize_device_categories(config.get("device_categories", [])),
+            "built_in_device_categories": list(self._built_in_device_category_options()),
             "feature_flags": self.scheduler_config.get_feature_flags(),
             "dangerous_categories": config.get("dangerous_categories", []),
             "preapproved_families_count": len(config.get("preapproved_command_families", [])),
@@ -12551,6 +12726,20 @@ class WebRuntime:
                 "Cloud AI mode may send host/service metadata to third-party providers.",
             ),
         }
+
+    def _device_category_options(self) -> List[Dict[str, Any]]:
+        from app.device_categories import device_category_options
+
+        return device_category_options(self.scheduler_config.get_device_categories())
+
+    @staticmethod
+    def _built_in_device_category_options() -> List[Dict[str, Any]]:
+        from app.device_categories import built_in_device_category_rules
+
+        return [
+            {"id": str(item.get("id", "") or ""), "name": str(item.get("name", "") or ""), "built_in": True}
+            for item in built_in_device_category_rules()
+        ]
 
     def _ensure_scheduler_table(self):
         project = getattr(self.logic, "activeProject", None)
@@ -12905,9 +13094,11 @@ class WebRuntime:
         entry_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
         target_port = str(port or "").strip()
         target_protocol = str(protocol or "tcp").strip().lower() or "tcp"
-        if entry_port and target_port and entry_port != target_port:
+        if entry_protocol != target_protocol:
             return False
-        return entry_protocol == target_protocol
+        if target_port:
+            return entry_port == target_port
+        return not entry_port
 
     def _build_command(
             self,
@@ -13136,6 +13327,7 @@ class WebRuntime:
         full_ports = bool(options.get("full_ports", False))
         vuln_scripts = bool(options.get("vuln_scripts", False))
         top_ports = self._normalize_top_ports(options.get("top_ports", 1000))
+        explicit_ports = self._normalize_explicit_ports(options.get("explicit_ports", ""))
         arp_ping = bool(options.get("arp_ping", False))
         force_pn = bool(options.get("force_pn", False))
 
@@ -13154,6 +13346,8 @@ class WebRuntime:
             tokens.append(f"-{timing_value}")
             if full_ports:
                 tokens.append("-p-")
+            elif explicit_ports:
+                tokens.extend(["-p", explicit_ports])
             else:
                 tokens.extend(["--top-ports", str(top_ports)])
 
@@ -13214,6 +13408,18 @@ class WebRuntime:
         except Exception:
             return 1000
         return max(1, min(value, 65535))
+
+    @staticmethod
+    def _normalize_explicit_ports(raw: Any) -> str:
+        value = str(raw or "").strip()
+        if not value:
+            return ""
+        cleaned = ",".join(part.strip() for part in value.split(",") if part.strip())
+        if not cleaned:
+            return ""
+        if not re.fullmatch(r"[0-9,\-]+", cleaned):
+            return ""
+        return cleaned
 
     @staticmethod
     def _contains_nmap_stats_every(args: List[str]) -> bool:

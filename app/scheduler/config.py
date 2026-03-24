@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from app.device_categories import normalize_custom_device_category_rules
 from app.paths import ensure_legion_home, get_scheduler_config_path
 from app.scheduler.policy_engine import VALID_FAMILY_POLICY_STATES
 from app.scheduler.policy import (
@@ -56,6 +57,7 @@ DEFAULT_INTEGRATIONS = {
         "api_key": "",
     }
 }
+DEFAULT_DEVICE_CATEGORIES: List[Dict[str, Any]] = []
 
 
 def normalize_feature_flags(raw: Any) -> Dict[str, bool]:
@@ -155,6 +157,10 @@ def normalize_integrations(raw: Any) -> Dict[str, Dict[str, str]]:
     return normalized
 
 
+def normalize_device_categories(raw: Any) -> List[Dict[str, Any]]:
+    return normalize_custom_device_category_rules(raw)
+
+
 DEFAULT_SCHEDULER_CONFIG = {
     "mode": "deterministic",
     "goal_profile": "internal_asset_discovery",
@@ -188,6 +194,7 @@ DEFAULT_SCHEDULER_CONFIG = {
         },
     },
     "integrations": normalize_integrations(DEFAULT_INTEGRATIONS),
+    "device_categories": normalize_device_categories(DEFAULT_DEVICE_CATEGORIES),
     "cloud_notice": (
         "Cloud AI mode may send host/service metadata to third-party providers."
     ),
@@ -290,6 +297,8 @@ class SchedulerConfigManager:
                         existing_integration.update(integration_config)
                     integrations[token] = existing_integration
                 merged["integrations"] = normalize_integrations(integrations)
+            elif key == "device_categories":
+                merged["device_categories"] = normalize_device_categories(value)
             elif key == "project_report_delivery" and isinstance(value, dict):
                 delivery = dict(merged.get("project_report_delivery", {}))
                 for delivery_key, delivery_value in value.items():
@@ -365,6 +374,9 @@ class SchedulerConfigManager:
 
     def get_feature_flags(self) -> Dict[str, bool]:
         return dict(self.load().get("feature_flags", {}))
+
+    def get_device_categories(self) -> List[Dict[str, Any]]:
+        return normalize_device_categories(self.load().get("device_categories", []))
 
     def is_feature_enabled(self, feature_name: str, default: bool = True) -> bool:
         feature_key = str(feature_name or "").strip()
@@ -532,6 +544,7 @@ class SchedulerConfigManager:
             providers["openai"] = openai_provider
         config["providers"] = providers
         config["integrations"] = normalize_integrations(raw.get("integrations", config.get("integrations", {})))
+        config["device_categories"] = normalize_device_categories(raw.get("device_categories", config.get("device_categories", [])))
         config["feature_flags"] = normalize_feature_flags(raw.get("feature_flags", config.get("feature_flags", {})))
         config["runners"] = normalize_runner_settings(raw.get("runners", config.get("runners", {})))
         config["disabled_tool_ids"] = normalize_disabled_tool_ids(

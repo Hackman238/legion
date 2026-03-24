@@ -231,6 +231,39 @@ class SettingsMigrationTest(unittest.TestCase):
         self.assertNotIn("command -v subfinder -silent", normalized)
         self.assertNotIn("subfinder not found -o", normalized)
 
+    def test_katana_normalization_preserves_wrapped_probe_and_output_tokens(self):
+        from app.settings import AppSettings
+
+        command = (
+            "(command -v katana >/dev/null 2>&1 && "
+            "katana -silent -jsonl -u https://portal.example:443 -o /tmp/out.jsonl) || "
+            "echo katana not found"
+        )
+
+        normalized = AppSettings._ensure_katana_command(command)
+
+        self.assertIn("command -v katana >/dev/null 2>&1", normalized)
+        self.assertIn("katana -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5 -u [WEB_URL]", normalized)
+        self.assertIn("-o [OUTPUT].jsonl", normalized)
+        self.assertNotIn("command -v katana -silent", normalized)
+        self.assertNotIn("katana not found -o", normalized)
+
+    def test_scheduler_target_input_error_requires_port_for_banner_and_port_placeholder_tools(self):
+        from app.settings import AppSettings
+
+        self.assertEqual(
+            "skipped: banner requires target port",
+            AppSettings._scheduler_target_input_error("banner", AppSettings.BANNER_COMMAND, port=""),
+        )
+        self.assertEqual(
+            "skipped: nmap requires target port",
+            AppSettings._scheduler_target_input_error("nmap", "nmap -Pn -p [PORT] [IP]", port=""),
+        )
+        self.assertEqual(
+            "",
+            AppSettings._scheduler_target_input_error("subfinder", "subfinder -d [IP] -o [OUTPUT].jsonl", port=""),
+        )
+
     def test_nuclei_normalization_rewrites_existing_stats_interval_to_15_seconds(self):
         from app.settings import AppSettings
 

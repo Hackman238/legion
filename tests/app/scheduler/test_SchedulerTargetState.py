@@ -220,6 +220,43 @@ class SchedulerTargetStateStoreTest(unittest.TestCase):
         finally:
             project_manager.closeProject(project)
 
+    def test_upsert_target_state_classifies_device_categories_and_honors_manual_override(self):
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_target_state_table(project.database)
+            upsert_target_state(project.database, 55, {
+                "host_ip": "10.0.0.55",
+                "hostname": "dc01.local",
+                "os_match": "Microsoft Windows Server 2022",
+                "service_inventory": [
+                    {"port": "135", "protocol": "tcp", "state": "open", "service": "msrpc", "service_product": "Microsoft Windows RPC"},
+                    {"port": "445", "protocol": "tcp", "state": "open", "service": "microsoft-ds", "service_product": "Microsoft Directory Services"},
+                    {"port": "443", "protocol": "tcp", "state": "open", "service": "https", "service_product": "Microsoft IIS httpd"},
+                ],
+                "technologies": [
+                    {"name": "windows", "cpe": "cpe:/o:microsoft:windows", "evidence": "service detection"},
+                    {"name": "Microsoft IIS httpd", "version": "10.0", "evidence": "banner"},
+                ],
+            })
+
+            loaded = get_target_state(project.database, 55)
+            category_names = {str(item.get("name", "")) for item in loaded.get("device_categories", [])}
+            self.assertIn("Windows", category_names)
+            self.assertIn("Server", category_names)
+            self.assertFalse(bool(loaded.get("device_category_override", False)))
+
+            upsert_target_state(project.database, 55, {
+                "host_ip": "10.0.0.55",
+                "manual_device_categories": ["Database"],
+                "device_category_override": True,
+            })
+            overridden = get_target_state(project.database, 55)
+            self.assertTrue(bool(overridden.get("device_category_override", False)))
+            self.assertEqual(["Database"], [str(item.get("name", "")) for item in overridden.get("device_categories", [])])
+            self.assertEqual(["Database"], [str(item.get("name", "")) for item in overridden.get("manual_device_categories", [])])
+        finally:
+            project_manager.closeProject(project)
+
 
 if __name__ == "__main__":
     unittest.main()

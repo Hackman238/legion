@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from xml.sax.saxutils import escape as xml_escape
 
+from app.device_categories import category_names
 from sqlalchemy import text
 
 from app.url_normalization import normalize_discovered_url
@@ -930,6 +931,7 @@ def sync_target_state_to_evidence_graph(
         goal_profile = _clean_text(context.get("goal_profile", ""), limit=80, allow_unknown=True)
         engagement_preset = _clean_text(context.get("engagement_preset", ""), limit=80, allow_unknown=True)
         last_mode = _clean_text(context.get("last_mode", ""), limit=32, lower=True, allow_unknown=True)
+        device_categories = category_names(context.get("device_categories", []))
         scope_node_id, changed = _upsert_node(
             session,
             node_key="scope:project",
@@ -960,6 +962,8 @@ def sync_target_state_to_evidence_graph(
                 "goal_profile": goal_profile,
                 "engagement_preset": engagement_preset,
                 "last_mode": last_mode,
+                "device_categories": device_categories,
+                "device_category_override": bool(context.get("device_category_override", False)),
             },
             evidence_refs=[f"host:{host_ip}" if host_ip else ""],
         )

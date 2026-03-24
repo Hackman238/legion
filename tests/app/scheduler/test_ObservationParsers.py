@@ -1105,6 +1105,39 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("Adminer", technologies)
         self.assertIn("Administrative/authentication paths discovered (2)", finding_titles)
 
+    def test_extract_tool_observations_parses_katana_jsonl_crawl_records(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            '{"request":{"endpoint":"https://portal.example/wp-login.php"},"response":{"status_code":200,"headers":{"content_type":"text/html"}},"tech":["WordPress"]}\n'
+            '{"request":{"endpoint":"https://portal.example/swagger/index.html"},"response":{"status_code":200}}\n'
+            '{"request":{"endpoint":"https://portal.example/static/app.js"},"response":{"status_code":200,"headers":{"content_type":"application/javascript"}}}\n'
+            '{"request":{"endpoint":"https://portal.example/adminer.php"},"response":{"status_code":200}}\n'
+        )
+
+        parsed = extract_tool_observations(
+            "katana",
+            output,
+            port="443",
+            protocol="tcp",
+            service="https",
+            hostname="portal.example",
+        )
+
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+        finding_titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("https://portal.example/wp-login.php", urls)
+        self.assertIn("https://portal.example/swagger/index.html", urls)
+        self.assertIn("https://portal.example/static/app.js", urls)
+        self.assertIn("WordPress", technologies)
+        self.assertIn("Adminer", technologies)
+        self.assertIn("Interesting crawl paths discovered (3)", finding_titles)
+        self.assertIn("Administrative/authentication crawl endpoints discovered (2)", finding_titles)
+        self.assertIn("API/diagnostic crawl endpoints discovered (1)", finding_titles)
+        self.assertIn("JavaScript crawl endpoints discovered (1)", finding_titles)
+
     def test_extract_tool_observations_parses_sqlmap_injection_and_dbms(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 

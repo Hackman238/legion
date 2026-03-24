@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 
 from app.hostsfile import registrable_root_domain
+from app.settings import AppSettings
 from app.scheduler.planner import SchedulerPlanner
 from app.scheduler.tool_prompt_registry import get_scheduler_tool_prompt_info
 from app.scheduler.policy import (
@@ -28,6 +29,7 @@ DIG_DEEPER_MAX_RUNTIME_SECONDS = 900
 DIG_DEEPER_MAX_TOTAL_ACTIONS = 24
 DIG_DEEPER_TASK_TIMEOUT_SECONDS = 180
 WEB_PARALLEL_FOLLOWUP_MAX_TOOLS = 3
+ROOT_DOMAIN_SCOPED_TOOL_IDS = {"subfinder", "grayhatwarfare", "chaos"}
 EXTERNAL_RECON_WEB_BUCKET_CAPS = {
     "metadata": 2,
     "content_discovery": 1,
@@ -182,6 +184,78 @@ class SchedulerOrchestrator:
             except (TypeError, ValueError):
                 continue
         return normalized
+
+    @classmethod
+    def _target_host_root_token(cls, target: SchedulerTarget) -> str:
+        metadata = getattr(target, "metadata", {}) or {}
+        return cls._normalize_text_token(
+            metadata.get("host_root_token")
+            or cls._candidate_host_root_token(getattr(target, "host_ip", ""), getattr(target, "hostname", ""))
+        )
+
+    @classmethod
+    def _target_scope_token(cls, target: SchedulerTarget) -> str:
+        return cls._normalize_text_token(getattr(target, "hostname", "") or getattr(target, "host_ip", ""))
+
+    @classmethod
+    def _is_canonical_root_domain_target(cls, target: SchedulerTarget) -> bool:
+        if cls._normalize_text_token(getattr(target, "service_name", "")) != "host":
+            return False
+        root_token = cls._target_host_root_token(target)
+        if not root_token:
+            return False
+        return cls._target_scope_token(target) == root_token
+
+    @staticmethod
+    def _split_scope_csv(raw: Any) -> Set[str]:
+        return {
+            str(item or "").strip().lower()
+            for item in str(raw or "").split(",")
+            if str(item or "").strip()
+        }
+
+    @classmethod
+    def _tool_service_scope(cls, settings: Any, tool_id: str) -> Set[str]:
+        normalized_tool = str(tool_id or "").strip().lower()
+        scopes: Set[str] = set()
+        for row in list(getattr(settings, "portActions", []) or []):
+            if str(row[1] if len(row) > 1 else "").strip().lower() != normalized_tool:
+                continue
+            scopes.update(cls._split_scope_csv(row[3] if len(row) > 3 else ""))
+        for row in list(getattr(settings, "automatedAttacks", []) or []):
+            if str(row[0] if len(row) > 0 else "").strip().lower() != normalized_tool:
+                continue
+            scopes.update(cls._split_scope_csv(row[1] if len(row) > 1 else ""))
+        return scopes
+
+    @classmethod
+    def _target_tool_validation_error(
+            cls,
+            *,
+            settings: Any,
+            target: SchedulerTarget,
+            tool_id: str,
+            command_template: str,
+    ) -> str:
+        normalized_tool = str(tool_id or "").strip().lower()
+        normalized_service = str(target.service_name or "").strip().rstrip("?").lower()
+        if normalized_tool in ROOT_DOMAIN_SCOPED_TOOL_IDS:
+            if normalized_service != "host":
+                return f"skipped: {normalized_tool or 'tool'} is only valid for host-root targets"
+            if not cls._is_canonical_root_domain_target(target):
+                return f"skipped: {normalized_tool or 'tool'} is only valid for canonical root-domain targets"
+        if normalized_service == "host":
+            service_scope = cls._tool_service_scope(settings, normalized_tool)
+            if service_scope and "host" not in service_scope:
+                return f"skipped: {normalized_tool or 'tool'} is not valid for host-root targets"
+        input_error = AppSettings._scheduler_target_input_error(
+            normalized_tool,
+            str(command_template or ""),
+            port=str(target.port or ""),
+        )
+        if not isinstance(input_error, str):
+            return ""
+        return input_error
 
     @staticmethod
     def _scheduler_max_concurrency(preferences: Optional[Dict[str, Any]] = None) -> int:
@@ -1064,6 +1138,7 @@ class SchedulerOrchestrator:
             "reflection_stops": 0,
         }
         started_at = time.monotonic()
+        root_domain_tool_attempts: Set[Tuple[str, str]] = set()
 
         for target in list(targets or []):
             if should_cancel and should_cancel(int(resolved_options.job_id or 0)):
@@ -1077,7 +1152,7 @@ class SchedulerOrchestrator:
             )
             attempted_state = self._normalize_attempt_summary(
                 existing_attempts(target=target)
-                if use_feedback_loop and existing_attempts else {}
+                if existing_attempts else {}
             )
             attempted_tool_ids = set(attempted_state["tool_ids"])
             attempted_family_ids = set(attempted_state["family_ids"])
@@ -1256,9 +1331,15 @@ class SchedulerOrchestrator:
                 for decision in decisions:
                     normalized_tool_id = str(decision.tool_id or "").strip().lower()
                     normalized_family_id = self._normalize_text_token(getattr(decision, "family_id", ""))
+                    root_domain_token = ""
                     if normalized_tool_id and normalized_tool_id in suppressed_tool_ids:
                         suppressed_filtered_count += 1
                         continue
+                    if normalized_tool_id in ROOT_DOMAIN_SCOPED_TOOL_IDS:
+                        root_domain_token = self._target_host_root_token(target)
+                        if root_domain_token and (root_domain_token, normalized_tool_id) in root_domain_tool_attempts:
+                            duplicate_filtered_count += 1
+                            continue
                     if (
                             not normalized_tool_id
                             or normalized_tool_id in attempted_tool_ids
@@ -1274,6 +1355,19 @@ class SchedulerOrchestrator:
                         settings,
                         decision.tool_id,
                     )
+                    validation_error = self._target_tool_validation_error(
+                        settings=settings,
+                        target=target,
+                        tool_id=normalized_tool_id,
+                        command_template=command_template,
+                    )
+                    if validation_error:
+                        attempted_tool_ids.add(normalized_tool_id)
+                        if normalized_family_id:
+                            attempted_family_ids.add(normalized_family_id)
+                        summary["skipped"] += 1
+                        round_progress = True
+                        continue
                     normalized_command_signature = self._normalize_text_token(
                         SchedulerPlanner._command_signature(str(target.protocol or "tcp"), command_template)
                     )
@@ -1334,6 +1428,8 @@ class SchedulerOrchestrator:
                                 round_scheduled_family_ids.add(normalized_family_id)
                             if normalized_command_signature:
                                 round_scheduled_command_signatures.add(normalized_command_signature)
+                            if root_domain_token and normalized_tool_id in ROOT_DOMAIN_SCOPED_TOOL_IDS:
+                                root_domain_tool_attempts.add((root_domain_token, normalized_tool_id))
                             execution_tasks.append(SchedulerExecutionTask(
                                 decision=decision,
                                 tool_id=normalized_tool_id,
@@ -1355,6 +1451,8 @@ class SchedulerOrchestrator:
                                 attempted_family_ids.add(normalized_family_id)
                             if normalized_command_signature:
                                 attempted_command_signatures.add(normalized_command_signature)
+                            if root_domain_token and normalized_tool_id in ROOT_DOMAIN_SCOPED_TOOL_IDS:
+                                root_domain_tool_attempts.add((root_domain_token, normalized_tool_id))
                             round_progress = True
                             if action == "queued":
                                 summary["approval_queued"] += 1
@@ -1367,6 +1465,8 @@ class SchedulerOrchestrator:
                         round_scheduled_family_ids.add(normalized_family_id)
                     if normalized_command_signature:
                         round_scheduled_command_signatures.add(normalized_command_signature)
+                    if root_domain_token and normalized_tool_id in ROOT_DOMAIN_SCOPED_TOOL_IDS:
+                        root_domain_tool_attempts.add((root_domain_token, normalized_tool_id))
                     execution_tasks.append(SchedulerExecutionTask(
                         decision=decision,
                         tool_id=normalized_tool_id,
@@ -1382,7 +1482,11 @@ class SchedulerOrchestrator:
                         runner_preference=str((engagement_policy or {}).get("runner_preference", "") or ""),
                     ))
 
-                execution_results = execute_batch(execution_tasks, int(resolved_options.scheduler_concurrency or 1)) if execute_batch else []
+                execution_results = (
+                    execute_batch(execution_tasks, int(resolved_options.scheduler_concurrency or 1))
+                    if execute_batch and execution_tasks else
+                    []
+                )
                 for result in list(execution_results or []):
                     decision = result.get("decision")
                     normalized_tool_id = str(result.get("tool_id", "") or "").strip().lower()

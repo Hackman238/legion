@@ -158,6 +158,7 @@
                     </button>
                     <div id="ribbon-settings-menu" class="ribbon-submenu" role="menu" aria-label="Settings options">
                         <button id="ribbon-scheduler-settings-button" class="ribbon-submenu-item" type="button" title="Open scheduler settings">Scheduler</button>
+                        <button id="ribbon-device-category-settings-button" class="ribbon-submenu-item" type="button" title="Open device category settings">Device Categories</button>
                         <button id="ribbon-report-provider-settings-button" class="ribbon-submenu-item" type="button" title="Open project report provider settings">Report Provider</button>
                         <button id="ribbon-app-settings-button" class="ribbon-submenu-item" type="button" title="Open and edit legion.conf settings">App Settings</button>
                     </div>
@@ -348,6 +349,7 @@
                     Group By
                     <select id="graph-group-select">
                         <option value="finding" selected>finding</option>
+                        <option value="category">device category</option>
                         <option value="service">service</option>
                         <option value="host">host</option>
                         <option value="domain">domain</option>
@@ -652,6 +654,12 @@
         <div class="panel-header">
             <h2>Hosts</h2>
             <div class="panel-header-actions">
+                <label class="panel-inline-select">
+                    Category
+                    <select id="hosts-category-filter-select">
+                        <option value="">all categories</option>
+                    </select>
+                </label>
                 <p id="host-count">{{ snapshot.hosts | length }}</p>
                 <button
                     id="hosts-reset-filter-button"
@@ -699,6 +707,7 @@
                     <th>Hostname</th>
                     <th>Status</th>
                     <th>OS</th>
+                    <th>Categories</th>
                     <th>Open Ports</th>
                     <th></th>
                 </tr>
@@ -712,6 +721,12 @@
         <div class="panel-header">
             <h2>Services</h2>
             <div class="panel-header-actions">
+                <label class="panel-inline-select">
+                    Category
+                    <select id="services-category-filter-select">
+                        <option value="">all categories</option>
+                    </select>
+                </label>
                 <p id="service-count">{{ snapshot.services | length }}</p>
                 <button
                     id="services-panel-toggle-button"
@@ -736,6 +751,7 @@
                     <th>Hosts</th>
                     <th>Ports</th>
                     <th>Protocols</th>
+                    <th>Categories</th>
                     <th>Actions</th>
                 </tr>
                 </thead>
@@ -793,6 +809,12 @@
                 <tbody id="host-detail-cves"></tbody>
             </table>
         </div>
+        <div class="panel-header">
+            <h3>Device Categories</h3>
+            <p id="host-device-category-count">0</p>
+        </div>
+        <div id="host-detail-categories" class="category-chip-list"></div>
+        <p id="host-detail-category-note" class="meta-note"></p>
         <div class="panel-header">
             <h3>Technologies</h3>
             <p id="host-ai-tech-count">0</p>
@@ -884,7 +906,7 @@
 </main>
 
 <div id="process-output-modal" class="legion-modal-overlay" aria-hidden="true">
-    <div class="legion-modal" role="dialog" aria-modal="true" aria-labelledby="process-output-modal-title">
+    <div class="legion-modal output-modal" role="dialog" aria-modal="true" aria-labelledby="process-output-modal-title">
         <div class="panel-header modal-header">
             <h2 id="process-output-modal-title">Process Output</h2>
             <p id="process-output-meta">No process selected</p>
@@ -918,15 +940,17 @@
             </div>
             <div id="process-output-progress" class="process-command-text">No structured progress reported</div>
         </div>
-        <label>
-            Output
+        <div class="process-command-block process-output-block">
+            <div class="process-command-header">
+                <span>Output</span>
+            </div>
             <div id="process-output-text" class="ansi-output-view" role="textbox" aria-readonly="true"></div>
-        </label>
+        </div>
     </div>
 </div>
 
 <div id="script-output-modal" class="legion-modal-overlay" aria-hidden="true">
-    <div class="legion-modal" role="dialog" aria-modal="true" aria-labelledby="script-output-modal-title">
+    <div class="legion-modal output-modal" role="dialog" aria-modal="true" aria-labelledby="script-output-modal-title">
         <div class="panel-header modal-header">
             <h2 id="script-output-modal-title">Script Output</h2>
             <p id="script-output-meta">No script selected</p>
@@ -951,10 +975,12 @@
             </div>
             <div id="script-output-command" class="process-command-text"></div>
         </div>
-        <label>
-            Output
+        <div class="process-command-block process-output-block">
+            <div class="process-command-header">
+                <span>Output</span>
+            </div>
             <div id="script-output-text" class="ansi-output-view" role="textbox" aria-readonly="true"></div>
-        </label>
+        </div>
     </div>
 </div>
 
@@ -989,12 +1015,33 @@
         <div id="nmap-scan-block" class="action-block">
             <div id="nmap-wizard" class="nmap-wizard">
                 <div class="wizard-steps">
-                    <button id="nmap-wizard-indicator-1" type="button" class="wizard-step is-active" data-wizard-goto="1">1. Mode</button>
-                    <button id="nmap-wizard-indicator-2" type="button" class="wizard-step" data-wizard-goto="2">2. Targets</button>
-                    <button id="nmap-wizard-indicator-3" type="button" class="wizard-step" data-wizard-goto="3">3. Options</button>
+                    <button id="nmap-wizard-indicator-1" type="button" class="wizard-step is-active" data-wizard-goto="1">1. Engagement</button>
+                    <button id="nmap-wizard-indicator-2" type="button" class="wizard-step" data-wizard-goto="2">2. Mode</button>
+                    <button id="nmap-wizard-indicator-3" type="button" class="wizard-step" data-wizard-goto="3">3. Targets</button>
+                    <button id="nmap-wizard-indicator-4" type="button" class="wizard-step" data-wizard-goto="4">4. Options</button>
                 </div>
 
                 <section id="nmap-wizard-step-1" class="wizard-page is-active" data-wizard-step="1">
+                    <label>
+                        Engagement Preset
+                        <select id="nmap-engagement-preset-select">
+                            <option value="external_recon">external_recon</option>
+                            <option value="external_pentest">external_pentest</option>
+                            <option value="internal_quick_recon">internal_quick_recon</option>
+                            <option value="internal_recon">internal_recon</option>
+                            <option value="internal_pentest">internal_pentest</option>
+                            <option value="custom">custom</option>
+                        </select>
+                    </label>
+                    <p id="nmap-engagement-preset-summary" class="meta-note scheduler-group-note">Select the engagement preset for this scan. The scan defaults and post-scan scheduler follow-up will use it.</p>
+                    <div id="nmap-engagement-derived-policy" class="scheduler-policy-summary" aria-live="polite">
+                        <span class="scheduler-policy-chip">Scope: <strong id="nmap-engagement-derived-scope">internal</strong></span>
+                        <span class="scheduler-policy-chip">Intent: <strong id="nmap-engagement-derived-intent">recon</strong></span>
+                    </div>
+                    <p id="nmap-engagement-custom-note" class="meta-note scheduler-group-note" hidden>Custom uses the current policy values from Scheduler Settings for this scan.</p>
+                </section>
+
+                <section id="nmap-wizard-step-2" class="wizard-page" data-wizard-step="2">
                     <div class="mode-grid">
                         <label class="mode-card">
                             <input type="radio" name="nmap-scan-mode" value="rfc1918_discovery">
@@ -1014,7 +1061,7 @@
                     </div>
                 </section>
 
-                <section id="nmap-wizard-step-2" class="wizard-page" data-wizard-step="2">
+                <section id="nmap-wizard-step-3" class="wizard-page" data-wizard-step="3">
                     <label>
                         Targets (hosts, subnets, ranges; space or comma separated)
                         <textarea id="nmap-targets" rows="3" placeholder="192.168.1.10 192.168.1.0/24"></textarea>
@@ -1039,7 +1086,7 @@
                     </div>
                 </section>
 
-                <section id="nmap-wizard-step-3" class="wizard-page" data-wizard-step="3">
+                <section id="nmap-wizard-step-4" class="wizard-page" data-wizard-step="4">
                     <div id="nmap-options-rfc1918_discovery" class="mode-options is-active" data-mode-options="rfc1918_discovery">
                         <h4>RFC1918 Discovery Options</h4>
                         <label class="checkbox">
@@ -1090,6 +1137,7 @@
 
                     <div id="nmap-options-easy" class="mode-options" data-mode-options="easy">
                         <h4>Easy Mode Options</h4>
+                        <p id="nmap-easy-preset-note" class="meta-note scheduler-group-note" hidden></p>
                         <label class="checkbox">
                             <input id="nmap-easy-discovery" type="checkbox" checked>
                             Use host discovery probes
@@ -1269,6 +1317,17 @@
             <div class="scheduler-actions">
                 <button id="workspace-save-note-button" type="button">Save Note</button>
             </div>
+            <label>
+                Device Categories
+                <input id="workspace-host-categories" type="text" placeholder="Windows, Server">
+            </label>
+            <label class="checkbox">
+                <input id="workspace-host-categories-override" type="checkbox">
+                Replace automatic classification for this host
+            </label>
+            <div class="scheduler-actions">
+                <button id="workspace-save-categories-button" type="button">Save Categories</button>
+            </div>
         </div>
     </div>
 </div>
@@ -1320,6 +1379,54 @@
     </div>
 </div>
 
+<div id="device-category-settings-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal scheduler-modal device-category-modal" role="dialog" aria-modal="true" aria-labelledby="device-category-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="device-category-modal-title">Device Categories</h2>
+            <p id="device-category-save-status">Idle</p>
+            <button id="device-category-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="device-category-modal-body">
+            <section class="device-category-panel">
+                <div class="panel-header">
+                    <h3>Built-in Categories</h3>
+                    <p>Read-only</p>
+                </div>
+                <div id="device-category-builtins-list" class="category-chip-list"></div>
+                <p class="meta-note">Built-in categories cover common roles like Windows, Linux, Network, Storage, Database, Printer, and Server.</p>
+            </section>
+            <section class="device-category-panel">
+                <div class="panel-header">
+                    <h3>Custom Categories</h3>
+                    <div class="scheduler-actions">
+                        <button id="device-category-add-rule-button" type="button">Add Category</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Ports</th>
+                            <th>Fingerprint Fragments</th>
+                            <th>CPE Fragments</th>
+                            <th>Actions</th>
+                        </tr>
+                        </thead>
+                        <tbody id="device-category-rules-body"></tbody>
+                    </table>
+                </div>
+                <p class="meta-note">Ports are comma-separated numbers. Fingerprint and CPE fragments are comma-separated contains matches. Strong fingerprint/CPE evidence or enough matching ports will make a host eligible for the category.</p>
+                <div class="scheduler-actions">
+                    <button id="device-category-save-button" type="button">Save Categories</button>
+                </div>
+            </section>
+        </div>
+    </div>
+</div>
+
 <div id="scheduler-settings-modal" class="legion-modal-overlay" aria-hidden="true">
     <div class="legion-modal scheduler-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-modal-title">
         <div class="panel-header modal-header">
@@ -1344,26 +1451,33 @@
                     <select id="scheduler-goal-select" name="goal_profile">
                         <option value="external_recon">external_recon</option>
                         <option value="external_pentest">external_pentest</option>
+                        <option value="internal_quick_recon">internal_quick_recon</option>
                         <option value="internal_recon">internal_recon</option>
                         <option value="internal_pentest">internal_pentest</option>
                         <option value="custom">custom</option>
                     </select>
                 </label>
-                <label>
-                    Scope
+                <p id="engagement-preset-summary" class="meta-note scheduler-group-note">Preset drives scope and intent for most runs. Switch to custom only if you need a manual override.</p>
+                <div id="engagement-derived-policy" class="scheduler-field-span-2 scheduler-policy-summary" aria-live="polite">
+                    <span class="scheduler-policy-chip">Scope: <strong id="engagement-derived-scope">internal</strong></span>
+                    <span class="scheduler-policy-chip">Intent: <strong id="engagement-derived-intent">recon</strong></span>
+                </div>
+                <label id="engagement-custom-scope-label" hidden>
+                    Custom Scope
                     <select id="engagement-scope-select" name="engagement_scope">
                         <option value="internal">internal</option>
                         <option value="external">external</option>
                         <option value="mixed">mixed</option>
                     </select>
                 </label>
-                <label>
-                    Intent
+                <label id="engagement-custom-intent-label" hidden>
+                    Custom Intent
                     <select id="engagement-intent-select" name="engagement_intent">
                         <option value="recon">recon</option>
                         <option value="pentest">pentest</option>
                     </select>
                 </label>
+                <p id="engagement-custom-note" class="meta-note scheduler-group-note" hidden>Use custom only when the standard presets do not match the engagement. Otherwise the preset is the simpler and safer choice.</p>
             </fieldset>
             <fieldset class="danger-group scheduler-settings-group">
                 <legend>Risk And Permissions</legend>
@@ -1941,12 +2055,37 @@
                 </select>
             </label>
             <label>
-                Goal Profile
+                Engagement Preset
                 <select id="startup-scheduler-goal">
-                    <option value="internal_asset_discovery">internal_asset_discovery</option>
+                    <option value="external_recon">external_recon</option>
                     <option value="external_pentest">external_pentest</option>
+                    <option value="internal_quick_recon">internal_quick_recon</option>
+                    <option value="internal_recon">internal_recon</option>
+                    <option value="internal_pentest">internal_pentest</option>
+                    <option value="custom">custom</option>
                 </select>
             </label>
+            <p id="startup-engagement-preset-summary" class="meta-note scheduler-group-note">Preset drives scope and intent for most runs. Switch to custom only if you need a manual override.</p>
+            <div id="startup-engagement-derived-policy" class="scheduler-policy-summary" aria-live="polite">
+                <span class="scheduler-policy-chip">Scope: <strong id="startup-engagement-derived-scope">internal</strong></span>
+                <span class="scheduler-policy-chip">Intent: <strong id="startup-engagement-derived-intent">recon</strong></span>
+            </div>
+            <label id="startup-engagement-custom-scope-label" hidden>
+                Custom Scope
+                <select id="startup-engagement-scope-select">
+                    <option value="internal">internal</option>
+                    <option value="external">external</option>
+                    <option value="mixed">mixed</option>
+                </select>
+            </label>
+            <label id="startup-engagement-custom-intent-label" hidden>
+                Custom Intent
+                <select id="startup-engagement-intent-select">
+                    <option value="recon">recon</option>
+                    <option value="pentest">pentest</option>
+                </select>
+            </label>
+            <p id="startup-engagement-custom-note" class="meta-note scheduler-group-note" hidden>Use custom only when the standard presets do not match the engagement. Otherwise the preset is the simpler and safer choice.</p>
             <label>
                 Provider
                 <select id="startup-scheduler-provider">

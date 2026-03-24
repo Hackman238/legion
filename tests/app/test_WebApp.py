@@ -184,16 +184,16 @@ class DummyRuntime:
             }
         ]
         self.workspace_hosts = [
-            {"id": 11, "ip": "10.0.0.5", "hostname": "dc01.local", "status": "up", "os": "windows", "open_ports": 2, "total_ports": 2, "services": ["kerberos", "smb"]},
-            {"id": 12, "ip": "10.0.0.6", "hostname": "filesrv.local", "status": "down", "os": "windows", "open_ports": 0, "total_ports": 1, "services": []},
-            {"id": 13, "ip": "10.0.0.7", "hostname": "web01.local", "status": "up", "os": "linux", "open_ports": 4, "total_ports": 5, "services": ["http", "https", "ssh"]},
+            {"id": 11, "ip": "10.0.0.5", "hostname": "dc01.local", "status": "up", "os": "windows", "open_ports": 2, "total_ports": 2, "services": ["kerberos", "smb"], "categories": ["Windows", "Server"]},
+            {"id": 12, "ip": "10.0.0.6", "hostname": "filesrv.local", "status": "down", "os": "windows", "open_ports": 0, "total_ports": 1, "services": [], "categories": ["Windows", "Storage"]},
+            {"id": 13, "ip": "10.0.0.7", "hostname": "web01.local", "status": "up", "os": "linux", "open_ports": 4, "total_ports": 5, "services": ["http", "https", "ssh"], "categories": ["Linux", "Server"]},
         ]
         self.workspace_services = [
-            {"service": "http", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
-            {"service": "https", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
-            {"service": "kerberos", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
-            {"service": "smb", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
-            {"service": "ssh", "host_count": 1, "port_count": 1, "protocols": ["tcp"]},
+            {"service": "http", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
+            {"service": "https", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
+            {"service": "kerberos", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Windows", "Server"]},
+            {"service": "smb", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Windows", "Server"]},
+            {"service": "ssh", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
         ]
         self.tool_install_requests = []
         self.workspace_tools = [
@@ -834,6 +834,7 @@ class DummyRuntime:
             "engagement_presets": [
                 {"id": "external_recon", "name": "External Recon"},
                 {"id": "external_pentest", "name": "External Pentest"},
+                {"id": "internal_quick_recon", "name": "Internal Quick Recon"},
                 {"id": "internal_recon", "name": "Internal Recon"},
                 {"id": "internal_pentest", "name": "Internal Pentest"},
                 {"id": "custom", "name": "Custom"},
@@ -892,7 +893,7 @@ class DummyRuntime:
     def get_scheduler_rationale_feed(self, limit=12):
         return list(self.scheduler_rationale_feed)[:max(1, int(limit or 1))]
 
-    def get_workspace_hosts(self, limit=None, include_down=False, service=""):
+    def get_workspace_hosts(self, limit=None, include_down=False, service="", category=""):
         rows = list(self.workspace_hosts)
         if not include_down:
             rows = [row for row in rows if str(row.get("status", "")).strip().lower() != "down"]
@@ -902,6 +903,12 @@ class DummyRuntime:
                 row for row in rows
                 if any(str(item or "").strip().lower() == service_filter for item in list(row.get("services", []) or []))
             ]
+        category_filter = str(category or "").strip().lower()
+        if category_filter:
+            rows = [
+                row for row in rows
+                if any(str(item or "").strip().lower() == category_filter for item in list(row.get("categories", []) or []))
+            ]
         if limit is None:
             return rows
         return rows[:limit]
@@ -909,7 +916,7 @@ class DummyRuntime:
     def get_scan_history(self, limit=200):
         return self.scan_history[:limit]
 
-    def get_workspace_services(self, limit=300, host_id=0):
+    def get_workspace_services(self, limit=300, host_id=0, category=""):
         normalized_host_id = int(host_id or 0)
         if normalized_host_id > 0:
             host = next((row for row in self.workspace_hosts if int(row.get("id", 0) or 0) == normalized_host_id), None)
@@ -920,10 +927,17 @@ class DummyRuntime:
                     "host_count": 1,
                     "port_count": 1,
                     "protocols": ["tcp"],
+                    "categories": list(host.get("categories", []) if isinstance(host, dict) else []),
                 }
                 for service in services[:limit]
             ]
-        return self.workspace_services[:limit]
+        category_filter = str(category or "").strip().lower()
+        if not category_filter:
+            return self.workspace_services[:limit]
+        return [
+            row for row in self.workspace_services[:limit]
+            if any(str(item or "").strip().lower() == category_filter for item in list(row.get("categories", []) or []))
+        ]
 
     def get_workspace_tools(self, service="", limit=300):
         return self.workspace_tools[:limit]
@@ -1901,6 +1915,65 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
         self.assertIn('id="feature-graph-workspace-enabled"', body)
+
+    def test_index_renders_simplified_scheduler_engagement_profile(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('id="engagement-preset-summary"', body)
+        self.assertIn('id="engagement-derived-policy"', body)
+        self.assertIn("Preset drives scope and intent for most runs.", body)
+        self.assertIn('id="engagement-custom-scope-label"', body)
+        self.assertIn('id="engagement-custom-intent-label"', body)
+        self.assertIn('value="internal_quick_recon"', body)
+
+    def test_index_renders_simplified_startup_wizard_scheduler_profile(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('id="startup-scheduler-goal"', body)
+        self.assertIn('id="startup-engagement-preset-summary"', body)
+        self.assertIn('id="startup-engagement-derived-policy"', body)
+        self.assertIn('id="startup-engagement-custom-scope-label"', body)
+        self.assertIn('id="startup-engagement-custom-intent-label"', body)
+        self.assertIn('value="internal_quick_recon"', body)
+
+    def test_index_renders_nmap_scan_engagement_step(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('id="nmap-wizard-indicator-1"', body)
+        self.assertIn(">1. Engagement<", body)
+        self.assertIn(">2. Mode<", body)
+        self.assertIn(">3. Targets<", body)
+        self.assertIn(">4. Options<", body)
+        self.assertIn('id="nmap-engagement-preset-select"', body)
+        self.assertIn('id="nmap-engagement-preset-summary"', body)
+        self.assertIn('id="nmap-engagement-derived-policy"', body)
+        self.assertIn('id="nmap-engagement-custom-note"', body)
+        self.assertIn('value="internal_quick_recon"', body)
+
+    def test_index_renders_viewport_bounded_output_modals(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('id="process-output-modal"', body)
+        self.assertIn('class="legion-modal output-modal"', body)
+        self.assertIn('class="process-command-block process-output-block"', body)
+        self.assertIn('id="script-output-modal"', body)
+
+    def test_index_renders_device_category_filters_and_modal(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('id="hosts-category-filter-select"', body)
+        self.assertIn('id="services-category-filter-select"', body)
+        self.assertIn('id="host-detail-categories"', body)
+        self.assertIn('id="workspace-host-categories"', body)
+        self.assertIn('id="ribbon-device-category-settings-button"', body)
+        self.assertIn('id="device-category-settings-modal"', body)
+        self.assertIn('id="device-category-rules-body"', body)
+        self.assertIn('>device category<', body)
 
     def test_index_renders_hosts_panel_menu(self):
         response = self.client.get("/")

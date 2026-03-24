@@ -6,6 +6,21 @@ from types import SimpleNamespace
 
 
 class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
+    def test_apply_engagement_scan_profile_uses_quick_recon_ports(self):
+        from app.web.runtime import WebRuntime
+
+        options = WebRuntime._apply_engagement_scan_profile(
+            {
+                "top_ports": 1000,
+                "explicit_ports": "",
+                "service_detection": True,
+            },
+            engagement_policy={"preset": "internal_quick_recon"},
+        )
+
+        self.assertEqual(0, int(options["top_ports"]))
+        self.assertEqual(WebRuntime.INTERNAL_QUICK_RECON_TCP_PORTS, options["explicit_ports"])
+
     def test_shodan_enabled_uses_scheduler_integrations_key(self):
         from app.web.runtime import WebRuntime
 
@@ -33,6 +48,71 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 }
             }
         }))
+
+    def test_workspace_hosts_and_services_support_device_category_filtering(self):
+        from app.ProjectManager import ProjectManager
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.state import upsert_target_state
+        from app.web.runtime import WebRuntime
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+        from db.entities.service import serviceObj
+        from db.entities.port import portObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            windows_host = hostObj(ip="10.0.0.10", ipv4="10.0.0.10", hostname="filesrv", osMatch="Windows Server")
+            linux_host = hostObj(ip="10.0.0.20", ipv4="10.0.0.20", hostname="db01", osMatch="Linux")
+            session.add(windows_host)
+            session.add(linux_host)
+            session.commit()
+
+            smb_service = serviceObj(name="microsoft-ds", host=windows_host.id, product="Microsoft Directory Services")
+            session.add(smb_service)
+            session.commit()
+            session.add(portObj("445", "tcp", "open", windows_host.id, smb_service.id))
+
+            ssh_service = serviceObj(name="ssh", host=linux_host.id, product="OpenSSH")
+            session.add(ssh_service)
+            session.commit()
+            session.add(portObj("22", "tcp", "open", linux_host.id, ssh_service.id))
+            session.commit()
+            session.close()
+
+            upsert_target_state(project.database, int(windows_host.id), {
+                "host_ip": "10.0.0.10",
+                "os_match": "Windows Server",
+                "service_inventory": [{"port": "445", "protocol": "tcp", "state": "open", "service": "microsoft-ds", "service_product": "Microsoft Directory Services"}],
+                "technologies": [{"name": "windows", "cpe": "cpe:/o:microsoft:windows", "evidence": "service detection"}],
+            })
+            upsert_target_state(project.database, int(linux_host.id), {
+                "host_ip": "10.0.0.20",
+                "os_match": "Linux",
+                "service_inventory": [{"port": "22", "protocol": "tcp", "state": "open", "service": "ssh", "service_product": "OpenSSH"}],
+                "technologies": [{"name": "linux", "cpe": "cpe:/o:linux:linux_kernel", "evidence": "service detection"}],
+            })
+
+            runtime = WebRuntime.__new__(WebRuntime)
+            runtime._lock = threading.RLock()
+            runtime.logic = SimpleNamespace(activeProject=project)
+            runtime.scheduler_config = SimpleNamespace(get_device_categories=lambda: [])
+
+            host_rows = runtime.get_workspace_hosts(category="Windows")
+            self.assertEqual(1, len(host_rows))
+            self.assertEqual("10.0.0.10", host_rows[0]["ip"])
+            self.assertIn("Windows", host_rows[0]["categories"])
+
+            service_rows = runtime.get_workspace_services(category="Windows")
+            self.assertEqual(1, len(service_rows))
+            self.assertEqual("microsoft-ds", service_rows[0]["service"])
+            self.assertIn("Windows", service_rows[0]["categories"])
+        finally:
+            project_manager.closeProject(project)
 
     def test_ingest_discovered_hosts_imports_targets_and_queues_subfinder_followup(self):
         from app.ProjectManager import ProjectManager

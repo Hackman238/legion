@@ -1205,6 +1205,247 @@ class SchedulerOrchestratorTest(unittest.TestCase):
         self.assertEqual(2, summary["executed"])
         self.assertEqual("external_recon_low_yield_web_stop", summary["target_stop_reasons"][0]["reason"])
 
+    def test_run_targets_skips_host_root_banner_and_nmap_without_port(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerExecutionTask, SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        banner = PlanStep.from_legacy_fields(
+            tool_id="banner",
+            label="Grab banner",
+            command_template="LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
+            protocol="tcp",
+            score=95,
+            rationale="bad host-root choice",
+            mode="ai",
+            goal_profile="internal_asset_discovery",
+            family_id="fam-banner",
+        )
+        nmap = PlanStep.from_legacy_fields(
+            tool_id="nmap",
+            label="Run nmap",
+            command_template="nmap -Pn -sV -sC -p [PORT] [IP]",
+            protocol="tcp",
+            score=94,
+            rationale="bad host-root choice",
+            mode="ai",
+            goal_profile="internal_asset_discovery",
+            family_id="fam-nmap",
+        )
+        subfinder = PlanStep.from_legacy_fields(
+            tool_id="subfinder",
+            label="Subfinder",
+            command_template="subfinder -d [IP] -o [OUTPUT].jsonl",
+            protocol="tcp",
+            score=93,
+            rationale="valid host-root choice",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-subfinder",
+        )
+
+        planner = _PlannerStub([[banner, nmap, subfinder]])
+        orchestrator = SchedulerOrchestrator(_ConfigStub(), planner=planner)
+        target = SchedulerTarget(host_id=81, host_ip="198.51.100.50", hostname="portal.example.com", port="", protocol="tcp", service_name="host")
+
+        executed_batches = []
+
+        def execute_batch(tasks, max_concurrency):
+            self.assertEqual(2, max_concurrency)
+            executed_batches.append([task.tool_id for task in tasks])
+            for item in tasks:
+                self.assertIsInstance(item, SchedulerExecutionTask)
+            return [
+                {
+                    "decision": task.decision,
+                    "tool_id": task.tool_id,
+                    "executed": True,
+                    "reason": "queued",
+                    "process_id": 0,
+                    "execution_record": None,
+                    "approval_id": int(task.approval_id or 0),
+                }
+                for task in tasks
+            ]
+
+        summary = orchestrator.run_targets(
+            settings=SimpleNamespace(
+                portActions=[
+                    ["Grab banner", "banner", "LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe", "http,https"],
+                    ["Run nmap", "nmap", "nmap -Pn -sV -sC -p [PORT] [IP]", ""],
+                    ["Run subfinder passive subdomain discovery", "subfinder", "subfinder -d [IP] -o [OUTPUT].jsonl", "host"],
+                ],
+                automatedAttacks=[],
+            ),
+            targets=[target],
+            engagement_policy={"preset": "external_pentest"},
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                scheduler_concurrency=2,
+                ai_feedback_enabled=False,
+                max_rounds=1,
+                max_actions_per_round=3,
+                recent_output_chars=900,
+                reflection_enabled=False,
+            ),
+            execute_batch=execute_batch,
+        )
+
+        self.assertEqual([], executed_batches)
+        self.assertEqual(0, summary["executed"])
+        self.assertEqual(3, summary["skipped"])
+
+    def test_run_targets_only_runs_root_domain_tools_once_on_canonical_root_targets(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerExecutionTask, SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        subfinder = PlanStep.from_legacy_fields(
+            tool_id="subfinder",
+            label="Subfinder",
+            command_template="subfinder -d [IP] -o [OUTPUT].jsonl",
+            protocol="tcp",
+            score=5,
+            rationale="root discovery",
+            mode="deterministic",
+            goal_profile="external_pentest",
+            family_id="fam-subfinder",
+        )
+        grayhat = PlanStep.from_legacy_fields(
+            tool_id="grayhatwarfare",
+            label="Grayhat Warfare",
+            command_template="python3 -m app.grayhatwarfare_probe --domain [ROOT_DOMAIN] --output [OUTPUT].json",
+            protocol="tcp",
+            score=4,
+            rationale="bucket enrichment",
+            mode="deterministic",
+            goal_profile="external_pentest",
+            family_id="fam-grayhat",
+        )
+
+        planner = _PlannerStub([subfinder, grayhat])
+        orchestrator = SchedulerOrchestrator(_ConfigStub(), planner=planner)
+        settings = SimpleNamespace(
+            portActions=[
+                ["Run subfinder", "subfinder", "subfinder -d [IP] -o [OUTPUT].jsonl", "host"],
+                ["Run grayhatwarfare", "grayhatwarfare", "python3 -m app.grayhatwarfare_probe --domain [ROOT_DOMAIN] --output [OUTPUT].json", "host"],
+            ],
+            automatedAttacks=[],
+        )
+        targets = [
+            SchedulerTarget(
+                host_id=1,
+                host_ip="104.26.2.143",
+                hostname="example.com",
+                port="",
+                protocol="tcp",
+                service_name="host",
+                metadata={"host_root_token": "example.com", "target_type": "host_root"},
+            ),
+            SchedulerTarget(
+                host_id=2,
+                host_ip="104.26.2.144",
+                hostname="api.example.com",
+                port="",
+                protocol="tcp",
+                service_name="host",
+                metadata={"host_root_token": "example.com", "target_type": "host_root"},
+            ),
+            SchedulerTarget(
+                host_id=3,
+                host_ip="104.26.2.145",
+                hostname="example.com",
+                port="",
+                protocol="tcp",
+                service_name="host",
+                metadata={"host_root_token": "example.com", "target_type": "host_root"},
+            ),
+        ]
+
+        executed = []
+
+        def execute_batch(tasks, _max_concurrency):
+            for item in tasks:
+                self.assertIsInstance(item, SchedulerExecutionTask)
+                executed.append((item.tool_id, item.hostname))
+            return [
+                {
+                    "decision": task.decision,
+                    "tool_id": task.tool_id,
+                    "executed": True,
+                    "reason": "queued",
+                    "process_id": 0,
+                    "execution_record": None,
+                    "approval_id": 0,
+                }
+                for task in tasks
+            ]
+
+        summary = orchestrator.run_targets(
+            settings=settings,
+            targets=targets,
+            engagement_policy={"preset": "external_recon"},
+            options=SchedulerRunOptions(
+                scheduler_mode="deterministic",
+                scheduler_concurrency=1,
+                ai_feedback_enabled=False,
+                max_rounds=1,
+                max_actions_per_round=0,
+            ),
+            execute_batch=execute_batch,
+        )
+
+        self.assertEqual([("subfinder", "example.com"), ("grayhatwarfare", "example.com")], executed)
+        self.assertEqual(2, summary["executed"])
+        self.assertEqual(0, summary["skipped"])
+
+    def test_run_targets_uses_existing_attempts_even_without_feedback_loop(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        subfinder = PlanStep.from_legacy_fields(
+            tool_id="subfinder",
+            label="Subfinder",
+            command_template="subfinder -d [IP] -o [OUTPUT].jsonl",
+            protocol="tcp",
+            score=5,
+            rationale="root discovery",
+            mode="deterministic",
+            goal_profile="external_pentest",
+            family_id="fam-subfinder",
+        )
+
+        planner = _PlannerStub([subfinder])
+        orchestrator = SchedulerOrchestrator(_ConfigStub(), planner=planner)
+        target = SchedulerTarget(
+            host_id=1,
+            host_ip="104.26.2.143",
+            hostname="example.com",
+            port="",
+            protocol="tcp",
+            service_name="host",
+            metadata={"host_root_token": "example.com", "target_type": "host_root"},
+        )
+
+        summary = orchestrator.run_targets(
+            settings=SimpleNamespace(
+                portActions=[["Run subfinder", "subfinder", "subfinder -d [IP] -o [OUTPUT].jsonl", "host"]],
+                automatedAttacks=[],
+            ),
+            targets=[target],
+            engagement_policy={"preset": "external_recon"},
+            options=SchedulerRunOptions(
+                scheduler_mode="deterministic",
+                scheduler_concurrency=1,
+                ai_feedback_enabled=False,
+                max_rounds=1,
+                max_actions_per_round=0,
+            ),
+            existing_attempts=lambda **_kwargs: {"tool_ids": {"subfinder"}},
+            execute_batch=lambda *_args, **_kwargs: self.fail("execute_batch should not run for excluded attempts"),
+        )
+
+        self.assertEqual(["subfinder"], planner.calls[0]["excluded_tool_ids"])
+        self.assertEqual(0, summary["executed"])
+
 
 if __name__ == "__main__":
     unittest.main()

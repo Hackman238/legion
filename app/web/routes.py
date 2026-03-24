@@ -178,10 +178,11 @@ def _normalized_service_filter(value: str) -> str:
 def _get_filtered_workspace_hosts(runtime):
     host_filter = _normalized_host_filter(request.args.get("filter", "hide_down"))
     service_filter = _normalized_service_filter(request.args.get("service", ""))
+    category_filter = _normalized_service_filter(request.args.get("category", ""))
     include_down = _host_filter_include_down(host_filter)
     limit_arg = request.args.get("limit")
     if limit_arg in {None, ""}:
-        rows = runtime.get_workspace_hosts(include_down=include_down, service=service_filter)
+        rows = runtime.get_workspace_hosts(include_down=include_down, service=service_filter, category=category_filter)
     else:
         try:
             limit = int(limit_arg)
@@ -189,8 +190,8 @@ def _get_filtered_workspace_hosts(runtime):
             limit = None
         if limit is not None and limit <= 0:
             limit = None
-        rows = runtime.get_workspace_hosts(limit=limit, include_down=include_down, service=service_filter)
-    return host_filter, service_filter, rows
+        rows = runtime.get_workspace_hosts(limit=limit, include_down=include_down, service=service_filter, category=category_filter)
+    return host_filter, service_filter, category_filter, rows
 
 
 def _safe_filename_token(value: str, fallback: str = "host") -> str:
@@ -776,8 +777,8 @@ def scan_history():
 def workspace_hosts():
     runtime = current_app.extensions["legion_runtime"]
     try:
-        host_filter, service_filter, rows = _get_filtered_workspace_hosts(runtime)
-        return jsonify({"filter": host_filter, "service": service_filter, "hosts": rows})
+        host_filter, service_filter, category_filter, rows = _get_filtered_workspace_hosts(runtime)
+        return jsonify({"filter": host_filter, "service": service_filter, "category": category_filter, "hosts": rows})
     except Exception as exc:
         return _json_error(str(exc), 500)
 
@@ -802,9 +803,10 @@ def workspace_services():
         host_id = int(request.args.get("host_id", 0))
     except (TypeError, ValueError):
         host_id = 0
+    category = str(request.args.get("category", "") or "").strip()
     limit = max(1, min(limit, 2000))
     try:
-        return jsonify({"services": runtime.get_workspace_services(limit=limit, host_id=host_id), "host_id": host_id})
+        return jsonify({"services": runtime.get_workspace_services(limit=limit, host_id=host_id, category=category), "host_id": host_id, "category": category})
     except Exception as exc:
         return _json_error(str(exc), 500)
 
@@ -1276,6 +1278,23 @@ def workspace_host_note(host_id):
         return _json_error(str(exc), 500)
 
 
+@web_bp.post("/api/workspace/hosts/<int:host_id>/categories")
+def workspace_host_categories(host_id):
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = runtime.update_host_categories(
+            host_id,
+            manual_categories=payload.get("manual_categories", []),
+            override_auto=bool(payload.get("override_auto", False)),
+        )
+        return jsonify({"status": "ok", **result})
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
 @web_bp.post("/api/workspace/hosts/<int:host_id>/scripts")
 def workspace_host_script_create(host_id):
     runtime = current_app.extensions["legion_runtime"]
@@ -1508,6 +1527,7 @@ def scheduler_preferences_update():
         "max_jobs",
         "providers",
         "integrations",
+        "device_categories",
         "dangerous_categories",
         "project_report_delivery",
     }
@@ -1533,6 +1553,7 @@ def scheduler_provider_test():
         "max_jobs",
         "providers",
         "integrations",
+        "device_categories",
         "dangerous_categories",
         "project_report_delivery",
     }

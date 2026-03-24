@@ -8,6 +8,7 @@ from sqlalchemy import text
 VALID_ENGAGEMENT_PRESETS = {
     "external_recon",
     "external_pentest",
+    "internal_quick_recon",
     "internal_recon",
     "internal_pentest",
     "custom",
@@ -23,14 +24,25 @@ VALID_NOISE_BUDGET = {"low", "medium", "high"}
 ENGAGEMENT_PRESET_LABELS = {
     "external_recon": "External Recon",
     "external_pentest": "External Pentest",
+    "internal_quick_recon": "Internal Quick Recon",
     "internal_recon": "Internal Recon",
     "internal_pentest": "Internal Pentest",
     "custom": "Custom",
 }
 
+ENGAGEMENT_PRESET_DESCRIPTIONS = {
+    "external_recon": "Passive and low-noise external mapping. Focus on discovery, fingerprinting, and bounded validation.",
+    "external_pentest": "Broader external assessment with deeper active follow-up once recon confirms a target is worth it.",
+    "internal_quick_recon": "Fast internal low-hanging-fruit sweep. Focus on SMB, NetBIOS, NFS, printers, common admin panels, and other obvious exposures instead of broad coverage.",
+    "internal_recon": "Broader internal discovery and validation across exposed services with safer follow-up than pentest mode.",
+    "internal_pentest": "Deeper internal assessment with wider follow-up, credential-adjacent validation, and higher-noise exploration.",
+    "custom": "Manual override for engagements that do not fit the standard presets.",
+}
+
 LEGACY_GOAL_TO_PRESET = {
     "internal_asset_discovery": "internal_recon",
     "external_pentest": "external_pentest",
+    "internal_quick_recon": "internal_quick_recon",
     "internal_recon": "internal_recon",
     "external_recon": "external_recon",
     "internal_pentest": "internal_pentest",
@@ -63,6 +75,19 @@ PRESET_DEFAULTS = {
         "approval_mode": "risky",
         "runner_preference": "local",
         "noise_budget": "medium",
+    },
+    "internal_quick_recon": {
+        "scope": "internal",
+        "intent": "recon",
+        "allow_exploitation": False,
+        "allow_lateral_movement": False,
+        "credential_attack_mode": "blocked",
+        "lockout_risk_mode": "blocked",
+        "stability_risk_mode": "approval",
+        "detection_risk_mode": "low",
+        "approval_mode": "risky",
+        "runner_preference": "local",
+        "noise_budget": "low",
     },
     "internal_recon": {
         "scope": "internal",
@@ -138,7 +163,7 @@ def legacy_goal_profile_from_policy(
     normalized_preset = _normalize_choice(preset, VALID_ENGAGEMENT_PRESETS, default="internal_recon")
     if normalized_preset in {"external_recon", "external_pentest"}:
         return "external_pentest"
-    if normalized_preset in {"internal_recon", "internal_pentest"}:
+    if normalized_preset in {"internal_quick_recon", "internal_recon", "internal_pentest"}:
         return "internal_asset_discovery"
     if _normalize_text(scope, default="internal") == "external":
         return "external_pentest"
@@ -149,8 +174,12 @@ def legacy_goal_profile_from_policy(
 
 def list_engagement_presets() -> list:
     return [
-        {"id": preset_id, "name": ENGAGEMENT_PRESET_LABELS.get(preset_id, preset_id.replace("_", " ").title())}
-        for preset_id in ("external_recon", "external_pentest", "internal_recon", "internal_pentest", "custom")
+        {
+            "id": preset_id,
+            "name": ENGAGEMENT_PRESET_LABELS.get(preset_id, preset_id.replace("_", " ").title()),
+            "description": ENGAGEMENT_PRESET_DESCRIPTIONS.get(preset_id, ""),
+        }
+        for preset_id in ("external_recon", "external_pentest", "internal_quick_recon", "internal_recon", "internal_pentest", "custom")
     ]
 
 
@@ -175,6 +204,10 @@ class EngagementPolicy:
         return ENGAGEMENT_PRESET_LABELS.get(self.preset, self.preset.replace("_", " ").title())
 
     @property
+    def preset_description(self) -> str:
+        return ENGAGEMENT_PRESET_DESCRIPTIONS.get(self.preset, "")
+
+    @property
     def legacy_goal_profile(self) -> str:
         return legacy_goal_profile_from_policy(
             self.preset,
@@ -185,6 +218,7 @@ class EngagementPolicy:
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
         payload["preset_label"] = self.preset_label
+        payload["preset_description"] = self.preset_description
         payload["legacy_goal_profile"] = self.legacy_goal_profile
         return payload
 

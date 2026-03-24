@@ -2,8 +2,10 @@ const workspaceState = {
     hosts: [],
     hostFilter: "hide_down",
     hostServiceFilter: "",
+    hostCategoryFilter: "",
     servicesHostFilterId: 0,
     servicesHostFilterLabel: "",
+    servicesCategoryFilter: "",
     services: [],
     tools: [],
     toolsHydrated: false,
@@ -11,10 +13,13 @@ const workspaceState = {
     selectedHostId: null,
     hostDetail: null,
     manualToolTargets: [],
+    deviceCategoryRules: [],
+    builtInDeviceCategories: [],
 };
 
 const GRAPH_WORKSPACE_ZOOM_MIN_PERCENT = 10;
 const GRAPH_WORKSPACE_ZOOM_MAX_PERCENT = 400;
+const INTERNAL_QUICK_RECON_TCP_PORTS = "80,81,88,111,135,139,443,445,515,591,593,623,631,2049,8000,8008,8010,8080,8081,8088,8443,8888,9000,9090,9100,9443,10443";
 
 const graphWorkspaceState = {
     viewId: "attack_surface",
@@ -280,6 +285,7 @@ const startupWizardState = {
 
 const uiModalState = {
     schedulerOpen: false,
+    deviceCategorySettingsOpen: false,
     reportProviderOpen: false,
     settingsOpen: false,
     nmapScanOpen: false,
@@ -307,6 +313,7 @@ function updateBodyModalState() {
         || screenshotModalState.modalOpen
         || startupWizardState.open
         || uiModalState.schedulerOpen
+        || uiModalState.deviceCategorySettingsOpen
         || uiModalState.reportProviderOpen
         || uiModalState.settingsOpen
         || uiModalState.nmapScanOpen
@@ -361,6 +368,115 @@ function makeCell(value) {
     const td = document.createElement("td");
     td.textContent = value ?? "";
     return td;
+}
+
+function makeTruncatedCell(value, className = "") {
+    const td = document.createElement("td");
+    if (className) {
+        td.className = className;
+    }
+    const text = String(value ?? "");
+    const span = document.createElement("span");
+    span.className = "cell-truncate";
+    span.textContent = text;
+    if (text) {
+        td.title = text;
+    }
+    td.appendChild(span);
+    return td;
+}
+
+function normalizeCategoryList(items) {
+    if (!Array.isArray(items)) {
+        return [];
+    }
+    const seen = new Set();
+    const rows = [];
+    items.forEach((item) => {
+        const name = String(typeof item === "string" ? item : item?.name || "").trim();
+        if (!name) {
+            return;
+        }
+        const key = name.toLowerCase();
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        rows.push(name);
+    });
+    return rows;
+}
+
+function renderCategoryChipList(target, categories, emptyText = "No categories") {
+    const node = typeof target === "string" ? document.getElementById(target) : target;
+    if (!node) {
+        return;
+    }
+    const names = normalizeCategoryList(categories);
+    node.innerHTML = "";
+    if (!names.length) {
+        const empty = document.createElement("span");
+        empty.className = "category-chip category-chip-empty";
+        empty.textContent = emptyText;
+        node.appendChild(empty);
+        return;
+    }
+    names.forEach((name) => {
+        const chip = document.createElement("span");
+        chip.className = "category-chip";
+        chip.textContent = name;
+        node.appendChild(chip);
+    });
+}
+
+function makeCategoryCell(categories) {
+    const td = document.createElement("td");
+    td.className = "category-cell";
+    renderCategoryChipList(td, categories, "Uncategorized");
+    td.title = normalizeCategoryList(categories).join(", ");
+    return td;
+}
+
+function collectWorkspaceCategoryOptions() {
+    const seen = new Set();
+    const rows = [];
+    (workspaceState.hosts || []).forEach((host) => {
+        normalizeCategoryList(host?.categories || []).forEach((name) => {
+            const key = name.toLowerCase();
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            rows.push(name);
+        });
+    });
+    rows.sort((left, right) => left.localeCompare(right));
+    return rows;
+}
+
+function syncCategoryFilterOptions() {
+    const options = collectWorkspaceCategoryOptions();
+    ["hosts-category-filter-select", "services-category-filter-select"].forEach((id) => {
+        const select = document.getElementById(id);
+        if (!select) {
+            return;
+        }
+        const previous = String(select.value || "");
+        select.innerHTML = "";
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "";
+        defaultOption.textContent = "all categories";
+        select.appendChild(defaultOption);
+        options.forEach((name) => {
+            const option = document.createElement("option");
+            option.value = name;
+            option.textContent = name;
+            select.appendChild(option);
+        });
+        if (options.some((name) => String(name || "") === previous)) {
+            select.value = previous;
+        }
+    });
 }
 
 function buildLaunchToolButton(title = "Run supported tool") {
@@ -1074,8 +1190,12 @@ function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {})
     workspaceState.hosts = [];
     workspaceState.hostFilter = "hide_down";
     workspaceState.hostServiceFilter = "";
+    workspaceState.hostCategoryFilter = "";
     workspaceState.servicesHostFilterId = 0;
     workspaceState.servicesHostFilterLabel = "";
+    workspaceState.servicesCategoryFilter = "";
+    workspaceState.deviceCategoryRules = [];
+    workspaceState.builtInDeviceCategories = [];
     workspaceState.services = [];
     workspaceState.tools = [];
     workspaceState.toolsHydrated = false;
@@ -1253,6 +1373,7 @@ function renderHosts(hosts) {
         tr.appendChild(makeCell(host.hostname));
         tr.appendChild(makeCell(host.status));
         tr.appendChild(makeCell(host.os));
+        tr.appendChild(makeCategoryCell(host.categories || []));
         tr.appendChild(makeCell(host.open_ports));
         const actionsCell = document.createElement("td");
         actionsCell.className = "host-actions";
@@ -1275,6 +1396,7 @@ function renderHosts(hosts) {
     setText("host-count", workspaceState.hosts.length);
     renderHostSelector(workspaceState.hosts);
     renderHostSelectionState();
+    syncCategoryFilterOptions();
     graphUpdateHostFilterOptions();
 }
 
@@ -1316,6 +1438,7 @@ function renderServices(services) {
         tr.appendChild(makeCell(service.host_count || 0));
         tr.appendChild(makeCell(service.port_count || 0));
         tr.appendChild(makeCell(Array.isArray(service.protocols) ? service.protocols.join(",") : ""));
+        tr.appendChild(makeCategoryCell(service.categories || []));
         const actionsCell = document.createElement("td");
         const launchButton = buildLaunchToolButton(`Run supported tool for ${service.service || "service"}`);
         launchButton.addEventListener("click", async () => {
@@ -1435,10 +1558,11 @@ function renderProcesses(processes) {
         const tr = document.createElement("tr");
         tr.dataset.processId = String(process.id || "");
         tr.appendChild(makeCell(process.id));
-        tr.appendChild(makeCell(process.name));
+        tr.appendChild(makeTruncatedCell(process.name, "process-name-cell"));
         const target = formatTargetLabel(process.hostIp, process.port, process.protocol);
-        tr.appendChild(makeCell(target));
+        tr.appendChild(makeTruncatedCell(target, "process-target-cell"));
         const statusCell = document.createElement("td");
+        statusCell.className = "process-status-cell";
         const statusWrap = document.createElement("span");
         statusWrap.className = "process-status";
         const statusClass = getProcessStatusClass(process.status);
@@ -1462,8 +1586,12 @@ function renderProcesses(processes) {
         if (Number.isFinite(numericPercent)) {
             percentDisplay = `${numericPercent.toFixed(1)}%`;
         }
-        tr.appendChild(makeCell(percentDisplay));
-        tr.appendChild(makeCell(formatEtaSeconds(process.estimatedRemaining)));
+        const percentCell = makeCell(percentDisplay);
+        percentCell.className = "process-percent-cell";
+        tr.appendChild(percentCell);
+        const etaCell = makeCell(formatEtaSeconds(process.estimatedRemaining));
+        etaCell.className = "process-eta-cell";
+        tr.appendChild(etaCell);
 
         const actions = document.createElement("td");
         actions.className = "process-actions";
@@ -1553,8 +1681,132 @@ function getStartupProjectAction() {
 
 function syncStartupSchedulerFromMain() {
     setValue("startup-scheduler-mode", getValue("scheduler-mode-select") || "deterministic");
-    setValue("startup-scheduler-goal", getValue("scheduler-goal-select") || "internal_asset_discovery");
+    setValue("startup-scheduler-goal", getValue("scheduler-goal-select") || "internal_recon");
+    setValue("startup-engagement-scope-select", getValue("engagement-scope-select") || "internal");
+    setValue("startup-engagement-intent-select", getValue("engagement-intent-select") || "recon");
     setValue("startup-scheduler-provider", getValue("scheduler-provider-select") || "none");
+    syncStartupEngagementPresetControls();
+}
+
+function engagementPresetSummaryText(preset, isCustom) {
+    if (isCustom) {
+        return "Custom lets you override scope and intent manually. Use the standard presets unless you need a non-standard combination.";
+    }
+    const normalizedPreset = String(preset || "").trim().toLowerCase();
+    const descriptions = {
+        external_recon: "Low-noise external mapping focused on discovery, fingerprinting, and bounded validation.",
+        external_pentest: "Broader external follow-up once recon shows a target is worth deeper assessment.",
+        internal_quick_recon: "Fast internal low-hanging-fruit sweep focused on SMB, NetBIOS, NFS, printers, common admin panels, and other obvious exposure points.",
+        internal_recon: "Broader internal discovery and validation across exposed services without moving into pentest depth.",
+        internal_pentest: "Deeper internal assessment with wider follow-up and higher-noise exploration.",
+    };
+    return descriptions[normalizedPreset] || "Preset drives scope and intent for most runs. Switch to custom only if you need a manual override.";
+}
+
+function getActiveEngagementPreset() {
+    return String(getValue("scheduler-goal-select") || "internal_recon").trim().toLowerCase();
+}
+
+function getSelectedNmapEngagementPreset() {
+    const selected = String(getValue("nmap-engagement-preset-select") || "").trim().toLowerCase();
+    return selected || getActiveEngagementPreset();
+}
+
+function isInternalQuickReconPreset(preset = "") {
+    return String(preset || "").trim().toLowerCase() === "internal_quick_recon";
+}
+
+function buildEngagementPolicyForPresetSelection(preset, options = {}) {
+    const normalizedPreset = String(preset || "internal_recon").trim().toLowerCase();
+    if (normalizedPreset !== "custom") {
+        return normalizeEngagementPolicyPayload(
+            defaultEngagementPolicyForPreset(normalizedPreset),
+            normalizedPreset,
+        );
+    }
+    const fallbackGoalProfile = String(options.fallbackGoalProfile || getValue("scheduler-goal-select") || "internal_recon");
+    return normalizeEngagementPolicyPayload(
+        {
+            preset: "custom",
+            scope: getValue("engagement-scope-select") || "internal",
+            intent: getValue("engagement-intent-select") || "recon",
+            allow_exploitation: getChecked("engagement-allow-exploitation"),
+            allow_lateral_movement: getChecked("engagement-allow-lateral"),
+            credential_attack_mode: getValue("engagement-credential-mode"),
+            lockout_risk_mode: getValue("engagement-lockout-mode"),
+            stability_risk_mode: getValue("engagement-stability-mode"),
+            detection_risk_mode: getValue("engagement-detection-mode"),
+            approval_mode: getValue("engagement-approval-mode"),
+            runner_preference: getValue("engagement-runner-preference"),
+            noise_budget: getValue("engagement-noise-budget"),
+            custom_overrides: {},
+        },
+        fallbackGoalProfile,
+    );
+}
+
+function syncNmapEngagementPresetControls() {
+    const preset = getSelectedNmapEngagementPreset();
+    const isCustom = preset === "custom";
+    const derivedPolicy = buildEngagementPolicyForPresetSelection(preset, {
+        fallbackGoalProfile: getValue("scheduler-goal-select") || "internal_recon",
+    });
+
+    setText("nmap-engagement-derived-scope", derivedPolicy.scope || "internal");
+    setText("nmap-engagement-derived-intent", derivedPolicy.intent || "recon");
+
+    const summaryNode = document.getElementById("nmap-engagement-preset-summary");
+    if (summaryNode) {
+        summaryNode.textContent = engagementPresetSummaryText(preset, isCustom);
+    }
+
+    const customNote = document.getElementById("nmap-engagement-custom-note");
+    if (customNote) {
+        customNote.hidden = !isCustom;
+    }
+}
+
+function syncStartupEngagementPresetControls() {
+    const preset = String(getValue("startup-scheduler-goal") || "internal_recon").trim().toLowerCase();
+    const isCustom = preset === "custom";
+    const derivedPolicy = isCustom
+        ? {
+            scope: getValue("startup-engagement-scope-select") || "internal",
+            intent: getValue("startup-engagement-intent-select") || "recon",
+        }
+        : defaultEngagementPolicyForPreset(preset);
+
+    if (!isCustom) {
+        setValue("startup-engagement-scope-select", derivedPolicy.scope || "internal");
+        setValue("startup-engagement-intent-select", derivedPolicy.intent || "recon");
+    }
+
+    setText("startup-engagement-derived-scope", derivedPolicy.scope || "internal");
+    setText("startup-engagement-derived-intent", derivedPolicy.intent || "recon");
+
+    const summaryNode = document.getElementById("startup-engagement-preset-summary");
+    if (summaryNode) {
+        summaryNode.textContent = engagementPresetSummaryText(preset, isCustom);
+    }
+
+    const customScopeLabel = document.getElementById("startup-engagement-custom-scope-label");
+    const customIntentLabel = document.getElementById("startup-engagement-custom-intent-label");
+    const customNote = document.getElementById("startup-engagement-custom-note");
+    const scopeSelect = document.getElementById("startup-engagement-scope-select");
+    const intentSelect = document.getElementById("startup-engagement-intent-select");
+
+    [customScopeLabel, customIntentLabel, customNote].forEach((node) => {
+        if (node) {
+            node.hidden = !isCustom;
+        }
+    });
+
+    if (scopeSelect) {
+        scopeSelect.disabled = !isCustom;
+    }
+    if (intentSelect) {
+        intentSelect.disabled = !isCustom;
+    }
 }
 
 function updateStartupSummary() {
@@ -1640,10 +1892,10 @@ function shouldShowStartupWizard() {
 
 function focusRunNmapScan() {
     setNmapScanModalOpen(true);
-    resetNmapScanWizardState({scrollIntoView: false, focusTargets: true});
+    resetNmapScanWizardState({scrollIntoView: false, focusPreset: true});
 }
 
-function resetNmapScanWizardState({scrollIntoView = false, focusTargets = false} = {}) {
+function resetNmapScanWizardState({scrollIntoView = false, focusPreset = false, focusTargets = false} = {}) {
     const block = document.getElementById("nmap-scan-block");
     if (scrollIntoView && block) {
         block.scrollIntoView({behavior: "smooth", block: "start"});
@@ -1659,13 +1911,16 @@ function resetNmapScanWizardState({scrollIntoView = false, focusTargets = false}
         easyMode.checked = true;
     }
 
+    setValue("nmap-engagement-preset-select", getValue("scheduler-goal-select") || "internal_recon");
+    syncNmapEngagementPresetControls();
     applyNmapModeTargetDefaults("easy");
     setNmapWizardStep(1);
     refreshNmapModeOptions();
     refreshNmapScanButtonState();
 
-    if (focusTargets) {
-        const targetInput = document.getElementById("nmap-targets");
+    const focusTargetId = focusPreset ? "nmap-engagement-preset-select" : (focusTargets ? "nmap-targets" : "");
+    if (focusTargetId) {
+        const targetInput = document.getElementById(focusTargetId);
         if (targetInput) {
             window.setTimeout(() => {
                 targetInput.focus();
@@ -1729,11 +1984,26 @@ async function applyStartupImportsStep() {
 
 async function applyStartupSchedulerStep() {
     const mode = getValue("startup-scheduler-mode") || "deterministic";
-    const goalProfile = getValue("startup-scheduler-goal") || "internal_asset_discovery";
+    const preset = String(getValue("startup-scheduler-goal") || "internal_recon").trim().toLowerCase();
+    const presetDefaults = defaultEngagementPolicyForPreset(preset);
     const provider = getValue("startup-scheduler-provider") || "none";
+    const engagementPolicy = normalizeEngagementPolicyPayload(
+        {
+            preset,
+            scope: preset === "custom"
+                ? getValue("startup-engagement-scope-select")
+                : presetDefaults.scope,
+            intent: preset === "custom"
+                ? getValue("startup-engagement-intent-select")
+                : presetDefaults.intent,
+            custom_overrides: {},
+        },
+        preset,
+    );
     const updates = {
         mode,
-        goal_profile: goalProfile,
+        goal_profile: legacyGoalProfileFromEngagementPolicy(engagementPolicy),
+        engagement_policy: engagementPolicy,
         provider,
     };
 
@@ -1768,9 +2038,12 @@ async function applyStartupSchedulerStep() {
     await postJson("/api/scheduler/preferences", updates);
 
     setValue("scheduler-mode-select", mode);
-    setValue("scheduler-goal-select", goalProfile);
+    setValue("scheduler-goal-select", engagementPolicy.preset || preset);
+    setValue("engagement-scope-select", engagementPolicy.scope || "internal");
+    setValue("engagement-intent-select", engagementPolicy.intent || "recon");
+    syncEngagementPresetControls();
     setValue("scheduler-provider-select", provider);
-    startupWizardState.summary.scheduler = `${mode} / ${goalProfile} / provider=${provider}`;
+    startupWizardState.summary.scheduler = `${mode} / ${engagementPolicy.preset || preset} (${engagementPolicy.scope}/${engagementPolicy.intent}) / provider=${provider}`;
     await loadSchedulerPreferences();
 }
 
@@ -2209,7 +2482,7 @@ async function handleManualToolTargetChange() {
 function openAddScanAction() {
     closeRibbonMenus();
     setNmapScanModalOpen(true);
-    resetNmapScanWizardState({scrollIntoView: false, focusTargets: true});
+    resetNmapScanWizardState({scrollIntoView: false, focusPreset: true});
 }
 
 function openManualScanAction() {
@@ -2272,6 +2545,17 @@ function setSchedulerModalOpen(open) {
         return;
     }
     uiModalState.schedulerOpen = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    updateBodyModalState();
+}
+
+function setDeviceCategorySettingsModalOpen(open) {
+    const overlay = document.getElementById("device-category-settings-modal");
+    if (!overlay) {
+        return;
+    }
+    uiModalState.deviceCategorySettingsOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
     updateBodyModalState();
@@ -2684,6 +2968,10 @@ function currentHostFilterQuery() {
     if (service) {
         params.set("service", service);
     }
+    const category = String(workspaceState.hostCategoryFilter || "").trim();
+    if (category) {
+        params.set("category", category);
+    }
     return params.toString();
 }
 
@@ -2692,6 +2980,10 @@ function currentServicesFilterQuery() {
     const hostId = parseInt(workspaceState.servicesHostFilterId, 10);
     if (Number.isFinite(hostId) && hostId > 0) {
         params.set("host_id", String(hostId));
+    }
+    const category = String(workspaceState.servicesCategoryFilter || "").trim();
+    if (category) {
+        params.set("category", category);
     }
     return params.toString();
 }
@@ -2712,6 +3004,10 @@ function syncHostFilterControls() {
     const resetButton = document.getElementById("hosts-reset-filter-button");
     const filter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase();
     const service = String(workspaceState.hostServiceFilter || "").trim();
+    const category = String(workspaceState.hostCategoryFilter || "").trim();
+    const servicesCategory = String(workspaceState.servicesCategoryFilter || "").trim();
+    setValue("hosts-category-filter-select", category);
+    setValue("services-category-filter-select", servicesCategory);
     const servicesHostFilterId = parseInt(workspaceState.servicesHostFilterId, 10);
     const servicesHostFilterLabel = String(workspaceState.servicesHostFilterLabel || "").trim();
     if (showAll) {
@@ -2721,14 +3017,20 @@ function syncHostFilterControls() {
         hideDown.classList.toggle("is-active", filter !== "show_all");
     }
     if (resetButton) {
-        const atDefault = filter === "hide_down" && !service && (!Number.isFinite(servicesHostFilterId) || servicesHostFilterId <= 0);
+        const atDefault = filter === "hide_down" && !service && !category && (!Number.isFinite(servicesHostFilterId) || servicesHostFilterId <= 0);
         resetButton.disabled = atDefault;
         resetButton.classList.toggle("is-active", !atDefault);
         let label = "Reset host filters (show only up hosts)";
-        if (service && servicesHostFilterLabel) {
+        if (service && category && servicesHostFilterLabel) {
+            label = `Reset host filters (show only up hosts, clear service filter: ${service}, clear category filter: ${category}, clear services filter: ${servicesHostFilterLabel})`;
+        } else if (service && servicesHostFilterLabel) {
             label = `Reset host filters (show only up hosts, clear service filter: ${service}, clear services filter: ${servicesHostFilterLabel})`;
+        } else if (service && category) {
+            label = `Reset host filters (show only up hosts, clear service filter: ${service}, clear category filter: ${category})`;
         } else if (service) {
             label = `Reset host filters (show only up hosts, clear service filter: ${service})`;
+        } else if (category) {
+            label = `Reset host filters (show only up hosts, clear category filter: ${category})`;
         } else if (servicesHostFilterLabel) {
             label = `Reset host filters (show only up hosts, clear services filter: ${servicesHostFilterLabel})`;
         }
@@ -2747,6 +3049,17 @@ async function setHostFilterAction(filter) {
     await graphLoadSnapshot({background: false}).catch(() => {});
 }
 
+async function setHostCategoryFilterAction(category) {
+    workspaceState.hostCategoryFilter = String(category || "").trim();
+    syncHostFilterControls();
+    renderHosts(workspaceState.hosts);
+    await Promise.all([
+        loadWorkspaceHosts(),
+        loadWorkspaceServices(),
+    ]);
+    await graphLoadSnapshot({background: false}).catch(() => {});
+}
+
 async function setHostServiceFilterAction(service) {
     workspaceState.hostServiceFilter = String(service || "").trim();
     workspaceState.servicesHostFilterId = 0;
@@ -2758,6 +3071,13 @@ async function setHostServiceFilterAction(service) {
         loadWorkspaceHosts(),
         loadWorkspaceServices(),
     ]);
+}
+
+async function setServicesCategoryFilterAction(category) {
+    workspaceState.servicesCategoryFilter = String(category || "").trim();
+    syncHostFilterControls();
+    renderServices(workspaceState.services);
+    await loadWorkspaceServices();
 }
 
 async function setServicesHostFilterAction(hostId, hostLabel = "") {
@@ -2785,8 +3105,10 @@ async function setServicesHostFilterAction(hostId, hostLabel = "") {
 async function resetHostFiltersAction() {
     workspaceState.hostFilter = "hide_down";
     workspaceState.hostServiceFilter = "";
+    workspaceState.hostCategoryFilter = "";
     workspaceState.servicesHostFilterId = 0;
     workspaceState.servicesHostFilterLabel = "";
+    workspaceState.servicesCategoryFilter = "";
     syncHostFilterControls();
     renderHosts(workspaceState.hosts);
     renderServices(workspaceState.services);
@@ -2860,6 +3182,17 @@ function openSchedulerSettingsAction() {
 
 function closeSchedulerSettingsAction() {
     setSchedulerModalOpen(false);
+}
+
+function openDeviceCategorySettingsAction() {
+    closeRibbonMenus();
+    setDeviceCategorySettingsStatus("Idle");
+    renderDeviceCategorySettingsModal();
+    setDeviceCategorySettingsModalOpen(true);
+}
+
+function closeDeviceCategorySettingsAction() {
+    setDeviceCategorySettingsModalOpen(false);
 }
 
 function openReportProviderAction() {
@@ -3750,8 +4083,9 @@ function applyWorkspaceOverview(overview) {
         renderSummary(overview.summary);
     }
     if (overview.scheduler) {
+        const schedulerPolicy = overview.scheduler.engagement_policy || {};
         setText("scheduler-mode", overview.scheduler.mode || "");
-        setText("scheduler-goal", overview.scheduler.goal_profile || "");
+        setText("scheduler-goal", schedulerPolicy.preset_label || schedulerPolicy.preset || overview.scheduler.goal_profile || "");
         setText("scheduler-families", overview.scheduler.preapproved_families_count || 0);
     }
     if (Array.isArray(overview.scheduler_rationale_feed)) {
@@ -3972,10 +4306,15 @@ function renderHostDetail(payload) {
     const stateUrls = Array.isArray(targetState?.urls) ? targetState.urls : [];
     const stateCredentials = Array.isArray(targetState?.credentials) ? targetState.credentials : [];
     const stateSessions = Array.isArray(targetState?.sessions) ? targetState.sessions : [];
+    const stateDeviceCategories = Array.isArray(targetState?.device_categories) ? targetState.device_categories : [];
+    const stateManualDeviceCategories = Array.isArray(targetState?.manual_device_categories) ? targetState.manual_device_categories : [];
+    const stateDeviceCategoryOverride = Boolean(targetState?.device_category_override);
 
     setText("host-detail-name", host.ip ? `${host.ip} (${host.hostname || "no-hostname"})` : "");
     setValue("workspace-note", payload?.note || "");
     setValue("workspace-tool-host-ip", host.ip || "");
+    setValue("workspace-host-categories", normalizeCategoryList(stateManualDeviceCategories).join(", "));
+    setChecked("workspace-host-categories-override", stateDeviceCategoryOverride);
 
     const portsBody = document.getElementById("host-detail-ports");
     if (portsBody) {
@@ -4144,6 +4483,15 @@ function renderHostDetail(payload) {
     setText("host-ai-tech-count", aiTechnologies.length);
     setText("host-ai-finding-count", aiFindings.length);
     setText("host-ai-manual-count", aiManualTests.length);
+    renderCategoryChipList("host-detail-categories", stateDeviceCategories, "Uncategorized");
+    setText("host-device-category-count", normalizeCategoryList(stateDeviceCategories).length);
+    if (stateDeviceCategoryOverride) {
+        setText("host-detail-category-note", "Manual categories replace automatic classification for this host.");
+    } else if (normalizeCategoryList(stateManualDeviceCategories).length > 0) {
+        setText("host-detail-category-note", "Manual categories are additive for this host.");
+    } else {
+        setText("host-detail-category-note", "");
+    }
 
     const shotsNode = document.getElementById("host-detail-screenshots");
     if (shotsNode) {
@@ -4177,6 +4525,7 @@ function applySchedulerPreferences(prefs) {
     setValue("scheduler-goal-select", policy.preset || "internal_recon");
     setValue("engagement-scope-select", policy.scope || "internal");
     setValue("engagement-intent-select", policy.intent || "recon");
+    syncEngagementPresetControls();
     setChecked("engagement-allow-exploitation", Boolean(policy.allow_exploitation));
     setChecked("engagement-allow-lateral", Boolean(policy.allow_lateral_movement));
     setValue("engagement-credential-mode", policy.credential_attack_mode || "blocked");
@@ -4199,6 +4548,8 @@ function applySchedulerPreferences(prefs) {
     const grayhatwarfare = integrations.grayhatwarfare || {};
     const chaos = integrations.chaos || {};
     const shodan = integrations.shodan || {};
+    workspaceState.deviceCategoryRules = Array.isArray(prefs.device_categories) ? prefs.device_categories : [];
+    workspaceState.builtInDeviceCategories = Array.isArray(prefs.built_in_device_categories) ? prefs.built_in_device_categories : [];
     const aiFeedback = prefs.ai_feedback || {};
     const projectDelivery = prefs.project_report_delivery || {};
     const projectDeliveryMtls = projectDelivery.mtls || {};
@@ -4274,6 +4625,119 @@ function applySchedulerPreferences(prefs) {
     });
 
     setSchedulerProviderFieldVisibility(prefs.provider || "none");
+    renderDeviceCategorySettingsModal();
+}
+
+function setDeviceCategorySettingsStatus(text, isError = false) {
+    const node = document.getElementById("device-category-save-status");
+    if (!node) {
+        return;
+    }
+    node.textContent = text || "";
+    node.style.color = isError ? "#ff9b9b" : "";
+}
+
+function buildDeviceCategoryRuleRow(rule = {}) {
+    const tr = document.createElement("tr");
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = String(rule?.name || "");
+    nameInput.dataset.deviceCategoryField = "name";
+    nameInput.placeholder = "Category name";
+
+    const portsInput = document.createElement("input");
+    portsInput.type = "text";
+    portsInput.value = Array.isArray(rule?.ports) ? rule.ports.join(", ") : "";
+    portsInput.dataset.deviceCategoryField = "ports";
+    portsInput.placeholder = "445, 3389";
+
+    const fingerprintInput = document.createElement("input");
+    fingerprintInput.type = "text";
+    fingerprintInput.value = Array.isArray(rule?.fingerprint_fragments) ? rule.fingerprint_fragments.join(", ") : "";
+    fingerprintInput.dataset.deviceCategoryField = "fingerprint_fragments";
+    fingerprintInput.placeholder = "iis, microsoft windows rpc";
+
+    const cpeInput = document.createElement("input");
+    cpeInput.type = "text";
+    cpeInput.value = Array.isArray(rule?.cpe) ? rule.cpe.join(", ") : "";
+    cpeInput.dataset.deviceCategoryField = "cpe";
+    cpeInput.placeholder = "cpe:/o:microsoft:windows";
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "icon-btn icon-btn-danger";
+    removeButton.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+    removeButton.title = "Remove category";
+    removeButton.setAttribute("aria-label", "Remove category");
+    removeButton.addEventListener("click", () => {
+        tr.remove();
+        if (!document.querySelector("#device-category-rules-body tr")) {
+            const body = document.getElementById("device-category-rules-body");
+            if (body) {
+                body.appendChild(buildDeviceCategoryRuleRow({}));
+            }
+        }
+    });
+
+    [nameInput, portsInput, fingerprintInput, cpeInput].forEach((input) => {
+        const td = document.createElement("td");
+        td.appendChild(input);
+        tr.appendChild(td);
+    });
+    const actionsTd = document.createElement("td");
+    actionsTd.appendChild(removeButton);
+    tr.appendChild(actionsTd);
+    return tr;
+}
+
+function renderDeviceCategorySettingsModal() {
+    renderCategoryChipList(
+        "device-category-builtins-list",
+        (workspaceState.builtInDeviceCategories || []).map((item) => item?.name || ""),
+        "No built-in categories",
+    );
+    const body = document.getElementById("device-category-rules-body");
+    if (!body) {
+        return;
+    }
+    body.innerHTML = "";
+    const rules = Array.isArray(workspaceState.deviceCategoryRules) ? workspaceState.deviceCategoryRules : [];
+    if (!rules.length) {
+        body.appendChild(buildDeviceCategoryRuleRow({}));
+        return;
+    }
+    rules.forEach((rule) => {
+        body.appendChild(buildDeviceCategoryRuleRow(rule));
+    });
+}
+
+function collectDeviceCategoryRulesFromModal() {
+    const rows = Array.from(document.querySelectorAll("#device-category-rules-body tr"));
+    return rows.map((row) => {
+        const getFieldValue = (field) => {
+            const input = row.querySelector(`[data-device-category-field="${field}"]`);
+            return input ? String(input.value || "").trim() : "";
+        };
+        return {
+            name: getFieldValue("name"),
+            ports: parseCommaSeparatedList(getFieldValue("ports")),
+            fingerprint_fragments: parseCommaSeparatedList(getFieldValue("fingerprint_fragments")),
+            cpe: parseCommaSeparatedList(getFieldValue("cpe")),
+        };
+    }).filter((rule) => rule.name);
+}
+
+async function saveDeviceCategorySettingsAction() {
+    setDeviceCategorySettingsStatus("Saving...");
+    try {
+        const prefs = await postJson("/api/scheduler/preferences", {
+            device_categories: collectDeviceCategoryRulesFromModal(),
+        });
+        applySchedulerPreferences(prefs);
+        setDeviceCategorySettingsStatus("Saved");
+    } catch (err) {
+        setDeviceCategorySettingsStatus(`Save failed: ${err.message}`, true);
+    }
 }
 
 function normalizeSchedulerFeatureFlags(flags) {
@@ -4348,6 +4812,23 @@ function defaultEngagementPolicyForPreset(preset) {
             custom_overrides: {},
             legacy_goal_profile: "external_pentest",
         },
+        internal_quick_recon: {
+            preset: "internal_quick_recon",
+            preset_label: "Internal Quick Recon",
+            scope: "internal",
+            intent: "recon",
+            allow_exploitation: false,
+            allow_lateral_movement: false,
+            credential_attack_mode: "blocked",
+            lockout_risk_mode: "blocked",
+            stability_risk_mode: "approval",
+            detection_risk_mode: "low",
+            approval_mode: "risky",
+            runner_preference: "local",
+            noise_budget: "low",
+            custom_overrides: {},
+            legacy_goal_profile: "internal_asset_discovery",
+        },
         internal_recon: {
             preset: "internal_recon",
             preset_label: "Internal Recon",
@@ -4388,6 +4869,53 @@ function defaultEngagementPolicyForPreset(preset) {
         preset: normalizedPreset || "custom",
         preset_label: normalizedPreset ? normalizedPreset.replace(/_/g, " ") : "Custom",
     };
+}
+
+function syncEngagementPresetControls() {
+    const preset = String(getValue("scheduler-goal-select") || "internal_recon").trim().toLowerCase();
+    const isCustom = preset === "custom";
+    const derivedPolicy = isCustom
+        ? {
+            scope: getValue("engagement-scope-select") || "internal",
+            intent: getValue("engagement-intent-select") || "recon",
+        }
+        : defaultEngagementPolicyForPreset(preset);
+
+    if (!isCustom) {
+        setValue("engagement-scope-select", derivedPolicy.scope || "internal");
+        setValue("engagement-intent-select", derivedPolicy.intent || "recon");
+    }
+
+    setText("engagement-derived-scope", derivedPolicy.scope || "internal");
+    setText("engagement-derived-intent", derivedPolicy.intent || "recon");
+
+    const summaryNode = document.getElementById("engagement-preset-summary");
+    if (summaryNode) {
+        summaryNode.textContent = engagementPresetSummaryText(preset, isCustom);
+    }
+
+    const customScopeLabel = document.getElementById("engagement-custom-scope-label");
+    const customIntentLabel = document.getElementById("engagement-custom-intent-label");
+    const customNote = document.getElementById("engagement-custom-note");
+    const scopeSelect = document.getElementById("engagement-scope-select");
+    const intentSelect = document.getElementById("engagement-intent-select");
+
+    [customScopeLabel, customIntentLabel, customNote].forEach((node) => {
+        if (node) {
+            node.hidden = !isCustom;
+        }
+    });
+
+    if (scopeSelect) {
+        scopeSelect.disabled = !isCustom;
+    }
+    if (intentSelect) {
+        intentSelect.disabled = !isCustom;
+    }
+    syncNmapPresetDerivedOptions();
+    if (document.getElementById("nmap-command-preview")) {
+        updateNmapCommandPreview();
+    }
 }
 
 function presetFromLegacyGoalProfile(goalProfile) {
@@ -4440,6 +4968,8 @@ function setSchedulerProviderFieldVisibility(providerName) {
 
 function collectSchedulerPreferencesFromForm() {
     const mode = getValue("scheduler-mode-select");
+    const selectedPreset = String(getValue("scheduler-goal-select") || "internal_recon").trim().toLowerCase();
+    const presetDefaults = defaultEngagementPolicyForPreset(selectedPreset);
     const selectedProvider = getValue("scheduler-provider-select");
     const rawConcurrency = parseInt(getValue("scheduler-concurrency-input"), 10);
     const maxConcurrency = Number.isFinite(rawConcurrency)
@@ -4543,9 +5073,13 @@ function collectSchedulerPreferencesFromForm() {
 
     const engagementPolicy = normalizeEngagementPolicyPayload(
         {
-            preset: getValue("scheduler-goal-select"),
-            scope: getValue("engagement-scope-select"),
-            intent: getValue("engagement-intent-select"),
+            preset: selectedPreset,
+            scope: selectedPreset === "custom"
+                ? getValue("engagement-scope-select")
+                : presetDefaults.scope,
+            intent: selectedPreset === "custom"
+                ? getValue("engagement-intent-select")
+                : presetDefaults.intent,
             allow_exploitation: getChecked("engagement-allow-exploitation"),
             allow_lateral_movement: getChecked("engagement-allow-lateral"),
             credential_attack_mode: getValue("engagement-credential-mode"),
@@ -4557,7 +5091,7 @@ function collectSchedulerPreferencesFromForm() {
             noise_budget: getValue("engagement-noise-budget"),
             custom_overrides: {},
         },
-        getValue("scheduler-goal-select"),
+        selectedPreset,
     );
 
     return {
@@ -5120,6 +5654,7 @@ function graphBuildHostMaps(nodes) {
     const hostLabelById = new Map();
     const subnetByHostId = new Map();
     const domainByHostId = new Map();
+    const categoriesByHostId = new Map();
     (nodes || []).forEach((node) => {
         const hostId = parseInt(graphPropertyValue(node, "host_id"), 10);
         if (!Number.isFinite(hostId) || hostId <= 0) {
@@ -5136,6 +5671,12 @@ function graphBuildHostMaps(nodes) {
             if (ip) {
                 subnetByHostId.set(hostId, graphSubnetForIp(ip));
             }
+            const categoryValue = graphPropertyValue(node, "device_categories");
+            if (Array.isArray(categoryValue)) {
+                categoriesByHostId.set(hostId, normalizeCategoryList(categoryValue));
+            } else {
+                categoriesByHostId.set(hostId, normalizeCategoryList(String(categoryValue || "").split(",")));
+            }
         }
     });
     return {
@@ -5143,6 +5684,7 @@ function graphBuildHostMaps(nodes) {
         hostLabelById,
         subnetByHostId,
         domainByHostId,
+        categoriesByHostId,
     };
 }
 
@@ -5165,6 +5707,12 @@ function graphGroupKeyForNode(node, groupBy, hostMaps) {
             return String(node.label || "host");
         }
         return hostMaps.hostLabelById.get(hostId) || "unassigned host";
+    }
+    if (groupBy === "category") {
+        const categories = type === "host"
+            ? normalizeCategoryList(graphPropertyValue(node, "device_categories"))
+            : normalizeCategoryList(hostMaps.categoriesByHostId.get(hostId) || []);
+        return categories.length ? categories.join(", ") : "uncategorized";
     }
     if (groupBy === "domain") {
         if (type === "fqdn") {
@@ -5262,7 +5810,7 @@ function graphGroupTypePriority(nodeType, groupBy) {
         }
         return 5;
     }
-    if (groupBy === "host" || groupBy === "domain" || groupBy === "subnet") {
+    if (groupBy === "host" || groupBy === "domain" || groupBy === "subnet" || groupBy === "category") {
         if (["host", "fqdn", "subnet", "scope"].includes(type)) {
             return 0;
         }
@@ -8529,6 +9077,7 @@ async function loadWorkspaceHosts() {
             : "hide_down";
     }
     workspaceState.hostServiceFilter = String(body?.service || "").trim();
+    workspaceState.hostCategoryFilter = String(body?.category || "").trim();
     syncHostFilterControls();
     renderServices(workspaceState.services);
     renderHosts(body.hosts || []);
@@ -8542,6 +9091,8 @@ async function loadWorkspaceServices() {
         workspaceState.servicesHostFilterId = 0;
         workspaceState.servicesHostFilterLabel = "";
     }
+    workspaceState.servicesCategoryFilter = String(body?.category || "").trim();
+    syncHostFilterControls();
     renderServices(body.services || []);
 }
 
@@ -8601,6 +9152,38 @@ async function saveHostNote() {
         setWorkspaceStatus("Note saved");
     } catch (err) {
         setWorkspaceStatus(`Save note failed: ${err.message}`, true);
+    }
+}
+
+function parseCommaSeparatedList(value) {
+    return Array.from(new Set(
+        String(value || "")
+            .split(",")
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+    ));
+}
+
+async function saveHostCategories() {
+    const hostId = workspaceState.selectedHostId;
+    if (!hostId) {
+        setWorkspaceStatus("No host selected", true);
+        return;
+    }
+    try {
+        await postJson(`/api/workspace/hosts/${hostId}/categories`, {
+            manual_categories: parseCommaSeparatedList(getValue("workspace-host-categories")),
+            override_auto: getChecked("workspace-host-categories-override"),
+        });
+        setWorkspaceStatus("Categories saved");
+        await Promise.all([
+            loadWorkspaceHosts(),
+            loadWorkspaceServices(),
+            loadHostDetail(hostId),
+        ]);
+        await graphLoadSnapshot({background: false}).catch(() => {});
+    } catch (err) {
+        setWorkspaceStatus(`Save categories failed: ${err.message}`, true);
     }
 }
 
@@ -8807,8 +9390,9 @@ function renderSnapshot(snapshot) {
         renderProcesses(snapshot.processes);
     }
     if (snapshot.scheduler) {
+        const schedulerPolicy = snapshot.scheduler.engagement_policy || {};
         setText("scheduler-mode", snapshot.scheduler.mode || "");
-        setText("scheduler-goal", snapshot.scheduler.goal_profile || "");
+        setText("scheduler-goal", schedulerPolicy.preset_label || schedulerPolicy.preset || snapshot.scheduler.goal_profile || "");
         setText("scheduler-families", snapshot.scheduler.preapproved_families_count || 0);
     }
     if (Array.isArray(snapshot.scheduler_rationale_feed)) {
@@ -9319,12 +9903,14 @@ function collectNmapWizardTargets() {
 
 function getNmapScanOptions(mode) {
     if (mode === "easy") {
+        const quickReconPreset = isInternalQuickReconPreset(getSelectedNmapEngagementPreset());
         return {
             discovery: getChecked("nmap-easy-discovery"),
             skip_dns: getChecked("nmap-easy-skip-dns"),
             force_pn: getChecked("nmap-easy-force-pn"),
             timing: normalizeTiming(getValue("nmap-easy-timing"), "T3"),
-            top_ports: normalizePortCount(getValue("nmap-easy-top-ports"), 1000),
+            top_ports: quickReconPreset ? 0 : normalizePortCount(getValue("nmap-easy-top-ports"), 1000),
+            explicit_ports: quickReconPreset ? INTERNAL_QUICK_RECON_TCP_PORTS : "",
             service_detection: getChecked("nmap-easy-service-detection"),
             default_scripts: getChecked("nmap-easy-default-scripts"),
             os_detection: getChecked("nmap-easy-os-detection"),
@@ -9435,7 +10021,7 @@ function validateNmapWizardState() {
     }
 
     if (mode === "easy") {
-        if (!isValidTopPortsValue("nmap-easy-top-ports")) {
+        if (!isInternalQuickReconPreset(getSelectedNmapEngagementPreset()) && !isValidTopPortsValue("nmap-easy-top-ports")) {
             return {valid: false, reason: "Easy mode Top Ports must be 1-65535."};
         }
         return {valid: true, reason: ""};
@@ -9540,6 +10126,8 @@ function updateNmapCommandPreview() {
 
         if (options.full_ports) {
             cmd.push("-p-");
+        } else if (String(options.explicit_ports || "").trim()) {
+            cmd.push("-p", String(options.explicit_ports || "").trim());
         } else {
             cmd.push("--top-ports", String(normalizePortCount(options.top_ports, 1000)));
         }
@@ -9572,11 +10160,26 @@ function updateNmapCommandPreview() {
     refreshNmapScanButtonState();
 }
 
+function syncNmapPresetDerivedOptions() {
+    const quickReconPreset = isInternalQuickReconPreset(getSelectedNmapEngagementPreset());
+    const topPortsNode = document.getElementById("nmap-easy-top-ports");
+    const noteNode = document.getElementById("nmap-easy-preset-note");
+    if (topPortsNode) {
+        topPortsNode.disabled = quickReconPreset;
+    }
+    if (noteNode) {
+        noteNode.hidden = !quickReconPreset;
+        noteNode.textContent = quickReconPreset
+            ? `Internal Quick Recon uses a curated TCP port list instead of Top Ports: ${INTERNAL_QUICK_RECON_TCP_PORTS}. Add UDP-specific follow-up separately if needed.`
+            : "";
+    }
+}
+
 function setNmapWizardStep(step) {
-    const nextStep = Math.max(1, Math.min(3, parseInt(step, 10) || 1));
+    const nextStep = Math.max(1, Math.min(4, parseInt(step, 10) || 1));
     nmapWizardState.step = nextStep;
 
-    [1, 2, 3].forEach((index) => {
+    [1, 2, 3, 4].forEach((index) => {
         const indicator = document.getElementById(`nmap-wizard-indicator-${index}`);
         if (indicator) {
             indicator.classList.toggle("is-active", index === nextStep);
@@ -9593,8 +10196,8 @@ function setNmapWizardStep(step) {
         back.disabled = nextStep <= 1;
     }
     if (next) {
-        next.disabled = nextStep >= 3;
-        next.style.display = nextStep >= 3 ? "none" : "";
+        next.disabled = nextStep >= 4;
+        next.style.display = nextStep >= 4 ? "none" : "";
     }
     refreshNmapScanButtonState();
 }
@@ -9622,6 +10225,7 @@ function refreshNmapModeOptions() {
                 node.disabled = rfcDiscoveryOnly;
             }
         });
+    syncNmapPresetDerivedOptions();
     updateNmapCommandPreview();
     refreshNmapScanButtonState();
 }
@@ -9637,9 +10241,9 @@ async function runNmapScan() {
         setActionStatus(`Scan failed: ${validation.reason}`, true);
         const reason = String(validation.reason || "").toLowerCase();
         if (reason.includes("target") || reason.includes("rfc1918")) {
-            setNmapWizardStep(2);
-        } else {
             setNmapWizardStep(3);
+        } else {
+            setNmapWizardStep(4);
         }
         return;
     }
@@ -9648,9 +10252,18 @@ async function runNmapScan() {
     const scanOptions = getNmapScanOptions(scanMode);
     const discovery = Boolean(scanOptions.discovery);
     const staged = false;
+    const engagementPolicy = buildEngagementPolicyForPresetSelection(getSelectedNmapEngagementPreset(), {
+        fallbackGoalProfile: getValue("scheduler-goal-select") || "internal_recon",
+    });
 
     setActionStatus("Queueing Nmap scan job...");
     try {
+        const schedulerPrefs = await postJson("/api/scheduler/preferences", {
+            engagement_policy: engagementPolicy,
+            goal_profile: legacyGoalProfileFromEngagementPolicy(engagementPolicy),
+        });
+        applySchedulerPreferences(schedulerPrefs);
+        syncStartupSchedulerFromMain();
         const body = await postJson("/api/nmap/scan", {
             targets,
             discovery,
@@ -9716,11 +10329,13 @@ function bindActionButtons() {
     bind("ribbon-logging-scheduler-decisions-button", openSchedulerDecisionsAction);
     bind("ribbon-logging-ai-provider-button", openProviderLogsAction);
     bind("ribbon-scheduler-settings-button", openSchedulerSettingsAction);
+    bind("ribbon-device-category-settings-button", openDeviceCategorySettingsAction);
     bind("ribbon-report-provider-settings-button", openReportProviderAction);
     bind("ribbon-app-settings-button", openAppSettingsAction);
 
     bind("workspace-refresh-button", refreshWorkspace);
     bind("workspace-save-note-button", saveHostNote);
+    bind("workspace-save-categories-button", saveHostCategories);
     bind("workspace-run-tool-button", runManualTool);
     bind("workspace-run-scheduler-button", runSchedulerNow);
     bind("workspace-add-script-button", addScriptEntry);
@@ -9769,6 +10384,18 @@ function bindActionButtons() {
     if (hostSelect) {
         hostSelect.addEventListener("change", async (event) => {
             await selectHost(event.target.value, {syncGraph: true, preserveGraphDetail: true});
+        });
+    }
+    const hostsCategoryFilter = document.getElementById("hosts-category-filter-select");
+    if (hostsCategoryFilter) {
+        hostsCategoryFilter.addEventListener("change", async (event) => {
+            await setHostCategoryFilterAction(event.target.value);
+        });
+    }
+    const servicesCategoryFilter = document.getElementById("services-category-filter-select");
+    if (servicesCategoryFilter) {
+        servicesCategoryFilter.addEventListener("change", async (event) => {
+            await setServicesCategoryFilterAction(event.target.value);
         });
     }
 
@@ -9934,6 +10561,14 @@ function bindActionButtons() {
     bind("scheduler-test-provider-button", testSchedulerProviderAction);
     bind("project-report-push-button", pushProjectAiReportAction);
     bind("scheduler-modal-close", closeSchedulerSettingsAction);
+    bind("device-category-modal-close", closeDeviceCategorySettingsAction);
+    bind("device-category-add-rule-button", () => {
+        const body = document.getElementById("device-category-rules-body");
+        if (body) {
+            body.appendChild(buildDeviceCategoryRuleRow({}));
+        }
+    });
+    bind("device-category-save-button", saveDeviceCategorySettingsAction);
     bind("report-provider-modal-close", closeReportProviderModalAction);
     bind("settings-modal-close", closeAppSettingsAction);
     bind("settings-config-refresh-button", refreshAppSettingsConfigAction);
@@ -10136,6 +10771,15 @@ function bindActionButtons() {
         });
     }
 
+    const deviceCategoryModal = document.getElementById("device-category-settings-modal");
+    if (deviceCategoryModal) {
+        deviceCategoryModal.addEventListener("click", (event) => {
+            if (event.target === deviceCategoryModal) {
+                closeDeviceCategorySettingsAction();
+            }
+        });
+    }
+
     const reportProviderModal = document.getElementById("report-provider-modal");
     if (reportProviderModal) {
         reportProviderModal.addEventListener("click", (event) => {
@@ -10218,6 +10862,10 @@ function bindActionButtons() {
             closeAppSettingsAction();
             return;
         }
+        if (uiModalState.deviceCategorySettingsOpen) {
+            closeDeviceCategorySettingsAction();
+            return;
+        }
         if (uiModalState.schedulerOpen) {
             closeSchedulerSettingsAction();
             return;
@@ -10255,6 +10903,7 @@ function bindActionButtons() {
             || uiModalState.hostRemoveOpen
             || uiModalState.graphNoteOpen
             || uiModalState.settingsOpen
+            || uiModalState.deviceCategorySettingsOpen
             || uiModalState.schedulerOpen
             || uiModalState.reportProviderOpen
             || startupWizardState.open
@@ -10295,7 +10944,10 @@ function bindActionButtons() {
             node.addEventListener(eventName, () => {
                 nmapWizardState.postSubmitLock = false;
                 if (node.name === "nmap-scan-mode") {
-                    setNmapWizardStep(2);
+                    setNmapWizardStep(3);
+                }
+                if (node.id === "nmap-engagement-preset-select") {
+                    syncNmapEngagementPresetControls();
                 }
                 refreshNmapModeOptions();
             });
@@ -10313,7 +10965,7 @@ function bindActionButtons() {
         });
     });
 
-    resetNmapScanWizardState({scrollIntoView: false, focusTargets: false});
+    resetNmapScanWizardState({scrollIntoView: false, focusPreset: false, focusTargets: false});
 }
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -10349,6 +11001,32 @@ window.addEventListener("DOMContentLoaded", () => {
         });
         setSchedulerProviderFieldVisibility(schedulerProviderSelect.value);
     }
+    const schedulerGoalSelect = document.getElementById("scheduler-goal-select");
+    if (schedulerGoalSelect) {
+        schedulerGoalSelect.addEventListener("change", syncEngagementPresetControls);
+    }
+    const engagementScopeSelect = document.getElementById("engagement-scope-select");
+    if (engagementScopeSelect) {
+        engagementScopeSelect.addEventListener("change", syncEngagementPresetControls);
+    }
+    const engagementIntentSelect = document.getElementById("engagement-intent-select");
+    if (engagementIntentSelect) {
+        engagementIntentSelect.addEventListener("change", syncEngagementPresetControls);
+    }
+    syncEngagementPresetControls();
+    const startupSchedulerGoalSelect = document.getElementById("startup-scheduler-goal");
+    if (startupSchedulerGoalSelect) {
+        startupSchedulerGoalSelect.addEventListener("change", syncStartupEngagementPresetControls);
+    }
+    const startupEngagementScopeSelect = document.getElementById("startup-engagement-scope-select");
+    if (startupEngagementScopeSelect) {
+        startupEngagementScopeSelect.addEventListener("change", syncStartupEngagementPresetControls);
+    }
+    const startupEngagementIntentSelect = document.getElementById("startup-engagement-intent-select");
+    if (startupEngagementIntentSelect) {
+        startupEngagementIntentSelect.addEventListener("change", syncStartupEngagementPresetControls);
+    }
+    syncStartupEngagementPresetControls();
     const reportProviderForm = document.getElementById("report-provider-form");
     if (reportProviderForm) {
         reportProviderForm.addEventListener("submit", saveProjectReportDeliveryPreferences);

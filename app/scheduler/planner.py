@@ -28,6 +28,7 @@ ScheduledAction = PlanStep
 
 class SchedulerPlanner:
     WEB_SERVICE_IDS = {"http", "https", "ssl", "soap", "http-proxy", "http-alt", "https-alt"}
+    HOST_SCOPED_TOOL_IDS = {"subfinder", "chaos", "grayhatwarfare", "shodan-enrichment", "responder", "ntlmrelayx"}
     WEB_AI_BASELINE_TOOL_IDS = tuple(tool_ids_for_prompt_group("web_baseline"))
     WEB_AI_DEEP_WEB_TOOL_IDS = tuple(tool_ids_for_prompt_group("web_deep"))
     WEB_AI_TARGETED_NUCLEI_TOOL_IDS = tuple(tool_ids_for_prompt_group("web_targeted_nuclei"))
@@ -147,6 +148,16 @@ class SchedulerPlanner:
         "persistence_action",
         "data_exfiltration_risk",
     }
+    INTERNAL_QUICK_RECON_PRIORITY_TOKENS = (
+        "smb", "netbios", "microsoft-ds", "rpc", "rpcbind", "nfs", "showmount",
+        "nbtscan", "ipp", "printer", "jetdirect", "9100", "631", "515",
+        "banner", "screenshooter", "whatweb", "http-title", "curl-headers",
+        "admin", "login", "auth", "portal",
+    )
+    INTERNAL_QUICK_RECON_DEEP_TOOL_TOKENS = (
+        "dirsearch", "ffuf", "katana", "web-content-discovery", "nikto",
+        "nuclei-cves", "nuclei-exposures", "wpscan", "nuclei-wordpress",
+    )
 
     def __init__(self, config_manager):
         self.config_manager = config_manager
@@ -258,6 +269,20 @@ class SchedulerPlanner:
     def build_action_registry(settings, dangerous_categories: Optional[List[str]] = None) -> ActionRegistry:
         return ActionRegistry.from_settings(settings, dangerous_categories=dangerous_categories)
 
+    @classmethod
+    def _blocked_by_internal_quick_recon(
+            cls,
+            *,
+            tool_id: str,
+            label: str,
+            command_template: str,
+            policy: EngagementPolicy,
+    ) -> bool:
+        if str(policy.preset or "").strip().lower() != "internal_quick_recon":
+            return False
+        text = " ".join([str(tool_id or ""), str(label or ""), str(command_template or "")]).lower()
+        return cls._matches_any_token(text, cls.INTERNAL_QUICK_RECON_DEEP_TOOL_TOKENS)
+
     def _plan_deterministic(self, service: str, protocol: str, registry: ActionRegistry, policy: EngagementPolicy,
                             dangerous_categories: List[str], mode: str = "deterministic",
                             context: Optional[Dict[str, Any]] = None,
@@ -283,10 +308,25 @@ class SchedulerPlanner:
 
         for index, action in enumerate(registry.for_deterministic(service_name, protocol_name)):
             tool_id = str(action.tool_id)
+            normalized_tool_id = self._normalized_tool_id(tool_id)
+            action_scope = {
+                str(item or "").strip().lower()
+                for item in list(getattr(action, "service_scope", []) or [])
+                if str(item or "").strip()
+            }
+            if service_name.lower() == "host" and "host" not in action_scope and normalized_tool_id not in self.HOST_SCOPED_TOOL_IDS:
+                continue
+            if self._blocked_by_internal_quick_recon(
+                    tool_id=tool_id,
+                    label=str(action.label or ""),
+                    command_template=str(action.command_template or ""),
+                    policy=policy,
+            ):
+                continue
             family_id = build_command_family_id(tool_id, protocol_name, action.command_template or tool_id)
             command_signature = self._command_signature(protocol_name, action.command_template or tool_id)
             if (
-                    self._normalized_tool_id(tool_id) in excluded
+                    normalized_tool_id in excluded
                     or self._normalize_text_token(family_id) in excluded_families
                     or self._normalize_text_token(command_signature) in excluded_signatures
             ):
@@ -364,10 +404,25 @@ class SchedulerPlanner:
         for action in registry.for_ai_selection(service_name, protocol_name):
             label = str(action.label)
             tool_id = str(action.tool_id)
+            normalized_tool_id = self._normalized_tool_id(tool_id)
+            action_scope = {
+                str(item or "").strip().lower()
+                for item in list(getattr(action, "service_scope", []) or [])
+                if str(item or "").strip()
+            }
+            if service_name.lower() == "host" and "host" not in action_scope and normalized_tool_id not in self.HOST_SCOPED_TOOL_IDS:
+                continue
+            if self._blocked_by_internal_quick_recon(
+                    tool_id=tool_id,
+                    label=label,
+                    command_template=str(action.command_template or ""),
+                    policy=policy,
+            ):
+                continue
             family_id = build_command_family_id(tool_id, protocol_name, action.command_template or tool_id)
             command_signature = self._command_signature(protocol_name, action.command_template or tool_id)
             if (
-                    self._normalized_tool_id(tool_id) in excluded
+                    normalized_tool_id in excluded
                     or self._normalize_text_token(family_id) in excluded_families
                     or self._normalize_text_token(command_signature) in excluded_signatures
             ):
@@ -690,6 +745,11 @@ class SchedulerPlanner:
 
         if has_legacy_dirbuster:
             score -= 35
+        if policy.preset == "internal_quick_recon":
+            if any(token in text for token in SchedulerPlanner.INTERNAL_QUICK_RECON_PRIORITY_TOKENS):
+                score += 16
+            if any(token in text for token in SchedulerPlanner.INTERNAL_QUICK_RECON_DEEP_TOOL_TOKENS):
+                score -= 18
 
         return score
 
@@ -983,13 +1043,23 @@ class SchedulerPlanner:
         external_scope = cls._context_is_external_scope(context)
         engagement_preset = cls._context_engagement_preset(context)
         recon_preset = engagement_preset.endswith("_recon")
+        quick_internal_recon = engagement_preset == "internal_quick_recon"
         current_phase = cls._context_current_phase(context)
+        target_dict = context.get("target", {}) if isinstance(context.get("target", {}), dict) else {}
+        context_summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        focus_dict = context_summary.get("focus", {}) if isinstance(context_summary.get("focus", {}), dict) else {}
+        target_service = str(target_dict.get("service", "") or focus_dict.get("service", "")).strip().lower()
 
         filtered: List[Dict[str, str]] = []
         for candidate in candidates:
             tool_id = str(candidate.get("tool_id", "") or "")
             label = str(candidate.get("label", "") or "")
             command_template = str(candidate.get("command_template", "") or "")
+            candidate_scope = {
+                str(item or "").strip().lower()
+                for item in str(candidate.get("service_scope", "") or "").split(",")
+                if str(item or "").strip()
+            }
             action = candidate.get("action")
             risk_tags = {
                 str(item or "").strip().lower()
@@ -1012,6 +1082,8 @@ class SchedulerPlanner:
             ):
                 blocked = True
             normalized_tool_id = cls._normalized_tool_id(tool_id)
+            if target_service == "host" and "host" not in candidate_scope and normalized_tool_id not in cls.HOST_SCOPED_TOOL_IDS:
+                blocked = True
             if normalized_tool_id == "subfinder":
                 if not external_scope or not supports_subdomain_discovery:
                     blocked = True
@@ -1055,6 +1127,8 @@ class SchedulerPlanner:
                     blocked = True
                 if normalized_tool_id == "wpscan":
                     blocked = True
+            if quick_internal_recon and cls._matches_any_token(tool_text, cls.INTERNAL_QUICK_RECON_DEEP_TOOL_TOKENS):
+                blocked = True
             if cls._covered_web_followup_tool_already_satisfied(
                     tool_id=tool_id,
                     context=context,

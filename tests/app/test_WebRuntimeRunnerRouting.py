@@ -79,6 +79,51 @@ class WebRuntimeRunnerRoutingTest(unittest.TestCase):
         self.assertEqual("container", result["execution_record"].runner_type)
         self.assertEqual("completed", result["reason"])
 
+    def test_execute_scheduler_decision_skips_banner_without_port(self):
+        from app.scheduler.models import PlanStep
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._require_active_project = lambda: SimpleNamespace(
+            properties=SimpleNamespace(
+                runningFolder="/tmp/legion-test-running",
+                outputFolder="/tmp/legion-test-output",
+            )
+        )
+        runtime._hostname_for_ip = lambda _ip: "portal.example"
+        runtime._build_command = MagicMock()
+        runtime._run_command_with_tracking = MagicMock()
+
+        decision = PlanStep.from_legacy_fields(
+            tool_id="banner",
+            label="Grab banner",
+            command_template="LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
+            protocol="tcp",
+            score=100.0,
+            rationale="Probe banner.",
+            mode="deterministic",
+            goal_profile="internal_asset_discovery",
+            family_id="banner",
+            target_ref={"host_ip": "10.0.0.5", "port": "", "protocol": "tcp", "service": "host"},
+        )
+
+        result = WebRuntime._execute_scheduler_decision(
+            runtime,
+            decision,
+            host_ip="10.0.0.5",
+            port="",
+            protocol="tcp",
+            service_name="host",
+            command_template="LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
+            timeout=300,
+            capture_metadata=True,
+        )
+
+        runtime._build_command.assert_not_called()
+        runtime._run_command_with_tracking.assert_not_called()
+        self.assertFalse(result["executed"])
+        self.assertEqual("skipped: banner requires target port", result["reason"])
+
     @patch("app.web.runtime.update_scheduler_decision_for_approval")
     @patch("app.web.runtime.update_pending_approval")
     @patch("app.web.runtime.get_pending_approval")

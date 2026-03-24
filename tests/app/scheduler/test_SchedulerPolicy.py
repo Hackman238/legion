@@ -21,6 +21,14 @@ class SchedulerPolicyTest(unittest.TestCase):
         self.assertEqual("internal_asset_discovery", policy.legacy_goal_profile)
         self.assertFalse(policy.allow_exploitation)
 
+    def test_normalize_policy_supports_internal_quick_recon(self):
+        policy = normalize_engagement_policy({"preset": "internal_quick_recon"})
+        self.assertEqual("internal_quick_recon", policy.preset)
+        self.assertEqual("internal", policy.scope)
+        self.assertEqual("recon", policy.intent)
+        self.assertEqual("internal_asset_discovery", policy.legacy_goal_profile)
+        self.assertIn("low-hanging-fruit", policy.preset_description.lower())
+
     def test_project_policy_round_trip_preserves_normalized_fields(self):
         shell = DefaultShell()
         repository_factory = RepositoryFactory(getDbLogger())

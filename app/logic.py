@@ -692,6 +692,33 @@ class Logic:
                     approval_id=int(task.approval_id or 0),
                     declared_runner_type=str(getattr(getattr(decision, "action", None), "runner_type", "local") or "local"),
                 )
+                input_error = AppSettings._scheduler_target_input_error(
+                    str(request.tool_id or ""),
+                    str(request.command_template or ""),
+                    port=str(request.port or ""),
+                )
+                if not isinstance(input_error, str):
+                    input_error = ""
+                if input_error:
+                    execution_record = ExecutionRecord.from_plan_step(
+                        decision,
+                        started_at=getTimestamp(True),
+                        finished_at=getTimestamp(True),
+                        exit_status=input_error,
+                        runner_type="local",
+                        approval_id=str(task.approval_id or ""),
+                    )
+                    results.append({
+                        "decision": decision,
+                        "tool_id": str(task.tool_id or ""),
+                        "executed": False,
+                        "reason": input_error,
+                        "process_id": 0,
+                        "execution_record": execution_record,
+                        "approval_id": int(task.approval_id or 0),
+                        "metadata": {},
+                    })
+                    continue
                 runner_result = execute_runner_request(
                     request,
                     runner_preference=str(task.runner_preference or ""),
@@ -939,14 +966,19 @@ class Logic:
                 return set()
             state = get_target_state(database, int(getattr(target, "host_id", 0) or 0)) or {}
             attempted = set()
+            target_protocol = str(getattr(target, "protocol", "tcp") or "tcp").strip().lower() or "tcp"
+            target_port = str(getattr(target, "port", "") or "").strip()
             for item in list(state.get("attempted_actions", []) or []):
                 if not isinstance(item, dict):
                     continue
                 item_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
                 item_port = str(item.get("port", "") or "").strip()
-                if item_protocol != str(getattr(target, "protocol", "tcp") or "tcp").strip().lower():
+                if item_protocol != target_protocol:
                     continue
-                if item_port and item_port != str(getattr(target, "port", "") or "").strip():
+                if target_port:
+                    if item_port != target_port:
+                        continue
+                elif item_port:
                     continue
                 tool_id = str(item.get("tool_id", "") or "").strip().lower()
                 if tool_id:
@@ -1186,6 +1218,9 @@ class Logic:
             targets=targets,
             engagement_policy=engagement_policy,
             options=options,
+            existing_attempts=lambda target: {
+                "tool_ids": _attempted_tool_ids_for_target(target),
+            },
             handle_blocked=lambda *, target, decision, command_template: (
                 print(
                     f"[!] Skipping {decision.tool_id} for {target.host_ip}:{target.port}/{target.protocol} "

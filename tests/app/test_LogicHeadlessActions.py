@@ -246,12 +246,12 @@ class LogicHeadlessActionsTest(unittest.TestCase):
             session.close()
 
             settings = SimpleNamespace(
-                automatedAttacks=[["subfinder", "https", "tcp"]],
+                automatedAttacks=[["subfinder", "host", "tcp"]],
                 portActions=[[
                     "Run subfinder passive subdomain discovery",
                     "subfinder",
                     "printf 'api.example.com\\nadmin.example.com\\n'",
-                    "https",
+                    "host",
                 ]],
             )
             _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
@@ -313,13 +313,13 @@ class LogicHeadlessActionsTest(unittest.TestCase):
             session.close()
 
             settings = SimpleNamespace(
-                automatedAttacks=[["subfinder", "https", "tcp"]],
+                automatedAttacks=[["subfinder", "host", "tcp"]],
                 portActions=[
                     [
                         "Run subfinder passive subdomain discovery",
                         "subfinder",
                         "printf 'api.example.com\\n'",
-                        "https",
+                        "host",
                     ],
                     [
                         "Run whatweb",

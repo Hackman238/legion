@@ -3,6 +3,13 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from app.device_categories import (
+    category_names,
+    classify_device_categories,
+    merge_effective_device_categories,
+    normalize_manual_device_categories,
+    slugify_device_category,
+)
 from sqlalchemy import text
 
 from app.scheduler.policy import preset_from_legacy_goal_profile
@@ -129,6 +136,17 @@ def _safe_float(value: Any, default: float = 0.0, minimum: float = 0.0, maximum:
     return float(parsed)
 
 
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = str(value or "").strip().lower()
+    if token in {"1", "true", "yes", "y", "on"}:
+        return True
+    if token in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return bool(default)
+
+
 def _normalize_source_kind(value: Any, default: str = "observed") -> str:
     token = str(value or default or "observed").strip().lower()
     if token not in TARGET_SOURCE_KINDS:
@@ -176,6 +194,56 @@ def _normalize_technologies(items: Any, default_source: str = "observed") -> Lis
             "observed": bool(item.get("observed", _normalize_source_kind(item.get("source_kind", default_source), default_source) == "observed")),
         })
     return _merge_rows([], rows, key_fields=["name", "version", "cpe"], limit=240)
+
+
+def _normalize_device_categories(
+        items: Any,
+        *,
+        default_source: str = "observed",
+        default_origin: str = "auto",
+) -> List[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    rows = []
+    for item in list(items or []):
+        if isinstance(item, dict):
+            name = str(item.get("name", "") or "").strip()[:80]
+            confidence = _safe_float(item.get("confidence", 80.0))
+            source_kind = _normalize_source_kind(item.get("source_kind", default_source), default_source)
+            origin = str(item.get("origin", default_origin) or default_origin).strip().lower()[:16]
+            reasons = [
+                str(reason or "").strip()[:120]
+                for reason in list(item.get("reasons", []) or [])
+                if str(reason or "").strip()
+            ][:8]
+        else:
+            name = str(item or "").strip()[:80]
+            confidence = 100.0 if default_origin == "manual" else 80.0
+            source_kind = _normalize_source_kind(default_source, default_source)
+            origin = default_origin
+            reasons = ["manual classification"] if default_origin == "manual" else []
+        if not name:
+            continue
+        row = {
+            "id": slugify_device_category(name),
+            "name": name,
+            "confidence": confidence,
+            "source_kind": source_kind,
+            "origin": origin,
+        }
+        if reasons:
+            row["reasons"] = reasons
+        rows.append(row)
+    return _merge_rows([], rows, key_fields=["name"], limit=32)
+
+
+def _load_custom_device_category_rules() -> List[Dict[str, Any]]:
+    try:
+        from app.scheduler.config import SchedulerConfigManager
+
+        return list(SchedulerConfigManager().get_device_categories() or [])
+    except Exception:
+        return []
 
 
 def _normalize_findings(items: Any, default_source: str = "observed") -> List[Dict[str, Any]]:
@@ -691,6 +759,24 @@ def _fetch_target_state_row(database, host_id: int) -> Optional[Dict[str, Any]]:
         payload["screenshots"] = _from_json(payload.get("screenshots_json"), [])
         payload["artifacts"] = _from_json(payload.get("artifacts_json"), [])
         payload["raw"] = _from_json(payload.get("raw_json"), {})
+        payload["manual_device_categories"] = _normalize_device_categories(
+            payload["raw"].get("manual_device_categories", []) if isinstance(payload.get("raw", {}), dict) else [],
+            default_source="user_entered",
+            default_origin="manual",
+        )
+        payload["auto_device_categories"] = _normalize_device_categories(
+            payload["raw"].get("auto_device_categories", []) if isinstance(payload.get("raw", {}), dict) else [],
+            default_source="observed",
+            default_origin="auto",
+        )
+        payload["device_categories"] = _normalize_device_categories(
+            payload["raw"].get("device_categories", []) if isinstance(payload.get("raw", {}), dict) else [],
+            default_source="observed",
+            default_origin="auto",
+        )
+        payload["device_category_override"] = _safe_bool(
+            payload["raw"].get("device_category_override", False) if isinstance(payload.get("raw", {}), dict) else False
+        )
         raw_quality_events = payload["raw"].get("finding_quality_events", []) if isinstance(payload.get("raw", {}), dict) else []
         payload["finding_quality_events"] = _normalize_finding_quality_events(raw_quality_events, default_source="observed")
         return payload
@@ -719,6 +805,9 @@ def target_state_to_legacy_ai_state(target_state: Optional[Dict[str, Any]]) -> O
         "findings": _normalize_findings(target_state.get("findings", []), default_source="observed"),
         "finding_quality_events": _normalize_finding_quality_events(target_state.get("finding_quality_events", []), default_source="observed"),
         "manual_tests": _normalize_manual_tests(target_state.get("manual_tests", []), default_source="ai_suggested"),
+        "device_categories": _normalize_device_categories(target_state.get("device_categories", []), default_source="observed", default_origin="auto"),
+        "manual_device_categories": _normalize_device_categories(target_state.get("manual_device_categories", []), default_source="user_entered", default_origin="manual"),
+        "device_category_override": _safe_bool(target_state.get("device_category_override", False)),
         "raw": target_state.get("raw", {}) if isinstance(target_state.get("raw", {}), dict) else {},
     }
 
@@ -736,6 +825,15 @@ def legacy_ai_payload_to_target_state(host_id: int, payload: Dict[str, Any]) -> 
         except Exception:
             engagement_preset = ""
     raw_payload = payload.get("raw", {}) if isinstance(payload.get("raw", {}), dict) else {}
+    manual_device_categories = payload.get("manual_device_categories", raw_payload.get("manual_device_categories"))
+    if manual_device_categories is not None:
+        raw_payload = dict(raw_payload)
+        raw_payload["manual_device_categories"] = normalize_manual_device_categories(manual_device_categories)
+    if "device_category_override" in payload or "device_category_override" in raw_payload:
+        raw_payload = dict(raw_payload)
+        raw_payload["device_category_override"] = _safe_bool(
+            payload.get("device_category_override", raw_payload.get("device_category_override", False))
+        )
     finding_quality_events = _normalize_finding_quality_events(
         payload.get("finding_quality_events", raw_payload.get("finding_quality_events", [])),
         default_source=default_source,
@@ -1033,6 +1131,41 @@ def upsert_target_state(database, host_id: int, payload: Dict[str, Any], *, merg
         merged_raw.pop("finding_quality_events", None)
     merged["raw"] = merged_raw
     merged["finding_quality_events"] = merged_quality_events
+    manual_device_categories = normalize_manual_device_categories(merged_raw.get("manual_device_categories", []))
+    device_category_override = _safe_bool(merged_raw.get("device_category_override", False))
+    auto_device_categories = classify_device_categories({
+        "hostname": str(merged.get("hostname", "") or ""),
+        "os_match": str(merged.get("os_match", "") or ""),
+        "service_inventory": list(merged.get("service_inventory", []) or []),
+        "technologies": list(merged.get("technologies", []) or []),
+        "findings": list(merged.get("findings", []) or []),
+    }, custom_rules=_load_custom_device_category_rules())
+    effective_device_categories = merge_effective_device_categories(
+        auto_device_categories,
+        manual_device_categories,
+        override_auto=device_category_override,
+    )
+    merged["auto_device_categories"] = _normalize_device_categories(
+        auto_device_categories,
+        default_source="observed",
+        default_origin="auto",
+    )
+    merged["manual_device_categories"] = _normalize_device_categories(
+        manual_device_categories,
+        default_source="user_entered",
+        default_origin="manual",
+    )
+    merged["device_categories"] = _normalize_device_categories(
+        effective_device_categories,
+        default_source="observed",
+        default_origin="auto",
+    )
+    merged["device_category_override"] = bool(device_category_override)
+    merged_raw["auto_device_categories"] = merged["auto_device_categories"]
+    merged_raw["manual_device_categories"] = merged["manual_device_categories"]
+    merged_raw["device_categories"] = merged["device_categories"]
+    merged_raw["device_category_override"] = bool(device_category_override)
+    merged["raw"] = merged_raw
 
     session = database.session()
     try:

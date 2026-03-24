@@ -204,6 +204,43 @@ class SchedulerPlannerTest(unittest.TestCase):
             self.assertEqual("blocked", actions[0].policy_decision)
             self.assertIn("credential_bruteforce", actions[0].danger_categories)
 
+    def test_internal_quick_recon_suppresses_deep_web_discovery_tools(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "deterministic",
+                "engagement_policy": {"preset": "internal_quick_recon"},
+            })
+            planner = SchedulerPlanner(manager)
+
+            settings = SimpleNamespace(
+                automatedAttacks=[["banner", "http", "tcp"], ["whatweb", "http", "tcp"], ["dirsearch", "http", "tcp"]],
+                portActions=[
+                    ["Grab banner", "banner", "python3 -m app.banner_probe", "http"],
+                    ["Run whatweb", "whatweb", "whatweb http://[IP]:[PORT]", "http"],
+                    ["Run dirsearch", "dirsearch", "dirsearch -u http://[IP]:[PORT]", "http"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "http",
+                "tcp",
+                settings,
+                context={
+                    "engagement_preset": "internal_quick_recon",
+                    "target": {"service": "http"},
+                    "signals": {"web_service": True},
+                },
+            )
+
+            tool_ids = [item.tool_id for item in actions]
+            self.assertIn("banner", tool_ids)
+            self.assertIn("whatweb", tool_ids)
+            self.assertNotIn("dirsearch", tool_ids)
+
     def test_ai_mode_surfaces_manual_relay_workflows_as_approval_gated_actions(self):
         from app.scheduler.config import SchedulerConfigManager
         from app.scheduler.planner import SchedulerPlanner
@@ -794,6 +831,42 @@ class SchedulerPlannerTest(unittest.TestCase):
         filtered = SchedulerPlanner._filter_candidates_with_context(candidates, context)
         self.assertEqual(1, len(filtered))
         self.assertEqual("shodan-enrichment", filtered[0]["tool_id"])
+
+    def test_ai_candidate_filter_blocks_non_host_scoped_tools_for_host_targets(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        candidates = [
+            {
+                "tool_id": "banner",
+                "label": "Grab banner",
+                "command_template": "python3 -m app.banner_probe",
+                "service_scope": "http,https",
+            },
+            {
+                "tool_id": "nmap",
+                "label": "Run nmap",
+                "command_template": "nmap -Pn -sV -sC -p [PORT] [IP]",
+                "service_scope": "",
+            },
+            {
+                "tool_id": "subfinder",
+                "label": "Subfinder",
+                "command_template": "subfinder -d [IP]",
+                "service_scope": "host",
+            },
+        ]
+        context = {
+            "target": {
+                "hostname": "example.com",
+                "service": "host",
+                "engagement_preset": "external_recon",
+            },
+            "context_summary": {"focus": {"current_phase": "initial_discovery", "service": "host"}},
+        }
+
+        filtered = SchedulerPlanner._filter_candidates_with_context(candidates, context)
+        filtered_ids = {item["tool_id"] for item in filtered}
+        self.assertEqual({"subfinder"}, filtered_ids)
 
     def test_ai_candidate_filter_blocks_cloud_storage_followup_without_signal_and_keeps_when_present(self):
         from app.scheduler.planner import SchedulerPlanner
