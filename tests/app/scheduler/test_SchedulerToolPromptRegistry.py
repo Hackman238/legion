@@ -46,6 +46,26 @@ class SchedulerToolPromptRegistryTest(unittest.TestCase):
     def test_legacy_smb_nse_tools_have_specific_prompt_metadata(self):
         from app.scheduler.tool_prompt_registry import get_scheduler_tool_prompt_info
 
+        subfinder_info = get_scheduler_tool_prompt_info(
+            "subfinder",
+            label="Run subfinder passive subdomain discovery",
+            command_template="subfinder -silent -recursive -duc -max-time 5 -oJ -d [IP] -o [OUTPUT].jsonl",
+            service_scope="https",
+        )
+        self.assertEqual(("initial_discovery",), subfinder_info.phase_tags)
+        self.assertNotIn("external_enrichment", subfinder_info.phase_tags)
+
+        shodan_info = get_scheduler_tool_prompt_info(
+            "shodan-enrichment",
+            label="Run Shodan hostname enrichment",
+            command_template="python3 -m app.shodan_probe --target [IP] --api-key [SHODAN_API_KEY] --output [OUTPUT].json",
+            service_scope="host",
+        )
+        self.assertIn("shodan", shodan_info.purpose.lower())
+        self.assertEqual("host", shodan_info.arg_shape)
+        self.assertIn("initial_discovery", shodan_info.phase_tags)
+        self.assertIn("external_enrichment", shodan_info.phase_tags)
+
         shares_info = get_scheduler_tool_prompt_info(
             "smb-enum-shares",
             label="Enumerate shares (nmap)",
@@ -85,6 +105,17 @@ class SchedulerToolPromptRegistryTest(unittest.TestCase):
         self.assertIn("relay", relay_info.purpose.lower())
         self.assertEqual("host", relay_info.arg_shape)
         self.assertIn("targeted_checks", relay_info.phase_tags)
+
+        aws_storage_info = get_scheduler_tool_prompt_info(
+            "nuclei-aws-storage",
+            label="Run nuclei AWS storage follow-up",
+            command_template="nuclei -tags aws,s3,bucket,storage -u [WEB_URL]",
+            service_scope="https",
+        )
+        self.assertIn("aws", aws_storage_info.purpose.lower())
+        self.assertIn("storage", aws_storage_info.purpose.lower())
+        self.assertEqual("web_url", aws_storage_info.arg_shape)
+        self.assertIn("external_enrichment", aws_storage_info.phase_tags)
 
     def test_http_nse_tools_have_specific_prompt_metadata(self):
         from app.scheduler.tool_prompt_registry import get_scheduler_tool_prompt_info

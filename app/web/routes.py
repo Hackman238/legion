@@ -1507,6 +1507,7 @@ def scheduler_preferences_update():
         "max_host_concurrency",
         "max_jobs",
         "providers",
+        "integrations",
         "dangerous_categories",
         "project_report_delivery",
     }
@@ -1531,6 +1532,7 @@ def scheduler_provider_test():
         "max_host_concurrency",
         "max_jobs",
         "providers",
+        "integrations",
         "dangerous_categories",
         "project_report_delivery",
     }

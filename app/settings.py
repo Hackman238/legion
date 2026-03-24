@@ -39,6 +39,7 @@ log = getAppLogger()
 
 class AppSettings():
     WEB_SERVICE_SCOPE = "http,https,ssl,soap,http-proxy,http-alt,https-alt"
+    HOST_SERVICE_SCOPE = "host"
     REMOTE_SCREEN_SERVICE_SCOPE = "ms-wbt-server,rdp,vmrdp,vnc,vnc-http,rfb"
     SCREENSHOT_SERVICE_SCOPE = f"{WEB_SERVICE_SCOPE},{REMOTE_SCREEN_SERVICE_SCOPE}"
     BANNER_COMMAND = (
@@ -109,7 +110,22 @@ class AppSettings():
     )
     NUCLEI_CLOUD_COMMAND = (
         "(command -v nuclei >/dev/null 2>&1 && "
-        "nuclei -tags cloud -stats -si 15 -u [WEB_URL] -ni -o [OUTPUT].txt) || "
+        "nuclei -tags cloud,aws,azure,gcp -stats -si 15 -u [WEB_URL] -ni -o [OUTPUT].txt) || "
+        "echo nuclei not found"
+    )
+    NUCLEI_AWS_STORAGE_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "nuclei -tags aws,s3,bucket,storage -stats -si 15 -u [WEB_URL] -ni -o [OUTPUT].txt) || "
+        "echo nuclei not found"
+    )
+    NUCLEI_AZURE_STORAGE_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "nuclei -tags azure,blob,storage -stats -si 15 -u [WEB_URL] -ni -o [OUTPUT].txt) || "
+        "echo nuclei not found"
+    )
+    NUCLEI_GCP_STORAGE_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "nuclei -tags gcp,gcs,bucket,storage -stats -si 15 -u [WEB_URL] -ni -o [OUTPUT].txt) || "
         "echo nuclei not found"
     )
     CURL_HEADERS_COMMAND = (
@@ -140,6 +156,21 @@ class AppSettings():
         "(command -v subfinder >/dev/null 2>&1 && "
         "subfinder -silent -recursive -duc -max-time 5 -oJ -d [IP] -o [OUTPUT].jsonl) || "
         "echo subfinder not found"
+    )
+    CHAOS_COMMAND = (
+        "(test -n [CHAOS_API_KEY] && command -v chaos >/dev/null 2>&1 && "
+        "chaos -d [ROOT_DOMAIN] -silent -json -key [CHAOS_API_KEY] -o [OUTPUT].jsonl) || "
+        "echo chaos not configured"
+    )
+    GRAYHATWARFARE_COMMAND = (
+        "(test -n [GRAYHAT_API_KEY] && "
+        "python3 -m app.grayhatwarfare_probe --domain [ROOT_DOMAIN] --api-key [GRAYHAT_API_KEY] --output [OUTPUT].json) || "
+        "echo grayhatwarfare not configured"
+    )
+    SHODAN_ENRICHMENT_COMMAND = (
+        "(test -n [SHODAN_API_KEY] && "
+        "python3 -m app.shodan_probe --target [IP] --api-key [SHODAN_API_KEY] --output [OUTPUT].json) || "
+        "echo shodan not configured"
     )
     NIKTO_COMMAND = (
         "(command -v nikto >/dev/null 2>&1 && "
@@ -201,6 +232,11 @@ class AppSettings():
         "-s -of json -o [OUTPUT].json) || "
         "echo ffuf not found"
     )
+    KATANA_COMMAND = (
+        "(command -v katana >/dev/null 2>&1 && "
+        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
+        "echo katana not found"
+    )
     ENUM4LINUX_NG_COMMAND = (
         "if command -v enum4linux-ng >/dev/null 2>&1; then "
         "enum4linux-ng -A -oJ [OUTPUT] [IP]; "
@@ -243,10 +279,17 @@ class AppSettings():
         "wpscan": ("Run wpscan", WPSCAN_COMMAND, "http,https,ssl,https-alt"),
         "dirsearch": ("Run dirsearch", DIRSEARCH_COMMAND, WEB_SERVICE_SCOPE),
         "ffuf": ("Run ffuf", FFUF_COMMAND, WEB_SERVICE_SCOPE),
+        "katana": ("Run katana", KATANA_COMMAND, WEB_SERVICE_SCOPE),
     }
     EXTERNAL_RECON_PORT_ACTIONS = {
-        "subfinder": ("Run subfinder passive subdomain discovery", SUBFINDER_COMMAND, WEB_SERVICE_SCOPE),
+        "subfinder": ("Run subfinder passive subdomain discovery", SUBFINDER_COMMAND, HOST_SERVICE_SCOPE),
+        "chaos": ("Run Chaos passive subdomain discovery", CHAOS_COMMAND, HOST_SERVICE_SCOPE),
+        "grayhatwarfare": ("Run Grayhat Warfare bucket/file search", GRAYHATWARFARE_COMMAND, HOST_SERVICE_SCOPE),
+        "shodan-enrichment": ("Run Shodan hostname enrichment", SHODAN_ENRICHMENT_COMMAND, HOST_SERVICE_SCOPE),
         "nuclei-cloud": ("Run nuclei cloud exposure follow-up", NUCLEI_CLOUD_COMMAND, WEB_SERVICE_SCOPE),
+        "nuclei-aws-storage": ("Run nuclei AWS storage follow-up", NUCLEI_AWS_STORAGE_COMMAND, WEB_SERVICE_SCOPE),
+        "nuclei-azure-storage": ("Run nuclei Azure storage follow-up", NUCLEI_AZURE_STORAGE_COMMAND, WEB_SERVICE_SCOPE),
+        "nuclei-gcp-storage": ("Run nuclei GCP storage follow-up", NUCLEI_GCP_STORAGE_COMMAND, WEB_SERVICE_SCOPE),
     }
     BASELINE_INTERNAL_PORT_ACTIONS = {
         "enum4linux-ng": ("Run enum4linux-ng", ENUM4LINUX_NG_COMMAND, "netbios-ssn,microsoft-ds,smb"),
@@ -312,6 +355,14 @@ class AppSettings():
         changed = False
         self.actions.beginGroup('PortActions')
         try:
+            expected_scopes = {
+                str(key): str(value[2] or "")
+                for key, value in {
+                    **self.BASELINE_WEB_PORT_ACTIONS,
+                    **self.EXTERNAL_RECON_PORT_ACTIONS,
+                    **self.BASELINE_INTERNAL_PORT_ACTIONS,
+                }.items()
+            }
             for key in sorted(self.DISABLED_PORT_ACTION_IDS):
                 if self.actions.value(key) is not None:
                     self.actions.remove(key)
@@ -421,6 +472,11 @@ class AppSettings():
                 if updated_command != command:
                     self.actions.setValue(str(key), [label, updated_command, scope])
                     changed = True
+                    command = updated_command
+                expected_scope = str(expected_scopes.get(str(key), "") or "")
+                if expected_scope and scope != expected_scope:
+                    self.actions.setValue(str(key), [label, command, expected_scope])
+                    changed = True
         finally:
             self.actions.endGroup()
         return changed
@@ -441,10 +497,14 @@ class AppSettings():
             normalized = cls._ensure_httpx_command(normalized)
         if normalized_tool == "subfinder":
             normalized = cls._ensure_subfinder_command(normalized)
+        if normalized_tool == "chaos":
+            normalized = cls.CHAOS_COMMAND
         if normalized_tool in {"whatweb", "whatweb-http", "whatweb-https"}:
             normalized = cls._ensure_whatweb_command(normalized)
         if normalized_tool == "nikto":
             normalized = cls._ensure_nikto_command(normalized)
+        if normalized_tool == "katana":
+            normalized = cls._ensure_katana_command(normalized)
         if normalized_tool == "wpscan":
             normalized = cls._ensure_wpscan_command(normalized)
         if normalized_tool == "dirsearch":
@@ -527,6 +587,7 @@ class AppSettings():
                     ("wpscan", "http,https,ssl,https-alt"),
                     ("dirsearch", self.WEB_SERVICE_SCOPE),
                     ("ffuf", self.WEB_SERVICE_SCOPE),
+                    ("katana", self.WEB_SERVICE_SCOPE),
                     ("enum4linux-ng", "netbios-ssn,microsoft-ds,smb"),
                     ("smbmap", "netbios-ssn,microsoft-ds,smb"),
                     ("rpcclient-enum", "netbios-ssn,microsoft-ds,smb"),
@@ -941,25 +1002,90 @@ class AppSettings():
         raw = str(command or "")
         if "subfinder" not in raw.lower():
             return raw
-        normalized = re.sub(r"(?i)(?:^|\s)-d(?:omain)?\s+\S+", " -d [IP]", raw)
-        normalized = re.sub(r"(?i)(?:^|\s)-dL\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-max-time\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-oJ\b", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-silent\b", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-recursive\b", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-duc\b", " ", normalized)
-        if not re.search(r"(?i)(?:^|\s)-d(?:omain)?(?:\s|$)", normalized):
-            normalized = re.sub(r"(?i)\bsubfinder\b", "subfinder -d [IP]", normalized, count=1)
+        probe_marker = "__LEGION_SUBFINDER_PROBE__"
         normalized = re.sub(
+            r"(?i)command\s+-v\s+subfinder(?:\s+\S+)*?\s*>/dev/null\s+2>&1",
+            f"command -v {probe_marker} >/dev/null 2>&1",
+            raw,
+        )
+        wrapped_prefix = re.search(
+            rf"(?i)^\s*\(\s*command\s+-v\s+{re.escape(probe_marker)}\s*>/dev/null\s+2>&1\s*&&\s*",
+            normalized,
+        )
+        fallback = ""
+        fallback_match = re.search(
+            r"(?i)\s*\|\|\s*echo\s+subfinder\s+not\s+found(?:\s+-o\s+\S+)?\s*$",
+            normalized,
+        )
+        if fallback_match:
+            fallback = " || echo subfinder not found"
+            normalized = normalized[:fallback_match.start()]
+        if wrapped_prefix:
+            normalized = normalized[wrapped_prefix.end():]
+            normalized = re.sub(r"\)\s*$", "", normalized)
+            prefix = f"(command -v {probe_marker} >/dev/null 2>&1 && "
+        else:
+            prefix = ""
+
+        subfinder_match = re.search(r"(?i)\bsubfinder\b", normalized)
+        if not subfinder_match:
+            return re.sub(r"\s{2,}", " ", raw).strip()
+        if not wrapped_prefix:
+            prefix = normalized[: subfinder_match.start()]
+        subfinder_command = normalized[subfinder_match.start():]
+        subfinder_command = re.sub(r"(?i)(?:^|\s)-d(?:omain)?\s+\S+", " -d [IP]", subfinder_command)
+        subfinder_command = re.sub(r"(?i)(?:^|\s)-dL\s+\S+", " ", subfinder_command)
+        subfinder_command = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", subfinder_command)
+        subfinder_command = re.sub(r"(?i)(?:^|\s)-max-time\s+\S+", " ", subfinder_command)
+        subfinder_command = re.sub(r"(?i)(?:^|\s)-oJ\b", " ", subfinder_command)
+        subfinder_command = re.sub(r"(?i)(?:^|\s)-silent\b", " ", subfinder_command)
+        subfinder_command = re.sub(r"(?i)(?:^|\s)-recursive\b", " ", subfinder_command)
+        subfinder_command = re.sub(r"(?i)(?:^|\s)-duc\b", " ", subfinder_command)
+        if not re.search(r"(?i)(?:^|\s)-d(?:omain)?(?:\s|$)", subfinder_command):
+            subfinder_command = re.sub(r"(?i)\bsubfinder\b", "subfinder -d [IP]", subfinder_command, count=1)
+        subfinder_command = re.sub(
             r"(?i)\bsubfinder\b",
             "subfinder -silent -recursive -duc -max-time 5 -oJ",
+            subfinder_command,
+            count=1,
+        )
+        if not re.search(r"(?i)(?:^|\s)-o(?:\s|$)", subfinder_command):
+            subfinder_command += " -o [OUTPUT].jsonl"
+        if wrapped_prefix:
+            combined = f"{prefix}{subfinder_command}){fallback or ' || echo subfinder not found'}"
+        else:
+            combined = f"{prefix}{subfinder_command}{fallback}"
+        return re.sub(r"\s{2,}", " ", combined).strip().replace(probe_marker, "subfinder")
+
+    @classmethod
+    def _ensure_katana_command(cls, command: str) -> str:
+        raw = cls._canonicalize_web_target_placeholders(str(command or ""))
+        if "katana" not in raw.lower():
+            return raw
+        probe_marker = "__LEGION_KATANA_PROBE__"
+        normalized = re.sub(r"(?i)command\s+-v\s+katana", f"command -v {probe_marker}", raw)
+        normalized = re.sub(r"(?i)(?:^|\s)-jsonl\b", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-silent\b", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-jc\b", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-kf\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-d\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-c\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-p\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-rl\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-u\s+\S+", " -u [WEB_URL]", normalized, count=1)
+        if not re.search(r"(?i)(?:^|\s)-u(?:\s|$)", normalized):
+            normalized = re.sub(r"(?i)\bkatana\b", "katana -u [WEB_URL]", normalized, count=1)
+        normalized = re.sub(
+            r"(?i)\bkatana\b",
+            "katana -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5",
             normalized,
             count=1,
         )
         if not re.search(r"(?i)(?:^|\s)-o(?:\s|$)", normalized):
             normalized += " -o [OUTPUT].jsonl"
-        return re.sub(r"\s{2,}", " ", normalized).strip()
+        normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+        return normalized.replace(probe_marker, "katana")
 
     @classmethod
     def _ensure_whatweb_command(cls, command: str) -> str:

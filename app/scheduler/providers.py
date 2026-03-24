@@ -481,7 +481,8 @@ def _record_provider_log(
 
 def rank_actions_with_provider(config: Dict[str, Any], goal_profile: str, service: str, protocol: str,
                                candidates: List[Dict[str, str]],
-                               context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+                               context: Optional[Dict[str, Any]] = None,
+                               *, engagement_preset: str = "") -> List[Dict[str, Any]]:
     _set_last_provider_payload({})
     provider_name = str(config.get("provider", "none") or "none").strip().lower()
     providers_cfg = config.get("providers", {}) if isinstance(config, dict) else {}
@@ -493,6 +494,7 @@ def rank_actions_with_provider(config: Dict[str, Any], goal_profile: str, servic
     context_summary_enabled = _feature_flag_enabled(config, "context_summary_enabled", default=True)
     prompt_package = _build_ranking_prompt_package(
         goal_profile=goal_profile,
+        engagement_preset=engagement_preset,
         service=service,
         protocol=protocol,
         candidates=candidates,
@@ -542,6 +544,7 @@ def reflect_on_scheduler_progress(
         service: str,
         protocol: str,
         *,
+        engagement_preset: str = "",
         context: Optional[Dict[str, Any]] = None,
         recent_rounds: Optional[List[Dict[str, Any]]] = None,
         trigger_reason: str = "",
@@ -566,6 +569,7 @@ def reflect_on_scheduler_progress(
 
     prompt_package = _build_reflection_prompt_package(
         goal_profile=goal_profile,
+        engagement_preset=engagement_preset,
         service=service,
         protocol=protocol,
         context=context or {},
@@ -610,6 +614,7 @@ def select_web_followup_with_provider(
         protocol: str,
         candidates: List[Dict[str, str]],
         *,
+        engagement_preset: str = "",
         context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     provider_name = str(config.get("provider", "none") or "none").strip().lower()
@@ -629,6 +634,7 @@ def select_web_followup_with_provider(
 
     prompt_package = _build_web_followup_prompt_package(
         goal_profile=goal_profile,
+        engagement_preset=engagement_preset,
         service=service,
         protocol=protocol,
         candidates=candidates,
@@ -726,6 +732,7 @@ def _determine_scheduler_phase(
         *,
         goal_profile: str,
         service: str,
+        engagement_preset: str = "",
         context: Optional[Dict[str, Any]] = None,
 ) -> str:
     ctx = context if isinstance(context, dict) else {}
@@ -798,6 +805,10 @@ def _determine_scheduler_phase(
 
     shodan_enabled = bool(signals.get("shodan_enabled"))
     shodan_checked = any(token in attempted for token in {"shodan-enrichment", "shodan-host", "pyshodan"})
+    effective_goal_profile = _effective_prompt_goal_profile(
+        goal_profile=goal_profile,
+        engagement_preset=engagement_preset,
+    )
 
     if not has_discovery:
         return "initial_discovery"
@@ -809,7 +820,7 @@ def _determine_scheduler_phase(
         return "protocol_checks"
     if is_web and not has_deep_web:
         return "deep_web"
-    if str(goal_profile or "").strip().lower() == "external_pentest" and shodan_enabled and not shodan_checked:
+    if effective_goal_profile == "external_pentest" and shodan_enabled and not shodan_checked:
         return "external_enrichment"
     if analysis_mode == "dig_deeper":
         return "deep_validation"
@@ -819,13 +830,22 @@ def _determine_scheduler_phase(
 def determine_scheduler_phase(
         goal_profile: str,
         service: str,
+        engagement_preset: str = "",
         context: Optional[Dict[str, Any]] = None,
 ) -> str:
     return _determine_scheduler_phase(
         goal_profile=goal_profile,
         service=service,
+        engagement_preset=engagement_preset,
         context=context,
     )
+
+
+def _effective_prompt_goal_profile(*, goal_profile: str, engagement_preset: str = "") -> str:
+    preset = str(engagement_preset or "").strip().lower()
+    if preset:
+        return preset
+    return str(goal_profile or "").strip().lower()
 
 
 def _build_prompt(
@@ -848,6 +868,7 @@ def _build_prompt(
 def _build_ranking_prompt_package(
         *,
         goal_profile: str,
+        engagement_preset: str = "",
         service: str,
         protocol: str,
         candidates: List[Dict[str, str]],
@@ -856,9 +877,14 @@ def _build_ranking_prompt_package(
         context_summary_enabled: bool = True,
 ) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
+    effective_goal_profile = _effective_prompt_goal_profile(
+        goal_profile=goal_profile,
+        engagement_preset=engagement_preset,
+    )
     current_phase = _determine_scheduler_phase(
         goal_profile=goal_profile,
         service=service,
+        engagement_preset=engagement_preset,
         context=ctx,
     )
     context_block = _build_context_block(
@@ -872,7 +898,7 @@ def _build_ranking_prompt_package(
 
     system_prompt = _build_scheduler_system_prompt()
     prefix = _build_ranking_user_prompt_prefix(
-        goal_profile=goal_profile,
+        goal_profile=effective_goal_profile,
         service=service,
         protocol=protocol,
         current_phase=current_phase,
@@ -890,6 +916,9 @@ def _build_ranking_prompt_package(
     metadata = {
         "prompt_version": SCHEDULER_PROMPT_VERSION,
         "prompt_type": "ranking",
+        "goal_profile": effective_goal_profile,
+        "legacy_goal_profile": str(goal_profile or "").strip().lower(),
+        "engagement_preset": str(engagement_preset or "").strip().lower(),
         "prompt_profile": prompt_profile,
         "service_profile": service_profile,
         "phase_profile": phase_profile,
@@ -1546,6 +1575,7 @@ def _request_openai_compatible_content(
 def _build_reflection_prompt_package(
         *,
         goal_profile: str,
+        engagement_preset: str = "",
         service: str,
         protocol: str,
         context: Optional[Dict[str, Any]] = None,
@@ -1555,6 +1585,10 @@ def _build_reflection_prompt_package(
         context_summary_enabled: bool = True,
 ) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
+    effective_goal_profile = _effective_prompt_goal_profile(
+        goal_profile=goal_profile,
+        engagement_preset=engagement_preset,
+    )
     rounds = recent_rounds if isinstance(recent_rounds, list) else []
     trigger_reason_token = str(trigger_reason or "").strip().lower()[:64]
     trigger_payload = {}
@@ -1582,6 +1616,7 @@ def _build_reflection_prompt_package(
     current_phase = _determine_scheduler_phase(
         goal_profile=goal_profile,
         service=service,
+        engagement_preset=engagement_preset,
         context=ctx,
     )
     service_profile = _resolve_prompt_profile(service=service, context=ctx)
@@ -1607,7 +1642,7 @@ def _build_reflection_prompt_package(
     user_prompt = (
         "Task: assess recent scheduler progress and detect stalls.\n"
         f"Prompt version: {SCHEDULER_REFLECTION_PROMPT_VERSION}\n"
-        f"Goal profile: {goal_profile}\n"
+        f"Goal profile: {effective_goal_profile}\n"
         f"Service: {service}\n"
         f"Protocol: {protocol}\n"
         f"Current phase: {current_phase}\n"
@@ -1629,6 +1664,9 @@ def _build_reflection_prompt_package(
         "metadata": {
             "prompt_version": SCHEDULER_REFLECTION_PROMPT_VERSION,
             "prompt_type": "reflection",
+            "goal_profile": effective_goal_profile,
+            "legacy_goal_profile": str(goal_profile or "").strip().lower(),
+            "engagement_preset": str(engagement_preset or "").strip().lower(),
             "current_phase": current_phase,
             "service_profile": service_profile,
             "recent_round_count": len(rounds[:8]),
@@ -1642,6 +1680,7 @@ def _build_reflection_prompt_package(
 def _build_web_followup_prompt_package(
         *,
         goal_profile: str,
+        engagement_preset: str = "",
         service: str,
         protocol: str,
         candidates: List[Dict[str, str]],
@@ -1649,9 +1688,14 @@ def _build_web_followup_prompt_package(
         context_summary_enabled: bool = True,
 ) -> Dict[str, Any]:
     ctx = context if isinstance(context, dict) else {}
+    effective_goal_profile = _effective_prompt_goal_profile(
+        goal_profile=goal_profile,
+        engagement_preset=engagement_preset,
+    )
     current_phase = _determine_scheduler_phase(
         goal_profile=goal_profile,
         service=service,
+        engagement_preset=engagement_preset,
         context=ctx,
     )
     context_block = _build_context_block(
@@ -1671,7 +1715,7 @@ def _build_web_followup_prompt_package(
     prefix = (
         "Task: choose the strongest bounded web follow-up actions from the supplied candidates.\n"
         f"Prompt version: {SCHEDULER_WEB_FOLLOWUP_PROMPT_VERSION}\n"
-        f"Goal profile: {goal_profile}\n"
+        f"Goal profile: {effective_goal_profile}\n"
         f"Service: {service}\n"
         f"Protocol: {protocol}\n"
         f"Current phase: {current_phase}\n"
@@ -1700,6 +1744,9 @@ def _build_web_followup_prompt_package(
         "metadata": {
             "prompt_version": SCHEDULER_WEB_FOLLOWUP_PROMPT_VERSION,
             "prompt_type": "web_followup",
+            "goal_profile": effective_goal_profile,
+            "legacy_goal_profile": str(goal_profile or "").strip().lower(),
+            "engagement_preset": str(engagement_preset or "").strip().lower(),
             "current_phase": current_phase,
             "service_profile": "web",
             "candidate_count": len(candidates or []),

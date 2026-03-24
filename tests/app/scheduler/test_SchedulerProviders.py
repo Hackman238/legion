@@ -89,6 +89,36 @@ class SchedulerProvidersTest(unittest.TestCase):
         self.assertIn("netexec", metadata["visible_candidate_tool_ids"])
         self.assertEqual("netexec", metadata["visible_candidate_tool_ids"][0])
 
+    def test_ranking_prompt_prefers_engagement_preset_for_external_recon_text_and_phase(self):
+        from app.scheduler.providers import _build_ranking_prompt_package
+
+        prompt_package = _build_ranking_prompt_package(
+            goal_profile="external_pentest",
+            engagement_preset="external_recon",
+            service="http",
+            protocol="tcp",
+            candidates=[
+                {"tool_id": "whatweb", "label": "whatweb", "command_template": "whatweb [IP]", "service_scope": "http"},
+            ],
+            context={
+                "signals": {"web_service": True, "shodan_enabled": True},
+                "attempted_tool_ids": [
+                    "nmap",
+                    "screenshooter",
+                    "nmap-vuln.nse",
+                    "smb-security-mode",
+                    "whatweb",
+                ],
+            },
+        )
+
+        self.assertIn("Goal profile: external_recon", prompt_package["user_prompt"])
+        self.assertNotIn("Goal overlay: external_pentest", prompt_package["user_prompt"])
+        self.assertNotEqual("external_enrichment", prompt_package["metadata"]["current_phase"])
+        self.assertEqual("external_recon", prompt_package["metadata"]["goal_profile"])
+        self.assertEqual("external_pentest", prompt_package["metadata"]["legacy_goal_profile"])
+        self.assertEqual("external_recon", prompt_package["metadata"]["engagement_preset"])
+
     @patch("app.scheduler.providers.requests.post")
     def test_ranking_prompt_can_disable_context_summary(self, mock_post):
         from app.scheduler.providers import rank_actions_with_provider
@@ -1163,6 +1193,54 @@ class SchedulerProvidersTest(unittest.TestCase):
         self.assertIn("Prompt version: scheduler-web-followup-v1", request_payload["messages"][1]["content"])
         self.assertIn("selected_tool_ids", request_payload["messages"][1]["content"])
         self.assertGreaterEqual(int(request_payload["max_completion_tokens"]), 320)
+
+    @patch("app.scheduler.providers.requests.post")
+    def test_web_followup_prompt_prefers_engagement_preset_for_display(self, mock_post):
+        from app.scheduler.providers import select_web_followup_with_provider
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"focus":"manual_review",'
+                            '"selected_tool_ids":["curl-headers"],'
+                            '"reason":"ok",'
+                            '"manual_tests":[]}'
+                        )
+                    }
+                }
+            ]
+        }
+        mock_post.return_value = response
+
+        config = {
+            "provider": "openai",
+            "providers": {
+                "openai": {
+                    "enabled": True,
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-5-mini",
+                    "api_key": "x",
+                }
+            },
+        }
+        select_web_followup_with_provider(
+            config,
+            "external_pentest",
+            "http",
+            "tcp",
+            engagement_preset="external_recon",
+            candidates=[
+                {"tool_id": "curl-headers", "label": "cURL headers", "command_template": "curl -k -I https://[IP]:[PORT]", "service_scope": "http"},
+            ],
+            context={"signals": {"web_service": True}},
+        )
+
+        request_payload = mock_post.call_args.kwargs["json"]
+        self.assertIn("Goal profile: external_recon", request_payload["messages"][1]["content"])
 
     @patch("app.scheduler.providers.requests.post")
     def test_claude_web_followup_sidecar_parses_text_block(self, mock_post):

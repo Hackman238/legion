@@ -1459,6 +1459,22 @@
                 <p class="meta-note scheduler-group-note">Disable this for exceptionally large scopes where graph rendering would add browser overhead without much operator value.</p>
             </fieldset>
             <fieldset class="danger-group scheduler-settings-group">
+                <legend>Integrations</legend>
+                <label class="scheduler-field-span-2">
+                    Grayhat Warfare API Key
+                    <input id="scheduler-integration-grayhatwarfare-apikey" type="password" name="grayhatwarfare_api_key" placeholder="Enter a new Grayhat Warfare API key">
+                </label>
+                <label class="scheduler-field-span-2">
+                    Chaos API Key
+                    <input id="scheduler-integration-chaos-apikey" type="password" name="chaos_api_key" placeholder="Enter a new Chaos API key">
+                </label>
+                <label class="scheduler-field-span-2">
+                    Shodan API Key
+                    <input id="scheduler-integration-shodan-apikey" type="password" name="shodan_api_key" placeholder="Enter a new Shodan API key">
+                </label>
+                <p class="meta-note scheduler-group-note">Scheduler-owned integrations are used for governed enrichment and discovery. Leave a key blank to preserve the currently stored value.</p>
+            </fieldset>
+            <fieldset class="danger-group scheduler-settings-group">
                 <legend>AI Provider</legend>
                 <label>
                     Provider

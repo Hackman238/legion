@@ -27,7 +27,7 @@ from sqlalchemy import text
 from app.cli_utils import import_targets, import_targets_from_textfile, is_wsl, to_windows_path
 from app.core.common import getTempFolder
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
-from app.hostsfile import add_temporary_host_alias
+from app.hostsfile import add_temporary_host_alias, registrable_root_domain
 from app.httputil.isHttps import isHttps
 from app.importers.nmap_runner import import_nmap_xml_into_project
 from app.nmap_enrichment import (
@@ -1410,6 +1410,10 @@ class WebRuntime:
             goal_profile = str(
                 engagement_policy.get("legacy_goal_profile", scheduler_prefs.get("goal_profile", "internal_asset_discovery"))
                 or "internal_asset_discovery"
+            )
+            engagement_preset = str(
+                engagement_policy.get("preset", scheduler_prefs.get("engagement_preset", "internal_recon"))
+                or "internal_recon"
             )
             targets = self.scheduler_orchestrator.collect_project_targets(
                 project,
@@ -5342,6 +5346,8 @@ class WebRuntime:
         )
         command_template = {
             "subfinder": "subfinder -d [IP] -o [OUTPUT].jsonl",
+            "grayhatwarfare": "python3 -m app.grayhatwarfare_probe --domain [ROOT_DOMAIN] --output [OUTPUT].json",
+            "shodan-enrichment": "python3 -m app.shodan_probe --target [IP] --output [OUTPUT].json",
             "dnsmap": "dnsmap [IP]",
         }.get(normalized_source, normalized_source)
         command_signature = self._command_signature_for_target(command_template, "tcp")
@@ -5659,11 +5665,17 @@ class WebRuntime:
         followup_error = ""
         bootstrap_job: Dict[str, Any] = {}
         bootstrap_error = ""
-        if str(source_tool_id or "").strip().lower() == "subfinder" and added_hosts:
+        normalized_source = str(source_tool_id or "").strip().lower()
+        if normalized_source == "subfinder" and added_hosts:
             try:
                 followup_job = self._queue_discovered_host_followup_scan(added_hosts)
             except Exception as exc:
                 followup_error = str(exc)
+            try:
+                bootstrap_job = self.start_httpx_bootstrap_job(added_hosts)
+            except Exception as exc:
+                bootstrap_error = str(exc)
+        elif normalized_source in {"grayhatwarfare", "shodan-enrichment"} and added_hosts:
             try:
                 bootstrap_job = self.start_httpx_bootstrap_job(added_hosts)
             except Exception as exc:
@@ -5933,6 +5945,10 @@ class WebRuntime:
                 engagement_policy.get("legacy_goal_profile", scheduler_prefs.get("goal_profile", "internal_asset_discovery"))
                 or "internal_asset_discovery"
             )
+            engagement_preset = str(
+                engagement_policy.get("preset", scheduler_prefs.get("engagement_preset", "internal_recon"))
+                or "internal_recon"
+            )
         def _should_cancel(job_identifier: int) -> bool:
             return int(job_identifier or 0) > 0 and self.jobs.is_cancel_requested(int(job_identifier or 0))
 
@@ -5960,6 +5976,7 @@ class WebRuntime:
                 protocol=str(target.protocol or "tcp"),
                 service_name=str(target.service_name or ""),
                 goal_profile=goal_profile,
+                engagement_preset=engagement_preset,
                 attempted_tool_ids=set(attempted_tool_ids or set()),
                 attempted_family_ids=set(attempted_family_ids or set()),
                 attempted_command_signatures=set(attempted_command_signatures or set()),
@@ -5984,6 +6001,7 @@ class WebRuntime:
                 goal_profile,
                 str(target.service_name or ""),
                 str(target.protocol or "tcp"),
+                engagement_preset=engagement_preset,
                 context=context,
                 recent_rounds=recent_rounds,
                 trigger_reason=str((trigger or {}).get("reason", "") or ""),
@@ -6585,7 +6603,7 @@ class WebRuntime:
 
     @staticmethod
     def _is_host_scoped_scheduler_tool(tool_id: str) -> bool:
-        return str(tool_id or "").strip().lower() in {"subfinder", "responder", "ntlmrelayx"}
+        return str(tool_id or "").strip().lower() in {"subfinder", "grayhatwarfare", "shodan-enrichment", "responder", "ntlmrelayx"}
 
     def _existing_attempt_summary_for_target(self, host_id: int, host_ip: str, port: str, protocol: str) -> Dict[str, set]:
         attempted = {
@@ -6749,6 +6767,7 @@ class WebRuntime:
             protocol: str,
             service_name: str,
             goal_profile: str = "internal_asset_discovery",
+            engagement_preset: str = "",
             attempted_tool_ids: set,
             attempted_family_ids: Optional[set] = None,
             attempted_command_signatures: Optional[set] = None,
@@ -6759,7 +6778,7 @@ class WebRuntime:
             project = getattr(self.logic, "activeProject", None)
             if not project:
                 return {}
-            settings = self._get_settings()
+            scheduler_preferences = self.scheduler_config.load()
 
             session = project.database.session()
             try:
@@ -6981,6 +7000,7 @@ class WebRuntime:
         target_data = {
             "host_ip": str(host_ip or ""),
             "hostname": str(hostname or ""),
+            "root_domain": registrable_root_domain(str(hostname or "").strip()) or registrable_root_domain(str(host_ip or "").strip()),
             "os": str(os_match or ""),
             "port": str(port or ""),
             "protocol": str(protocol or "tcp"),
@@ -6988,16 +7008,12 @@ class WebRuntime:
             "service_product": str(service_product or ""),
             "service_version": str(service_version or ""),
             "service_extrainfo": str(service_extrainfo or ""),
+            "engagement_preset": str(engagement_preset or "").strip().lower(),
             "host_open_services": sorted(host_open_services)[:48],
             "host_open_ports": host_open_ports[:120],
             "host_banners": host_banner_hints[:80],
-            "shodan_enabled": bool(
-                str(getattr(settings, "tools_pyshodan_api_key", "") or "").strip()
-                and str(getattr(settings, "tools_pyshodan_api_key", "") or "").strip().lower() not in {
-                    "yourkeygoeshere",
-                    "changeme",
-                }
-            ),
+            "grayhatwarfare_enabled": self._grayhatwarfare_integration_enabled(scheduler_preferences),
+            "shodan_enabled": self._shodan_integration_enabled(scheduler_preferences),
         }
         signals = self._extract_scheduler_signals(
             service_name=target_data["service"],
@@ -7199,6 +7215,7 @@ class WebRuntime:
         current_phase = determine_scheduler_phase(
             goal_profile=str(goal_profile or "internal_asset_discovery"),
             service=str(target_data.get("service", "") or service_name or ""),
+            engagement_preset=str(engagement_preset or ""),
             context={
                 "analysis_mode": str(analysis_mode or "standard"),
                 "signals": signals,
@@ -7243,6 +7260,7 @@ class WebRuntime:
 
         return {
             "target": target_data,
+            "engagement_preset": str(engagement_preset or "").strip().lower(),
             "signals": signals,
             "tool_audit": tool_audit,
             "attempted_tool_ids": sorted({str(item).strip().lower() for item in attempted_tool_ids if str(item).strip()}),
@@ -8128,6 +8146,54 @@ class WebRuntime:
             token in signal_evidence_blob
             for token in ["wordpress", "wp-content", "wp-includes", "wp-json", "/wp-admin", "xmlrpc.php"]
         )
+        aws_detected = any(token in signal_evidence_blob for token in [
+            "amazon web services",
+            "amazonaws.com",
+            "aws ",
+            " aws",
+            "x-amz-",
+        ])
+        azure_detected = any(token in signal_evidence_blob for token in [
+            "microsoft azure",
+            "azure",
+            "blob.core.windows.net",
+            "dfs.core.windows.net",
+            "x-ms-",
+        ])
+        gcp_detected = any(token in signal_evidence_blob for token in [
+            "google cloud",
+            "storage.googleapis.com",
+            "storage.cloud.google.com",
+            "googleapis.com",
+            "x-goog-",
+            " gcp ",
+        ])
+        aws_storage_detected = any(token in signal_evidence_blob for token in [
+            "s3.amazonaws.com",
+            "amazon s3",
+            "aws s3",
+            "s3 bucket",
+            "bucket.s3",
+            "x-amz-bucket",
+            "x-amz-request-id",
+        ])
+        azure_storage_detected = any(token in signal_evidence_blob for token in [
+            "blob.core.windows.net",
+            "dfs.core.windows.net",
+            "azure blob",
+            "azure storage",
+            "x-ms-blob",
+            "x-ms-version",
+        ])
+        gcp_storage_detected = any(token in signal_evidence_blob for token in [
+            "storage.googleapis.com",
+            "storage.cloud.google.com",
+            "google cloud storage",
+            "gcs bucket",
+            "x-goog-",
+        ])
+        cloud_provider_detected = bool(aws_detected or azure_detected or gcp_detected)
+        storage_service_detected = bool(aws_storage_detected or azure_storage_detected or gcp_storage_detected)
 
         observed_technologies = []
         for marker, present in (
@@ -8138,6 +8204,10 @@ class WebRuntime:
                 ("huawei", huawei_detected),
                 ("ubiquiti", ubiquiti_detected),
                 ("wordpress", wordpress_detected),
+                ("aws", aws_detected),
+                ("azure", azure_detected),
+                ("gcp", gcp_detected),
+                ("cloud_storage", storage_service_detected),
                 ("nginx", "nginx" in signal_evidence_blob),
                 ("apache", "apache" in signal_evidence_blob),
         ):
@@ -8165,6 +8235,14 @@ class WebRuntime:
             "coldfusion_detected": coldfusion_detected,
             "huawei_detected": huawei_detected,
             "ubiquiti_detected": ubiquiti_detected,
+            "cloud_provider_detected": cloud_provider_detected,
+            "storage_service_detected": storage_service_detected,
+            "aws_detected": aws_detected,
+            "azure_detected": azure_detected,
+            "gcp_detected": gcp_detected,
+            "aws_storage_detected": aws_storage_detected,
+            "azure_storage_detected": azure_storage_detected,
+            "gcp_storage_detected": gcp_storage_detected,
             "observed_technologies": observed_technologies[:12],
             "vuln_hits": len(cve_hits),
             "missing_tools": sorted(missing_tools),
@@ -12067,43 +12145,120 @@ class WebRuntime:
             records: List[Dict[str, Any]] = []
             for row in rows:
                 item = dict(zip(keys, row))
-                item["startTimeUtc"] = WebRuntime._normalize_process_timestamp_to_utc(item.get("startTime", ""))
-                item["endTimeUtc"] = WebRuntime._normalize_process_timestamp_to_utc(item.get("endTime", ""))
-                item["progressUpdatedAtUtc"] = WebRuntime._normalize_process_timestamp_to_utc(item.get("progressUpdatedAt", ""))
+                start_time_utc, end_time_utc, prefer_utc_naive = WebRuntime._normalize_process_time_range_to_utc(
+                    item.get("startTime", ""),
+                    item.get("endTime", ""),
+                )
+                item["startTimeUtc"] = start_time_utc
+                item["endTimeUtc"] = end_time_utc
+                item["progressUpdatedAtUtc"] = WebRuntime._normalize_process_timestamp_to_utc(
+                    item.get("progressUpdatedAt", ""),
+                    prefer_utc_naive=prefer_utc_naive,
+                )
                 records.append(item)
             return records
         finally:
             session.close()
 
     @staticmethod
-    def _normalize_process_timestamp_to_utc(value: Any) -> str:
+    def _normalize_process_timestamp_to_utc(value: Any, *, prefer_utc_naive: bool = False) -> str:
         text_value = str(value or "").strip()
         if not text_value:
             return ""
 
-        parsed: Optional[datetime.datetime] = None
+        candidates = WebRuntime._process_timestamp_utc_candidates(
+            text_value,
+            prefer_utc_naive=prefer_utc_naive,
+        )
+        if not candidates:
+            return ""
+        parsed = candidates[0][1]
+
+        return parsed.astimezone(datetime.timezone.utc).isoformat()
+
+    @staticmethod
+    def _process_timestamp_utc_candidates(
+            value: Any,
+            *,
+            prefer_utc_naive: bool = False,
+    ) -> List[tuple]:
+        text_value = str(value or "").strip()
+        if not text_value:
+            return []
+
+        local_tz = datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
+        candidates: List[tuple] = []
+        seen = set()
+
+        def _append(candidate_dt: datetime.datetime, assumption: str):
+            utc_dt = candidate_dt.astimezone(datetime.timezone.utc)
+            normalized = utc_dt.isoformat()
+            key = (normalized, assumption)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append((normalized, utc_dt, assumption))
+
         try:
             iso_candidate = f"{text_value[:-1]}+00:00" if text_value.endswith("Z") else text_value
             parsed = datetime.datetime.fromisoformat(iso_candidate)
+            if parsed.tzinfo is None:
+                preferred_tz = datetime.timezone.utc if prefer_utc_naive else local_tz
+                _append(parsed.replace(tzinfo=preferred_tz), "iso-naive-utc" if prefer_utc_naive else "iso-naive-local")
+                alternate_tz = local_tz if prefer_utc_naive else datetime.timezone.utc
+                _append(parsed.replace(tzinfo=alternate_tz), "iso-naive-local" if prefer_utc_naive else "iso-naive-utc")
+            else:
+                _append(parsed, "iso-aware")
         except ValueError:
-            parsed = None
+            pass
 
-        if parsed is None:
-            for fmt in ("%d %b %Y %H:%M:%S.%f", "%d %b %Y %H:%M:%S"):
-                try:
-                    parsed = datetime.datetime.strptime(text_value, fmt)
-                    break
-                except ValueError:
+        for fmt in ("%d %b %Y %H:%M:%S.%f", "%d %b %Y %H:%M:%S"):
+            try:
+                parsed = datetime.datetime.strptime(text_value, fmt)
+            except ValueError:
+                continue
+            preferred_tz = datetime.timezone.utc if prefer_utc_naive else local_tz
+            _append(parsed.replace(tzinfo=preferred_tz), "human-utc" if prefer_utc_naive else "human-local")
+            alternate_tz = local_tz if prefer_utc_naive else datetime.timezone.utc
+            _append(parsed.replace(tzinfo=alternate_tz), "human-local" if prefer_utc_naive else "human-utc")
+            break
+
+        return candidates
+
+    @staticmethod
+    def _normalize_process_time_range_to_utc(start_value: Any, end_value: Any) -> tuple:
+        start_default = WebRuntime._process_timestamp_utc_candidates(start_value, prefer_utc_naive=False)
+        end_default = WebRuntime._process_timestamp_utc_candidates(end_value, prefer_utc_naive=False)
+        start_utc = start_default[0][0] if start_default else ""
+        end_utc = end_default[0][0] if end_default else ""
+
+        if not start_default or not end_default:
+            return start_utc, end_utc, False
+
+        default_start_dt = start_default[0][1]
+        default_end_dt = end_default[0][1]
+        if default_start_dt <= default_end_dt:
+            prefer_utc_naive = any(candidate[2].endswith("-utc") for candidate in (start_default[0], end_default[0]))
+            return start_utc, end_utc, prefer_utc_naive
+
+        best_pair = None
+        best_delta = None
+        for start_candidate in start_default:
+            for end_candidate in end_default:
+                start_dt = start_candidate[1]
+                end_dt = end_candidate[1]
+                if start_dt > end_dt:
                     continue
+                delta_seconds = abs((end_dt - start_dt).total_seconds())
+                if best_delta is None or delta_seconds < best_delta:
+                    best_delta = delta_seconds
+                    best_pair = (start_candidate, end_candidate)
 
-        if parsed is None:
-            return ""
+        if best_pair is None:
+            return start_utc, end_utc, False
 
-        if parsed.tzinfo is None:
-            local_tz = datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
-            parsed = parsed.replace(tzinfo=local_tz)
-
-        return parsed.astimezone(datetime.timezone.utc).isoformat()
+        prefer_utc_naive = any(candidate[2].endswith("-utc") for candidate in best_pair)
+        return best_pair[0][0], best_pair[1][0], prefer_utc_naive
 
     @staticmethod
     def _sanitize_provider_config(provider_cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -12113,6 +12268,51 @@ class WebRuntime:
         value["api_key_configured"] = bool(api_key)
         return value
 
+    @staticmethod
+    def _sanitize_integration_config(integration_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        value = dict(integration_cfg)
+        api_key = str(value.get("api_key", "") or "")
+        value["api_key"] = ""
+        value["api_key_configured"] = bool(api_key)
+        return value
+
+    @staticmethod
+    def _scheduler_integration_api_key(
+            integration_name: str,
+            preferences: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        config = preferences if isinstance(preferences, dict) else {}
+        integrations = config.get("integrations", {}) if isinstance(config.get("integrations", {}), dict) else {}
+        integration_cfg = integrations.get(str(integration_name or "").strip().lower(), {})
+        if not isinstance(integration_cfg, dict):
+            return ""
+        return str(integration_cfg.get("api_key", "") or "").strip()
+
+    def _shodan_integration_enabled(self, preferences: Optional[Dict[str, Any]] = None) -> bool:
+        config = preferences if isinstance(preferences, dict) else self.scheduler_config.load()
+        api_key = self._scheduler_integration_api_key("shodan", config)
+        return bool(api_key and api_key.lower() not in {"yourkeygoeshere", "changeme"})
+
+    def _grayhatwarfare_integration_enabled(self, preferences: Optional[Dict[str, Any]] = None) -> bool:
+        config = preferences if isinstance(preferences, dict) else self.scheduler_config.load()
+        api_key = self._scheduler_integration_api_key("grayhatwarfare", config)
+        return bool(api_key and api_key.lower() not in {"yourkeygoeshere", "changeme"})
+
+    def _scheduler_command_placeholders(
+            self,
+            *,
+            host_ip: str,
+            hostname: str,
+            preferences: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        config = preferences if isinstance(preferences, dict) else self.scheduler_config.load()
+        root_domain = registrable_root_domain(str(hostname or "").strip()) or registrable_root_domain(str(host_ip or "").strip())
+        return {
+            "ROOT_DOMAIN": shlex.quote(root_domain) if root_domain else "",
+            "GRAYHAT_API_KEY": shlex.quote(self._scheduler_integration_api_key("grayhatwarfare", config)),
+            "SHODAN_API_KEY": shlex.quote(self._scheduler_integration_api_key("shodan", config)),
+        }
+
     def _scheduler_preferences(self) -> Dict[str, Any]:
         config = self.scheduler_config.load()
         engagement_policy = self._load_engagement_policy_locked(persist_if_missing=True)
@@ -12120,6 +12320,10 @@ class WebRuntime:
         sanitized_providers = {}
         for name, provider_cfg in providers.items():
             sanitized_providers[name] = self._sanitize_provider_config(provider_cfg)
+        integrations = config.get("integrations", {})
+        sanitized_integrations = {}
+        for name, integration_cfg in integrations.items():
+            sanitized_integrations[name] = self._sanitize_integration_config(integration_cfg)
         return {
             "mode": config.get("mode", "deterministic"),
             "available_modes": ["deterministic", "ai"],
@@ -12137,6 +12341,7 @@ class WebRuntime:
             "job_workers": int(getattr(self.jobs, "worker_count", 1) or 1),
             "job_max": int(getattr(self.jobs, "max_jobs", 200) or 200),
             "providers": sanitized_providers,
+            "integrations": sanitized_integrations,
             "feature_flags": self.scheduler_config.get_feature_flags(),
             "dangerous_categories": config.get("dangerous_categories", []),
             "preapproved_families_count": len(config.get("preapproved_command_families", [])),
@@ -12521,6 +12726,7 @@ class WebRuntime:
 
         command = str(template or "")
         normalized_tool = str(tool_id or "").strip().lower()
+        scheduler_preferences = self.scheduler_config.load()
         resolved_service_name = str(service_name or "").strip() or self._service_name_for_target(host_ip, port, protocol)
         if normalized_tool == "banner":
             command = AppSettings._ensure_banner_command(command)
@@ -12550,6 +12756,11 @@ class WebRuntime:
             port=str(port),
             output=outputfile,
             service_name=resolved_service_name,
+            extra_placeholders=self._scheduler_command_placeholders(
+                host_ip=str(host_ip),
+                hostname=self._hostname_for_ip(host_ip),
+                preferences=scheduler_preferences,
+            ),
         )
         command = AppSettings._collapse_redundant_fallbacks(command)
         command = AppSettings._ensure_nmap_hostname_target_support(command, target_host)

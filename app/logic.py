@@ -22,9 +22,12 @@ import glob
 import ntpath
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
+from urllib.parse import urlparse
 
 from app.Project import Project
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
@@ -55,18 +58,20 @@ class Logic:
         Screenshots are also taken using EyeWitness, just as in the GUI.
         """
         from app.cli_utils import import_targets
+        from app.hostsfile import registrable_root_domain
         from app.settings import AppSettings, Settings
         from app.scheduler.approvals import ensure_scheduler_approval_table, queue_pending_approval
         from app.scheduler.audit import log_scheduler_decision
         from app.scheduler.config import SchedulerConfigManager
         from app.scheduler.execution import ensure_scheduler_execution_table, store_execution_record
         from app.scheduler.models import ExecutionRecord
-        from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
+        from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerExecutionTask, SchedulerOrchestrator
         from app.scheduler.observation_parsers import extract_tool_observations
         from app.scheduler.state import (
             build_attempted_action_entry,
             build_target_urls,
             ensure_scheduler_target_state_table,
+            get_target_state,
             load_observed_service_inventory,
             upsert_target_state,
         )
@@ -89,8 +94,73 @@ class Logic:
         repo_container = self.activeProject.repositoryContainer
         scheduler_config = SchedulerConfigManager()
         runner_settings = normalize_runner_settings(scheduler_config.load().get("runners", {}))
+        pending_httpx_bootstrap_targets = set()
 
-        def import_discovered_hosts(discovered_hosts):
+        def resolve_host_by_token(host_token):
+            token = str(host_token or "").strip()
+            if not token:
+                return None
+            host_repo = self.activeProject.repositoryContainer.hostRepository
+            host = host_repo.getHostByIP(token)
+            if host is None:
+                host = host_repo.getHostByHostname(token)
+            return host
+
+        def mark_discovered_host_origin(host_tokens, source_tool_id=""):
+            normalized_source = str(source_tool_id or "").strip().lower()
+            if not normalized_source:
+                return
+            database = getattr(self.activeProject, "database", None)
+            if database is None:
+                return
+            command_template = {
+                "subfinder": "subfinder -d [IP] -o [OUTPUT].jsonl",
+                "grayhatwarfare": "python3 -m app.grayhatwarfare_probe --domain [ROOT_DOMAIN] --output [OUTPUT].json",
+                "shodan-enrichment": "python3 -m app.shodan_probe --target [IP] --output [OUTPUT].json",
+                "dnsmap": "dnsmap [IP]",
+            }.get(normalized_source, normalized_source)
+            decision = SimpleNamespace(
+                tool_id=normalized_source,
+                label=normalized_source,
+                action_id=normalized_source,
+                family_id="",
+                mode="deterministic",
+                approval_state="approved",
+                coverage_gap="",
+                pack_ids=[],
+                command_template=command_template,
+            )
+            attempted_at = getTimestamp(True)
+            for host_token in list(host_tokens or []):
+                host = resolve_host_by_token(host_token)
+                if host is None:
+                    continue
+                host_id = int(getattr(host, "id", 0) or 0)
+                host_ip = str(getattr(host, "ip", "") or host_token).strip()
+                if host_id <= 0 or not host_ip:
+                    continue
+                ensure_scheduler_target_state_table(database)
+                upsert_target_state(database, host_id, {
+                    "host_ip": host_ip,
+                    "updated_at": attempted_at,
+                    "attempted_actions": [
+                        build_attempted_action_entry(
+                            decision=decision,
+                            status="executed",
+                            reason=f"discovered via {normalized_source}",
+                            attempted_at=attempted_at,
+                            port="",
+                            protocol="tcp",
+                            service="",
+                            command_signature=scheduler_orchestrator.planner._command_signature("tcp", command_template),
+                        )
+                    ],
+                    "raw": {
+                        "discovered_via": normalized_source,
+                    },
+                }, merge=True)
+
+        def import_discovered_hosts(discovered_hosts, source_tool_id=""):
             targets = [str(item or "").strip() for item in list(discovered_hosts or []) if str(item or "").strip()]
             if not targets:
                 return []
@@ -100,12 +170,16 @@ class Logic:
             session = database.session()
             try:
                 host_repo = self.activeProject.repositoryContainer.hostRepository
-                return list(import_targets(session, host_repo, targets) or [])
+                added = list(import_targets(session, host_repo, targets) or [])
             except Exception:
                 session.rollback()
                 return []
             finally:
                 session.close()
+            if added:
+                pending_httpx_bootstrap_targets.update(added)
+                mark_discovered_host_origin(added, source_tool_id=source_tool_id)
+            return added
         scheduler_orchestrator = SchedulerOrchestrator(scheduler_config)
         engagement_policy = None
         database = getattr(self.activeProject, "database", None)
@@ -346,6 +420,9 @@ class Logic:
                 command_template = AppSettings._canonicalize_web_target_placeholders(command_template)
                 if "nmap" in str(command_template).lower():
                     command_template = AppSettings._ensure_nmap_stats_every(command_template)
+                scheduler_preferences = scheduler_config.load()
+                hostname_value = str(request.hostname or "").strip()
+                root_domain = registrable_root_domain(hostname_value) or registrable_root_domain(str(request.host_ip))
                 running_folder = self.activeProject.properties.runningFolder
                 outputfile = os.path.join(
                     running_folder,
@@ -359,6 +436,43 @@ class Logic:
                     port=str(request.port),
                     output=outputfile,
                     service_name=str(request.service_name or ""),
+                    extra_placeholders={
+                        "ROOT_DOMAIN": shlex.quote(root_domain) if root_domain else "",
+                        "GRAYHAT_API_KEY": shlex.quote(
+                            str(
+                                (
+                                    (
+                                        scheduler_preferences.get("integrations", {})
+                                        if isinstance(scheduler_preferences.get("integrations", {}), dict) else {}
+                                    ).get("grayhatwarfare", {})
+                                    if isinstance(
+                                        (
+                                            scheduler_preferences.get("integrations", {})
+                                            if isinstance(scheduler_preferences.get("integrations", {}), dict) else {}
+                                        ).get("grayhatwarfare", {}),
+                                        dict,
+                                    ) else {}
+                                ).get("api_key", "")
+                            ) or ""
+                        ),
+                        "SHODAN_API_KEY": shlex.quote(
+                            str(
+                                (
+                                    (
+                                        scheduler_preferences.get("integrations", {})
+                                        if isinstance(scheduler_preferences.get("integrations", {}), dict) else {}
+                                    ).get("shodan", {})
+                                    if isinstance(
+                                        (
+                                            scheduler_preferences.get("integrations", {})
+                                            if isinstance(scheduler_preferences.get("integrations", {}), dict) else {}
+                                        ).get("shodan", {}),
+                                        dict,
+                                    ) else {}
+                                ).get("api_key", "")
+                            ) or ""
+                        ),
+                    },
                 )
                 command = AppSettings._collapse_redundant_fallbacks(command)
                 command = AppSettings._ensure_nmap_hostname_target_support(command, target_host)
@@ -400,7 +514,10 @@ class Logic:
                         host_ip=str(request.host_ip or ""),
                         hostname=str(request.hostname or ""),
                     )
-                    discovered_hosts_added = import_discovered_hosts(observations.get("discovered_hosts", []))
+                    discovered_hosts_added = import_discovered_hosts(
+                        observations.get("discovered_hosts", []),
+                        source_tool_id=str(request.tool_id or ""),
+                    )
                     if discovered_hosts_added:
                         observations = dict(observations)
                         observations["discovered_hosts_added"] = discovered_hosts_added
@@ -528,7 +645,10 @@ class Logic:
                         host_ip=str(request.host_ip or ""),
                         hostname=str(request.hostname or ""),
                     )
-                    discovered_hosts_added = import_discovered_hosts(observations.get("discovered_hosts", []))
+                    discovered_hosts_added = import_discovered_hosts(
+                        observations.get("discovered_hosts", []),
+                        source_tool_id=str(request.tool_id or ""),
+                    )
                     if discovered_hosts_added:
                         observations = dict(observations)
                         observations["discovered_hosts_added"] = discovered_hosts_added
@@ -605,6 +725,451 @@ class Logic:
                     "metadata": dict(getattr(runner_result, "metadata", {}) or {}),
                 })
             return results
+
+        def materialize_httpx_urls_as_web_targets(*, host_id, host_ip, hostname, host_token, observations):
+            resolved_host_id = int(host_id or 0)
+            if resolved_host_id <= 0:
+                return []
+            candidate_hosts = {
+                str(token or "").strip().lower()
+                for token in [host_token, host_ip, hostname]
+                if str(token or "").strip()
+            }
+            candidate_targets = {}
+            for item in list((observations or {}).get("urls", []) or []):
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url", "") or "").strip()
+                if not url:
+                    continue
+                try:
+                    parsed = urlparse(url)
+                except Exception:
+                    continue
+                scheme = str(parsed.scheme or "").strip().lower()
+                if scheme not in {"http", "https"}:
+                    continue
+                parsed_host = str(parsed.hostname or "").strip().lower()
+                if candidate_hosts and parsed_host and parsed_host not in candidate_hosts:
+                    continue
+                port_value = int(parsed.port or (443 if scheme == "https" else 80))
+                service_name = "https" if scheme == "https" else "http"
+                candidate_targets[(str(port_value), "tcp")] = {
+                    "port": str(port_value),
+                    "protocol": "tcp",
+                    "service": service_name,
+                    "url": url,
+                }
+
+            if not candidate_targets:
+                return []
+
+            session = self.activeProject.database.session()
+            try:
+                from db.entities.port import portObj
+                from db.entities.service import serviceObj
+
+                for item in list(candidate_targets.values()):
+                    port_value = str(item.get("port", "") or "").strip()
+                    protocol_value = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
+                    service_name = str(item.get("service", "") or "").strip() or "http"
+                    port_row = session.query(portObj).filter_by(
+                        hostId=str(resolved_host_id),
+                        portId=port_value,
+                        protocol=protocol_value,
+                    ).first()
+                    service_row = None
+                    if port_row is not None and str(getattr(port_row, "serviceId", "") or "").strip():
+                        service_row = session.query(serviceObj).filter_by(id=getattr(port_row, "serviceId", None)).first()
+                    if service_row is None:
+                        service_row = serviceObj(service_name, resolved_host_id)
+                        session.add(service_row)
+                        session.flush()
+                    else:
+                        current_name = str(getattr(service_row, "name", "") or "").strip().lower()
+                        if not current_name or current_name in {"http", "https", "ssl", "http-alt", "https-alt", "soap", "http-proxy"}:
+                            service_row.name = service_name
+                            session.add(service_row)
+                    if port_row is None:
+                        session.add(portObj(port_value, protocol_value, "open", resolved_host_id, service_row.id))
+                    else:
+                        port_row.state = "open"
+                        port_row.serviceId = service_row.id
+                        session.add(port_row)
+                session.commit()
+            except Exception:
+                session.rollback()
+                return []
+            finally:
+                session.close()
+            return list(candidate_targets.values())
+
+        def run_httpx_bootstrap(targets):
+            normalized_targets = [
+                str(item or "").strip()
+                for item in list(targets or [])
+                if str(item or "").strip()
+            ]
+            if not normalized_targets:
+                return {"results": [], "materialized_host_ids": []}
+
+            results = []
+            materialized_host_ids = set()
+            httpx_decision = SimpleNamespace(
+                tool_id="httpx",
+                label="Run httpx",
+                action_id="httpx",
+                family_id="",
+                mode="deterministic",
+                goal_profile=str(
+                    (engagement_policy or {}).get(
+                        "legacy_goal_profile",
+                        scheduler_config.load().get("goal_profile", "internal_asset_discovery"),
+                    ) or "internal_asset_discovery"
+                ),
+                engagement_preset=str((engagement_policy or {}).get("preset", "") or ""),
+                approval_state="approved",
+                coverage_gap="",
+                pack_ids=[],
+                command_template="httpx -l [TARGETS] -o [OUTPUT].jsonl",
+            )
+            for host_token in normalized_targets:
+                safe_token = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(host_token or "").strip())[:96] or "target"
+                output_prefix = os.path.join(
+                    self.activeProject.properties.runningFolder,
+                    f"{getTimestamp()}-httpx-bootstrap-{safe_token}",
+                )
+                targets_file = f"{output_prefix}-targets.txt"
+                with open(targets_file, "w", encoding="utf-8") as handle:
+                    handle.write(f"https://{host_token}\n")
+                    handle.write(f"http://{host_token}\n")
+                command = (
+                    "(command -v httpx >/dev/null 2>&1 && "
+                    "httpx -silent -json -title -tech-detect -web-server -status-code -content-type "
+                    f"-l {shlex.quote(targets_file)} -o {shlex.quote(f'{output_prefix}.jsonl')}) || echo httpx not found"
+                )
+                started_at = getTimestamp(True)
+                try:
+                    result = subprocess.run(
+                        command,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=900,
+                        env=build_tool_execution_env(),
+                    )
+                    combined_output = "\n".join(
+                        part for part in [
+                            str(getattr(result, "stdout", "") or ""),
+                            str(getattr(result, "stderr", "") or ""),
+                        ]
+                        if str(part or "").strip()
+                    )
+                    returncode = int(getattr(result, "returncode", 0) or 0)
+                    allowed_exit_codes = AppSettings.allowed_nonzero_exit_codes("httpx")
+                    executed = bool(returncode == 0 or returncode in allowed_exit_codes)
+                    reason = (
+                        "completed"
+                        if returncode == 0 else
+                        (
+                            f"completed (allowed exit {returncode})"
+                            if returncode in allowed_exit_codes else
+                            f"completed (exit {returncode})"
+                        )
+                    )
+                except Exception as exc:
+                    combined_output = f"[error] {exc}"
+                    executed = False
+                    reason = f"error: {exc}"
+                artifact_refs = [
+                    path for path in sorted(set(glob.glob(f"{output_prefix}*")))
+                    if os.path.exists(path)
+                ]
+                observations = extract_tool_observations(
+                    "httpx",
+                    combined_output,
+                    protocol="tcp",
+                    artifact_refs=artifact_refs,
+                    host_ip=str(host_token or ""),
+                    hostname=str(host_token or ""),
+                )
+                host = resolve_host_by_token(host_token)
+                host_id = int(getattr(host, "id", 0) or 0)
+                host_ip = str(getattr(host, "ip", "") or host_token).strip()
+                hostname = str(getattr(host, "hostname", "") or host_ip).strip()
+                materialized_targets = materialize_httpx_urls_as_web_targets(
+                    host_id=host_id,
+                    host_ip=host_ip,
+                    hostname=hostname,
+                    host_token=host_token,
+                    observations=observations,
+                )
+                if materialized_targets:
+                    materialized_host_ids.add(host_id)
+                    for item in materialized_targets:
+                        remember_target_state(
+                            httpx_decision,
+                            host_id,
+                            host_ip,
+                            str(item.get("port", "") or ""),
+                            str(item.get("protocol", "tcp") or "tcp"),
+                            str(item.get("service", "") or ""),
+                            status="executed" if executed else "failed",
+                            reason=reason,
+                            artifact_refs=artifact_refs,
+                            observations=observations,
+                        )
+                results.append({
+                    "host": str(host_token),
+                    "executed": bool(executed),
+                    "reason": str(reason or ""),
+                    "artifact_refs": artifact_refs,
+                    "materialized_targets": materialized_targets,
+                    "started_at": started_at,
+                    "finished_at": getTimestamp(True),
+                })
+            return {
+                "results": results,
+                "materialized_host_ids": sorted(int(item) for item in list(materialized_host_ids or set())),
+            }
+
+        def _attempted_tool_ids_for_target(target):
+            database = getattr(self.activeProject, "database", None)
+            if database is None or int(getattr(target, "host_id", 0) or 0) <= 0:
+                return set()
+            state = get_target_state(database, int(getattr(target, "host_id", 0) or 0)) or {}
+            attempted = set()
+            for item in list(state.get("attempted_actions", []) or []):
+                if not isinstance(item, dict):
+                    continue
+                item_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
+                item_port = str(item.get("port", "") or "").strip()
+                if item_protocol != str(getattr(target, "protocol", "tcp") or "tcp").strip().lower():
+                    continue
+                if item_port and item_port != str(getattr(target, "port", "") or "").strip():
+                    continue
+                tool_id = str(item.get("tool_id", "") or "").strip().lower()
+                if tool_id:
+                    attempted.add(tool_id)
+            return attempted
+
+        def run_bounded_discovered_followup(host_ids):
+            target_rows = scheduler_orchestrator.collect_project_targets(
+                self.activeProject,
+                host_ids={int(item) for item in list(host_ids or set()) if str(item).strip()},
+                allowed_states={"open", "open|filtered"},
+            )
+            preferred_tool_ids = [
+                "screenshooter",
+                "whatweb",
+                "whatweb-http",
+                "whatweb-https",
+                "nuclei-web",
+                "web-content-discovery",
+                "dirsearch",
+                "ffuf",
+                "curl-headers",
+                "curl-options",
+                "curl-robots",
+                "nmap-vuln.nse",
+            ]
+            preferred_order = {tool_id: index for index, tool_id in enumerate(preferred_tool_ids)}
+            preferred_set = set(preferred_tool_ids)
+
+            def _synthesized_followup_decision(tool_id):
+                command_template = str(
+                    scheduler_orchestrator._find_command_template_for_tool(settings, tool_id) or ""
+                ).strip()
+                if not command_template:
+                    return None
+                label = str(tool_id)
+                for action in list(getattr(settings, "portActions", []) or []):
+                    if len(action) >= 2 and str(action[1] or "").strip() == str(tool_id):
+                        label = str(action[0] or tool_id).strip() or str(tool_id)
+                        break
+                return SimpleNamespace(
+                    step_id=f"external-followup-{tool_id}",
+                    tool_id=str(tool_id),
+                    label=label,
+                    action_id=str(tool_id),
+                    family_id="",
+                    mode="deterministic",
+                    goal_profile=str(
+                        (engagement_policy or {}).get(
+                            "legacy_goal_profile",
+                            scheduler_config.load().get("goal_profile", "internal_asset_discovery"),
+                        ) or "internal_asset_discovery"
+                    ),
+                    engagement_preset=str((engagement_policy or {}).get("preset", "") or ""),
+                    approval_state="approved",
+                    coverage_gap="",
+                    pack_ids=[],
+                    danger_categories=[],
+                    risk_tags=[],
+                    requires_approval=False,
+                    is_blocked=False,
+                    rationale=f"bounded discovered-host follow-up via {tool_id}",
+                    policy_decision="allow",
+                    policy_reason="",
+                    risk_summary="",
+                    safer_alternative="",
+                    family_policy_state="allowed",
+                    score=0.0,
+                    command_template=command_template,
+                    action=SimpleNamespace(runner_type="local"),
+                )
+
+            for target in list(target_rows or []):
+                attempted_tool_ids = _attempted_tool_ids_for_target(target)
+                attempted_tool_ids.update({"subfinder", "httpx"})
+                decisions = scheduler_orchestrator.planner.plan_steps(
+                    str(target.service_name or ""),
+                    str(target.protocol or "tcp"),
+                    settings,
+                    excluded_tool_ids=sorted(attempted_tool_ids),
+                    limit=10,
+                    engagement_policy=engagement_policy,
+                )
+                decisions = [
+                    item for item in list(decisions or [])
+                    if str(getattr(item, "tool_id", "") or "").strip().lower() in preferred_set
+                ]
+                if not decisions:
+                    for fallback_tool_id in preferred_tool_ids:
+                        if fallback_tool_id in attempted_tool_ids:
+                            continue
+                        fallback_decision = _synthesized_followup_decision(fallback_tool_id)
+                        if fallback_decision is not None:
+                            decisions = [fallback_decision]
+                            break
+                decisions = sorted(
+                    decisions,
+                    key=lambda item: (
+                        preferred_order.get(str(getattr(item, "tool_id", "") or "").strip().lower(), len(preferred_order)),
+                        -float(getattr(item, "score", 0.0) or 0.0),
+                    ),
+                )[:4]
+                execution_tasks = []
+                for decision in list(decisions or []):
+                    command_template = str(decision.command_template or "") or scheduler_orchestrator._find_command_template_for_tool(
+                        settings,
+                        decision.tool_id,
+                    )
+                    if decision.is_blocked:
+                        print(
+                            f"[!] Skipping {decision.tool_id} for {target.host_ip}:{target.port}/{target.protocol} "
+                            f"because policy blocked it: {decision.policy_reason or 'blocked by policy'}."
+                        )
+                        remember_target_state(
+                            decision,
+                            target.host_id,
+                            target.host_ip,
+                            target.port,
+                            target.protocol,
+                            target.service_name,
+                            status="blocked",
+                            reason=decision.policy_reason or "blocked by policy",
+                        )
+                        record(
+                            decision,
+                            target.host_ip,
+                            target.port,
+                            target.protocol,
+                            target.service_name,
+                            approved=False,
+                            executed=False,
+                            reason=decision.policy_reason or "blocked by policy",
+                        )
+                        continue
+                    if decision.requires_approval:
+                        approval_id = queue_approval(
+                            decision,
+                            target.host_ip,
+                            target.port,
+                            target.protocol,
+                            target.service_name,
+                            command_template,
+                        )
+                        print(
+                            f"[!] Queued approval #{approval_id} for {decision.tool_id} on "
+                            f"{target.host_ip}:{target.port}/{target.protocol}."
+                        )
+                        remember_target_state(
+                            decision,
+                            target.host_id,
+                            target.host_ip,
+                            target.port,
+                            target.protocol,
+                            target.service_name,
+                            status="approval_queued",
+                            reason=f"pending approval #{approval_id}",
+                        )
+                        record(
+                            decision,
+                            target.host_ip,
+                            target.port,
+                            target.protocol,
+                            target.service_name,
+                            approved=False,
+                            executed=False,
+                            reason=f"pending approval #{approval_id}",
+                            approval_id=approval_id,
+                        )
+                        continue
+                    execution_tasks.append(SchedulerExecutionTask(
+                        decision=decision,
+                        tool_id=str(decision.tool_id or "").strip().lower(),
+                        host_id=int(target.host_id or 0),
+                        host_ip=str(target.host_ip or ""),
+                        hostname=str(target.hostname or ""),
+                        port=str(target.port or ""),
+                        protocol=str(target.protocol or "tcp"),
+                        service_name=str(target.service_name or ""),
+                        command_template=command_template,
+                        timeout=180,
+                        runner_preference=str((engagement_policy or {}).get("runner_preference", "") or ""),
+                    ))
+                if not execution_tasks:
+                    continue
+                execution_results = execute_batch(execution_tasks, 1)
+                for task, result in zip(execution_tasks, execution_results):
+                    decision = task.decision
+                    record(
+                        decision,
+                        task.host_ip,
+                        task.port,
+                        task.protocol,
+                        task.service_name,
+                        approved=True,
+                        executed=bool(result.get("executed", False)),
+                        reason=str(result.get("reason", "") or ""),
+                        approval_id=str(result.get("approval_id", "") or ""),
+                    )
+                    record_execution(
+                        decision,
+                        task.host_ip,
+                        task.port,
+                        task.protocol,
+                        task.service_name,
+                        started_at=str(getattr(result.get("execution_record"), "started_at", "") or ""),
+                        finished_at=str(getattr(result.get("execution_record"), "finished_at", "") or ""),
+                        exit_status=str(getattr(result.get("execution_record"), "exit_status", "") or result.get("reason", "")),
+                        runner_type=str(getattr(result.get("execution_record"), "runner_type", "") or ""),
+                        artifact_refs=list(getattr(result.get("execution_record"), "artifact_refs", []) or []),
+                        approval_id=str(result.get("approval_id", "") or ""),
+                    )
+                    remember_target_state(
+                        decision,
+                        task.host_id,
+                        task.host_ip,
+                        task.port,
+                        task.protocol,
+                        task.service_name,
+                        status="executed" if bool(result.get("executed", False)) else "failed",
+                        reason=str(result.get("reason", "") or ""),
+                        artifact_refs=list(getattr(result.get("execution_record"), "artifact_refs", []) or []),
+                        observations=(result.get("metadata", {}) if isinstance(result.get("metadata", {}), dict) else {}).get("observations"),
+                    )
 
         targets = scheduler_orchestrator.collect_project_targets(
             self.activeProject,
@@ -729,6 +1294,15 @@ class Logic:
                 ),
             ),
         )
+
+        bootstrap_targets = sorted(str(item or "").strip() for item in list(pending_httpx_bootstrap_targets or set()) if str(item or "").strip())
+        if bootstrap_targets:
+            print(f"[*] Running httpx bootstrap for discovered hosts: {', '.join(bootstrap_targets[:8])}")
+            bootstrap_result = run_httpx_bootstrap(bootstrap_targets)
+            materialized_host_ids = set(int(item) for item in list(bootstrap_result.get("materialized_host_ids", []) or []) if int(item or 0) > 0)
+            if materialized_host_ids:
+                print(f"[*] Running bounded web follow-up for discovered hosts ({len(materialized_host_ids)})...")
+                run_bounded_discovered_followup(materialized_host_ids)
 
     def createFolderForTool(self, tool):
         if 'nmap' in tool:

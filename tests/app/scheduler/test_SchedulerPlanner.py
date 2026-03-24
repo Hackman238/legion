@@ -667,6 +667,139 @@ class SchedulerPlannerTest(unittest.TestCase):
         self.assertEqual(1, len(filtered))
         self.assertEqual("http-vmware-path-vuln.nse", filtered[0]["tool_id"])
 
+    def test_ai_candidate_filter_blocks_subfinder_outside_initial_discovery(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        candidates = [
+            {"tool_id": "subfinder", "label": "Subfinder", "command_template": "subfinder -d [IP]", "service_scope": "host"},
+            {"tool_id": "curl-headers", "label": "Curl Headers", "command_template": "curl -k -I https://[IP]", "service_scope": "http"},
+        ]
+        context = {
+            "target": {"hostname": "example.com"},
+            "signals": {"web_service": True},
+            "context_summary": {"focus": {"current_phase": "broad_vuln"}},
+        }
+
+        filtered = SchedulerPlanner._filter_candidates_with_context(candidates, context)
+        filtered_ids = {item["tool_id"] for item in filtered}
+        self.assertNotIn("subfinder", filtered_ids)
+        self.assertIn("curl-headers", filtered_ids)
+
+    def test_ai_candidate_filter_keeps_subfinder_for_external_initial_discovery(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        candidates = [
+            {"tool_id": "subfinder", "label": "Subfinder", "command_template": "subfinder -d [IP]", "service_scope": "host"},
+        ]
+        context = {
+            "target": {
+                "hostname": "example.com",
+                "engagement_preset": "external_recon",
+            },
+            "context_summary": {"focus": {"current_phase": "initial_discovery"}},
+        }
+
+        filtered = SchedulerPlanner._filter_candidates_with_context(candidates, context)
+        self.assertEqual(1, len(filtered))
+        self.assertEqual("subfinder", filtered[0]["tool_id"])
+
+    def test_ai_candidate_filter_blocks_shodan_outside_allowed_phase(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        candidates = [
+            {
+                "tool_id": "shodan-enrichment",
+                "label": "Run Shodan hostname enrichment",
+                "command_template": "python3 -m app.shodan_probe --target [IP] --api-key [SHODAN_API_KEY]",
+                "service_scope": "host",
+            },
+            {"tool_id": "curl-headers", "label": "Curl Headers", "command_template": "curl -k -I https://[IP]", "service_scope": "http"},
+        ]
+        context = {
+            "target": {
+                "hostname": "connect.example.com",
+                "engagement_preset": "external_recon",
+                "shodan_enabled": True,
+            },
+            "signals": {"web_service": True},
+            "context_summary": {"focus": {"current_phase": "broad_vuln"}},
+        }
+
+        filtered = SchedulerPlanner._filter_candidates_with_context(candidates, context)
+        filtered_ids = {item["tool_id"] for item in filtered}
+        self.assertNotIn("shodan-enrichment", filtered_ids)
+        self.assertIn("curl-headers", filtered_ids)
+
+    def test_ai_candidate_filter_keeps_shodan_for_external_hostname_with_api_key(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        candidates = [
+            {
+                "tool_id": "shodan-enrichment",
+                "label": "Run Shodan hostname enrichment",
+                "command_template": "python3 -m app.shodan_probe --target [IP] --api-key [SHODAN_API_KEY]",
+                "service_scope": "host",
+            },
+        ]
+        context = {
+            "target": {
+                "hostname": "connect.example.com",
+                "engagement_preset": "external_recon",
+                "shodan_enabled": True,
+            },
+            "context_summary": {"focus": {"current_phase": "initial_discovery"}},
+        }
+
+        filtered = SchedulerPlanner._filter_candidates_with_context(candidates, context)
+        self.assertEqual(1, len(filtered))
+        self.assertEqual("shodan-enrichment", filtered[0]["tool_id"])
+
+    def test_ai_candidate_filter_blocks_cloud_storage_followup_without_signal_and_keeps_when_present(self):
+        from app.scheduler.planner import SchedulerPlanner
+
+        candidates = [
+            {
+                "tool_id": "nuclei-aws-storage",
+                "label": "Run nuclei AWS storage follow-up",
+                "command_template": "nuclei -tags aws,s3,bucket,storage -u [WEB_URL]",
+                "service_scope": "https",
+            },
+            {
+                "tool_id": "nuclei-cloud",
+                "label": "Run nuclei cloud exposure follow-up",
+                "command_template": "nuclei -tags cloud,aws,azure,gcp -u [WEB_URL]",
+                "service_scope": "https",
+            },
+        ]
+
+        filtered = SchedulerPlanner._filter_candidates_with_context(
+            candidates,
+            {
+                "target": {"hostname": "portal.example", "engagement_preset": "external_recon"},
+                "signals": {"web_service": True, "cloud_provider_detected": True, "aws_detected": True},
+                "context_summary": {"focus": {"current_phase": "targeted_checks"}},
+            },
+        )
+        filtered_ids = {item["tool_id"] for item in filtered}
+        self.assertIn("nuclei-cloud", filtered_ids)
+        self.assertNotIn("nuclei-aws-storage", filtered_ids)
+
+        filtered_with_signal = SchedulerPlanner._filter_candidates_with_context(
+            candidates,
+            {
+                "target": {"hostname": "portal.example", "engagement_preset": "external_recon"},
+                "signals": {
+                    "web_service": True,
+                    "cloud_provider_detected": True,
+                    "aws_storage_detected": True,
+                },
+                "context_summary": {"focus": {"current_phase": "targeted_checks"}},
+            },
+        )
+        filtered_with_signal_ids = {item["tool_id"] for item in filtered_with_signal}
+        self.assertIn("nuclei-cloud", filtered_with_signal_ids)
+        self.assertIn("nuclei-aws-storage", filtered_with_signal_ids)
+
     def test_ai_candidate_filter_generalized_vendor_token_block_and_allow(self):
         from app.scheduler.planner import SchedulerPlanner
 

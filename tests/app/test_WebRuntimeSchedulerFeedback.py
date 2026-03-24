@@ -6,6 +6,34 @@ from types import SimpleNamespace
 
 
 class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
+    def test_shodan_enabled_uses_scheduler_integrations_key(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime.scheduler_config = SimpleNamespace(load=lambda: {
+            "integrations": {
+                "shodan": {
+                    "api_key": "scheduler-owned-key",
+                }
+            }
+        })
+
+        self.assertTrue(runtime._shodan_integration_enabled())
+        self.assertTrue(runtime._shodan_integration_enabled({
+            "integrations": {
+                "shodan": {
+                    "api_key": "another-key",
+                }
+            }
+        }))
+        self.assertFalse(runtime._shodan_integration_enabled({
+            "integrations": {
+                "shodan": {
+                    "api_key": "",
+                }
+            }
+        }))
+
     def test_ingest_discovered_hosts_imports_targets_and_queues_subfinder_followup(self):
         from app.ProjectManager import ProjectManager
         from app.logic import Logic
@@ -218,6 +246,53 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             )
 
             self.assertIn("subfinder", summary["tool_ids"])
+        finally:
+            project_manager.closeProject(project)
+
+    def test_existing_attempt_summary_treats_shodan_as_host_scoped(self):
+        from app.ProjectManager import ProjectManager
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.state import upsert_target_state
+        from app.web.runtime import WebRuntime
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            host = hostObj(ip="connect.example.com", ipv4="connect.example.com", hostname="connect.example.com")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+            session.close()
+
+            upsert_target_state(project.database, host_id, {
+                "host_ip": "connect.example.com",
+                "attempted_actions": [{
+                    "tool_id": "shodan-enrichment",
+                    "status": "executed",
+                    "port": "",
+                    "protocol": "tcp",
+                    "attempted_at": "2026-03-24T00:00:00Z",
+                }],
+            }, merge=True)
+
+            runtime = WebRuntime.__new__(WebRuntime)
+            runtime._lock = threading.RLock()
+            runtime.logic = SimpleNamespace(activeProject=project)
+
+            summary = runtime._existing_attempt_summary_for_target(
+                host_id,
+                "connect.example.com",
+                "443",
+                "tcp",
+            )
+
+            self.assertIn("shodan-enrichment", summary["tool_ids"])
         finally:
             project_manager.closeProject(project)
 
@@ -930,6 +1005,37 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         self.assertTrue(signals["ubiquiti_detected"])
         self.assertFalse(signals["vmware_detected"])
         self.assertIn("ubiquiti", signals["observed_technologies"])
+
+    def test_extract_scheduler_signals_detects_cloud_provider_and_storage_markers(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        signals = runtime._extract_scheduler_signals(
+            service_name="https",
+            scripts=[],
+            recent_processes=[
+                {
+                    "tool_id": "nuclei-cloud",
+                    "status": "Finished",
+                    "output_excerpt": (
+                        "[aws-public-bucket] [http] [medium] https://tenant-assets.s3.amazonaws.com "
+                        "Amazon S3 bucket listing exposed x-amz-request-id: 1234"
+                    ),
+                }
+            ],
+            target={
+                "hostname": "tenant-assets.s3.amazonaws.com",
+                "service": "https",
+                "host_open_services": ["https"],
+            },
+        )
+
+        self.assertTrue(signals["cloud_provider_detected"])
+        self.assertTrue(signals["aws_detected"])
+        self.assertTrue(signals["storage_service_detected"])
+        self.assertTrue(signals["aws_storage_detected"])
+        self.assertIn("aws", signals["observed_technologies"])
+        self.assertIn("cloud_storage", signals["observed_technologies"])
 
     def test_extract_scheduler_signals_ignores_script_and_tool_names_without_positive_evidence(self):
         from app.web.runtime import WebRuntime

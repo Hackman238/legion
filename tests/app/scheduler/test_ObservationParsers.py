@@ -84,6 +84,30 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertEqual("downgraded", quality_events[0]["action"])
         self.assertEqual("info", quality_events[0]["severity_after"])
 
+    def test_extract_tool_observations_parses_cloud_provider_technologies_from_nuclei(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            '[aws-public-bucket] [http] [medium] https://tenant-assets.s3.amazonaws.com '
+            'Amazon S3 bucket listing exposed x-amz-request-id: 1234\n'
+            '[azure-blob-container-public] [http] [medium] https://tenant.blob.core.windows.net '
+            'Azure Blob listing exposed x-ms-version: 2024-11-04'
+        )
+
+        parsed = extract_tool_observations(
+            "nuclei-cloud",
+            output,
+            port="443",
+            protocol="tcp",
+            service="https",
+        )
+
+        technologies = {str(item.get("name", "") or "").strip() for item in parsed["technologies"]}
+        self.assertIn("Amazon Web Services", technologies)
+        self.assertIn("Amazon S3", technologies)
+        self.assertIn("Microsoft Azure", technologies)
+        self.assertIn("Azure Blob Storage", technologies)
+
     def test_extract_tool_observations_parses_nikto_findings_urls_and_technologies(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -1330,6 +1354,53 @@ class ObservationParsersTest(unittest.TestCase):
             {"api.example.com", "cdn.example.com", "admin.example.com"},
             discovered_hosts,
         )
+
+    def test_extract_tool_observations_parses_shodan_enrichment_output(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = json.dumps({
+            "input_target": "connect.example.com",
+            "exact_hostname": "connect.example.com",
+            "root_domain": "example.com",
+            "supported": True,
+            "dns_resolve": {
+                "connect.example.com": "203.0.113.10",
+            },
+            "search_query": 'hostname:"connect.example.com" OR ssl:"connect.example.com"',
+            "total": 2,
+            "matches": [
+                {
+                    "ip_str": "203.0.113.10",
+                    "port": 443,
+                    "hostnames": ["connect.example.com", "www.example.com"],
+                    "domains": ["connect.example.com", "www.example.com", "example.com"],
+                    "product": "nginx",
+                },
+                {
+                    "ip": 3405803787,
+                    "port": 80,
+                    "hostnames": ["api.example.com"],
+                    "domains": ["api.example.com", "example.com"],
+                    "product": "Envoy",
+                },
+            ],
+        })
+
+        parsed = extract_tool_observations("shodan-enrichment", output)
+
+        finding_titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+        discovered_hosts = {str(item).strip() for item in parsed.get("discovered_hosts", [])}
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+
+        self.assertIn("Shodan DNS resolve hit", finding_titles)
+        self.assertIn("Shodan indexed matches (2)", finding_titles)
+        self.assertIn("connect.example.com", discovered_hosts)
+        self.assertIn("api.example.com", discovered_hosts)
+        self.assertIn("https://connect.example.com", urls)
+        self.assertIn("http://api.example.com", urls)
+        self.assertIn("nginx", technologies)
+        self.assertIn("Envoy", technologies)
 
     def test_extract_tool_observations_parses_screenshot_metadata_artifact(self):
         from app.scheduler.observation_parsers import extract_tool_observations

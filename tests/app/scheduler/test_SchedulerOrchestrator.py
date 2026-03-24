@@ -85,6 +85,42 @@ class SchedulerOrchestratorTest(unittest.TestCase):
         self.assertGreaterEqual(options.max_reflections_per_target, 1)
         self.assertTrue(options.dig_deeper)
 
+    def test_collect_project_targets_includes_host_root_target_for_hostname_scope(self):
+        from app.ProjectManager import ProjectManager
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.orchestrator import SchedulerOrchestrator
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+        from db.entities.port import portObj
+        from db.entities.service import serviceObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            host = hostObj(ip="104.26.2.143", ipv4="104.26.2.143", hostname="example.com")
+            session.add(host)
+            session.flush()
+            service = serviceObj("http", int(host.id))
+            session.add(service)
+            session.flush()
+            session.add(portObj("80", "tcp", "open", int(host.id), int(service.id)))
+            session.commit()
+            session.close()
+
+            targets = SchedulerOrchestrator.collect_project_targets(project)
+
+            self.assertGreaterEqual(len(targets), 2)
+            self.assertEqual("host", targets[0].service_name)
+            self.assertEqual("", targets[0].port)
+            self.assertEqual("example.com", targets[0].metadata.get("host_root_token"))
+            self.assertTrue(any(item.service_name == "http" and item.port == "80" for item in targets))
+        finally:
+            project_manager.closeProject(project)
+
     def test_run_targets_routes_blocked_approval_and_execution_through_callbacks(self):
         from app.scheduler.models import PlanStep
         from app.scheduler.orchestrator import (

@@ -40,6 +40,11 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual(1, int(defaults["ai_feedback"]["max_reflections_per_target"]))
             self.assertEqual("gpt-4.1-mini", defaults["providers"]["openai"]["model"])
             self.assertFalse(defaults["providers"]["openai"]["structured_outputs"])
+            self.assertIn("integrations", defaults)
+            self.assertIn("grayhatwarfare", defaults["integrations"])
+            self.assertEqual("", defaults["integrations"]["grayhatwarfare"]["api_key"])
+            self.assertIn("shodan", defaults["integrations"])
+            self.assertEqual("", defaults["integrations"]["shodan"]["api_key"])
             self.assertIn("feature_flags", defaults)
             self.assertTrue(defaults["feature_flags"]["graph_workspace"])
             self.assertTrue(defaults["feature_flags"]["optional_runners"])
@@ -73,6 +78,14 @@ class SchedulerConfigManagerTest(unittest.TestCase):
                         "structured_outputs": True,
                     }
                 },
+                "integrations": {
+                    "grayhatwarfare": {
+                        "api_key": "test-grayhat-key",
+                    },
+                    "shodan": {
+                        "api_key": "test-shodan-key",
+                    }
+                },
             })
             self.assertEqual("ai", updated["mode"])
             self.assertEqual("external_pentest", updated["goal_profile"])
@@ -82,6 +95,8 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertEqual(1, int(updated["max_host_concurrency"]))
             self.assertEqual("gpt-5-mini", updated["providers"]["openai"]["model"])
             self.assertTrue(updated["providers"]["openai"]["structured_outputs"])
+            self.assertEqual("test-grayhat-key", updated["integrations"]["grayhatwarfare"]["api_key"])
+            self.assertEqual("test-shodan-key", updated["integrations"]["shodan"]["api_key"])
             self.assertEqual(5, int(updated["ai_feedback"]["max_rounds_per_target"]))
 
             normalized_openai_model = manager.update_preferences({

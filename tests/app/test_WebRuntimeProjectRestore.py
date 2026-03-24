@@ -393,6 +393,69 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
             if active_project is not None:
                 runtime._close_active_project()
 
+    def test_project_bundle_reconciles_reversed_mixed_process_timestamps(self):
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+
+        bundle_path = ""
+        try:
+            runtime._ensure_process_tables()
+            session = project.database.session()
+            try:
+                session.execute(text(
+                    "INSERT INTO process ("
+                    "pid, display, name, tabTitle, hostIp, port, protocol, command, startTime, endTime, "
+                    "estimatedRemaining, elapsed, outputfile, status, closed, percent, "
+                    "progressMessage, progressSource, progressUpdatedAt"
+                    ") VALUES ("
+                    ":pid, :display, :name, :tabTitle, :hostIp, :port, :protocol, :command, :startTime, :endTime, "
+                    ":estimatedRemaining, :elapsed, :outputfile, :status, :closed, :percent, "
+                    ":progressMessage, :progressSource, :progressUpdatedAt"
+                    ")"
+                ), {
+                    "pid": "7001",
+                    "display": "False",
+                    "name": "httpx-bootstrap",
+                    "tabTitle": "httpx bootstrap",
+                    "hostIp": "api.example.com",
+                    "port": "",
+                    "protocol": "tcp",
+                    "command": "httpx -l targets.txt -json",
+                    "startTime": "24 Mar 2026 02:27:52.130291",
+                    "endTime": "2026-03-24T02:27:53.130291+00:00",
+                    "estimatedRemaining": 0,
+                    "elapsed": 1,
+                    "outputfile": "/tmp/legion/httpx-bootstrap.txt",
+                    "status": "Finished",
+                    "closed": "True",
+                    "percent": "100",
+                    "progressMessage": "",
+                    "progressSource": "",
+                    "progressUpdatedAt": "24 Mar 2026 02:27:52.500000",
+                })
+                session.commit()
+            finally:
+                session.close()
+
+            bundle_path, _bundle_name = runtime.build_project_bundle_zip()
+            with zipfile.ZipFile(bundle_path, "r") as archive:
+                process_history_name = next(
+                    name for name in archive.namelist() if str(name).endswith("/process-history.json")
+                )
+                payload = json.loads(archive.read(process_history_name).decode("utf-8"))
+
+            self.assertEqual("httpx-bootstrap", payload[0]["name"])
+            self.assertEqual("2026-03-24T02:27:52.130291+00:00", payload[0]["startTimeUtc"])
+            self.assertEqual("2026-03-24T02:27:53.130291+00:00", payload[0]["endTimeUtc"])
+            self.assertEqual("2026-03-24T02:27:52.500000+00:00", payload[0]["progressUpdatedAtUtc"])
+        finally:
+            if bundle_path and os.path.isfile(bundle_path):
+                os.remove(bundle_path)
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
+
     def test_get_process_output_includes_structured_progress_payload(self):
         project_manager, logic, runtime = self._create_runtime()
         project = project_manager.createNewProject(projectType="legion", isTemp=True)

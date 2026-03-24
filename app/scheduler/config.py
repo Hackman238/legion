@@ -30,6 +30,17 @@ DEFAULT_TOOL_EXECUTION_PROFILES = {
         "hard_timeout_seconds": 0,
     }
 }
+DEFAULT_INTEGRATIONS = {
+    "grayhatwarfare": {
+        "api_key": "",
+    },
+    "chaos": {
+        "api_key": "",
+    },
+    "shodan": {
+        "api_key": "",
+    }
+}
 
 
 def normalize_feature_flags(raw: Any) -> Dict[str, bool]:
@@ -100,6 +111,35 @@ def normalize_tool_execution_profiles(raw: Any) -> Dict[str, Dict[str, Any]]:
     return normalized
 
 
+def normalize_integrations(raw: Any) -> Dict[str, Dict[str, str]]:
+    source = raw if isinstance(raw, dict) else {}
+    integrations: Dict[str, Dict[str, str]] = {
+        str(name): dict(config)
+        for name, config in DEFAULT_INTEGRATIONS.items()
+        if isinstance(config, dict)
+    }
+
+    for integration_name, integration_cfg in source.items():
+        token = str(integration_name or "").strip().lower()
+        if not token:
+            continue
+        current = dict(integrations.get(token, {}))
+        if isinstance(integration_cfg, dict):
+            current.update(integration_cfg)
+        integrations[token] = current
+
+    normalized: Dict[str, Dict[str, str]] = {}
+    for integration_name, integration_cfg in integrations.items():
+        token = str(integration_name or "").strip().lower()
+        if not token:
+            continue
+        cfg = integration_cfg if isinstance(integration_cfg, dict) else {}
+        normalized[token] = {
+            "api_key": str(cfg.get("api_key", "") or "").strip(),
+        }
+    return normalized
+
+
 DEFAULT_SCHEDULER_CONFIG = {
     "mode": "deterministic",
     "goal_profile": "internal_asset_discovery",
@@ -132,6 +172,7 @@ DEFAULT_SCHEDULER_CONFIG = {
             "api_key": "",
         },
     },
+    "integrations": normalize_integrations(DEFAULT_INTEGRATIONS),
     "cloud_notice": (
         "Cloud AI mode may send host/service metadata to third-party providers."
     ),
@@ -223,6 +264,17 @@ class SchedulerConfigManager:
                         existing_provider.update(provider_config)
                     providers[provider_name] = existing_provider
                 merged["providers"] = providers
+            elif key == "integrations" and isinstance(value, dict):
+                integrations = normalize_integrations(merged.get("integrations", {}))
+                for integration_name, integration_config in value.items():
+                    token = str(integration_name or "").strip().lower()
+                    if not token:
+                        continue
+                    existing_integration = dict(integrations.get(token, {}))
+                    if isinstance(integration_config, dict):
+                        existing_integration.update(integration_config)
+                    integrations[token] = existing_integration
+                merged["integrations"] = normalize_integrations(integrations)
             elif key == "project_report_delivery" and isinstance(value, dict):
                 delivery = dict(merged.get("project_report_delivery", {}))
                 for delivery_key, delivery_value in value.items():
@@ -464,6 +516,7 @@ class SchedulerConfigManager:
             openai_provider["structured_outputs"] = bool(openai_provider.get("structured_outputs", False))
             providers["openai"] = openai_provider
         config["providers"] = providers
+        config["integrations"] = normalize_integrations(raw.get("integrations", config.get("integrations", {})))
         config["feature_flags"] = normalize_feature_flags(raw.get("feature_flags", config.get("feature_flags", {})))
         config["runners"] = normalize_runner_settings(raw.get("runners", config.get("runners", {})))
         config["disabled_tool_ids"] = normalize_disabled_tool_ids(

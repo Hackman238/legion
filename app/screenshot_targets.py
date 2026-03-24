@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 import socket
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from app.hostsfile import normalize_hostname_alias
 from app.nmap_enrichment import is_unknown_hostname
@@ -92,6 +92,7 @@ def apply_preferred_target_placeholders(
         port: Optional[str] = None,
         output: Optional[str] = None,
         service_name: str = "",
+        extra_placeholders: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, str]:
     command = str(template or "")
     target_host = choose_preferred_command_host(hostname, ip, command)
@@ -104,6 +105,11 @@ def apply_preferred_target_placeholders(
         )
     if output is not None:
         command = command.replace("[OUTPUT]", str(output))
+    for placeholder, replacement in dict(extra_placeholders or {}).items():
+        token = str(placeholder or "").strip().upper()
+        if not token:
+            continue
+        command = command.replace(f"[{token}]", str(replacement or ""))
     return command, target_host
 
 

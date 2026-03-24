@@ -107,7 +107,12 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("wpscan", port_action_ids)
                 self.assertIn("httpx", port_action_ids)
                 self.assertIn("subfinder", port_action_ids)
+                self.assertIn("grayhatwarfare", port_action_ids)
+                self.assertIn("shodan-enrichment", port_action_ids)
                 self.assertIn("nuclei-cloud", port_action_ids)
+                self.assertIn("nuclei-aws-storage", port_action_ids)
+                self.assertIn("nuclei-azure-storage", port_action_ids)
+                self.assertIn("nuclei-gcp-storage", port_action_ids)
                 self.assertIn("whatweb", port_action_ids)
                 self.assertIn("whatweb-http", port_action_ids)
                 self.assertIn("whatweb-https", port_action_ids)
@@ -125,14 +130,19 @@ class SettingsMigrationTest(unittest.TestCase):
 
                 port_actions = {row[1]: row for row in app_settings.getPortActions()}
                 nuclei_cmd = str(port_actions["nuclei-web"][2])
+                nuclei_cloud_cmd = str(port_actions["nuclei-cloud"][2])
                 ffuf_cmd = str(port_actions["ffuf"][2])
                 self.assertIn("nuclei -as", nuclei_cmd)
                 self.assertIn("-stats -si 15", nuclei_cmd)
                 self.assertIn("-silent", nuclei_cmd)
                 self.assertNotIn("-no-color", nuclei_cmd)
+                self.assertIn("-tags cloud,aws,azure,gcp", nuclei_cloud_cmd)
                 self.assertIn("ffuf -s -of json -o [OUTPUT].json -u [WEB_URL]/FUZZ", ffuf_cmd)
                 self.assertNotIn("-json", ffuf_cmd)
                 self.assertNotIn("-noninteractive", ffuf_cmd)
+                self.assertEqual("host", str(port_actions["subfinder"][3]))
+                self.assertEqual("host", str(port_actions["grayhatwarfare"][3]))
+                self.assertEqual("host", str(port_actions["shodan-enrichment"][3]))
                 self.assertEqual(
                     "LEGION_BANNER_TARGET=[IP] LEGION_BANNER_PORT=[PORT] "
                     "LEGION_BANNER_PROTOCOL=tcp python3 -m app.banner_probe",
@@ -153,7 +163,12 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("rpcclient-enum", scheduler_ids)
                 self.assertIn("netexec", scheduler_ids)
                 self.assertNotIn("subfinder", scheduler_ids)
+                self.assertNotIn("grayhatwarfare", scheduler_ids)
+                self.assertNotIn("shodan-enrichment", scheduler_ids)
                 self.assertNotIn("nuclei-cloud", scheduler_ids)
+                self.assertNotIn("nuclei-aws-storage", scheduler_ids)
+                self.assertNotIn("nuclei-azure-storage", scheduler_ids)
+                self.assertNotIn("nuclei-gcp-storage", scheduler_ids)
                 self.assertNotIn("responder", scheduler_ids)
                 self.assertNotIn("ntlmrelayx", scheduler_ids)
 
@@ -173,6 +188,23 @@ class SettingsMigrationTest(unittest.TestCase):
         self.assertNotIn("nuclei -as-web", normalized)
         self.assertIn("-silent", normalized)
         self.assertNotIn("-no-color", normalized)
+
+    def test_subfinder_normalization_preserves_wrapped_probe_and_output_tokens(self):
+        from app.settings import AppSettings
+
+        command = (
+            "(command -v subfinder >/dev/null 2>&1 && "
+            "subfinder -silent -recursive -duc -max-time 5 -oJ -d tantalumlabs.io -o /tmp/out.jsonl) || "
+            "echo subfinder not found"
+        )
+
+        normalized = AppSettings._ensure_subfinder_command(command)
+
+        self.assertIn("command -v subfinder >/dev/null 2>&1", normalized)
+        self.assertIn("subfinder -silent -recursive -duc -max-time 5 -oJ -d [IP]", normalized)
+        self.assertIn("-o [OUTPUT].jsonl", normalized)
+        self.assertNotIn("command -v subfinder -silent", normalized)
+        self.assertNotIn("subfinder not found -o", normalized)
 
     def test_nuclei_normalization_rewrites_existing_stats_interval_to_15_seconds(self):
         from app.settings import AppSettings

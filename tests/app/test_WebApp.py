@@ -54,6 +54,14 @@ class DummySchedulerConfig:
                     "api_key": "",
                 },
             },
+            "integrations": {
+                "grayhatwarfare": {
+                    "api_key": "",
+                },
+                "shodan": {
+                    "api_key": "",
+                },
+            },
             "feature_flags": {
                 "graph_workspace": True,
                 "optional_runners": True,
@@ -111,6 +119,14 @@ class DummySchedulerConfig:
                     existing.update(provider_cfg)
                 providers[provider_name] = existing
             updates["providers"] = providers
+        if isinstance(updates.get("integrations"), dict):
+            integrations = dict(self.state.get("integrations", {}))
+            for integration_name, integration_cfg in updates.get("integrations", {}).items():
+                existing = dict(integrations.get(integration_name, {}))
+                if isinstance(integration_cfg, dict):
+                    existing.update(integration_cfg)
+                integrations[integration_name] = existing
+            updates["integrations"] = integrations
         elif "goal_profile" in updates:
             policy = dict(self.state.get("engagement_policy", {}))
             policy["preset"] = "external_pentest" if str(updates.get("goal_profile", "")).strip().lower() == "external_pentest" else "internal_recon"
@@ -827,6 +843,16 @@ class DummyRuntime:
             "max_host_concurrency": self.scheduler_config.state["max_host_concurrency"],
             "max_jobs": self.scheduler_config.state["max_jobs"],
             "providers": self.scheduler_config.state["providers"],
+            "integrations": {
+                "grayhatwarfare": {
+                    "api_key": "",
+                    "api_key_configured": bool(self.scheduler_config.state["integrations"]["grayhatwarfare"]["api_key"]),
+                },
+                "shodan": {
+                    "api_key": "",
+                    "api_key_configured": bool(self.scheduler_config.state["integrations"]["shodan"]["api_key"]),
+                }
+            },
             "feature_flags": self.scheduler_config.state["feature_flags"],
             "ai_feedback": self.scheduler_config.state["ai_feedback"],
             "project_report_delivery": self.scheduler_config.state["project_report_delivery"],
@@ -2001,6 +2027,10 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(1, response.json["max_host_concurrency"])
         self.assertIn("openai", response.json["providers"])
         self.assertFalse(response.json["providers"]["openai"]["structured_outputs"])
+        self.assertIn("grayhatwarfare", response.json["integrations"])
+        self.assertFalse(response.json["integrations"]["grayhatwarfare"]["api_key_configured"])
+        self.assertIn("shodan", response.json["integrations"])
+        self.assertFalse(response.json["integrations"]["shodan"]["api_key_configured"])
         self.assertTrue(response.json["ai_feedback"]["enabled"])
         self.assertTrue(response.json["ai_feedback"]["reflection_enabled"])
         self.assertEqual(2, response.json["ai_feedback"]["stall_rounds_without_progress"])
@@ -2069,6 +2099,26 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("openai", response.json["provider"])
         self.assertTrue(response.json["providers"]["openai"]["structured_outputs"])
+
+    def test_scheduler_preferences_update_accepts_integrations(self):
+        response = self.client.post(
+            "/api/scheduler/preferences",
+            json={
+                "integrations": {
+                    "grayhatwarfare": {
+                        "api_key": "test-grayhat-key",
+                    },
+                    "shodan": {
+                        "api_key": "test-shodan-key",
+                    }
+                },
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json["integrations"]["grayhatwarfare"]["api_key_configured"])
+        self.assertEqual("", response.json["integrations"]["grayhatwarfare"]["api_key"])
+        self.assertTrue(response.json["integrations"]["shodan"]["api_key_configured"])
+        self.assertEqual("", response.json["integrations"]["shodan"]["api_key"])
 
     def test_scheduler_preferences_update_accepts_ai_feedback_controls(self):
         response = self.client.post(

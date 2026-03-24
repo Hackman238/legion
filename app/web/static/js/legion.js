@@ -4192,9 +4192,13 @@ function applySchedulerPreferences(prefs) {
     setValue("scheduler-max-jobs-input", String(prefs.max_jobs || 200));
 
     const providers = prefs.providers || {};
+    const integrations = prefs.integrations || {};
     const lmStudio = providers.lm_studio || {};
     const openai = providers.openai || {};
     const claude = providers.claude || {};
+    const grayhatwarfare = integrations.grayhatwarfare || {};
+    const chaos = integrations.chaos || {};
+    const shodan = integrations.shodan || {};
     const aiFeedback = prefs.ai_feedback || {};
     const projectDelivery = prefs.project_report_delivery || {};
     const projectDeliveryMtls = projectDelivery.mtls || {};
@@ -4211,6 +4215,27 @@ function applySchedulerPreferences(prefs) {
     setValue("provider-claude-baseurl", claude.base_url || "");
     setValue("provider-claude-model", claude.model || "");
     setValue("provider-claude-apikey", "");
+    setValue("scheduler-integration-grayhatwarfare-apikey", "");
+    const grayhatwarfareApiKeyInput = document.getElementById("scheduler-integration-grayhatwarfare-apikey");
+    if (grayhatwarfareApiKeyInput) {
+        grayhatwarfareApiKeyInput.placeholder = grayhatwarfare.api_key_configured
+            ? "Configured. Enter a new Grayhat Warfare API key to replace it"
+            : "Enter a new Grayhat Warfare API key";
+    }
+    setValue("scheduler-integration-chaos-apikey", "");
+    const chaosApiKeyInput = document.getElementById("scheduler-integration-chaos-apikey");
+    if (chaosApiKeyInput) {
+        chaosApiKeyInput.placeholder = chaos.api_key_configured
+            ? "Configured. Enter a new Chaos API key to replace it"
+            : "Enter a new Chaos API key";
+    }
+    setValue("scheduler-integration-shodan-apikey", "");
+    const shodanApiKeyInput = document.getElementById("scheduler-integration-shodan-apikey");
+    if (shodanApiKeyInput) {
+        shodanApiKeyInput.placeholder = shodan.api_key_configured
+            ? "Configured. Enter a new Shodan API key to replace it"
+            : "Enter a new Shodan API key";
+    }
     setChecked("scheduler-ai-feedback-enabled", aiFeedback.enabled !== false);
     setValue("scheduler-ai-max-rounds", String(aiFeedback.max_rounds_per_target || 5));
     setValue("scheduler-ai-max-actions", String(aiFeedback.max_actions_per_round || 6));
@@ -4498,6 +4523,23 @@ function collectSchedulerPreferencesFromForm() {
     if (claudeApiKey) {
         providers.claude.api_key = claudeApiKey;
     }
+    const integrations = {
+        grayhatwarfare: {},
+        chaos: {},
+        shodan: {},
+    };
+    const grayhatwarfareApiKey = getValue("scheduler-integration-grayhatwarfare-apikey").trim();
+    if (grayhatwarfareApiKey) {
+        integrations.grayhatwarfare.api_key = grayhatwarfareApiKey;
+    }
+    const chaosApiKey = getValue("scheduler-integration-chaos-apikey").trim();
+    if (chaosApiKey) {
+        integrations.chaos.api_key = chaosApiKey;
+    }
+    const shodanApiKey = getValue("scheduler-integration-shodan-apikey").trim();
+    if (shodanApiKey) {
+        integrations.shodan.api_key = shodanApiKey;
+    }
 
     const engagementPolicy = normalizeEngagementPolicyPayload(
         {
@@ -4544,6 +4586,7 @@ function collectSchedulerPreferencesFromForm() {
             scheduler_web_followup_sidecar: getChecked("feature-scheduler-web-followup-sidecar"),
         },
         providers,
+        integrations,
     };
 }
 

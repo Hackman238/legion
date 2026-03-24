@@ -1,7 +1,9 @@
 import time
+import ipaddress
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 
+from app.hostsfile import registrable_root_domain
 from app.scheduler.planner import SchedulerPlanner
 from app.scheduler.tool_prompt_registry import get_scheduler_tool_prompt_info
 from app.scheduler.policy import (
@@ -91,6 +93,25 @@ class SchedulerOrchestrator:
     def __init__(self, config_manager, planner: Optional[SchedulerPlanner] = None):
         self.config_manager = config_manager
         self.planner = planner or SchedulerPlanner(config_manager)
+
+    @staticmethod
+    def _candidate_host_root_token(host_ip: Any, hostname: Any) -> str:
+        for value in (hostname, host_ip):
+            token = str(value or "").strip()
+            if not token:
+                continue
+            lowered = token.lower()
+            if lowered in {"unknown", "localhost"}:
+                continue
+            try:
+                ipaddress.ip_address(token)
+                continue
+            except ValueError:
+                pass
+            root_domain = registrable_root_domain(token)
+            if root_domain:
+                return root_domain
+        return ""
 
     @staticmethod
     def _normalize_host_id_set(host_ids: Optional[Iterable[Any]]) -> Set[int]:
@@ -699,6 +720,22 @@ class SchedulerOrchestrator:
                 continue
             host_ip = str(getattr(host, "ip", "") or "")
             hostname = str(getattr(host, "hostname", "") or "")
+            host_root_token = SchedulerOrchestrator._candidate_host_root_token(host_ip, hostname)
+            if host_root_token:
+                targets.append(SchedulerTarget(
+                    host_id=host_id,
+                    host_ip=host_ip,
+                    hostname=hostname,
+                    port="",
+                    protocol="tcp",
+                    service_name="host",
+                    metadata={
+                        "state": "up",
+                        "service_id": 0,
+                        "target_type": "host_root",
+                        "host_root_token": host_root_token,
+                    },
+                ))
             for port_obj in list(port_repo.getPortsByHostId(host_id) or []):
                 state = str(getattr(port_obj, "state", "") or "").strip().lower()
                 if allowed_state_set and state not in allowed_state_set:
@@ -734,6 +771,17 @@ class SchedulerOrchestrator:
         for host in list(parser.getAllHosts() or []):
             hostname = str(getattr(host, "hostname", "") or "")
             host_ip = str(getattr(host, "ip", "") or "")
+            host_root_token = SchedulerOrchestrator._candidate_host_root_token(host_ip, hostname)
+            if host_root_token:
+                targets.append(SchedulerTarget(
+                    host_id=0,
+                    host_ip=host_ip,
+                    hostname=hostname,
+                    port="",
+                    protocol="tcp",
+                    service_name="host",
+                    metadata={"state": "up", "parser_host": host, "target_type": "host_root", "host_root_token": host_root_token},
+                ))
             for port in list(host.all_ports() or []):
                 state = str(getattr(port, "state", "") or "").strip().lower()
                 if state != "open":

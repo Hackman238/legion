@@ -23,6 +23,11 @@ _INVALID_HOSTS = {
     "ip6-loopback",
     "broadcasthost",
 }
+_COMPOUND_PUBLIC_SUFFIXES = {
+    "co.uk",
+    "com.au",
+    "co.jp",
+}
 
 
 def normalize_hostname_alias(raw_value: str) -> str:
@@ -55,6 +60,22 @@ def normalize_hostname_alias(raw_value: str) -> str:
     if not any(ch.isalpha() for ch in value):
         return ""
     return value
+
+
+def registrable_root_domain(raw_value: str) -> str:
+    hostname = normalize_hostname_alias(raw_value)
+    if not hostname:
+        return ""
+    if hostname.endswith(".local") or hostname.endswith(".internal") or hostname.endswith(".lan"):
+        return ""
+
+    labels = hostname.split(".")
+    if len(labels) < 2:
+        return ""
+    suffix = ".".join(labels[-2:])
+    if suffix in _COMPOUND_PUBLIC_SUFFIXES and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
 
 
 def add_temporary_host_alias(ip_value: str, hostname_value: str, hosts_path: str = "/etc/hosts") -> Tuple[bool, str]:

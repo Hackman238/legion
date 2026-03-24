@@ -275,6 +275,149 @@ class LogicHeadlessActionsTest(unittest.TestCase):
         finally:
             project_manager.closeProject(project)
 
+    @patch("subprocess.run")
+    @patch("app.settings.AppSettings")
+    @patch("app.settings.Settings")
+    def test_run_scripted_actions_bootstraps_discovered_hosts_with_httpx_and_runs_bounded_followup(
+            self,
+            mock_settings_cls,
+            _mock_app_settings_cls,
+            mock_subprocess_run,
+    ):
+        from app.ProjectManager import ProjectManager
+        from app.logic import Logic
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.state import get_target_state
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            host = hostObj(ip="example.com", ipv4="example.com", hostname="example.com")
+            session.add(host)
+            session.commit()
+            root_host_id = int(host.id)
+            from db.entities.service import serviceObj
+            from db.entities.port import portObj
+            service = serviceObj(name="https", host=root_host_id)
+            session.add(service)
+            session.commit()
+            port = portObj("443", "tcp", "open", root_host_id, service.id)
+            session.add(port)
+            session.commit()
+            session.close()
+
+            settings = SimpleNamespace(
+                automatedAttacks=[["subfinder", "https", "tcp"]],
+                portActions=[
+                    [
+                        "Run subfinder passive subdomain discovery",
+                        "subfinder",
+                        "printf 'api.example.com\\n'",
+                        "https",
+                    ],
+                    [
+                        "Run whatweb",
+                        "whatweb",
+                        "whatweb [WEB_URL] > [OUTPUT].txt",
+                        "http,https,ssl,soap,http-proxy,http-alt,https-alt",
+                    ],
+                    [
+                        "Run whatweb (http)",
+                        "whatweb-http",
+                        "whatweb [WEB_URL] > [OUTPUT].txt",
+                        "http,https,ssl,soap,http-proxy,http-alt,https-alt",
+                    ],
+                    [
+                        "Run whatweb (https)",
+                        "whatweb-https",
+                        "whatweb [WEB_URL] > [OUTPUT].txt",
+                        "http,https,ssl,soap,http-proxy,http-alt,https-alt",
+                    ],
+                ],
+            )
+            _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
+            _mock_app_settings_cls._canonicalize_web_target_placeholders.side_effect = lambda command: command
+            _mock_app_settings_cls._collapse_redundant_fallbacks.side_effect = lambda command: command
+            mock_settings_cls.return_value = settings
+
+            commands_seen = []
+
+            def fake_subprocess_run(command, *args, **kwargs):
+                commands_seen.append(str(command))
+                if "printf 'api.example.com" in str(command):
+                    return SimpleNamespace(stdout="api.example.com\n", stderr="", returncode=0)
+                if "httpx -silent -json" in str(command):
+                    match = re.search(r"-o\s+('([^']+)'|\"([^\"]+)\"|(\S+))", str(command))
+                    output_path = ""
+                    if match:
+                        output_path = next((group for group in match.groups()[1:] if group), "") or str(match.group(1) or "").strip("'\"")
+                    if output_path:
+                        with open(output_path, "w", encoding="utf-8") as handle:
+                            handle.write(
+                                '{"url":"https://api.example.com","host":"api.example.com","scheme":"https",'
+                                '"port":"443","status-code":200,"title":"Portal","webserver":"nginx/1.25.3"}\n'
+                            )
+                    return SimpleNamespace(stdout="", stderr="", returncode=0)
+                if "whatweb" in str(command):
+                    return SimpleNamespace(
+                        stdout="https://api.example.com [200 OK] HTTPServer[Apache/2.4.57 (Ubuntu)]\n",
+                        stderr="",
+                        returncode=0,
+                    )
+                return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+            mock_subprocess_run.side_effect = fake_subprocess_run
+
+            logic = Logic(MagicMock(), MagicMock(), MagicMock())
+            logic.activeProject = project
+
+            with patch("app.scheduler.config.SchedulerConfigManager.load", return_value={
+                "mode": "deterministic",
+                "goal_profile": "external_pentest",
+                "engagement_policy": {"preset": "external_recon"},
+                "max_concurrency": 1,
+                "runners": {
+                    "container": {"enabled": False},
+                    "browser": {"enabled": True, "use_xvfb": True, "delay": 5, "timeout": 180},
+                },
+            }):
+                logic.run_scripted_actions()
+
+            host_rows = project.repositoryContainer.hostRepository.getAllHostObjs()
+            host_map = {
+                str(getattr(item, "hostname", "") or getattr(item, "ip", "") or "").strip(): item
+                for item in list(host_rows or [])
+            }
+            self.assertIn("api.example.com", host_map)
+
+            api_host = host_map["api.example.com"]
+            port_rows = project.repositoryContainer.portRepository.getPortsByHostId(int(getattr(api_host, "id", 0) or 0))
+            port_map = {
+                str(getattr(item, "portId", "") or "").strip(): item
+                for item in list(port_rows or [])
+            }
+            self.assertIn("443", port_map)
+            service_row = project.repositoryContainer.serviceRepository.getServiceById(getattr(port_map["443"], "serviceId", None))
+            self.assertEqual("https", str(getattr(service_row, "name", "") or "").strip().lower())
+
+            target_state = get_target_state(project.database, int(getattr(api_host, "id", 0) or 0)) or {}
+            attempted_tool_ids = {
+                str(item.get("tool_id", "") or "").strip().lower()
+                for item in list(target_state.get("attempted_actions", []) or [])
+            }
+            self.assertIn("httpx", attempted_tool_ids)
+            self.assertTrue({"whatweb", "whatweb-http", "whatweb-https"} & attempted_tool_ids)
+            self.assertTrue(any("httpx -silent -json" in command for command in commands_seen))
+            self.assertTrue(any("whatweb" in command for command in commands_seen))
+        finally:
+            project_manager.closeProject(project)
+
     @patch("app.scheduler.runners.shutil.which", return_value="/usr/bin/docker")
     @patch("subprocess.run")
     @patch("app.settings.AppSettings")

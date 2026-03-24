@@ -6,7 +6,7 @@ import shlex
 import threading
 from typing import Any, Dict, List, Optional, Set
 
-from app.hostsfile import normalize_hostname_alias
+from app.hostsfile import normalize_hostname_alias, registrable_root_domain
 from app.scheduler.family import build_command_family_id
 from app.scheduler.models import PlanStep
 from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
@@ -19,7 +19,7 @@ from app.scheduler.providers import (
 )
 from app.scheduler.registry import ActionRegistry
 from app.scheduler.strategy_packs import evaluate_action_strategy, select_strategy_packs
-from app.scheduler.tool_prompt_registry import tool_ids_for_prompt_group
+from app.scheduler.tool_prompt_registry import phase_tags_for_tool, tool_ids_for_prompt_group
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,18 @@ class SchedulerPlanner:
         {
             "tokens": ("wpscan", "wordpress", "wp-"),
             "required_signals": ("wordpress_detected",),
+        },
+        {
+            "tokens": ("nuclei-aws-storage", "aws storage", "amazon s3", "s3"),
+            "required_signals": ("aws_storage_detected",),
+        },
+        {
+            "tokens": ("nuclei-azure-storage", "azure storage", "azure blob", "blob"),
+            "required_signals": ("azure_storage_detected",),
+        },
+        {
+            "tokens": ("nuclei-gcp-storage", "gcp storage", "google cloud storage", "gcs"),
+            "required_signals": ("gcp_storage_detected",),
         },
         {
             "tokens": ("vmware", "vsphere", "vcenter", "esxi"),
@@ -358,6 +370,7 @@ class SchedulerPlanner:
             provider_ranked = rank_actions_with_provider(
                 config=config,
                 goal_profile=policy.legacy_goal_profile,
+                engagement_preset=policy.preset,
                 service=service_name,
                 protocol=protocol_name,
                 candidates=candidates,
@@ -409,6 +422,7 @@ class SchedulerPlanner:
                     sidecar_payload = select_web_followup_with_provider(
                         config=config,
                         goal_profile=policy.legacy_goal_profile,
+                        engagement_preset=policy.preset,
                         service=service_name,
                         protocol=protocol_name,
                         candidates=specialist_candidates,
@@ -574,7 +588,11 @@ class SchedulerPlanner:
         has_web_content_discovery = any(token in text for token in ["feroxbuster", "gobuster"])
         has_legacy_dirbuster = any(token in text for token in ["dirbuster", "java -xmx256m -jar"])
         has_subdomain_discovery = any(token in text for token in ["subfinder", "subdomain"])
-        has_cloud_followup = "nuclei-cloud" in text or ("nuclei" in text and "cloud" in text)
+        has_bucket_exposure_search = "grayhatwarfare" in text or "grayhat warfare" in text
+        has_cloud_followup = (
+            "nuclei-cloud" in text
+            or ("nuclei" in text and any(token in text for token in ["cloud", "aws", "azure", "gcp", "gcs", "s3", "blob", "storage"]))
+        )
 
         if policy.intent == "recon":
             if any(token in text for token in ["enum", "discover", "info", "list", "scan", "fingerprint", "title", "headers"]):
@@ -585,6 +603,8 @@ class SchedulerPlanner:
                 score += 14
             if has_subdomain_discovery and policy.scope == "external":
                 score += 18
+            if has_bucket_exposure_search and policy.scope == "external":
+                score += 16
             if has_cloud_followup and policy.scope == "external":
                 score += 12
             if has_vuln_signal:
@@ -599,6 +619,8 @@ class SchedulerPlanner:
             if policy.scope == "external" and any(token in text for token in ["http", "https", "web"]):
                 score += 10
             if has_subdomain_discovery and policy.scope == "external":
+                score += 12
+            if has_bucket_exposure_search and policy.scope == "external":
                 score += 12
             if has_cloud_followup and policy.scope == "external":
                 score += 10
@@ -622,6 +644,8 @@ class SchedulerPlanner:
             score -= 6
         if policy.scope != "external" and has_subdomain_discovery:
             score -= 26
+        if policy.scope != "external" and has_bucket_exposure_search:
+            score -= 24
         if policy.scope != "external" and has_cloud_followup:
             score -= 18
 
@@ -668,6 +692,10 @@ class SchedulerPlanner:
             or "standard"
         ).strip().lower()
         supports_subdomain_discovery = cls._target_hostname_supports_subdomain_discovery(context)
+        supports_root_domain_enrichment = cls._target_hostname_supports_root_domain_enrichment(context)
+        supports_shodan_enrichment = cls._target_hostname_supports_shodan_enrichment(context)
+        grayhat_enabled = cls._context_grayhatwarfare_enabled(context)
+        shodan_enabled = cls._context_shodan_enabled(context)
 
         text = " ".join([str(tool_id or ""), str(label or ""), str(command_template or "")]).lower()
         if tool_norm in attempted:
@@ -744,8 +772,35 @@ class SchedulerPlanner:
                 value += 34.0
             else:
                 value -= 82.0
+        if tool_norm == "grayhatwarfare":
+            if supports_root_domain_enrichment and grayhat_enabled:
+                value += 30.0
+            else:
+                value -= 84.0
+        if tool_norm == "shodan-enrichment":
+            if supports_shodan_enrichment and shodan_enabled:
+                value += 28.0
+            else:
+                value -= 84.0
         if tool_norm == "nuclei-cloud" and bool(signals.get("web_service")):
             value += 12.0
+            if bool(signals.get("cloud_provider_detected")):
+                value += 10.0
+        if tool_norm == "nuclei-aws-storage":
+            if bool(signals.get("aws_storage_detected")):
+                value += 26.0
+            else:
+                value -= 42.0
+        if tool_norm == "nuclei-azure-storage":
+            if bool(signals.get("azure_storage_detected")):
+                value += 26.0
+            else:
+                value -= 42.0
+        if tool_norm == "nuclei-gcp-storage":
+            if bool(signals.get("gcp_storage_detected")):
+                value += 26.0
+            else:
+                value -= 42.0
 
         if bool(signals.get("web_service")) and any(token in text for token in ["http", "https", "web", "nuclei", "waf"]):
             value += 7.0
@@ -831,6 +886,12 @@ class SchedulerPlanner:
         observed_tokens = cls._observed_context_tokens(context)
         web_service = bool(signals.get("web_service"))
         supports_subdomain_discovery = cls._target_hostname_supports_subdomain_discovery(context)
+        supports_root_domain_enrichment = cls._target_hostname_supports_root_domain_enrichment(context)
+        supports_shodan_enrichment = cls._target_hostname_supports_shodan_enrichment(context)
+        grayhat_enabled = cls._context_grayhatwarfare_enabled(context)
+        shodan_enabled = cls._context_shodan_enabled(context)
+        external_scope = cls._context_is_external_scope(context)
+        current_phase = cls._context_current_phase(context)
 
         filtered: List[Dict[str, str]] = []
         for candidate in candidates:
@@ -852,12 +913,41 @@ class SchedulerPlanner:
                     context=context,
             ):
                 blocked = True
-            if cls._normalized_tool_id(tool_id) == "subfinder" and not supports_subdomain_discovery:
-                blocked = True
+            normalized_tool_id = cls._normalized_tool_id(tool_id)
+            if normalized_tool_id == "subfinder":
+                if not external_scope or not supports_subdomain_discovery:
+                    blocked = True
+                tool_phases = {
+                    str(item or "").strip().lower()
+                    for item in phase_tags_for_tool(normalized_tool_id)
+                    if str(item or "").strip()
+                }
+                if current_phase and tool_phases and current_phase not in tool_phases:
+                    blocked = True
+            if normalized_tool_id == "grayhatwarfare":
+                if not external_scope or not supports_root_domain_enrichment or not grayhat_enabled:
+                    blocked = True
+                tool_phases = {
+                    str(item or "").strip().lower()
+                    for item in phase_tags_for_tool(normalized_tool_id)
+                    if str(item or "").strip()
+                }
+                if current_phase and tool_phases and current_phase not in tool_phases:
+                    blocked = True
+            if normalized_tool_id == "shodan-enrichment":
+                if not external_scope or not supports_shodan_enrichment or not shodan_enabled:
+                    blocked = True
+                tool_phases = {
+                    str(item or "").strip().lower()
+                    for item in phase_tags_for_tool(normalized_tool_id)
+                    if str(item or "").strip()
+                }
+                if current_phase and tool_phases and current_phase not in tool_phases:
+                    blocked = True
             if (
-                    cls._normalized_tool_id(tool_id) in missing_tools
+                    normalized_tool_id in missing_tools
                     or bool(command_tools & missing_tools)
-                    or cls._normalized_tool_id(tool_id) in suppressed_tools
+                    or normalized_tool_id in suppressed_tools
             ):
                 blocked = True
             if cls._covered_web_followup_tool_already_satisfied(
@@ -1141,6 +1231,86 @@ class SchedulerPlanner:
         if lowered.endswith(".local") or lowered.endswith(".internal") or lowered.endswith(".lan"):
             return False
         return True
+
+    @classmethod
+    def _target_hostname_supports_root_domain_enrichment(cls, context: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(context, dict):
+            return False
+        target = context.get("target", {}) if isinstance(context.get("target", {}), dict) else {}
+        root_domain = str(target.get("root_domain", "") or "").strip().lower()
+        if root_domain:
+            return True
+        hostname = normalize_hostname_alias(str(target.get("hostname", "") or ""))
+        if registrable_root_domain(hostname):
+            return True
+        host_ip = str(target.get("host_ip", "") or "").strip()
+        return bool(registrable_root_domain(host_ip))
+
+    @classmethod
+    def _target_hostname_supports_shodan_enrichment(cls, context: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(context, dict):
+            return False
+        target = context.get("target", {}) if isinstance(context.get("target", {}), dict) else {}
+        for candidate in (
+                str(target.get("hostname", "") or "").strip(),
+                str(target.get("host_ip", "") or "").strip(),
+        ):
+            hostname = normalize_hostname_alias(candidate)
+            if not hostname:
+                continue
+            if "." not in hostname:
+                continue
+            if registrable_root_domain(hostname):
+                return True
+        return False
+
+    @classmethod
+    def _context_grayhatwarfare_enabled(cls, context: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(context, dict):
+            return False
+        target = context.get("target", {}) if isinstance(context.get("target", {}), dict) else {}
+        return bool(target.get("grayhatwarfare_enabled", False))
+
+    @classmethod
+    def _context_shodan_enabled(cls, context: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(context, dict):
+            return False
+        target = context.get("target", {}) if isinstance(context.get("target", {}), dict) else {}
+        return bool(target.get("shodan_enabled", False))
+
+    @classmethod
+    def _context_is_external_scope(cls, context: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(context, dict):
+            return False
+        target = context.get("target", {}) if isinstance(context.get("target", {}), dict) else {}
+        engagement_preset = str(target.get("engagement_preset", "") or "").strip().lower()
+        if engagement_preset.startswith("external"):
+            return True
+        host_ai_state = context.get("host_ai_state", {}) if isinstance(context.get("host_ai_state", {}), dict) else {}
+        state_preset = str(host_ai_state.get("engagement_preset", "") or "").strip().lower()
+        if state_preset.startswith("external"):
+            return True
+        summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        focus = summary.get("focus", {}) if isinstance(summary.get("focus", {}), dict) else {}
+        summary_preset = str(focus.get("engagement_preset", "") or "").strip().lower()
+        if summary_preset.startswith("external"):
+            return True
+        goal_profile = str(target.get("goal_profile", "") or "").strip().lower()
+        if goal_profile.startswith("external"):
+            return True
+        return False
+
+    @staticmethod
+    def _context_current_phase(context: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(context, dict):
+            return ""
+        summary = context.get("context_summary", {}) if isinstance(context.get("context_summary", {}), dict) else {}
+        focus = summary.get("focus", {}) if isinstance(summary.get("focus", {}), dict) else {}
+        current_phase = str(focus.get("current_phase", "") or "").strip().lower()
+        if current_phase:
+            return current_phase
+        ai_state = context.get("host_ai_state", {}) if isinstance(context.get("host_ai_state", {}), dict) else {}
+        return str(ai_state.get("next_phase", "") or "").strip().lower()
 
     @classmethod
     def _expand_tool_id_aliases(cls, values: Set[str]) -> Set[str]:
