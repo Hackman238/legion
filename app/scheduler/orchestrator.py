@@ -28,6 +28,66 @@ DIG_DEEPER_MAX_RUNTIME_SECONDS = 900
 DIG_DEEPER_MAX_TOTAL_ACTIONS = 24
 DIG_DEEPER_TASK_TIMEOUT_SECONDS = 180
 WEB_PARALLEL_FOLLOWUP_MAX_TOOLS = 3
+EXTERNAL_RECON_WEB_BUCKET_CAPS = {
+    "metadata": 2,
+    "content_discovery": 1,
+    "heavy_validation": 1,
+    "cloud_followup": 1,
+}
+EXTERNAL_RECON_LOW_YIELD_PHASES = {"broad_vuln", "protocol_checks", "targeted_checks", "deep_web"}
+EXTERNAL_RECON_METADATA_TOOL_IDS = {
+    "banner",
+    "screenshooter",
+    "whatweb",
+    "whatweb-http",
+    "whatweb-https",
+    "httpx",
+    "curl-headers",
+    "curl-options",
+    "curl-robots",
+}
+EXTERNAL_RECON_CONTENT_DISCOVERY_TOOL_IDS = {
+    "web-content-discovery",
+    "dirsearch",
+    "ffuf",
+    "katana",
+}
+EXTERNAL_RECON_HEAVY_VALIDATION_TOOL_IDS = {
+    "nikto",
+    "nmap-vuln.nse",
+    "nuclei-web",
+    "nuclei-cves",
+    "nuclei-exposures",
+    "nuclei-wordpress",
+    "sslscan",
+    "testssl.sh",
+    "wafw00f",
+}
+EXTERNAL_RECON_CLOUD_FOLLOWUP_TOOL_IDS = {
+    "nuclei-cloud",
+    "nuclei-aws-storage",
+    "nuclei-azure-storage",
+    "nuclei-gcp-storage",
+    "nuclei-aws-rds",
+    "nuclei-aws-aurora",
+    "nuclei-azure-cosmos",
+    "nuclei-gcp-cloudsql",
+}
+EXTERNAL_RECON_HIGH_SIGNAL_KEYS = {
+    "cloud_exposure_candidate",
+    "storage_exposure_candidate",
+    "managed_db_exposure_candidate",
+    "aws_storage_exposure_candidate",
+    "azure_storage_exposure_candidate",
+    "gcp_storage_exposure_candidate",
+    "rds_public_access_candidate",
+    "aurora_public_access_candidate",
+    "cosmos_exposure_candidate",
+    "cloudsql_public_access_candidate",
+    "directory_listing",
+    "wordpress_detected",
+    "webdav_detected",
+}
 
 
 @dataclass(frozen=True)
@@ -180,6 +240,111 @@ class SchedulerOrchestrator:
     @staticmethod
     def _normalize_text_token(value: Any) -> str:
         return str(value or "").strip().lower()
+
+    @classmethod
+    def _decision_cost_bucket(cls, decision: Any) -> str:
+        tool_id = cls._normalize_text_token(getattr(decision, "tool_id", ""))
+        if tool_id in EXTERNAL_RECON_METADATA_TOOL_IDS:
+            return "metadata"
+        if tool_id in EXTERNAL_RECON_CONTENT_DISCOVERY_TOOL_IDS:
+            return "content_discovery"
+        if tool_id in EXTERNAL_RECON_HEAVY_VALIDATION_TOOL_IDS:
+            return "heavy_validation"
+        if tool_id in EXTERNAL_RECON_CLOUD_FOLLOWUP_TOOL_IDS:
+            return "cloud_followup"
+        return "other"
+
+    @classmethod
+    def _trim_decisions_for_cost_control(
+            cls,
+            *,
+            target: SchedulerTarget,
+            decisions: Sequence[Any],
+            context: Optional[Dict[str, Any]],
+            engagement_policy: Optional[Dict[str, Any]],
+    ) -> List[Any]:
+        preset = cls._normalize_text_token((engagement_policy or {}).get("preset", ""))
+        if preset != "external_recon":
+            return list(decisions or [])
+
+        service_name = cls._normalize_text_token(getattr(target, "service_name", ""))
+        if service_name not in SchedulerPlanner.WEB_SERVICE_IDS:
+            return list(decisions or [])
+
+        current_phase = cls._normalize_text_token(SchedulerPlanner._context_current_phase(context))
+        if current_phase not in EXTERNAL_RECON_LOW_YIELD_PHASES:
+            return list(decisions or [])
+
+        bucket_caps = dict(EXTERNAL_RECON_WEB_BUCKET_CAPS)
+        kept: List[Any] = []
+        bucket_counts: Dict[str, int] = {}
+        total_cap = sum(int(value or 0) for value in bucket_caps.values())
+        for decision in list(decisions or []):
+            bucket = cls._decision_cost_bucket(decision)
+            bucket_cap = bucket_caps.get(bucket)
+            if bucket_cap is not None and int(bucket_counts.get(bucket, 0) or 0) >= int(bucket_cap):
+                continue
+            kept.append(decision)
+            if bucket_cap is not None:
+                bucket_counts[bucket] = int(bucket_counts.get(bucket, 0) or 0) + 1
+            if total_cap > 0 and len(kept) >= int(total_cap):
+                break
+        return kept
+
+    @classmethod
+    def _should_stop_low_yield_external_recon(
+            cls,
+            *,
+            target: SchedulerTarget,
+            context: Optional[Dict[str, Any]],
+            attempted_tool_ids: Sequence[Any],
+            recent_rounds: Sequence[Dict[str, Any]],
+            engagement_policy: Optional[Dict[str, Any]],
+    ) -> str:
+        preset = cls._normalize_text_token((engagement_policy or {}).get("preset", ""))
+        if preset != "external_recon":
+            return ""
+
+        service_name = cls._normalize_text_token(getattr(target, "service_name", ""))
+        if service_name not in SchedulerPlanner.WEB_SERVICE_IDS:
+            return ""
+
+        current_phase = cls._normalize_text_token(SchedulerPlanner._context_current_phase(context))
+        if current_phase not in EXTERNAL_RECON_LOW_YIELD_PHASES:
+            return ""
+
+        if cls._context_coverage_missing(context):
+            return ""
+
+        signals = context.get("signals", {}) if isinstance(context, dict) and isinstance(context.get("signals", {}), dict) else {}
+        if any(bool(signals.get(key)) for key in EXTERNAL_RECON_HIGH_SIGNAL_KEYS):
+            return ""
+
+        rounds = [item for item in list(recent_rounds or []) if isinstance(item, dict)]
+        if len(rounds) < 2:
+            return ""
+        window = rounds[-2:]
+        if any(int(item.get("progress_score", 0) or 0) > 0 for item in window):
+            return ""
+        if any(int(item.get("findings_count", 0) or 0) > 0 for item in window):
+            return ""
+
+        attempted = {
+            cls._normalize_text_token(item)
+            for item in list(attempted_tool_ids or [])
+            if cls._normalize_text_token(item)
+        }
+        if not attempted:
+            return ""
+        explored = (
+            EXTERNAL_RECON_METADATA_TOOL_IDS
+            | EXTERNAL_RECON_CONTENT_DISCOVERY_TOOL_IDS
+            | EXTERNAL_RECON_HEAVY_VALIDATION_TOOL_IDS
+            | EXTERNAL_RECON_CLOUD_FOLLOWUP_TOOL_IDS
+        )
+        if not (attempted & explored):
+            return ""
+        return "external_recon_low_yield_web_stop"
 
     @classmethod
     def _expand_reflection_suppression_aliases(
@@ -999,6 +1164,23 @@ class SchedulerOrchestrator:
                             summary["reflection_stops"] += 1
                             break
 
+                low_yield_stop_reason = self._should_stop_low_yield_external_recon(
+                    target=target,
+                    context=context,
+                    attempted_tool_ids=sorted(attempted_tool_ids),
+                    recent_rounds=recent_rounds,
+                    engagement_policy=engagement_policy,
+                )
+                if low_yield_stop_reason:
+                    summary.setdefault("target_stop_reasons", []).append({
+                        "host_ip": str(target.host_ip or ""),
+                        "port": str(target.port or ""),
+                        "protocol": str(target.protocol or "tcp"),
+                        "service": str(target.service_name or ""),
+                        "reason": low_yield_stop_reason,
+                    })
+                    break
+
                 decisions = self.planner.plan_actions(
                     target.service_name,
                     target.protocol,
@@ -1015,6 +1197,16 @@ class SchedulerOrchestrator:
                     provider_payload = self.planner.get_last_provider_payload(clear=True)
                     if on_ai_analysis:
                         on_ai_analysis(target=target, provider_payload=provider_payload)
+
+                if not decisions:
+                    break
+
+                decisions = self._trim_decisions_for_cost_control(
+                    target=target,
+                    decisions=decisions,
+                    context=context,
+                    engagement_policy=engagement_policy,
+                )
 
                 if not decisions:
                     break

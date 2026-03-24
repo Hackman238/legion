@@ -27,8 +27,23 @@ DEFAULT_TOOL_EXECUTION_PROFILES = {
     "nikto": {
         "quiet_long_running": True,
         "activity_timeout_seconds": 1800,
-        "hard_timeout_seconds": 0,
-    }
+        "hard_timeout_seconds": 3600,
+    },
+    "dirsearch": {
+        "quiet_long_running": True,
+        "activity_timeout_seconds": 900,
+        "hard_timeout_seconds": 2400,
+    },
+    "ffuf": {
+        "quiet_long_running": True,
+        "activity_timeout_seconds": 900,
+        "hard_timeout_seconds": 1800,
+    },
+    "katana": {
+        "quiet_long_running": True,
+        "activity_timeout_seconds": 900,
+        "hard_timeout_seconds": 1800,
+    },
 }
 DEFAULT_INTEGRATIONS = {
     "grayhatwarfare": {

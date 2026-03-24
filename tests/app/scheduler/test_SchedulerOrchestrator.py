@@ -979,6 +979,232 @@ class SchedulerOrchestratorTest(unittest.TestCase):
         self.assertEqual(3, summary["executed"])
         self.assertEqual(0, summary["reflections"])
 
+    def test_run_targets_caps_external_recon_web_followup_by_bucket(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerExecutionTask, SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        whatweb_http = PlanStep.from_legacy_fields(
+            tool_id="whatweb-http",
+            label="WhatWeb HTTP",
+            command_template="whatweb http://[IP]:[PORT]",
+            protocol="tcp",
+            score=95,
+            rationale="fingerprint",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-whatweb",
+        )
+        curl_headers = PlanStep.from_legacy_fields(
+            tool_id="curl-headers",
+            label="HTTP Headers",
+            command_template="curl -k -I https://[IP]:[PORT]",
+            protocol="tcp",
+            score=94,
+            rationale="metadata",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-headers",
+        )
+        curl_options = PlanStep.from_legacy_fields(
+            tool_id="curl-options",
+            label="HTTP OPTIONS",
+            command_template="curl -k -X OPTIONS -i https://[IP]:[PORT]",
+            protocol="tcp",
+            score=93,
+            rationale="metadata",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-options",
+        )
+        nikto = PlanStep.from_legacy_fields(
+            tool_id="nikto",
+            label="Nikto",
+            command_template="nikto -h [WEB_URL]",
+            protocol="tcp",
+            score=92,
+            rationale="heavy validation",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-nikto",
+        )
+        dirsearch = PlanStep.from_legacy_fields(
+            tool_id="dirsearch",
+            label="Dirsearch",
+            command_template="dirsearch -u [WEB_URL]/",
+            protocol="tcp",
+            score=91,
+            rationale="content discovery",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-dirsearch",
+        )
+        nuclei_aws_storage = PlanStep.from_legacy_fields(
+            tool_id="nuclei-aws-storage",
+            label="AWS Storage",
+            command_template="nuclei -tags aws,s3,bucket,storage -u [WEB_URL]",
+            protocol="tcp",
+            score=90,
+            rationale="cloud follow-up",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-aws-storage",
+        )
+        nuclei_web = PlanStep.from_legacy_fields(
+            tool_id="nuclei-web",
+            label="Nuclei Web",
+            command_template="nuclei -u [WEB_URL]",
+            protocol="tcp",
+            score=89,
+            rationale="heavy validation overflow",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-nuclei-web",
+        )
+        katana = PlanStep.from_legacy_fields(
+            tool_id="katana",
+            label="Katana",
+            command_template="katana -u [WEB_URL]",
+            protocol="tcp",
+            score=88,
+            rationale="content overflow",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-katana",
+        )
+
+        planner = _PlannerStub([[whatweb_http, curl_headers, curl_options, nikto, dirsearch, nuclei_aws_storage, nuclei_web, katana]])
+        orchestrator = SchedulerOrchestrator(_ConfigStub(), planner=planner)
+        target = SchedulerTarget(host_id=73, host_ip="198.51.100.10", hostname="portal.example.com", port="443", protocol="tcp", service_name="https")
+
+        executed_batches = []
+
+        def build_context(**kwargs):
+            _ = kwargs
+            return {
+                "target": {"engagement_preset": "external_recon"},
+                "context_summary": {"focus": {"current_phase": "broad_vuln", "engagement_preset": "external_recon"}},
+                "coverage": {"stage": "post_baseline", "missing": []},
+                "signals": {"web_service": True, "tls_detected": True},
+            }
+
+        def execute_batch(tasks, max_concurrency):
+            self.assertEqual(4, max_concurrency)
+            executed_batches.append([task.tool_id for task in tasks])
+            for item in tasks:
+                self.assertIsInstance(item, SchedulerExecutionTask)
+            return [
+                {
+                    "decision": task.decision,
+                    "tool_id": task.tool_id,
+                    "executed": True,
+                    "reason": "queued",
+                    "process_id": 0,
+                    "execution_record": None,
+                    "approval_id": int(task.approval_id or 0),
+                }
+                for task in tasks
+            ]
+
+        summary = orchestrator.run_targets(
+            settings=SimpleNamespace(portActions=[]),
+            targets=[target],
+            engagement_policy={"preset": "external_recon"},
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                scheduler_concurrency=4,
+                ai_feedback_enabled=True,
+                max_rounds=1,
+                max_actions_per_round=8,
+                recent_output_chars=900,
+                reflection_enabled=False,
+            ),
+            build_context=build_context,
+            execute_batch=execute_batch,
+        )
+
+        self.assertEqual([["whatweb-http", "curl-headers", "nikto", "dirsearch", "nuclei-aws-storage"]], executed_batches)
+        self.assertEqual(5, summary["executed"])
+
+    def test_run_targets_stops_low_yield_external_recon_web_after_flat_rounds(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerExecutionTask, SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        whatweb_http = PlanStep.from_legacy_fields(
+            tool_id="whatweb-http",
+            label="WhatWeb HTTP",
+            command_template="whatweb http://[IP]:[PORT]",
+            protocol="tcp",
+            score=95,
+            rationale="fingerprint",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-whatweb",
+        )
+        curl_headers = PlanStep.from_legacy_fields(
+            tool_id="curl-headers",
+            label="HTTP Headers",
+            command_template="curl -k -I https://[IP]:[PORT]",
+            protocol="tcp",
+            score=94,
+            rationale="metadata",
+            mode="ai",
+            goal_profile="external_pentest",
+            family_id="fam-curl-headers",
+        )
+        planner = _PlannerStub([[whatweb_http], [curl_headers], [whatweb_http], [curl_headers]])
+        orchestrator = SchedulerOrchestrator(_ConfigStub(), planner=planner)
+        target = SchedulerTarget(host_id=74, host_ip="198.51.100.11", hostname="edge.example.com", port="443", protocol="tcp", service_name="https")
+
+        executed_batches = []
+
+        def build_context(**kwargs):
+            _ = kwargs
+            return {
+                "target": {"engagement_preset": "external_recon"},
+                "context_summary": {"focus": {"current_phase": "broad_vuln", "engagement_preset": "external_recon"}},
+                "coverage": {"stage": "post_baseline", "missing": []},
+                "signals": {"web_service": True, "tls_detected": True},
+            }
+
+        def execute_batch(tasks, max_concurrency):
+            self.assertEqual(2, max_concurrency)
+            executed_batches.append([task.tool_id for task in tasks])
+            for item in tasks:
+                self.assertIsInstance(item, SchedulerExecutionTask)
+            return [
+                {
+                    "decision": task.decision,
+                    "tool_id": task.tool_id,
+                    "executed": True,
+                    "reason": "queued",
+                    "process_id": 0,
+                    "execution_record": None,
+                    "approval_id": int(task.approval_id or 0),
+                }
+                for task in tasks
+            ]
+
+        summary = orchestrator.run_targets(
+            settings=SimpleNamespace(portActions=[]),
+            targets=[target],
+            engagement_policy={"preset": "external_recon"},
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                scheduler_concurrency=2,
+                ai_feedback_enabled=True,
+                max_rounds=4,
+                max_actions_per_round=2,
+                recent_output_chars=900,
+                reflection_enabled=False,
+            ),
+            build_context=build_context,
+            execute_batch=execute_batch,
+        )
+
+        self.assertEqual([["whatweb-http"], ["curl-headers"]], executed_batches)
+        self.assertEqual(2, summary["executed"])
+        self.assertEqual("external_recon_low_yield_web_stop", summary["target_stop_reasons"][0]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
