@@ -10,6 +10,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
         from app.ProjectManager import ProjectManager
         from app.logic import Logic
         from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.state import get_target_state
         from app.web.runtime import WebRuntime
         from app.shell.DefaultShell import DefaultShell
         from db.RepositoryFactory import RepositoryFactory
@@ -24,6 +25,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             runtime.logic = SimpleNamespace(activeProject=project)
 
             captured = {}
+            bootstrap_captured = {}
 
             def fake_start_nmap_scan_job(**kwargs):
                 captured.update(kwargs)
@@ -33,7 +35,16 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                     "payload": {"targets": list(kwargs.get("targets", []))},
                 }
 
+            def fake_start_httpx_bootstrap_job(targets):
+                bootstrap_captured["targets"] = list(targets or [])
+                return {
+                    "id": 92,
+                    "type": "httpx-bootstrap",
+                    "payload": {"targets": list(targets or [])},
+                }
+
             runtime.start_nmap_scan_job = fake_start_nmap_scan_job
+            runtime.start_httpx_bootstrap_job = fake_start_httpx_bootstrap_job
 
             result = runtime._ingest_discovered_hosts(
                 ["api.example.com", "admin.example.com", "api.example.com"],
@@ -49,9 +60,117 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             self.assertEqual({"api.example.com", "admin.example.com"}, set(result["added_hosts"]))
             self.assertEqual({"api.example.com", "admin.example.com"}, imported_hosts)
             self.assertEqual({"api.example.com", "admin.example.com"}, set(captured["targets"]))
+            self.assertEqual({"api.example.com", "admin.example.com"}, set(bootstrap_captured["targets"]))
             self.assertFalse(bool(captured["run_actions"]))
             self.assertEqual("easy", captured["scan_mode"])
             self.assertEqual(100, int(captured["scan_options"]["top_ports"]))
+            self.assertEqual(92, int(result["bootstrap_job"]["id"]))
+
+            host_rows_by_name = {
+                str(getattr(item, "hostname", "") or getattr(item, "ip", "") or "").strip(): item
+                for item in list(host_rows or [])
+            }
+            subfinder_actions = []
+            for host_name in ("api.example.com", "admin.example.com"):
+                target_state = get_target_state(project.database, int(getattr(host_rows_by_name[host_name], "id", 0) or 0)) or {}
+                for item in list(target_state.get("attempted_actions", []) or []):
+                    if str(item.get("tool_id", "") or "").strip().lower() == "subfinder":
+                        subfinder_actions.append(item)
+            self.assertEqual(2, len(subfinder_actions))
+        finally:
+            project_manager.closeProject(project)
+
+    def test_run_httpx_bootstrap_materializes_web_targets_and_runs_scoped_scheduler_followup(self):
+        from app.ProjectManager import ProjectManager
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.state import get_target_state
+        from app.web.runtime import WebRuntime
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            host = hostObj(ip="api.example.com", ipv4="api.example.com", hostname="api.example.com")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+            session.close()
+
+            runtime = WebRuntime.__new__(WebRuntime)
+            runtime._lock = threading.RLock()
+            runtime.logic = SimpleNamespace(activeProject=project)
+            runtime.jobs = SimpleNamespace(is_cancel_requested=lambda _job_id: False)
+
+            scheduled = {}
+
+            def fake_run_scheduler_actions_web(*, host_ids=None, dig_deeper=False, job_id=0):
+                scheduled["host_ids"] = set(host_ids or set())
+                scheduled["dig_deeper"] = bool(dig_deeper)
+                scheduled["job_id"] = int(job_id or 0)
+                return {"host_ids": sorted(int(item) for item in list(host_ids or set()))}
+
+            def fake_run_command_with_tracking(**kwargs):
+                output_prefix = str(kwargs.get("outputfile", "") or "")
+                artifact_path = f"{output_prefix}.jsonl"
+                with open(artifact_path, "w", encoding="utf-8") as handle:
+                    handle.write(
+                        '{"url":"https://api.example.com","host":"api.example.com","scheme":"https",'
+                        '"port":"443","status-code":200,"title":"Portal","webserver":"nginx/1.25.3"}\n'
+                    )
+                return (
+                    True,
+                    "completed",
+                    17,
+                    {
+                        "started_at": "",
+                        "finished_at": "",
+                        "stdout_ref": "",
+                        "stderr_ref": "",
+                        "artifact_refs": [artifact_path],
+                    },
+                )
+
+            runtime._run_scheduler_actions_web = fake_run_scheduler_actions_web
+            runtime._run_command_with_tracking = fake_run_command_with_tracking
+            runtime.get_process_output = lambda *_args, **_kwargs: {"output": ""}
+
+            with mock.patch("app.web.runtime.rebuild_evidence_graph"):
+                result = runtime._run_httpx_bootstrap(["api.example.com"], job_id=0)
+
+            port_rows = project.repositoryContainer.portRepository.getPortsByHostId(host_id)
+            port_map = {
+                str(getattr(item, "portId", "") or "").strip(): item
+                for item in list(port_rows or [])
+            }
+            https_port = port_map.get("443")
+            self.assertIsNotNone(https_port)
+            self.assertEqual("open", str(getattr(https_port, "state", "") or "").strip().lower())
+
+            service_row = project.repositoryContainer.serviceRepository.getServiceById(getattr(https_port, "serviceId", None))
+            self.assertIsNotNone(service_row)
+            self.assertEqual("https", str(getattr(service_row, "name", "") or "").strip().lower())
+
+            self.assertEqual([host_id], list(result["materialized_hosts"]))
+            self.assertEqual({host_id}, scheduled["host_ids"])
+            self.assertFalse(bool(scheduled["dig_deeper"]))
+
+            target_state = get_target_state(project.database, host_id) or {}
+            attempted_httpx = [
+                item for item in list(target_state.get("attempted_actions", []) or [])
+                if str(item.get("tool_id", "") or "").strip().lower() == "httpx"
+            ]
+            observed_urls = {
+                str(item.get("url", "") or "").strip()
+                for item in list(target_state.get("urls", []) or [])
+            }
+            self.assertEqual(1, len(attempted_httpx))
+            self.assertEqual("443", str(attempted_httpx[0].get("port", "") or "").strip())
+            self.assertIn("https://api.example.com", observed_urls)
         finally:
             project_manager.closeProject(project)
 
