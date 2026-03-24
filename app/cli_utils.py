@@ -19,49 +19,98 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 import os
 import sys
 import subprocess
+from typing import Iterable, List
+from urllib.parse import urlparse
+
+from app.hostsfile import normalize_hostname_alias
 from db.entities.host import hostObj
+
+def _normalize_import_target(raw_target: str) -> str:
+    candidate = str(raw_target or "").strip()
+    if not candidate or candidate.startswith("#"):
+        return ""
+    if "://" in candidate:
+        try:
+            parsed = urlparse(candidate)
+            candidate = str(parsed.hostname or "").strip()
+        except Exception:
+            candidate = ""
+    normalized = normalize_hostname_alias(candidate)
+    return str(normalized or candidate or "").strip().rstrip(".")
+
+
+def import_targets(session, hostRepository, targets: Iterable[str]) -> List[str]:
+    """
+    Import targets (hostnames, subnets, IPs, etc.) from an iterable into the database.
+    Returns the list of newly-added targets.
+    """
+    added_targets: List[str] = []
+    seen = set()
+    for raw_target in list(targets or []):
+        target = _normalize_import_target(raw_target)
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        try:
+            db_host = hostRepository.getHostInformation(target)
+        except Exception as repo_exc:
+            print(
+                f"Warning: unable to check existing host '{target}': {repo_exc}",
+                file=sys.stderr
+            )
+            continue
+        if db_host:
+            continue
+        try:
+            existing_hostname = hostRepository.getHostByHostname(target)
+        except Exception:
+            existing_hostname = None
+        if existing_hostname:
+            continue
+        hid = hostObj(
+            ip=target,
+            ipv4=target,
+            ipv6='',
+            macaddr='',
+            status='',
+            hostname=target,
+            vendor='',
+            uptime='',
+            lastboot='',
+            distance='',
+            state='',
+            count='',
+        )
+        try:
+            session.add(hid)
+            session.commit()
+            added_targets.append(target)
+        except Exception as db_exc:
+            session.rollback()
+            print(
+                f"Error importing target '{target}': {db_exc}",
+                file=sys.stderr
+            )
+    return added_targets
+
 
 def import_targets_from_textfile(session, hostRepository, filename):
     """
     Import targets (hostnames, subnets, IPs, etc.) from a text file into the database.
     Each line is treated as a target.
     """
-    added = 0
+    raw_targets = []
     try:
         with open(filename, "r", encoding="utf-8", errors="ignore") as f:
-            for line_number, line in enumerate(f, 1):
-                target = line.strip()
-                if not target or target.startswith("#"):
-                    continue
-                try:
-                    db_host = hostRepository.getHostInformation(target)
-                except Exception as repo_exc:
-                    print(
-                        f"Warning: unable to check existing host '{target}' ({filename}:{line_number}): {repo_exc}",
-                        file=sys.stderr
-                    )
-                    continue
-                if db_host:
-                    continue
-                hid = hostObj(ip=target, ipv4=target, ipv6='', macaddr='', status='', hostname=target,
-                              vendor='', uptime='', lastboot='', distance='', state='', count='')
-                try:
-                    session.add(hid)
-                    session.commit()
-                    added += 1
-                except Exception as db_exc:
-                    session.rollback()
-                    print(
-                        f"Error importing target '{target}' ({filename}:{line_number}): {db_exc}",
-                        file=sys.stderr
-                    )
+            for line in f:
+                raw_targets.append(line)
     except FileNotFoundError:
         print(f"Error: input file '{filename}' not found.", file=sys.stderr)
         return 0
     except OSError as exc:
         print(f"Error opening input file '{filename}': {exc}", file=sys.stderr)
-        return added
-    return added
+        return 0
+    return len(import_targets(session, hostRepository, raw_targets))
 
 def is_wsl():
     try:

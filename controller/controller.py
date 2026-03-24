@@ -2349,27 +2349,152 @@ class Controller:
         if not repo:
             return
         output_lines = qProcess.display.toPlainText().splitlines()
-        interests = ('ntlm', 'hash', 'relay', 'captured', 'credential')
         seen = set()
+        tool_name = str(getattr(qProcess, 'name', '') or '')
+        default_source = str(getattr(qProcess, 'hostIp', '') or '')
+        capture_context = {}
         for line in output_lines:
             stripped = line.strip()
             if not stripped:
                 continue
-            if not any(keyword in stripped.lower() for keyword in interests):
+            captures = self._extractCredentialCaptureEntries(
+                tool_name,
+                stripped,
+                default_source=default_source,
+                context=capture_context,
+            )
+            if not captures:
                 continue
-            if stripped in seen:
-                continue
-            seen.add(stripped)
-            username, hash_value = self._extractCredentialData(stripped)
-            try:
-                repo.storeCapture(qProcess.name, qProcess.hostIp or '', stripped, username=username,
-                                   hash_value=hash_value)
-            except Exception:
-                log.exception("Failed to store credential capture entry")
+            for capture in captures:
+                dedupe_key = (
+                    str(capture.get('source', '') or ''),
+                    str(capture.get('username', '') or ''),
+                    str(capture.get('hash_value', '') or ''),
+                    str(capture.get('details', '') or ''),
+                )
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                try:
+                    repo.storeCapture(
+                        qProcess.name,
+                        capture.get('source', '') or '',
+                        capture.get('details', '') or stripped,
+                        username=capture.get('username', '') or '',
+                        hash_value=capture.get('hash_value', '') or '',
+                    )
+                except Exception:
+                    log.exception("Failed to store credential capture entry")
         try:
             self.view.updateResponderResultsTable()
         except Exception:
             log.exception("Failed to refresh responder results table")
+
+    @staticmethod
+    def _extractCredentialCaptureEntries(tool_name, line, default_source='', context=None):
+        stripped = str(line or '').strip()
+        if not stripped:
+            return []
+
+        lowered_tool = str(tool_name or '').strip().lower()
+        default_source_value = str(default_source or '').strip()
+        context = context if isinstance(context, dict) else {}
+        captures = []
+
+        if lowered_tool == 'ntlmrelay':
+            auth_match = re.search(
+                r"Authenticating against\s+(?P<target>\S+)\s+as\s+(?P<account>[^\s]+)\s+"
+                r"(?P<result>SUCCEED|SUCCESS|SUCCEEDED|FAILED|FAIL(?:ED)?)\b",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            if auth_match:
+                result = str(auth_match.group('result') or '').strip().lower()
+                if result.startswith('suc'):
+                    captures.append({
+                        'source': str(auth_match.group('target') or '').strip() or default_source_value,
+                        'details': stripped,
+                        'username': str(auth_match.group('account') or '').strip(),
+                        'hash_value': '',
+                    })
+                    return captures
+
+            sam_match = re.match(
+                r"^(?P<account>[^:\s]+):(?P<rid>\d+):(?P<lm>[A-Fa-f0-9]{32}):(?P<nt>[A-Fa-f0-9]{32})(?:::.*)?$",
+                stripped,
+            )
+            if sam_match:
+                captures.append({
+                    'source': default_source_value,
+                    'details': stripped,
+                    'username': str(sam_match.group('account') or '').strip(),
+                    'hash_value': f"{sam_match.group('lm')}:{sam_match.group('nt')}",
+                })
+                return captures
+
+            return []
+
+        if lowered_tool == 'responder':
+            client_match = re.search(r"\bclient\s*:\s*(?P<source>\S+)", stripped, flags=re.IGNORECASE)
+            if client_match:
+                context['source'] = str(client_match.group('source') or '').strip()
+                return []
+
+            user_match = re.search(r"\busername\s*:\s*(?P<username>.+)$", stripped, flags=re.IGNORECASE)
+            if user_match:
+                context['username'] = str(user_match.group('username') or '').strip()
+                return []
+
+            hash_match = re.search(r"\bhash\s*:\s*(?P<hash>.+)$", stripped, flags=re.IGNORECASE)
+            if hash_match:
+                raw_hash = str(hash_match.group('hash') or '').strip()
+                username, hash_value = Controller._extractCredentialData(raw_hash)
+                captures.append({
+                    'source': context.get('source', '') or default_source_value,
+                    'details': stripped,
+                    'username': context.get('username', '') or username,
+                    'hash_value': hash_value or raw_hash,
+                })
+                return captures
+
+            cleartext_match = re.search(r"\bclear\s+text\s+password\s*:\s*(?P<password>.+)$", stripped, flags=re.IGNORECASE)
+            if cleartext_match:
+                captures.append({
+                    'source': context.get('source', '') or default_source_value,
+                    'details': stripped,
+                    'username': context.get('username', ''),
+                    'hash_value': '',
+                })
+                return captures
+
+            if '::' in stripped:
+                username, hash_value = Controller._extractCredentialData(stripped)
+                captures.append({
+                    'source': context.get('source', '') or default_source_value,
+                    'details': stripped,
+                    'username': context.get('username', '') or username,
+                    'hash_value': hash_value,
+                })
+                return captures
+
+            return captures
+
+        interests = ('ntlm', 'hash', 'relay', 'captured', 'credential')
+        if (
+                not any(keyword in stripped.lower() for keyword in interests)
+                and '::' not in stripped
+                and not re.search(r'from\s+[^:]+:\s*.+', stripped, re.IGNORECASE)
+        ):
+            return []
+
+        username, hash_value = Controller._extractCredentialData(stripped)
+        captures.append({
+            'source': default_source_value,
+            'details': stripped,
+            'username': username,
+            'hash_value': hash_value,
+        })
+        return captures
 
     @staticmethod
     def _extractCredentialData(line):

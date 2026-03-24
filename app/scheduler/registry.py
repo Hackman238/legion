@@ -45,8 +45,11 @@ def _infer_runner_type(tool_id: str, service_scope: List[str], command_template:
         str(command_template or ""),
         " ".join(str(item or "") for item in list(service_scope or [])),
     ]).lower()
-    if str(tool_id or "").strip().lower() in {"screenshooter", "x11screen"}:
+    normalized_tool = str(tool_id or "").strip().lower()
+    if normalized_tool in {"screenshooter", "x11screen"}:
         return "browser"
+    if normalized_tool in {"responder", "ntlmrelayx"}:
+        return "manual"
     if any(token in tool_text for token in ["manual", "operator", "clipboard"]):
         return "manual"
     return "local"
@@ -86,7 +89,7 @@ def _infer_noise_level(tool_id: str, command_template: str, risk_tags: List[str]
         return "high"
     if {"credential_bruteforce", "password_spray", "high_detection_likelihood"} & tag_set:
         return "medium"
-    if any(token in tool_text for token in ["gobuster", "feroxbuster", "nikto", "nuclei", "whatweb", "sslscan", "sslyze"]):
+    if any(token in tool_text for token in ["gobuster", "feroxbuster", "nikto", "nuclei", "whatweb", "sslscan", "testssl"]):
         return "medium"
     return "low"
 
@@ -95,7 +98,7 @@ def _infer_default_timeout(tool_id: str, command_template: str) -> int:
     tool_text = " ".join([str(tool_id or ""), str(command_template or "")]).lower()
     if str(tool_id or "").strip().lower() in {"screenshooter", "x11screen"}:
         return 180
-    if any(token in tool_text for token in ["nmap", "nuclei", "gobuster", "feroxbuster", "nikto", "sslyze", "sslscan"]):
+    if any(token in tool_text for token in ["nmap", "nuclei", "gobuster", "feroxbuster", "nikto", "testssl", "sslscan"]):
         return 600
     return 300
 

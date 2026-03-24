@@ -18,6 +18,8 @@ class SchedulerRegistryTest(unittest.TestCase):
                 ["SMB Enum Users", "smb-enum-users.nse", "nmap --script=smb-enum-users [IP] -p [PORT]", "smb"],
                 ["Run dirsearch", "dirsearch", "dirsearch -u [WEB_URL]/ --format=json --output=[OUTPUT].json", "http,https"],
                 ["Run enum4linux-ng", "enum4linux-ng", "enum4linux-ng -A -oJ [OUTPUT] [IP]", "smb"],
+                ["Prepare Responder capture workflow", "responder", "responder -I <interface> -w -F", "smb,ldap,kerberos"],
+                ["Prepare ntlmrelayx relay workflow", "ntlmrelayx", "impacket-ntlmrelayx -t smb://[IP] -smb2support", "smb,ldap,kerberos"],
             ],
         )
 
@@ -27,12 +29,16 @@ class SchedulerRegistryTest(unittest.TestCase):
         smb_enum = registry.get_by_tool_id("smb-enum-users.nse")
         dirsearch = registry.get_by_tool_id("dirsearch")
         enum4linux = registry.get_by_tool_id("enum4linux-ng")
+        responder = registry.get_by_tool_id("responder")
+        ntlmrelayx = registry.get_by_tool_id("ntlmrelayx")
 
         self.assertIsNotNone(screenshooter)
         self.assertIsNotNone(nuclei)
         self.assertIsNotNone(smb_enum)
         self.assertIsNotNone(dirsearch)
         self.assertIsNotNone(enum4linux)
+        self.assertIsNotNone(responder)
+        self.assertIsNotNone(ntlmrelayx)
 
         self.assertTrue(screenshooter.supports_deterministic)
         self.assertTrue(screenshooter.supports_ai_selection)
@@ -58,6 +64,16 @@ class SchedulerRegistryTest(unittest.TestCase):
         self.assertTrue(enum4linux.supports_deterministic)
         self.assertIn("enumeration", enum4linux.methodology_tags)
         self.assertIn("internal_network", enum4linux.pack_tags)
+
+        self.assertTrue(responder.supports_ai_selection)
+        self.assertFalse(responder.supports_deterministic)
+        self.assertEqual("manual", responder.runner_type)
+        self.assertIn("credentials_and_relay", responder.pack_tags)
+
+        self.assertTrue(ntlmrelayx.supports_ai_selection)
+        self.assertFalse(ntlmrelayx.supports_deterministic)
+        self.assertEqual("manual", ntlmrelayx.runner_type)
+        self.assertIn("lateral_movement", ntlmrelayx.risk_tags)
 
 
 if __name__ == "__main__":

@@ -219,6 +219,15 @@ class PlanStep:
     ) -> "PlanStep":
         protocol_name = _normalize_protocol(protocol)
         service_scope = _normalize_text_list((target_ref or {}).get("service"))
+        normalized_tool = str(tool_id or "").strip().lower()
+        runner_type = "local"
+        artifact_types: List[str] = []
+        if normalized_tool in {"screenshooter", "x11screen"}:
+            runner_type = "browser"
+            artifact_types = ["screenshot"]
+        elif normalized_tool in {"responder", "ntlmrelayx"}:
+            runner_type = "manual"
+
         action = ActionSpec(
             action_id=str(tool_id or "").strip() or "unknown-action",
             tool_id=str(tool_id or "").strip(),
@@ -228,8 +237,8 @@ class PlanStep:
             parameter_schema=_extract_parameter_schema(command_template),
             service_scope=service_scope,
             protocol_scope=[protocol_name],
-            runner_type="browser" if str(tool_id or "").strip().lower() in {"screenshooter", "x11screen"} else "local",
-            artifact_types=["screenshot"] if str(tool_id or "").strip().lower() in {"screenshooter", "x11screen"} else [],
+            runner_type=runner_type,
+            artifact_types=artifact_types,
             risk_tags=list(danger_categories or []),
             family_id=str(family_id or ""),
             requires_web_context=bool(service_scope and any(item in WEB_SERVICE_IDS for item in service_scope)),

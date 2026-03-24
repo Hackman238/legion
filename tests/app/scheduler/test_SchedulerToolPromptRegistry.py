@@ -15,6 +15,7 @@ class SchedulerToolPromptRegistryTest(unittest.TestCase):
             tool_ids_for_prompt_group("web_deep"),
         )
         self.assertIn("wafw00f", tool_ids_for_prompt_group("web_specialist_followup"))
+        self.assertIn("netexec", tool_ids_for_prompt_group("internal_safe_enum"))
 
     def test_candidate_block_includes_prompt_registry_metadata(self):
         from app.scheduler.providers import _build_candidate_block
@@ -64,6 +65,26 @@ class SchedulerToolPromptRegistryTest(unittest.TestCase):
         )
         self.assertIn("rpc", rpc_info.purpose.lower())
         self.assertIn("service_fingerprint", rpc_info.phase_tags)
+
+        responder_info = get_scheduler_tool_prompt_info(
+            "responder",
+            label="Prepare Responder capture workflow",
+            command_template="responder -I <interface> -w -F",
+            service_scope="microsoft-ds",
+        )
+        self.assertIn("credential", responder_info.purpose.lower())
+        self.assertIn("operator", responder_info.when_to_use.lower())
+        self.assertEqual("host", responder_info.arg_shape)
+
+        relay_info = get_scheduler_tool_prompt_info(
+            "ntlmrelayx",
+            label="Prepare ntlmrelayx relay workflow",
+            command_template="impacket-ntlmrelayx -t smb://[IP] -smb2support",
+            service_scope="microsoft-ds",
+        )
+        self.assertIn("relay", relay_info.purpose.lower())
+        self.assertEqual("host", relay_info.arg_shape)
+        self.assertIn("targeted_checks", relay_info.phase_tags)
 
     def test_http_nse_tools_have_specific_prompt_metadata(self):
         from app.scheduler.tool_prompt_registry import get_scheduler_tool_prompt_info

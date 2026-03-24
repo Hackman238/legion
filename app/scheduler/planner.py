@@ -1,10 +1,12 @@
 import logging
 import json
+import ipaddress
 import re
 import shlex
 import threading
 from typing import Any, Dict, List, Optional, Set
 
+from app.hostsfile import normalize_hostname_alias
 from app.scheduler.family import build_command_family_id
 from app.scheduler.models import PlanStep
 from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
@@ -52,7 +54,7 @@ class SchedulerPlanner:
         "enum", "enumerate", "discovery", "discover", "fingerprint",
         "banner", "title", "headers", "robots", "favicon", "version",
         "script", "scripts", "vuln", "vulnerability", "cve", "path", "default",
-        "nmap", "nse", "nuclei", "nikto", "whatweb", "httpx", "wafw00f", "sslscan", "sslyze",
+        "nmap", "nse", "nuclei", "nikto", "whatweb", "httpx", "wafw00f", "sslscan", "testssl", "testssl.sh",
         "feroxbuster", "gobuster", "dirsearch", "ffuf", "wordlist", "content",
         "port", "ports", "tcp", "udp", "open", "service", "status",
         "run", "quick", "full", "safe", "basic", "manual",
@@ -61,6 +63,7 @@ class SchedulerPlanner:
         "txt", "json", "xml", "html", "log", "out", "output", "report",
         "silent", "color", "timeout", "threads", "thread", "rate", "verbose",
         "dir", "dirs", "list", "lists", "wordlists", "dirb", "common", "url",
+        "subfinder", "subdomain", "subdomains", "domain", "dns", "cloud",
     }
     IGNORED_CONTEXT_TOKENS = {
         "unknown", "localhost", "local", "internal", "external", "customer",
@@ -570,14 +573,20 @@ class SchedulerPlanner:
         has_nuclei_signal = "nuclei" in text
         has_web_content_discovery = any(token in text for token in ["feroxbuster", "gobuster"])
         has_legacy_dirbuster = any(token in text for token in ["dirbuster", "java -xmx256m -jar"])
+        has_subdomain_discovery = any(token in text for token in ["subfinder", "subdomain"])
+        has_cloud_followup = "nuclei-cloud" in text or ("nuclei" in text and "cloud" in text)
 
         if policy.intent == "recon":
             if any(token in text for token in ["enum", "discover", "info", "list", "scan", "fingerprint", "title", "headers"]):
                 score += 20
             if policy.scope == "internal" and any(token in text for token in ["smb", "ldap", "rpc", "snmp", "kerberos", "rdp", "winrm"]):
                 score += 12
-            if policy.scope == "external" and any(token in text for token in ["whatweb", "sslscan", "sslyze", "http", "https", "web", "screenshot"]):
+            if policy.scope == "external" and any(token in text for token in ["whatweb", "sslscan", "testssl", "http", "https", "web", "screenshot"]):
                 score += 14
+            if has_subdomain_discovery and policy.scope == "external":
+                score += 18
+            if has_cloud_followup and policy.scope == "external":
+                score += 12
             if has_vuln_signal:
                 score += 14
             if has_nuclei_signal:
@@ -585,9 +594,13 @@ class SchedulerPlanner:
             if has_web_content_discovery:
                 score += 6 if policy.noise_budget == "low" else 10
         else:
-            if any(token in text for token in ["whatweb", "sslscan", "sslyze", "nikto", "nmap", "validate", "check"]):
+            if any(token in text for token in ["whatweb", "sslscan", "testssl", "nikto", "nmap", "validate", "check"]):
                 score += 18
             if policy.scope == "external" and any(token in text for token in ["http", "https", "web"]):
+                score += 10
+            if has_subdomain_discovery and policy.scope == "external":
+                score += 12
+            if has_cloud_followup and policy.scope == "external":
                 score += 10
             if policy.scope == "internal" and any(token in text for token in ["smb", "ldap", "rpc", "kerberos", "rdp", "winrm"]):
                 score += 10
@@ -607,6 +620,10 @@ class SchedulerPlanner:
             score -= 28 if policy.detection_risk_mode == "low" else 16
         if policy.noise_budget == "low" and has_web_content_discovery:
             score -= 6
+        if policy.scope != "external" and has_subdomain_discovery:
+            score -= 26
+        if policy.scope != "external" and has_cloud_followup:
+            score -= 18
 
         if has_legacy_dirbuster:
             score -= 35
@@ -650,6 +667,7 @@ class SchedulerPlanner:
             or context.get("analysis_mode", "")
             or "standard"
         ).strip().lower()
+        supports_subdomain_discovery = cls._target_hostname_supports_subdomain_discovery(context)
 
         text = " ".join([str(tool_id or ""), str(label or ""), str(command_template or "")]).lower()
         if tool_norm in attempted:
@@ -706,11 +724,11 @@ class SchedulerPlanner:
             value += 24.0
         if "missing_smb_signing_checks" in coverage_missing and cls._matches_any_token(text, ("smb-security-mode", "smb2-security-mode")):
             value += 26.0
-        if "missing_internal_safe_enum" in coverage_missing and cls._matches_any_token(text, ("enum4linux", "smbmap", "rpcclient", "smb-enum-users")):
+        if "missing_internal_safe_enum" in coverage_missing and cls._matches_any_token(text, ("enum4linux", "smbmap", "rpcclient", "smb-enum-users", "netexec", "nxc")):
             value += 28.0
         if analysis_mode == "dig_deeper" and "missing_followup_after_vuln" in coverage_missing and cls._matches_any_token(
                 text,
-                ("nikto", "whatweb", "web-content-discovery", "dirsearch", "ffuf", "sslscan", "sslyze", "wafw00f"),
+                ("nikto", "whatweb", "web-content-discovery", "dirsearch", "ffuf", "sslscan", "testssl", "wafw00f"),
         ):
             value += 18.0
         if analysis_mode == "dig_deeper" and tool_norm in {
@@ -721,6 +739,13 @@ class SchedulerPlanner:
             "curl-robots",
         }:
             value += 16.0
+        if tool_norm == "subfinder":
+            if supports_subdomain_discovery:
+                value += 34.0
+            else:
+                value -= 82.0
+        if tool_norm == "nuclei-cloud" and bool(signals.get("web_service")):
+            value += 12.0
 
         if bool(signals.get("web_service")) and any(token in text for token in ["http", "https", "web", "nuclei", "waf"]):
             value += 7.0
@@ -730,7 +755,7 @@ class SchedulerPlanner:
             value += 14.0
         if (bool(signals.get("rdp_service")) or bool(signals.get("vnc_service"))) and "banner" in text:
             value += 6.0
-        if bool(signals.get("tls_detected")) and any(token in text for token in ["https", "ssl", "tls", "sslyze", "sslscan", "nuclei"]):
+        if bool(signals.get("tls_detected")) and any(token in text for token in ["https", "ssl", "tls", "testssl", "sslscan", "nuclei"]):
             value += 8.0
         if bool(signals.get("directory_listing")) and any(token in text for token in ["feroxbuster", "gobuster", "dirsearch", "ffuf", "web-content"]):
             value += 8.0
@@ -805,6 +830,7 @@ class SchedulerPlanner:
         })
         observed_tokens = cls._observed_context_tokens(context)
         web_service = bool(signals.get("web_service"))
+        supports_subdomain_discovery = cls._target_hostname_supports_subdomain_discovery(context)
 
         filtered: List[Dict[str, str]] = []
         for candidate in candidates:
@@ -825,6 +851,8 @@ class SchedulerPlanner:
                     command_template=command_template,
                     context=context,
             ):
+                blocked = True
+            if cls._normalized_tool_id(tool_id) == "subfinder" and not supports_subdomain_discovery:
                 blocked = True
             if (
                     cls._normalized_tool_id(tool_id) in missing_tools
@@ -881,7 +909,7 @@ class SchedulerPlanner:
                     specific_tokens = set()
                 if "missing_internal_safe_enum" in coverage_missing and cls._matches_any_token(
                         tool_text,
-                        ("enum4linux", "smbmap", "rpcclient", "smb-enum-users"),
+                        ("enum4linux", "smbmap", "rpcclient", "smb-enum-users", "netexec", "nxc"),
                 ):
                     specific_tokens = set()
                 if specific_tokens and not (specific_tokens & observed_tokens):
@@ -1000,6 +1028,7 @@ class SchedulerPlanner:
             "enum4linux-ng",
             "smbmap",
             "rpcclient-enum",
+            "netexec",
             "smb-enum-users.nse",
         }:
             return True
@@ -1087,6 +1116,31 @@ class SchedulerPlanner:
     def _matches_any_token(text: str, tokens) -> bool:
         lowered = str(text or "").lower()
         return any(str(token or "").strip().lower() in lowered for token in list(tokens or []))
+
+    @staticmethod
+    def _is_ip_literal(value: str) -> bool:
+        try:
+            ipaddress.ip_address(str(value or "").strip())
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def _target_hostname_supports_subdomain_discovery(cls, context: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(context, dict):
+            return False
+        target = context.get("target", {}) if isinstance(context.get("target", {}), dict) else {}
+        hostname = normalize_hostname_alias(str(target.get("hostname", "") or ""))
+        if not hostname or cls._is_ip_literal(hostname):
+            return False
+        lowered = hostname.lower()
+        if "." not in lowered:
+            return False
+        if lowered in {"localhost", "unknown"}:
+            return False
+        if lowered.endswith(".local") or lowered.endswith(".internal") or lowered.endswith(".lan"):
+            return False
+        return True
 
     @classmethod
     def _expand_tool_id_aliases(cls, values: Set[str]) -> Set[str]:
@@ -1530,7 +1584,6 @@ class SchedulerPlanner:
                     "curl-robots",
                     "wafw00f",
                     "wpscan",
-                    "wapiti",
                     "nuclei-cves",
                     "nuclei-exposures",
                     "nuclei-wordpress",

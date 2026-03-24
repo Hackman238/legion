@@ -29,6 +29,8 @@ default-terminal=xterm
 [PortActions]
 http-wapiti=http-wapiti, wapiti http://[IP] -n 10 -b folder -u -v 1 -f txt -o [OUTPUT], http
 https-wapiti=https-wapiti, wapiti https://[IP] -n 10 -b folder -u -v 1 -f txt -o [OUTPUT], https
+sslyze=Run sslyze, sslyze --regular [IP]:[PORT], "https,ssl"
+http-wordpress-plugins.nse=http-wordpress-plugins.nse, "nmap -Pn [IP] -p [PORT] --script=http-wordpress-plugins.nse --script-args=unsafe=1", "http,https"
 """
 
 LEGACY_VULN_AND_SCREENSHOT_CONFIG = """[GeneralSettings]
@@ -60,6 +62,7 @@ default-terminal=xterm
 smb-enum-admins=Enumerate domain admins (net), "net rpc group members \\"Domain Admins\\" -I [IP] -U% ", "netbios-ssn,microsoft-ds"
 smb-enum-users-rpc=Enumerate users (rpcclient), bash -c \\"echo 'enumdomusers' | rpcclient [IP] -U%\\", "netbios-ssn,microsoft-ds"
 smb-null-sessions=Check for null sessions (rpcclient), bash -c \\"echo 'srvinfo' | rpcclient [IP] -U%\\", "netbios-ssn,microsoft-ds"
+samrdump=Run samrdump, python /usr/share/doc/python-impacket-doc/examples/samrdump.py [IP] [PORT]/SMB, "netbios-ssn,microsoft-ds"
 """
 
 LEGACY_SHELL_WRAPPER_CONFIG = """[GeneralSettings]
@@ -100,7 +103,7 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("nikto", port_action_ids)
                 self.assertIn("wafw00f", port_action_ids)
                 self.assertIn("sslscan", port_action_ids)
-                self.assertIn("sslyze", port_action_ids)
+                self.assertIn("testssl.sh", port_action_ids)
                 self.assertIn("wpscan", port_action_ids)
                 self.assertIn("httpx", port_action_ids)
                 self.assertIn("whatweb", port_action_ids)
@@ -111,6 +114,12 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("enum4linux-ng", port_action_ids)
                 self.assertIn("smbmap", port_action_ids)
                 self.assertIn("rpcclient-enum", port_action_ids)
+                self.assertIn("netexec", port_action_ids)
+                self.assertIn("responder", port_action_ids)
+                self.assertIn("ntlmrelayx", port_action_ids)
+                self.assertNotIn("sslyze", port_action_ids)
+                self.assertNotIn("http-wapiti", port_action_ids)
+                self.assertNotIn("https-wapiti", port_action_ids)
 
                 port_actions = {row[1]: row for row in app_settings.getPortActions()}
                 nuclei_cmd = str(port_actions["nuclei-web"][2])
@@ -140,6 +149,9 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("enum4linux-ng", scheduler_ids)
                 self.assertIn("smbmap", scheduler_ids)
                 self.assertIn("rpcclient-enum", scheduler_ids)
+                self.assertIn("netexec", scheduler_ids)
+                self.assertNotIn("responder", scheduler_ids)
+                self.assertNotIn("ntlmrelayx", scheduler_ids)
 
     def test_nuclei_normalization_does_not_mutate_probe_or_output_tokens(self):
         from app.settings import AppSettings
@@ -212,6 +224,20 @@ class SettingsMigrationTest(unittest.TestCase):
 
         self.assertIn("-o [OUTPUT].txt", normalized)
         self.assertNotIn('\\"[OUTPUT].txt\\"', normalized)
+
+    def test_netexec_normalization_rewrites_legacy_aliases_to_safe_default_command(self):
+        from app.settings import AppSettings
+
+        for command in (
+            "netexec smb [IP] -u guest -p guest --shares",
+            "nxc smb [IP] -u '' -p '' --users",
+            "crackmapexec smb [IP] --shares",
+        ):
+            with self.subTest(command=command):
+                normalized = AppSettings._ensure_netexec_command(command)
+                self.assertIn("--shares --users --pass-pol", normalized)
+                self.assertIn("--port [PORT]", normalized)
+                self.assertIn("[OUTPUT].txt", normalized)
 
     def test_wapiti_normalization_fixes_missing_url_argument_and_inserts_port(self):
         from app.settings import AppSettings
@@ -349,7 +375,7 @@ class SettingsMigrationTest(unittest.TestCase):
                     command,
                 )
 
-    def test_existing_wapiti_actions_are_migrated_to_valid_url_arguments(self):
+    def test_deprecated_web_actions_are_removed_and_testssl_is_added(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_dir = os.path.join(tmpdir, ".local", "share", "legion")
             os.makedirs(config_dir, exist_ok=True)
@@ -362,13 +388,18 @@ class SettingsMigrationTest(unittest.TestCase):
 
                 app_settings = AppSettings()
                 port_actions = {row[1]: row for row in app_settings.getPortActions()}
-                http_cmd = str(port_actions["http-wapiti"][2])
-                https_cmd = str(port_actions["https-wapiti"][2])
+                self.assertNotIn("http-wapiti", port_actions)
+                self.assertNotIn("https-wapiti", port_actions)
+                self.assertNotIn("sslyze", port_actions)
+                self.assertNotIn("http-wordpress-plugins.nse", port_actions)
+                self.assertIn("testssl.sh", port_actions)
 
-                self.assertIn("wapiti -u http://[IP]:[PORT]", http_cmd)
-                self.assertIn("wapiti -u https://[IP]:[PORT]", https_cmd)
-                self.assertNotIn(" -u -v ", http_cmd)
-                self.assertNotIn(" -u -v ", https_cmd)
+                scheduler_settings = {row[0]: row for row in app_settings.getSchedulerSettings()}
+                self.assertNotIn("http-wapiti", scheduler_settings)
+                self.assertNotIn("https-wapiti", scheduler_settings)
+                self.assertNotIn("sslyze", scheduler_settings)
+                self.assertNotIn("http-wordpress-plugins.nse", scheduler_settings)
+                self.assertIn("testssl.sh", scheduler_settings)
 
     def test_nmap_vuln_command_and_screenshooter_scope_are_migrated(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -470,6 +501,7 @@ class SettingsMigrationTest(unittest.TestCase):
                     str(port_actions["smb-null-sessions"][2]),
                 )
                 self.assertIn("rpcclient [IP] -p [PORT] -U '%'", str(port_actions["rpcclient-enum"][2]))
+                self.assertIn("impacket-samrdump -no-pass -port [PORT] [IP]", str(port_actions["samrdump"][2]))
 
     def test_legacy_shell_wrapper_actions_are_normalized_for_port_and_terminal_actions(self):
         with tempfile.TemporaryDirectory() as tmpdir:

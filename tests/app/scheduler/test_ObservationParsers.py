@@ -267,6 +267,53 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("http://192.168.3.133:5357/%2e%2e/google.com", urls)
         self.assertTrue(any(url.startswith("http://192.168.3.133:5357/") and "passwd" in url for url in urls))
 
+    def test_extract_tool_observations_parses_httpx_redirects_titles_and_tech(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            '{"url":"https://portal.example/admin","title":"Admin Console",'
+            '"tech":["Bootstrap","Vue.js"],"webserver":"nginx/1.25.3",'
+            '"status-code":401,"content-type":"text/html; charset=utf-8","location":"/login"}'
+        )
+
+        parsed = extract_tool_observations("httpx", output)
+
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip(): item for item in parsed["technologies"]}
+        findings = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("https://portal.example/admin", urls)
+        self.assertIn("https://portal.example/login", urls)
+        self.assertIn("Bootstrap", technologies)
+        self.assertIn("Vue.js", technologies)
+        self.assertIn("nginx", technologies)
+        self.assertEqual("1.25.3", technologies["nginx"]["version"])
+        self.assertIn("Administrative/authentication web page observed", findings)
+
+    def test_extract_tool_observations_parses_httpx_directory_listing_api_and_cdn(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = "\n".join([
+            '{"scheme":"https","host":"files.example","path":"/","title":"Index of /",'
+            '"status-code":200,"content-type":"text/html","webserver":"Apache/2.4.57"}',
+            '{"url":"https://api.example/swagger/index.html","title":"Swagger UI",'
+            '"status-code":200,"content-type":"text/html","cdn":"cloudflare"}',
+        ])
+
+        parsed = extract_tool_observations("httpx", output)
+
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip(): item for item in parsed["technologies"]}
+        findings = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("https://files.example", urls)
+        self.assertIn("https://api.example/swagger/index.html", urls)
+        self.assertIn("Apache", technologies)
+        self.assertEqual("2.4.57", technologies["Apache"]["version"])
+        self.assertIn("cloudflare", {name.lower() for name in technologies})
+        self.assertIn("Directory listing observed", findings)
+        self.assertIn("API/diagnostic web page observed", findings)
+
     def test_extract_tool_observations_parses_nmap_vuln_and_http_vuln_blocks(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -524,6 +571,96 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertNotIn("TLSv1.0 supported", titles)
         self.assertIn("TLSv1.1 supported", titles)
 
+    def test_extract_tool_observations_parses_testssl_pretty_json_artifact(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        payload = {
+            "scanResult": [
+                {
+                    "targetHost": "legacy.example",
+                    "ip": "192.0.2.10",
+                    "port": "443",
+                    "service": "HTTP",
+                    "protocols": [
+                        {"id": "SSLv3", "severity": "HIGH", "finding": "offered"},
+                        {"id": "TLS1", "severity": "LOW", "finding": "offered (deprecated)"},
+                        {"id": "TLS1_1", "severity": "LOW", "finding": "offered (deprecated)"},
+                    ],
+                    "serverDefaults": [
+                        {"id": "cert_commonName <cert#1>", "severity": "INFO", "finding": "legacy.example"},
+                        {"id": "cert_caIssuers <cert#1>", "severity": "INFO", "finding": "legacy.example"},
+                        {"id": "cert_keySize <cert#1>", "severity": "INFO", "finding": "RSA 1024 bits"},
+                        {"id": "cert_signatureAlgorithm <cert#1>", "severity": "LOW", "finding": "SHA1 with RSA"},
+                    ],
+                    "vulnerabilities": [
+                        {"id": "secure_renego", "severity": "MEDIUM", "finding": "Secure renegotiation not supported"},
+                        {"id": "fallback_SCSV", "severity": "MEDIUM", "finding": "NOT supported"},
+                        {"id": "heartbleed", "severity": "OK", "finding": "not vulnerable", "cve": "CVE-2014-0160"},
+                    ],
+                    "cipherTests": [
+                        {"id": "SWEET32", "severity": "LOW", "finding": "uses 64 bit block ciphers for TLS 1.0 and above"},
+                    ],
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = os.path.join(tmpdir, "testssl.json")
+            with open(artifact, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+
+            parsed = extract_tool_observations(
+                "testssl.sh",
+                "",
+                artifact_refs=[artifact],
+                port="443",
+                protocol="tcp",
+                service="https",
+                hostname="legacy.example",
+            )
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("SSLv3 supported", titles)
+        self.assertIn("TLSv1.0 supported", titles)
+        self.assertIn("TLSv1.1 supported", titles)
+        self.assertIn("Weak TLS cipher supported", titles)
+        self.assertIn("Weak TLS certificate key size", titles)
+        self.assertIn("TLS certificate uses SHA-1", titles)
+        self.assertIn("Self-signed TLS certificate", titles)
+        self.assertIn("Insecure TLS renegotiation", titles)
+        self.assertIn("TLS downgrade protection missing", titles)
+        self.assertNotIn("Heartbleed exposure", titles)
+
+    def test_extract_tool_observations_ignores_testssl_check_failed_records(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = json.dumps({
+            "scanResult": [
+                {
+                    "targetHost": "edge.example",
+                    "ip": "192.0.2.15",
+                    "port": "443",
+                    "service": "HTTP",
+                    "vulnerabilities": [
+                        {"id": "secure_renego", "severity": "WARN", "finding": "OpenSSL handshake didn't succeed"},
+                        {"id": "fallback_SCSV", "severity": "WARN", "finding": "Check failed, unexpected result"},
+                    ],
+                    "serverDefaults": [
+                        {"id": "cert_expirationStatus <cert#1>", "severity": "MEDIUM", "finding": "expires < 60 days (12)"},
+                    ],
+                }
+            ]
+        })
+
+        parsed = extract_tool_observations("testssl.sh", output)
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertNotIn("Insecure TLS renegotiation", titles)
+        self.assertNotIn("TLS downgrade protection missing", titles)
+        self.assertNotIn("Expired TLS certificate", titles)
+
     def test_extract_tool_observations_handles_wafw00f_generic_and_negative_output(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -531,14 +668,17 @@ class ObservationParsersTest(unittest.TestCase):
             "[*] Checking https://portal.example\n"
             "[+] Generic Detection results:\n"
             "[+] The site https://portal.example seems to be behind a WAF or some sort of security solution\n"
+            "[~] Reason: The server header is different when an attack is detected.\n"
         )
         generic_parsed = extract_tool_observations("wafw00f", generic_output)
 
         generic_titles = {str(item.get("title", "")).strip() for item in generic_parsed["findings"]}
         generic_urls = {str(item.get("url", "")).strip() for item in generic_parsed["urls"]}
+        generic_evidence = {str(item.get("evidence", "")).strip() for item in generic_parsed["findings"]}
 
         self.assertIn("WAF detected", generic_titles)
         self.assertIn("https://portal.example", generic_urls)
+        self.assertTrue(any("server header is different" in row.lower() for row in generic_evidence))
 
         no_waf_output = (
             "[*] Checking https://portal.example\n"
@@ -548,6 +688,69 @@ class ObservationParsersTest(unittest.TestCase):
 
         self.assertEqual([], no_waf_parsed["findings"])
         self.assertEqual([], no_waf_parsed["technologies"])
+
+    def test_extract_tool_observations_parses_wafw00f_multiple_vendors(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "[*] Checking https://portal.example\n"
+            "[+] The site https://portal.example is behind Cloudflare (Cloudflare Inc.) and/or F5 BIG-IP ASM (F5 Networks) WAF.\n"
+            "[+] Generic Detection results:\n"
+            "[*] The site https://portal.example seems to be behind a WAF or some sort of security solution\n"
+            "[~] Reason: The server header is different when an attack is detected.\n"
+        )
+
+        parsed = extract_tool_observations("wafw00f", output)
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+
+        self.assertIn("WAF detected: Cloudflare", titles)
+        self.assertIn("WAF detected: F5 BIG-IP ASM", titles)
+        self.assertNotIn("WAF detected", titles)
+        self.assertIn("Cloudflare WAF", technologies)
+        self.assertIn("F5 BIG-IP ASM WAF", technologies)
+
+    def test_extract_tool_observations_parses_wafw00f_json_artifact(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        payload = [
+            {
+                "url": "https://portal.example",
+                "detected": True,
+                "firewall": "Cloudflare",
+                "manufacturer": "Cloudflare Inc.",
+            },
+            {
+                "url": "https://portal.example",
+                "detected": True,
+                "firewall": "Generic",
+                "manufacturer": "Unknown",
+            },
+            {
+                "url": "https://plain.example",
+                "detected": False,
+                "firewall": "None",
+                "manufacturer": "None",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = os.path.join(tmpdir, "wafw00f.json")
+            with open(artifact, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+
+            parsed = extract_tool_observations("wafw00f", "", artifact_refs=[artifact])
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+
+        self.assertIn("WAF detected: Cloudflare", titles)
+        self.assertNotIn("WAF detected", titles)
+        self.assertIn("Cloudflare WAF", technologies)
+        self.assertIn("https://portal.example", urls)
+        self.assertIn("https://plain.example", urls)
 
     def test_extract_tool_observations_parses_wpscan_plain_text_output(self):
         from app.scheduler.observation_parsers import extract_tool_observations
@@ -659,6 +862,76 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("nginx", technologies)
         self.assertIn("https://unifi.local", urls)
 
+    def test_extract_tool_observations_parses_curl_headers_auth_methods_and_relative_redirect(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "HTTP/1.1 401 Unauthorized\n"
+            "Server: Apache/2.4.58\n"
+            "Location: /admin/login\n"
+            "Allow: GET, HEAD, POST, PUT, DELETE\n"
+            "WWW-Authenticate: Basic realm=\"Admin\"\n"
+            "Strict-Transport-Security: max-age=31536000\n"
+            "Content-Security-Policy: default-src 'self'\n"
+            "X-Frame-Options: DENY\n"
+        )
+
+        parsed = extract_tool_observations(
+            "curl-headers",
+            output,
+            port="443",
+            protocol="tcp",
+            service="https",
+            hostname="portal.example",
+        )
+
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        findings = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("Apache", technologies)
+        self.assertIn("https://portal.example/admin/login", urls)
+        self.assertIn("HTTP authentication required", findings)
+        self.assertIn("HTTP redirect observed", findings)
+        self.assertIn("HTTP methods exposed", findings)
+        self.assertIn("Potentially dangerous HTTP methods allowed (PUT, DELETE)", findings)
+        self.assertIn("HTTP authentication challenge exposed (Basic)", findings)
+        self.assertIn("HSTS header observed", findings)
+        self.assertIn("Content-Security-Policy header observed", findings)
+        self.assertIn("X-Frame-Options header observed", findings)
+
+    def test_extract_tool_observations_parses_curl_robots_artifact_paths_and_sitemap(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = os.path.join(tmpdir, "robots.txt")
+            with open(artifact, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "User-agent: *\n"
+                    "Disallow: /admin\n"
+                    "Allow: /health\n"
+                    "Sitemap: /sitemap.xml\n"
+                )
+
+            parsed = extract_tool_observations(
+                "curl-robots",
+                "",
+                artifact_refs=[artifact],
+                port="443",
+                protocol="tcp",
+                service="https",
+                hostname="portal.example",
+            )
+
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        findings = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("https://portal.example/admin", urls)
+        self.assertIn("https://portal.example/health", urls)
+        self.assertIn("https://portal.example/sitemap.xml", urls)
+        self.assertIn("robots.txt directives exposed", findings)
+        self.assertIn("robots.txt paths disclosed (2)", findings)
+
     def test_extract_tool_observations_parses_feroxbuster_and_gobuster_plain_text(self):
         from app.scheduler.observation_parsers import extract_tool_observations
 
@@ -678,12 +951,81 @@ class ObservationParsersTest(unittest.TestCase):
         )
 
         urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
         finding_titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
 
         self.assertIn("https://portal.example/admin", urls)
         self.assertIn("https://portal.example/api-docs", urls)
         self.assertIn("https://portal.example/graphql", urls)
+        self.assertIn("Administrative/authentication paths discovered (1)", finding_titles)
+        self.assertIn("API/diagnostic paths discovered (2)", finding_titles)
+        self.assertEqual(set(), technologies)
         self.assertIn("Interesting web paths discovered (3)", finding_titles)
+
+    def test_extract_tool_observations_parses_web_content_discovery_artifact_and_sensitive_paths(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = os.path.join(tmpdir, "ferox.jsonl")
+            with open(artifact, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"type":"response","status":403,"url":"https://portal.example/wp-admin/"}\n'
+                    '{"type":"response","status":200,"url":"https://portal.example/wp-login.php"}\n'
+                    '{"type":"response","status":200,"url":"https://portal.example/.env"}\n'
+                    '{"type":"response","status":200,"url":"https://portal.example/backup.zip"}\n'
+                    '{"type":"response","status":200,"url":"https://portal.example/swagger/index.html"}\n'
+                )
+
+            parsed = extract_tool_observations(
+                "web-content-discovery",
+                "",
+                artifact_refs=[artifact],
+                port="443",
+                protocol="tcp",
+                service="https",
+                hostname="portal.example",
+            )
+
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+        findings = {str(item.get("title", "")).strip(): item for item in parsed["findings"]}
+
+        self.assertIn("https://portal.example/wp-login.php", urls)
+        self.assertIn("WordPress", technologies)
+        self.assertIn("Administrative/authentication paths discovered (2)", findings)
+        self.assertIn("API/diagnostic paths discovered (1)", findings)
+        self.assertIn("Sensitive web files exposed (1)", findings)
+        self.assertIn("Backup/config artifacts exposed (1)", findings)
+        self.assertIn("/.env (200)", findings["Sensitive web files exposed (1)"]["evidence_items"])
+        self.assertIn("/backup.zip (200)", findings["Backup/config artifacts exposed (1)"]["evidence_items"])
+
+    def test_extract_tool_observations_parses_gobuster_expanded_full_url_lines(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "https://portal.example/phpmyadmin/ (Status: 301) [Size: 0] [--> https://portal.example/phpmyadmin/index.php]\n"
+            "Found: https://portal.example/adminer.php (Status: 200) [Size: 512]\n"
+        )
+
+        parsed = extract_tool_observations(
+            "web-content-discovery",
+            output,
+            port="443",
+            protocol="tcp",
+            service="https",
+            hostname="portal.example",
+        )
+
+        urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+        finding_titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("https://portal.example/phpmyadmin", urls)
+        self.assertIn("https://portal.example/phpmyadmin/index.php", urls)
+        self.assertIn("https://portal.example/adminer.php", urls)
+        self.assertIn("phpMyAdmin", technologies)
+        self.assertIn("Adminer", technologies)
+        self.assertIn("Administrative/authentication paths discovered (2)", finding_titles)
 
     def test_extract_tool_observations_parses_sqlmap_injection_and_dbms(self):
         from app.scheduler.observation_parsers import extract_tool_observations
@@ -835,6 +1177,45 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("Active Directory", technologies)
         self.assertIn("SMB domain identified: CONTOSO", finding_titles)
         self.assertIn("SMB users enumerated (2)", finding_titles)
+
+    def test_extract_tool_observations_parses_netexec_smb_enumeration(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "SMB 192.168.3.10 445 DC01 [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:CONTOSO) (signing:False) (SMBv1:True)\n"
+            "SMB 192.168.3.10 445 DC01 [+] \\\\ : \n"
+            "SMB 192.168.3.10 445 DC01 [*] Enumerated shares\n"
+            "SMB 192.168.3.10 445 DC01 Share           Permissions     Remark\n"
+            "SMB 192.168.3.10 445 DC01 ADMIN$                          Remote Admin\n"
+            "SMB 192.168.3.10 445 DC01 IPC$            READ            Remote IPC\n"
+            "SMB 192.168.3.10 445 DC01 [*] Enumerated domain user(s)\n"
+            "SMB 192.168.3.10 445 DC01 CONTOSO\\Administrator rid:500\n"
+            "SMB 192.168.3.10 445 DC01 CONTOSO\\HelpDesk rid:1107\n"
+            "SMB 192.168.3.10 445 DC01 [*] Password policy\n"
+            "SMB 192.168.3.10 445 DC01 min password length: 7\n"
+        )
+
+        parsed = extract_tool_observations(
+            "netexec",
+            output,
+            port="445",
+            protocol="tcp",
+            service="smb",
+            host_ip="192.168.3.10",
+        )
+
+        technologies = {str(item.get("name", "")).strip() for item in parsed["technologies"]}
+        finding_titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+
+        self.assertIn("Windows", technologies)
+        self.assertIn("Active Directory", technologies)
+        self.assertIn("SMB domain identified: CONTOSO", finding_titles)
+        self.assertIn("SMB shares enumerated (2)", finding_titles)
+        self.assertIn("SMB users enumerated (2)", finding_titles)
+        self.assertIn("SMB password policy disclosed", finding_titles)
+        self.assertIn("Anonymous SMB access allowed", finding_titles)
+        self.assertIn("SMB signing disabled", finding_titles)
+        self.assertIn("SMBv1 enabled", finding_titles)
 
     def test_extract_tool_observations_parses_nbtscan_verbose_output(self):
         from app.scheduler.observation_parsers import extract_tool_observations

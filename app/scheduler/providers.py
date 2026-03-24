@@ -777,7 +777,7 @@ def _determine_scheduler_phase(
         "ssh-auth-methods.nse",
         "snmp-info",
         "sslscan",
-        "sslyze",
+        "testssl.sh",
     })
     has_deep_web = any(token in attempted for token in {
         "whatweb",
@@ -794,8 +794,6 @@ def _determine_scheduler_phase(
         "curl-robots",
         "wafw00f",
         "wpscan",
-        "http-wapiti",
-        "https-wapiti",
     })
 
     shodan_enabled = bool(signals.get("shodan_enabled"))
@@ -1111,6 +1109,7 @@ def _tool_matches_coverage_gap(tool_id: str, coverage_missing: Set[str]) -> bool
         "enum4linux-ng",
         "smbmap",
         "rpcclient-enum",
+        "netexec",
         "smb-enum-users.nse",
     }:
         return True

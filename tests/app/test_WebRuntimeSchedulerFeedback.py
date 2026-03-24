@@ -790,7 +790,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 "web-content-discovery",
                 "curl-headers",
                 "sslscan",
-                "sslyze",
+                "testssl.sh",
                 "wafw00f",
             },
             host_cves=[],

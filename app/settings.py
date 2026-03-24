@@ -51,7 +51,11 @@ class AppSettings():
     }
     DISABLED_PORT_ACTION_IDS = {
         "http-drupal-modules.nse",
+        "http-wapiti",
         "http-vuln-zimbra-lfi.nse",
+        "http-wordpress-plugins.nse",
+        "https-wapiti",
+        "sslyze",
     }
     WEB_CONTENT_GOBUSTER_COMMAND = (
         "(command -v gobuster >/dev/null 2>&1 && "
@@ -103,6 +107,11 @@ class AppSettings():
         "nuclei -tags wordpress,wp-plugin -stats -si 15 -u http://[IP]:[PORT] -ni -o [OUTPUT].txt)) || "
         "echo nuclei not found"
     )
+    NUCLEI_CLOUD_COMMAND = (
+        "(command -v nuclei >/dev/null 2>&1 && "
+        "nuclei -tags cloud -stats -si 15 -u [WEB_URL] -ni -o [OUTPUT].txt) || "
+        "echo nuclei not found"
+    )
     CURL_HEADERS_COMMAND = (
         "(command -v curl >/dev/null 2>&1 && "
         "(curl -k -I --max-time 20 https://[IP]:[PORT] > [OUTPUT].txt || "
@@ -127,6 +136,11 @@ class AppSettings():
         "-u [WEB_URL] -o [OUTPUT].jsonl) || "
         "echo httpx not found"
     )
+    SUBFINDER_COMMAND = (
+        "(command -v subfinder >/dev/null 2>&1 && "
+        "subfinder -silent -recursive -duc -max-time 5 -oJ -d [IP] -o [OUTPUT].jsonl) || "
+        "echo subfinder not found"
+    )
     NIKTO_COMMAND = (
         "(command -v nikto >/dev/null 2>&1 && "
         "nikto -h [WEB_URL] -nointeractive -Format txt -output [OUTPUT].txt -C all) || "
@@ -138,7 +152,15 @@ class AppSettings():
         "echo wafw00f not found"
     )
     SSLSCAN_COMMAND = "sslscan --no-failed [IP]:[PORT]"
-    SSLYZE_COMMAND = "sslyze --regular [IP]:[PORT]"
+    TESTSSL_SH_COMMAND = (
+        "((command -v testssl.sh >/dev/null 2>&1 && "
+        "testssl.sh --quiet --warnings off --connect-timeout 10 --openssl-timeout 10 "
+        "--jsonfile-pretty [OUTPUT].json [IP]:[PORT] > [OUTPUT].txt 2>&1) || "
+        "(command -v testssl >/dev/null 2>&1 && "
+        "testssl --quiet --warnings off --connect-timeout 10 --openssl-timeout 10 "
+        "--jsonfile-pretty [OUTPUT].json [IP]:[PORT] > [OUTPUT].txt 2>&1)) || "
+        "echo testssl.sh not found"
+    )
     WPSCAN_COMMAND = (
         "(command -v wpscan >/dev/null 2>&1 && "
         "wpscan --url [WEB_URL] --disable-tls-checks --no-update --format json --output [OUTPUT].json) || "
@@ -153,6 +175,15 @@ class AppSettings():
         "(command -v wapiti >/dev/null 2>&1 && "
         "wapiti -u https://[IP]:[PORT] -n 10 -b folder -v 1 -f txt -o [OUTPUT]) || "
         "echo wapiti not found"
+    )
+    SAMRDUMP_COMMAND = (
+        "(command -v impacket-samrdump >/dev/null 2>&1 && "
+        "impacket-samrdump -no-pass -port [PORT] [IP] > [OUTPUT].txt 2>&1) || "
+        "([ -f /usr/share/doc/python3-impacket/examples/samrdump.py ] && "
+        "python3 /usr/share/doc/python3-impacket/examples/samrdump.py -no-pass -port [PORT] [IP] > [OUTPUT].txt 2>&1) || "
+        "([ -f /usr/share/doc/python-impacket-doc/examples/samrdump.py ] && "
+        "python3 /usr/share/doc/python-impacket-doc/examples/samrdump.py -no-pass -port [PORT] [IP] > [OUTPUT].txt 2>&1) || "
+        "echo samrdump not found"
     )
     WHATWEB_COMMAND = (
         "(command -v whatweb >/dev/null 2>&1 && "
@@ -185,6 +216,15 @@ class AppSettings():
         "rpcclient [IP] -p [PORT] -U '%' -c 'srvinfo;enumdomusers;netshareenumall' > [OUTPUT].txt; "
         "else echo rpcclient not found; fi"
     )
+    RESPONDER_COMMAND = "responder -I <interface> -w -F"
+    NTLMRELAYX_COMMAND = "impacket-ntlmrelayx -t smb://[IP] -smb2support"
+    NETEXEC_COMMAND = (
+        "if command -v netexec >/dev/null 2>&1; then "
+        "netexec smb [IP] --port [PORT] -u '' -p '' --shares --users --pass-pol 2>&1 | tee [OUTPUT].txt; "
+        "elif command -v nxc >/dev/null 2>&1; then "
+        "nxc smb [IP] --port [PORT] -u '' -p '' --shares --users --pass-pol 2>&1 | tee [OUTPUT].txt; "
+        "else echo netexec not found; fi"
+    )
     BASELINE_WEB_PORT_ACTIONS = {
         "httpx": ("Run httpx", HTTPX_COMMAND, WEB_SERVICE_SCOPE),
         "whatweb": ("Run whatweb", WHATWEB_COMMAND, WEB_SERVICE_SCOPE),
@@ -193,7 +233,7 @@ class AppSettings():
         "nikto": ("Run nikto", NIKTO_COMMAND, WEB_SERVICE_SCOPE),
         "wafw00f": ("Run wafw00f", WAFW00F_COMMAND, "https,ssl,https-alt"),
         "sslscan": ("Run sslscan", SSLSCAN_COMMAND, "https,ssl,https-alt"),
-        "sslyze": ("Run sslyze", SSLYZE_COMMAND, "https,ssl,ms-wbt-server,imap,pop3,smtp,https-alt"),
+        "testssl.sh": ("Run testssl.sh", TESTSSL_SH_COMMAND, "https,ssl,ms-wbt-server,imap,pop3,smtp,https-alt"),
         "nuclei-cves": ("Run nuclei CVE follow-up", NUCLEI_CVES_COMMAND, WEB_SERVICE_SCOPE),
         "nuclei-exposures": ("Run nuclei exposure/panel follow-up", NUCLEI_EXPOSURES_COMMAND, WEB_SERVICE_SCOPE),
         "nuclei-wordpress": ("Run nuclei WordPress follow-up", NUCLEI_WORDPRESS_COMMAND, WEB_SERVICE_SCOPE),
@@ -201,15 +241,28 @@ class AppSettings():
         "curl-options": ("Collect HTTP OPTIONS response (curl)", CURL_OPTIONS_COMMAND, WEB_SERVICE_SCOPE),
         "curl-robots": ("Fetch robots.txt (curl)", CURL_ROBOTS_COMMAND, WEB_SERVICE_SCOPE),
         "wpscan": ("Run wpscan", WPSCAN_COMMAND, "http,https,ssl,https-alt"),
-        "http-wapiti": ("Run wapiti (http)", WAPITI_HTTP_COMMAND, "http"),
-        "https-wapiti": ("Run wapiti (https)", WAPITI_HTTPS_COMMAND, "https"),
         "dirsearch": ("Run dirsearch", DIRSEARCH_COMMAND, WEB_SERVICE_SCOPE),
         "ffuf": ("Run ffuf", FFUF_COMMAND, WEB_SERVICE_SCOPE),
+    }
+    EXTERNAL_RECON_PORT_ACTIONS = {
+        "subfinder": ("Run subfinder passive subdomain discovery", SUBFINDER_COMMAND, WEB_SERVICE_SCOPE),
+        "nuclei-cloud": ("Run nuclei cloud exposure follow-up", NUCLEI_CLOUD_COMMAND, WEB_SERVICE_SCOPE),
     }
     BASELINE_INTERNAL_PORT_ACTIONS = {
         "enum4linux-ng": ("Run enum4linux-ng", ENUM4LINUX_NG_COMMAND, "netbios-ssn,microsoft-ds,smb"),
         "smbmap": ("Run smbmap", SMBMAP_COMMAND, "netbios-ssn,microsoft-ds,smb"),
         "rpcclient-enum": ("Run rpcclient SMB enumeration", RPCCLIENT_ENUM_COMMAND, "netbios-ssn,microsoft-ds,smb"),
+        "netexec": ("Run netexec", NETEXEC_COMMAND, "netbios-ssn,microsoft-ds,smb"),
+        "responder": (
+            "Prepare Responder capture workflow",
+            RESPONDER_COMMAND,
+            "netbios-ssn,microsoft-ds,smb,ldap,kerberos,winrm",
+        ),
+        "ntlmrelayx": (
+            "Prepare ntlmrelayx relay workflow",
+            NTLMRELAYX_COMMAND,
+            "netbios-ssn,microsoft-ds,smb,ldap,kerberos,winrm",
+        ),
     }
 
     def __init__(self):
@@ -347,42 +400,11 @@ class AppSettings():
                     self.actions.setValue('nuclei-web', [label, updated_command, scope])
                     changed = True
 
-            for wapiti_key, expected_scheme, default_label, default_scope in (
-                    ("http-wapiti", "http", "Run wapiti (http)", "http"),
-                    ("https-wapiti", "https", "Run wapiti (https)", "https"),
-            ):
-                value = self.actions.value(wapiti_key)
-                if value is None:
-                    default_command = (
-                        self.WAPITI_HTTPS_COMMAND
-                        if expected_scheme == "https"
-                        else self.WAPITI_HTTP_COMMAND
-                    )
-                    self.actions.setValue(wapiti_key, [default_label, default_command, default_scope])
-                    changed = True
-                    continue
-
-                label = default_label
-                command = (
-                    self.WAPITI_HTTPS_COMMAND
-                    if expected_scheme == "https"
-                    else self.WAPITI_HTTP_COMMAND
-                )
-                scope = default_scope
-                if isinstance(value, (list, tuple)):
-                    if len(value) > 0 and value[0]:
-                        label = str(value[0])
-                    if len(value) > 1 and value[1]:
-                        command = str(value[1])
-                    if len(value) > 2 and value[2]:
-                        scope = str(value[2])
-
-                updated_command = self._ensure_wapiti_command(command, scheme=expected_scheme)
-                if updated_command != command:
-                    self.actions.setValue(wapiti_key, [label, updated_command, scope])
-                    changed = True
-
-            for key, value in {**self.BASELINE_WEB_PORT_ACTIONS, **self.BASELINE_INTERNAL_PORT_ACTIONS}.items():
+            for key, value in {
+                **self.BASELINE_WEB_PORT_ACTIONS,
+                **self.EXTERNAL_RECON_PORT_ACTIONS,
+                **self.BASELINE_INTERNAL_PORT_ACTIONS,
+            }.items():
                 if self.actions.value(key) is None:
                     self.actions.setValue(key, [value[0], value[1], value[2]])
                     changed = True
@@ -417,6 +439,8 @@ class AppSettings():
             normalized = cls._ensure_web_content_discovery_command(normalized)
         if normalized_tool == "httpx":
             normalized = cls._ensure_httpx_command(normalized)
+        if normalized_tool == "subfinder":
+            normalized = cls._ensure_subfinder_command(normalized)
         if normalized_tool in {"whatweb", "whatweb-http", "whatweb-https"}:
             normalized = cls._ensure_whatweb_command(normalized)
         if normalized_tool == "nikto":
@@ -435,6 +459,14 @@ class AppSettings():
             normalized = cls._ensure_smbmap_command(normalized)
         if normalized_tool == "rpcclient-enum":
             normalized = cls._ensure_rpcclient_enum_command(normalized)
+        if normalized_tool == "netexec":
+            normalized = cls._ensure_netexec_command(normalized)
+        if normalized_tool == "responder":
+            normalized = cls._ensure_responder_command(normalized)
+        if normalized_tool == "ntlmrelayx":
+            normalized = cls._ensure_ntlmrelayx_command(normalized)
+        if normalized_tool == "samrdump":
+            normalized = cls.SAMRDUMP_COMMAND
         if normalized_tool == "smb-enum-users-rpc":
             normalized = cls._canonicalize_legacy_rpcclient_action("enumdomusers")
         if normalized_tool == "smb-null-sessions":
@@ -485,7 +517,7 @@ class AppSettings():
                     ("nikto", self.WEB_SERVICE_SCOPE),
                     ("wafw00f", "https,ssl,https-alt"),
                     ("sslscan", "https,ssl,https-alt"),
-                    ("sslyze", "https,ssl,ms-wbt-server,imap,pop3,smtp,https-alt"),
+                    ("testssl.sh", "https,ssl,ms-wbt-server,imap,pop3,smtp,https-alt"),
                     ("nuclei-cves", self.WEB_SERVICE_SCOPE),
                     ("nuclei-exposures", self.WEB_SERVICE_SCOPE),
                     ("nuclei-wordpress", self.WEB_SERVICE_SCOPE),
@@ -493,13 +525,12 @@ class AppSettings():
                     ("curl-options", self.WEB_SERVICE_SCOPE),
                     ("curl-robots", self.WEB_SERVICE_SCOPE),
                     ("wpscan", "http,https,ssl,https-alt"),
-                    ("http-wapiti", "http"),
-                    ("https-wapiti", "https"),
                     ("dirsearch", self.WEB_SERVICE_SCOPE),
                     ("ffuf", self.WEB_SERVICE_SCOPE),
                     ("enum4linux-ng", "netbios-ssn,microsoft-ds,smb"),
                     ("smbmap", "netbios-ssn,microsoft-ds,smb"),
                     ("rpcclient-enum", "netbios-ssn,microsoft-ds,smb"),
+                    ("netexec", "netbios-ssn,microsoft-ds,smb"),
             ):
                 if self.actions.value(tool_id) is None:
                     self.actions.setValue(tool_id, [scope, 'tcp'])
@@ -906,6 +937,31 @@ class AppSettings():
         return re.sub(r"\s{2,}", " ", combined).strip().replace(probe_marker, "httpx")
 
     @classmethod
+    def _ensure_subfinder_command(cls, command: str) -> str:
+        raw = str(command or "")
+        if "subfinder" not in raw.lower():
+            return raw
+        normalized = re.sub(r"(?i)(?:^|\s)-d(?:omain)?\s+\S+", " -d [IP]", raw)
+        normalized = re.sub(r"(?i)(?:^|\s)-dL\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-max-time\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-oJ\b", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-silent\b", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-recursive\b", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-duc\b", " ", normalized)
+        if not re.search(r"(?i)(?:^|\s)-d(?:omain)?(?:\s|$)", normalized):
+            normalized = re.sub(r"(?i)\bsubfinder\b", "subfinder -d [IP]", normalized, count=1)
+        normalized = re.sub(
+            r"(?i)\bsubfinder\b",
+            "subfinder -silent -recursive -duc -max-time 5 -oJ",
+            normalized,
+            count=1,
+        )
+        if not re.search(r"(?i)(?:^|\s)-o(?:\s|$)", normalized):
+            normalized += " -o [OUTPUT].jsonl"
+        return re.sub(r"\s{2,}", " ", normalized).strip()
+
+    @classmethod
     def _ensure_whatweb_command(cls, command: str) -> str:
         raw = str(command or "")
         if "whatweb" not in raw.lower():
@@ -1023,6 +1079,29 @@ class AppSettings():
         if "rpcclient" not in raw.lower():
             return raw
         return AppSettings.RPCCLIENT_ENUM_COMMAND
+
+    @staticmethod
+    def _ensure_netexec_command(command: str) -> str:
+        raw = str(command or "")
+        lowered = raw.lower()
+        if "netexec" not in lowered and "nxc" not in lowered and "crackmapexec" not in lowered:
+            return raw
+        return AppSettings.NETEXEC_COMMAND
+
+    @staticmethod
+    def _ensure_responder_command(command: str) -> str:
+        raw = str(command or "")
+        if "responder" not in raw.lower():
+            return raw
+        return AppSettings.RESPONDER_COMMAND
+
+    @staticmethod
+    def _ensure_ntlmrelayx_command(command: str) -> str:
+        raw = str(command or "")
+        lowered = raw.lower()
+        if "ntlmrelayx" not in lowered and "impacket-ntlmrelayx" not in lowered:
+            return raw
+        return AppSettings.NTLMRELAYX_COMMAND
 
     @staticmethod
     def _canonicalize_legacy_rpcclient_action(rpc_command: str) -> str:

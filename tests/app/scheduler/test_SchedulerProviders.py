@@ -58,6 +58,37 @@ class SchedulerProvidersTest(unittest.TestCase):
             prompt_package["user_prompt"],
         )
 
+    def test_ranking_prompt_treats_netexec_as_internal_safe_enum_gap_closer(self):
+        from app.scheduler.providers import _build_ranking_prompt_package
+
+        candidates = [
+            {"tool_id": "banner", "label": "Banner", "command_template": "nc [IP] [PORT]", "service_scope": "smb"},
+            {
+                "tool_id": "netexec",
+                "label": "Run netexec",
+                "command_template": "netexec smb [IP] --port [PORT] -u '' -p '' --shares --users --pass-pol",
+                "service_scope": "netbios-ssn,microsoft-ds,smb",
+            },
+        ]
+
+        prompt_package = _build_ranking_prompt_package(
+            goal_profile="internal_asset_discovery",
+            service="microsoft-ds",
+            protocol="tcp",
+            candidates=candidates,
+            context={
+                "coverage": {
+                    "missing": ["missing_internal_safe_enum"],
+                    "recommended_tool_ids": ["netexec"],
+                },
+                "signals": {"smb_signing_disabled": True},
+            },
+        )
+
+        metadata = prompt_package["metadata"]
+        self.assertIn("netexec", metadata["visible_candidate_tool_ids"])
+        self.assertEqual("netexec", metadata["visible_candidate_tool_ids"][0])
+
     @patch("app.scheduler.providers.requests.post")
     def test_ranking_prompt_can_disable_context_summary(self, mock_post):
         from app.scheduler.providers import rank_actions_with_provider

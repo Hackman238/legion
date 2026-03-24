@@ -128,6 +128,15 @@ _WAF_VENDOR_RE = re.compile(
     r"\b(?:behind|protected by|using)\s+(?:an?\s+)?([A-Za-z0-9][A-Za-z0-9 ._()/+-]{1,80}?)(?:\s+\(|\s+waf\b|\s+firewall\b|[.!]|\s*$)",
     flags=re.IGNORECASE,
 )
+_WAF_SITE_VENDORS_RE = re.compile(
+    r"\bthe site\s+(?P<url>https?://\S+)\s+is behind\s+(?P<vendors>.+?)\s+waf\b",
+    flags=re.IGNORECASE,
+)
+_WAF_VENDOR_DETAIL_RE = re.compile(
+    r"^(?P<firewall>[A-Za-z0-9][A-Za-z0-9 ._()/+-]{0,80}?)(?:\s*\((?P<manufacturer>[^)]+)\))?$",
+    flags=re.IGNORECASE,
+)
+_WAF_REASON_RE = re.compile(r"^\[\~\]\s*Reason:\s*(.+)$", flags=re.IGNORECASE)
 _FEROX_LINE_RE = re.compile(
     r"^(?P<status>\d{3})\s+\w+\s+\d+l\s+\d+w\s+\d+c\s+(?P<url>https?://\S+?)(?:\s+=>\s+(?P<redirect>https?://\S+))?$",
     flags=re.IGNORECASE,
@@ -136,6 +145,11 @@ _GOBUSTER_LINE_RE = re.compile(
     r"^(?P<path>/\S+?)\s+\(Status:\s*(?P<status>\d{3})\)(?:\s+\[Size:\s*\d+\])?(?:\s+\[-->\s*(?P<redirect>https?://\S+)\])?$",
     flags=re.IGNORECASE,
 )
+_GOBUSTER_URL_LINE_RE = re.compile(
+    r"^(?:Found:\s+)?(?P<url>https?://\S+?)\s+\(Status:\s*(?P<status>\d{3})\)(?:\s+\[Size:\s*\d+\])?(?:\s+\[-->\s*(?P<redirect>https?://\S+)\])?$",
+    flags=re.IGNORECASE,
+)
+_HTTP_STATUS_RE = re.compile(r"^HTTP/\d+(?:\.\d+)?\s+(\d{3})\b(?:\s+(.+))?$", flags=re.IGNORECASE)
 _TLS_WEAK_CIPHER_RE = re.compile(r"(?:RC4|3DES|DES-CBC|NULL|EXPORT|aNULL|anon)", flags=re.IGNORECASE)
 _TLS_SHA1_RE = re.compile(r"(?:\bsha-?1\b|sha1with)", flags=re.IGNORECASE)
 _TLS_MD5_RE = re.compile(r"(?:\bmd5\b|md5with)", flags=re.IGNORECASE)
@@ -164,9 +178,58 @@ _SQLMAP_TITLE_RE = re.compile(r"^Title:\s*(.+?)\s*$", flags=re.IGNORECASE)
 _SQLMAP_WEB_TECH_RE = re.compile(r"^web application technology:\s*(.+?)\s*$", flags=re.IGNORECASE)
 _SQLMAP_DBMS_RE = re.compile(r"^(?:the\s+back-end\s+DBMS\s+is|back-end DBMS:)\s*(.+?)\s*$", flags=re.IGNORECASE)
 _SQLMAP_BANNER_RE = re.compile(r"^banner:\s*['\"]?(.+?)['\"]?\s*$", flags=re.IGNORECASE)
+_NETEXEC_DOMAIN_TOKEN_RE = re.compile(r"(?i)\(domain:([A-Za-z0-9_.-]{1,96})\)")
+_NETEXEC_SIGNING_TOKEN_RE = re.compile(r"(?i)\(signing:(true|false)\)")
+_NETEXEC_SMBV1_TOKEN_RE = re.compile(r"(?i)\(smbv1:(true|false)\)")
+_NETEXEC_SHARE_ROW_RE = re.compile(
+    r"(?im)^SMB\s+\S+\s+\d+\s+\S+\s+(?P<share>[A-Za-z0-9_. $-]{1,128}\$?)\s{2,}(?P<permissions>[A-Za-z, /-]{0,32})\s{2,}.*$"
+)
+_NETEXEC_USER_ROW_RE = re.compile(
+    r"(?im)^SMB\s+\S+\s+\d+\s+\S+\s+(?P<account>[A-Za-z0-9_.-]{1,64}\\[A-Za-z0-9_. $-]{1,96})\b.*\brid:(?:0x)?[0-9A-Fa-f]+\b"
+)
+_NETEXEC_AUTH_SUCCESS_RE = re.compile(r"(?im)^SMB\s+\S+\s+\d+\s+\S+\s+\[\+\]\s+(?P<account>[^:\r\n]+)\s*:")
+_SMB_PASSWORD_POLICY_RE = re.compile(
+    r"(?im)\b(?:min password length|password history length|max password age|min password age|lockout threshold)\s*:\s*([^\r\n]+)"
+)
 _SQLMAP_DBA_RE = re.compile(r"^current user is DBA:\s*(true|false|yes|no)\s*$", flags=re.IGNORECASE)
 _SQLMAP_AVAILABLE_DBS_RE = re.compile(r"^available databases\s*\[(\d+)\]\s*:\s*$", flags=re.IGNORECASE)
 _SQLMAP_LIST_ITEM_RE = re.compile(r"^\[\*\]\s+(.+?)\s*$")
+_DISCOVERY_ADMIN_TOKENS = (
+    "admin",
+    "login",
+    "signin",
+    "sign-in",
+    "portal",
+    "console",
+    "manager",
+    "phpmyadmin",
+    "adminer",
+    "wp-admin",
+    "wp-login",
+    "xmlrpc",
+)
+_DISCOVERY_API_TOKENS = (
+    "api",
+    "graphql",
+    "graphiql",
+    "swagger",
+    "openapi",
+    "redoc",
+    "actuator",
+    "metrics",
+    "health",
+    "server-status",
+)
+_DISCOVERY_WORDPRESS_TOKENS = ("wp-admin", "wp-login", "wp-content", "wp-includes", "xmlrpc.php")
+_DISCOVERY_PHPMYADMIN_TOKENS = ("phpmyadmin", "/pma", "php-my-admin")
+_DISCOVERY_ACCESSIBLE_STATUSES = {"200", "204", "206"}
+_DISCOVERY_PRESENT_STATUSES = _DISCOVERY_ACCESSIBLE_STATUSES | {"301", "302", "307", "308", "401", "403"}
+_DISCOVERY_SENSITIVE_PATH_RE = re.compile(
+    r"(?i)(?:^|/)(?:\.env(?:\.[^/]+)?|\.git(?:/|$)|\.svn(?:/|$)|\.hg(?:/|$)|id_rsa(?:\.pub)?|authorized_keys|\.htaccess|\.htpasswd|web\.config|settings\.php(?:\.[^/]+)?|config(?:uration)?\.(?:php|json|ya?ml|xml|ini|conf|bak|old|orig)|phpinfo(?:\.php)?|server-status|server-info|passwd|shadow)(?:$|/)"
+)
+_DISCOVERY_BACKUP_PATH_RE = re.compile(
+    r"(?i)(?:^|/)(?:backup|dump|db|database|config|settings|site)(?:[-_.][^/]{0,48})?\.(?:zip|tar|tgz|gz|rar|7z|sql|bak|old|orig|tar\.gz|sql\.gz)$"
+)
 _IGNORED_PRODUCT_NAMES = {"http", "https", "tls", "ssl", "html", "json"}
 _IGNORED_DISCOVERY_URL_HOSTS = {"nmap.org", "www.nmap.org", "http", "https"}
 _SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
@@ -178,6 +241,7 @@ _SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
     "http-vuln-",
     "sslscan",
     "sslyze",
+    "testssl",
     "wafw00f",
     "web-content-discovery",
     "dirsearch",
@@ -194,6 +258,8 @@ _SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
     "screenshooter",
     "sqlmap",
     "http-sqlmap",
+    "netexec",
+    "curl-",
 )
 _DISCOVERY_PATH_RE = re.compile(r"(?i)(?:\"path\"|path|location|redirectlocation)\s*[:=]\s*['\"]?(/[^\"'\s,|]+)")
 _SMB_USER_RE = re.compile(r"(?i)(?:user(?:name)?|account)\s*[:=\[]\s*['\"]?([A-Za-z0-9_. $-]{1,96})")
@@ -235,7 +301,7 @@ def _normalize_tls_protocol_token(value: Any) -> str:
         return "sslv3"
     if token in {"tls1", "tls1.0", "tlsv1", "tlsv1.0"}:
         return "tlsv1.0"
-    if token in {"tls1.1", "tlsv1.1"}:
+    if token in {"tls1.1", "tls11", "tlsv1.1"}:
         return "tlsv1.1"
     return token
 
@@ -264,6 +330,17 @@ def _select_artifact_refs_for_tool(tool_id: str, artifact_refs: Iterable[Any]) -
         if preferred:
             return preferred + [ref for ref in refs if ref not in preferred]
     if token == "screenshooter":
+        preferred = _with_exts(".json")
+        if preferred:
+            return preferred
+    if token == "wafw00f":
+        preferred = _with_exts(".json")
+        if preferred:
+            return preferred + [ref for ref in refs if ref not in preferred]
+        preferred = _with_exts(".csv")
+        if preferred:
+            return preferred + [ref for ref in refs if ref not in preferred]
+    if token.startswith("testssl"):
         preferred = _with_exts(".json")
         if preferred:
             return preferred
@@ -336,6 +413,42 @@ def _iter_discovery_records(payload: Any) -> Iterable[Dict[str, Any]]:
             yield from _iter_discovery_records(item)
 
 
+def _iter_testssl_records(payload: Any, section: str = "") -> Iterable[Dict[str, Any]]:
+    if isinstance(payload, dict):
+        if "id" in payload and "finding" in payload:
+            yield {
+                "section": _clean_text(section, 64),
+                "id": _clean_text(payload.get("id"), 120),
+                "severity": _clean_text(payload.get("severity"), 24),
+                "cve": _clean_text(payload.get("cve"), 64).upper(),
+                "finding": _clean_text(payload.get("finding"), 520),
+            }
+        for key, value in payload.items():
+            if not isinstance(value, (dict, list)):
+                continue
+            next_section = section
+            if key in {
+                "pretest",
+                "singleCipher",
+                "protocols",
+                "grease",
+                "ciphers",
+                "pfs",
+                "serverPreferences",
+                "serverDefaults",
+                "headerResponse",
+                "vulnerabilities",
+                "cipherTests",
+                "browserSimulations",
+                "scanResult",
+            }:
+                next_section = key
+            yield from _iter_testssl_records(value, next_section)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _iter_testssl_records(item, section)
+
+
 def _build_base_web_url(*, host_ip: Any = "", hostname: Any = "", port: Any = "", service: Any = "") -> str:
     resolved_host = normalize_hostname_alias(hostname) or str(host_ip or "").strip()
     if not resolved_host:
@@ -345,6 +458,17 @@ def _build_base_web_url(*, host_ip: Any = "", hostname: Any = "", port: Any = ""
     if str(port or "").strip():
         return _clean_url(f"{scheme}://{resolved_host}:{str(port).strip()}")
     return _clean_url(f"{scheme}://{resolved_host}")
+
+
+def _resolve_web_url(value: Any, *, base_url: str = "") -> str:
+    text = _clean_text(value, 320)
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return _clean_url(text)
+    if text.startswith("/") and base_url:
+        return _clean_url(urljoin(base_url.rstrip("/") + "/", text))
+    return ""
 
 
 def _severity_token(value: Any, default: str = "info") -> str:
@@ -655,8 +779,49 @@ def _is_interesting_web_path(path: str) -> bool:
     lowered = str(path or "").strip().lower()
     return bool(
         lowered
-        and any(token in lowered for token in ("admin", "login", "portal", "api", "graphql", "swagger", "actuator", "wp-", "xmlrpc"))
+        and (
+            any(token in lowered for token in _DISCOVERY_ADMIN_TOKENS + _DISCOVERY_API_TOKENS + _DISCOVERY_WORDPRESS_TOKENS)
+            or bool(_DISCOVERY_SENSITIVE_PATH_RE.search(lowered))
+            or bool(_DISCOVERY_BACKUP_PATH_RE.search(lowered))
+        )
     )
+
+
+def _classify_content_discovery_path(
+        technologies: List[Dict[str, Any]],
+        *,
+        tool_id: str,
+        candidate_path: str,
+        status: str,
+        interesting_paths: List[str],
+        admin_paths: List[str],
+        api_paths: List[str],
+        sensitive_paths: List[str],
+        backup_paths: List[str],
+):
+    normalized_path = str(candidate_path or "").strip()
+    lowered = normalized_path.lower()
+    if not normalized_path or not lowered:
+        return
+    display_item = f"{normalized_path} ({status})" if status else normalized_path
+
+    if status in _DISCOVERY_PRESENT_STATUSES and _is_interesting_web_path(normalized_path):
+        interesting_paths.append(display_item)
+    if status in _DISCOVERY_PRESENT_STATUSES and any(token in lowered for token in _DISCOVERY_ADMIN_TOKENS):
+        admin_paths.append(display_item)
+    if status in _DISCOVERY_PRESENT_STATUSES and any(token in lowered for token in _DISCOVERY_API_TOKENS):
+        api_paths.append(display_item)
+    if status in _DISCOVERY_ACCESSIBLE_STATUSES and _DISCOVERY_SENSITIVE_PATH_RE.search(lowered):
+        sensitive_paths.append(display_item)
+    if status in _DISCOVERY_ACCESSIBLE_STATUSES and _DISCOVERY_BACKUP_PATH_RE.search(lowered):
+        backup_paths.append(display_item)
+
+    if status in _DISCOVERY_PRESENT_STATUSES and any(token in lowered for token in _DISCOVERY_WORDPRESS_TOKENS):
+        _append_technology(technologies, "WordPress", evidence=f"{tool_id} discovered path {normalized_path}")
+    if status in _DISCOVERY_PRESENT_STATUSES and any(token in lowered for token in _DISCOVERY_PHPMYADMIN_TOKENS):
+        _append_technology(technologies, "phpMyAdmin", evidence=f"{tool_id} discovered path {normalized_path}")
+    if status in _DISCOVERY_PRESENT_STATUSES and ("/adminer" in lowered or lowered.endswith("/adminer.php")):
+        _append_technology(technologies, "Adminer", evidence=f"{tool_id} discovered path {normalized_path}")
 
 
 def _parse_whatweb_output(tool_id: str, output_text: str) -> Dict[str, Any]:
@@ -712,7 +877,33 @@ def _parse_whatweb_output(tool_id: str, output_text: str) -> Dict[str, Any]:
 
 def _parse_httpx_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     technologies: List[Dict[str, Any]] = []
+    findings: List[Dict[str, Any]] = []
     urls: List[Dict[str, Any]] = []
+
+    def _resolve_httpx_url(parsed: Dict[str, Any]) -> str:
+        explicit_url = _clean_url(parsed.get("url") or "")
+        if explicit_url:
+            return explicit_url
+        scheme = _clean_text(parsed.get("scheme", "") or "", 16).lower()
+        host = _clean_text(parsed.get("host", "") or parsed.get("input", "") or "", 180)
+        path = str(parsed.get("path", "") or "").strip()
+        if not scheme or not host:
+            return ""
+        if path and not str(path).startswith("/"):
+            path = f"/{path}"
+        return _clean_url(f"{scheme}://{host}{path}")
+
+    def _resolve_httpx_location(current_url: str, location_value: Any) -> str:
+        location = _clean_text(location_value, 240)
+        if not location:
+            return ""
+        absolute = _clean_url(location)
+        if absolute:
+            return absolute
+        if current_url:
+            return _clean_url(urljoin(current_url, location))
+        return ""
+
     for raw_line in str(output_text or "").splitlines():
         line = raw_line.strip()
         if not line:
@@ -724,18 +915,33 @@ def _parse_httpx_output(tool_id: str, output_text: str) -> Dict[str, Any]:
             except Exception:
                 parsed = None
         if isinstance(parsed, dict):
-            url = parsed.get("url") or parsed.get("input") or parsed.get("host") or ""
+            url = _resolve_httpx_url(parsed)
+            status_code = str(parsed.get("status-code") or parsed.get("status_code") or parsed.get("status") or "").strip()
+            title = _clean_text(parsed.get("title", "") or "", 180)
+            content_type = _clean_text(parsed.get("content-type", "") or parsed.get("content_type", "") or "", 120)
+            lowered_title = title.lower()
+            lowered_url = str(url or "").lower()
             _append_url(
                 urls,
                 url,
                 port=str(parsed.get("port", "") or ""),
                 service="https" if str(url).startswith("https://") else "http",
-                label=str(parsed.get("title", "") or "httpx"),
+                label=title or "httpx",
             )
+            for location_key in ("location", "redirectlocation", "redirect", "final-url", "final_url"):
+                resolved_location = _resolve_httpx_location(url, parsed.get(location_key))
+                if resolved_location:
+                    _append_url(
+                        urls,
+                        resolved_location,
+                        port=str(parsed.get("port", "") or ""),
+                        service="https" if str(resolved_location).startswith("https://") else "http",
+                        label=f"{tool_id} redirect",
+                    )
             tech_list = parsed.get("tech") if isinstance(parsed.get("tech"), list) else parsed.get("technologies", [])
             if isinstance(tech_list, list):
                 for item in tech_list[:24]:
-                    _append_technology(technologies, str(item or ""), evidence=f"{tool_id} fingerprint tech detect")
+                    _append_named_version_technology(technologies, str(item or ""), evidence=f"{tool_id} fingerprint tech detect")
             webserver = _clean_text(parsed.get("webserver", "") or parsed.get("server", ""), 120)
             if webserver:
                 server_match = re.search(r"([A-Za-z][A-Za-z0-9+_.-]+)(?:/([0-9][A-Za-z0-9._-]*))?", webserver)
@@ -746,12 +952,66 @@ def _parse_httpx_output(tool_id: str, output_text: str) -> Dict[str, Any]:
                         version=server_match.group(2) or "",
                         evidence=f"{tool_id} fingerprint webserver {webserver}",
                     )
+            cdn_name = _clean_text(parsed.get("cdn", "") or parsed.get("cdn-name", "") or parsed.get("cdn_name", ""), 96)
+            if cdn_name:
+                _append_named_version_technology(technologies, cdn_name, evidence=f"{tool_id} fingerprint cdn {cdn_name}")
+
+            evidence_parts = [tool_id]
+            if url:
+                evidence_parts.append(url)
+            if status_code:
+                evidence_parts.append(f"status {status_code}")
+            if title:
+                evidence_parts.append(f"title {title}")
+            if content_type:
+                evidence_parts.append(f"content-type {content_type}")
+            evidence_text = " | ".join(evidence_parts)
+
+            if (
+                    status_code in _DISCOVERY_PRESENT_STATUSES
+                    and (
+                        any(token in lowered_url for token in _DISCOVERY_ADMIN_TOKENS)
+                        or any(token in lowered_title for token in _DISCOVERY_ADMIN_TOKENS)
+                    )
+            ):
+                _append_finding(
+                    findings,
+                    "Administrative/authentication web page observed",
+                    severity="info",
+                    evidence=evidence_text,
+                )
+            if (
+                    status_code in _DISCOVERY_PRESENT_STATUSES
+                    and (
+                        any(token in lowered_url for token in ("swagger", "openapi", "redoc", "graphql", "graphiql", "actuator"))
+                        or any(token in lowered_title for token in ("swagger", "openapi", "redoc", "graphql", "graphiql", "actuator"))
+                    )
+            ):
+                _append_finding(
+                    findings,
+                    "API/diagnostic web page observed",
+                    severity="info",
+                    evidence=evidence_text,
+                )
+            if (
+                    status_code in _DISCOVERY_ACCESSIBLE_STATUSES
+                    and (
+                        "index of /" in lowered_title
+                        or "directory listing" in lowered_title
+                    )
+            ):
+                _append_finding(
+                    findings,
+                    "Directory listing observed",
+                    severity="low",
+                    evidence=evidence_text,
+                )
             continue
         for url in _URL_RE.findall(line):
             _append_url(urls, url, label=f"{tool_id} response")
     return {
         "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=48),
-        "findings": [],
+        "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
         "urls": _dedupe_rows(urls, ("url",), limit=48),
     }
 
@@ -1130,6 +1390,140 @@ def _parse_tls_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     }
 
 
+def _parse_testssl_output(tool_id: str, output_text: str) -> Dict[str, Any]:
+    try:
+        payload = json.loads(str(output_text or ""))
+    except Exception:
+        return _parse_tls_output(tool_id, output_text)
+    if not isinstance(payload, (dict, list)):
+        return _parse_tls_output(tool_id, output_text)
+
+    findings: List[Dict[str, Any]] = []
+    subject_name = ""
+    issuer_name = ""
+    explicit_self_signed = False
+    seen_legacy_protocol_titles = set()
+    seen_weak_cipher = False
+
+    def _mark_legacy_protocol(protocol_token: str, evidence: str) -> None:
+        if protocol_token not in _LEGACY_TLS_FINDINGS:
+            return
+        title, severity = _LEGACY_TLS_FINDINGS[protocol_token]
+        if title in seen_legacy_protocol_titles:
+            return
+        seen_legacy_protocol_titles.add(title)
+        _append_finding(findings, title, severity=severity, evidence=evidence)
+
+    for record in _iter_testssl_records(payload):
+        record_id = _clean_text(record.get("id"), 120)
+        finding = _clean_text(record.get("finding"), 520)
+        if not record_id and not finding:
+            continue
+        record_id_lower = record_id.lower()
+        finding_lower = finding.lower()
+        evidence = f"{tool_id}: {record_id}: {finding}" if record_id else f"{tool_id}: {finding}"
+
+        protocol_token = _normalize_tls_protocol_token(record_id)
+        if protocol_token in _LEGACY_TLS_FINDINGS:
+            if (
+                    any(marker in finding_lower for marker in ("offered", "supported", "default protocol"))
+                    and "not offered" not in finding_lower
+                    and "not supported" not in finding_lower
+            ):
+                _mark_legacy_protocol(protocol_token, evidence)
+
+        if "self-signed" in finding_lower or "self signed" in finding_lower:
+            explicit_self_signed = True
+            _append_finding(findings, "Self-signed TLS certificate", severity="low", evidence=evidence)
+
+        if (
+                not seen_weak_cipher
+                and (
+                    _TLS_WEAK_CIPHER_RE.search(finding)
+                    or (record_id_lower == "sweet32" and "not vulnerable" not in finding_lower)
+                )
+                and "not offered" not in finding_lower
+                and "not supported" not in finding_lower
+                and "not vulnerable" not in finding_lower
+        ):
+            seen_weak_cipher = True
+            _append_finding(findings, "Weak TLS cipher supported", severity="medium", evidence=evidence)
+
+        if ("crime" in record_id_lower or "compression" in record_id_lower) and "not vulnerable" not in finding_lower:
+            if any(marker in finding_lower for marker in ("supported", "supports", "enabled", "available", "vulnerable")):
+                _append_finding(findings, "TLS compression enabled", severity="medium", evidence=evidence)
+
+        if "fallback" in record_id_lower and "scsv" in record_id_lower and "not supported" in finding_lower:
+            _append_finding(findings, "TLS downgrade protection missing", severity="low", evidence=evidence)
+
+        if ("renego" in record_id_lower or "renegotiation" in record_id_lower) and "not vulnerable" not in finding_lower:
+            if "not supported" in finding_lower or "vulnerable" in finding_lower or "insecure" in finding_lower:
+                _append_finding(findings, "Insecure TLS renegotiation", severity="medium", evidence=evidence)
+
+        if "heartbleed" in record_id_lower and "not vulnerable" not in finding_lower:
+            if any(token in finding_lower for token in ("vulnerable", "exploitable", "affected")):
+                _append_finding(
+                    findings,
+                    "Heartbleed exposure",
+                    severity="high",
+                    cve=str(record.get("cve") or "CVE-2014-0160"),
+                    evidence=evidence,
+                )
+
+        if record_id_lower.startswith("cert_keysize"):
+            key_match = re.search(r"\b(\d{3,5})\s*bits\b", finding_lower)
+            if key_match:
+                try:
+                    key_bits = int(key_match.group(1) or 0)
+                except (TypeError, ValueError):
+                    key_bits = 0
+                if 0 < key_bits < 2048:
+                    _append_finding(findings, "Weak TLS certificate key size", severity="medium", evidence=evidence)
+
+        if record_id_lower.startswith("cert_signaturealgorithm"):
+            if _TLS_SHA1_RE.search(finding):
+                _append_finding(findings, "TLS certificate uses SHA-1", severity="low", evidence=evidence)
+            if _TLS_MD5_RE.search(finding):
+                _append_finding(findings, "TLS certificate uses MD5", severity="medium", evidence=evidence)
+
+        if record_id_lower.startswith("cert_commonname") and "wo_sni" not in record_id_lower:
+            subject_name = finding
+        elif record_id_lower.startswith("cert_caissuers") or record_id_lower.startswith("cert_issuer"):
+            issuer_name = re.sub(r"\s*\([^)]*\)\s*$", "", finding).strip()
+
+        if record_id_lower.startswith("cert_expirationstatus") and "expired" in finding_lower:
+            _append_finding(findings, "Expired TLS certificate", severity="medium", evidence=evidence)
+
+        if (record_id_lower.startswith("cert_trust") or record_id_lower.startswith("cert_commonname")) and (
+                "hostname mismatch" in finding_lower
+                or ("mismatch" in finding_lower and "host" in finding_lower)
+                or ("does not match" in finding_lower and "host" in finding_lower)
+        ):
+            _append_finding(findings, "TLS certificate hostname mismatch", severity="medium", evidence=evidence)
+
+        if record_id_lower.startswith("cert_chain_of_trust") or record_id_lower.startswith("cert_trust"):
+            if any(token in finding_lower for token in ("untrusted", "not trusted", "failed", "unable to build", "self-signed")):
+                if "passed" not in finding_lower and " ok" not in finding_lower and not finding_lower.startswith("ok"):
+                    _append_finding(findings, "Untrusted TLS certificate chain", severity="medium", evidence=evidence)
+
+    if subject_name and issuer_name:
+        normalized_subject = re.sub(r"\s+", " ", subject_name).strip().lower()
+        normalized_issuer = re.sub(r"\s+", " ", issuer_name).strip().lower()
+        if normalized_subject and normalized_subject == normalized_issuer and not explicit_self_signed:
+            _append_finding(
+                findings,
+                "Self-signed TLS certificate",
+                severity="low",
+                evidence=f"{tool_id}: subject={subject_name}; issuer={issuer_name}",
+            )
+
+    return {
+        "technologies": [],
+        "findings": _dedupe_rows(findings, ("title", "cve", "evidence"), limit=32),
+        "urls": [],
+    }
+
+
 def _parse_curl_output(
         tool_id: str,
         output_text: str,
@@ -1137,15 +1531,47 @@ def _parse_curl_output(
         port: str = "",
         protocol: str = "tcp",
         service: str = "",
+        base_url: str = "",
 ) -> Dict[str, Any]:
     technologies: List[Dict[str, Any]] = []
     findings: List[Dict[str, Any]] = []
     urls: List[Dict[str, Any]] = []
     header_lines = 0
+    robots_paths = set()
+    seen_auth_headers = set()
 
     for raw_line in str(output_text or "").splitlines():
         line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
         if not line:
+            continue
+        if tool_id == "curl-robots":
+            sitemap_match = re.match(r"(?i)^sitemap:\s*(\S+)$", line)
+            if sitemap_match:
+                resolved = _resolve_web_url(sitemap_match.group(1), base_url=base_url) or _clean_url(sitemap_match.group(1))
+                _append_url(urls, resolved, port=port, protocol=protocol, service=service, label=f"{tool_id} sitemap")
+                continue
+            path_match = re.match(r"(?i)^(?:allow|disallow):\s*(/\S+)\s*$", line)
+            if path_match:
+                path_value = str(path_match.group(1) or "").strip()
+                robots_paths.add(path_value)
+                resolved = _resolve_web_url(path_value, base_url=base_url)
+                _append_url(urls, resolved, port=port, protocol=protocol, service=service, label=f"{tool_id} path")
+                _append_finding(findings, "robots.txt directives exposed", severity="info", evidence=line)
+                continue
+            if re.match(r"(?i)^user-agent:\s*", line):
+                _append_finding(findings, "robots.txt directives exposed", severity="info", evidence=line)
+                continue
+        status_match = _HTTP_STATUS_RE.match(line)
+        if status_match:
+            status_code = str(status_match.group(1) or "").strip()
+            status_reason = _clean_text(status_match.group(2) or "", 120)
+            if status_code in {"401", "407"}:
+                _append_finding(
+                    findings,
+                    "HTTP authentication required",
+                    severity="info",
+                    evidence=_clean_text(f"{line} {status_reason}", 240),
+                )
             continue
         header_match = _HTTP_HEADER_RE.match(line)
         if header_match:
@@ -1157,21 +1583,43 @@ def _parse_curl_output(
             elif key == "x-powered-by":
                 _append_product_technology(technologies, value, evidence=f"{tool_id} header x-powered-by {value}")
             elif key == "location":
-                _append_url(urls, value, port=port, protocol=protocol, service=service, label=f"{tool_id} redirect")
+                resolved = _resolve_web_url(value, base_url=base_url) or _clean_url(value)
+                _append_url(urls, resolved, port=port, protocol=protocol, service=service, label=f"{tool_id} redirect")
+                _append_finding(findings, "HTTP redirect observed", severity="info", evidence=line)
             elif key == "allow" and value:
                 _append_finding(findings, "HTTP methods exposed", severity="low", evidence=line)
+                dangerous_methods = [
+                    method for method in ("PUT", "DELETE", "TRACE", "CONNECT", "PATCH")
+                    if re.search(rf"(?i)\b{re.escape(method)}\b", value)
+                ]
+                if dangerous_methods:
+                    _append_finding(
+                        findings,
+                        f"Potentially dangerous HTTP methods allowed ({', '.join(dangerous_methods)})",
+                        severity="medium" if "TRACE" in dangerous_methods else "low",
+                        evidence=line,
+                    )
             elif key == "sitemap":
-                _append_url(urls, value, port=port, protocol=protocol, service=service, label=f"{tool_id} sitemap")
+                resolved = _resolve_web_url(value, base_url=base_url) or _clean_url(value)
+                _append_url(urls, resolved, port=port, protocol=protocol, service=service, label=f"{tool_id} sitemap")
+            elif key == "www-authenticate" and value:
+                auth_scheme = value.split()[0].strip(",").strip() if value else ""
+                auth_scheme_lower = auth_scheme.lower()
+                if auth_scheme_lower and auth_scheme_lower not in seen_auth_headers:
+                    seen_auth_headers.add(auth_scheme_lower)
+                    _append_finding(
+                        findings,
+                        f"HTTP authentication challenge exposed ({auth_scheme})",
+                        severity="info",
+                        evidence=line,
+                    )
+            elif key == "strict-transport-security" and value:
+                _append_finding(findings, "HSTS header observed", severity="info", evidence=line)
+            elif key == "content-security-policy" and value:
+                _append_finding(findings, "Content-Security-Policy header observed", severity="info", evidence=line)
+            elif key == "x-frame-options" and value:
+                _append_finding(findings, "X-Frame-Options header observed", severity="info", evidence=line)
             continue
-
-        if tool_id == "curl-robots":
-            sitemap_match = re.match(r"(?i)^sitemap:\s*(https?://\S+)$", line)
-            if sitemap_match:
-                _append_url(urls, sitemap_match.group(1), port=port, protocol=protocol, service=service, label=f"{tool_id} sitemap")
-                continue
-            if re.match(r"(?i)^user-agent:\s*", line) or re.match(r"(?i)^disallow:\s*", line):
-                _append_finding(findings, "robots.txt directives exposed", severity="info", evidence=line)
-                continue
 
     if not header_lines:
         title_match = _HTML_TITLE_RE.search(str(output_text or ""))
@@ -1179,6 +1627,15 @@ def _parse_curl_output(
             title = _clean_text(title_match.group(1), 180)
             if "plain http request was sent to https port" in title.lower():
                 _append_finding(findings, title, severity="info", evidence=title)
+
+    if robots_paths:
+        _append_finding(
+            findings,
+            f"robots.txt paths disclosed ({len(robots_paths)})",
+            severity="info",
+            evidence_items=sorted(robots_paths),
+            evidence=f"{tool_id}: {', '.join(sorted(robots_paths)[:8])}",
+        )
 
     return {
         "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=24),
@@ -1192,24 +1649,109 @@ def _parse_waf_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     findings: List[Dict[str, Any]] = []
     urls: List[Dict[str, Any]] = []
 
-    for raw_line in str(output_text or "").splitlines():
+    def _append_waf_vendor(vendor_name: Any, *, manufacturer: Any = "", evidence: str = "") -> bool:
+        firewall = _clean_text(vendor_name, 96).strip(" .")
+        maker = _clean_text(manufacturer, 96).strip(" .")
+        if not firewall:
+            return False
+        lowered_firewall = firewall.lower()
+        if lowered_firewall in {"none", "generic", "unknown"} or "some sort of security" in lowered_firewall:
+            return False
+        evidence_text = _clean_text(evidence or f"{tool_id}: {firewall}", 520)
+        if maker and maker.lower() not in {"none", "unknown"}:
+            evidence_text = _clean_text(f"{evidence_text} [{maker}]", 520)
+        _append_technology(technologies, f"{firewall} WAF", evidence=evidence_text)
+        _append_finding(findings, f"WAF detected: {firewall}", severity="info", evidence=evidence_text)
+        return True
+
+    text = str(output_text or "")
+    stripped = text.lstrip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            payload = payload.get("results", payload)
+        if isinstance(payload, list):
+            vendor_detected = False
+            generic_detected = False
+            for record in payload:
+                if not isinstance(record, dict):
+                    continue
+                record_url = _clean_url(record.get("url"))
+                if record_url:
+                    _append_url(urls, record_url, label=f"{tool_id} target")
+                if not record.get("detected"):
+                    continue
+                firewall = _clean_text(record.get("firewall"), 96)
+                manufacturer = _clean_text(record.get("manufacturer"), 96)
+                evidence = f"{tool_id} json: firewall={firewall or 'unknown'}"
+                if manufacturer and manufacturer.lower() not in {"none", "unknown"}:
+                    evidence += f" manufacturer={manufacturer}"
+                if _append_waf_vendor(firewall, manufacturer=manufacturer, evidence=evidence):
+                    vendor_detected = True
+                elif firewall.lower() == "generic":
+                    generic_detected = True
+            if generic_detected and not vendor_detected:
+                _append_finding(findings, "WAF detected", severity="info", evidence=f"{tool_id} json: generic detection")
+            return {
+                "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=12),
+                "findings": _dedupe_rows(findings, ("title", "cve", "evidence"), limit=16),
+                "urls": _dedupe_rows(urls, ("url",), limit=16),
+            }
+
+    generic_detected = False
+    generic_reason = ""
+    vendor_detected = False
+
+    for raw_line in text.splitlines():
         line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
         if not line:
             continue
         lowered = line.lower()
         for url in _URL_RE.findall(line):
             _append_url(urls, url, label=f"{tool_id} target")
-        if "no waf" in lowered or "not behind a waf" in lowered:
+
+        if "no waf" in lowered or "not behind a waf" in lowered or "was not detected on" in lowered:
             continue
+
+        reason_match = _WAF_REASON_RE.match(line)
+        if reason_match:
+            generic_reason = _clean_text(reason_match.group(1), 240)
+            continue
+
+        site_match = _WAF_SITE_VENDORS_RE.search(line)
+        if site_match:
+            vendor_blob = _clean_text(site_match.group("vendors"), 180)
+            vendor_chunks = [chunk.strip(" .") for chunk in re.split(r"\s+and/or\s+", vendor_blob) if chunk.strip()]
+            for chunk in vendor_chunks:
+                detail_match = _WAF_VENDOR_DETAIL_RE.match(chunk)
+                if detail_match and _append_waf_vendor(
+                        detail_match.group("firewall"),
+                        manufacturer=detail_match.group("manufacturer") or "",
+                        evidence=f"{tool_id}: {line}",
+                ):
+                    vendor_detected = True
+            if vendor_detected:
+                continue
+
         vendor_match = _WAF_VENDOR_RE.search(line)
         if vendor_match:
             vendor = _clean_text(vendor_match.group(1), 96).strip(" .")
-            if vendor and "some sort of security" not in vendor.lower():
-                _append_technology(technologies, f"{vendor} WAF", evidence=f"{tool_id}: {line}")
-                _append_finding(findings, f"WAF detected: {vendor}", severity="info", evidence=line)
+            if _append_waf_vendor(vendor, evidence=f"{tool_id}: {line}"):
+                vendor_detected = True
                 continue
-        if "waf" in lowered and any(token in lowered for token in ("detected", "behind", "generic detection")):
-            _append_finding(findings, "WAF detected", severity="info", evidence=line)
+
+        if "seems to be behind a waf" in lowered or ("waf" in lowered and "generic detection" in lowered):
+            generic_detected = True
+            continue
+
+    if generic_detected and not vendor_detected:
+        evidence = f"{tool_id}: generic detection"
+        if generic_reason:
+            evidence += f" ({generic_reason})"
+        _append_finding(findings, "WAF detected", severity="info", evidence=evidence)
 
     return {
         "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=12),
@@ -1375,9 +1917,14 @@ def _parse_content_discovery_output(
         protocol: str = "tcp",
         service: str = "",
 ) -> Dict[str, Any]:
+    technologies: List[Dict[str, Any]] = []
     findings: List[Dict[str, Any]] = []
     urls: List[Dict[str, Any]] = []
-    interesting_paths = []
+    interesting_paths: List[str] = []
+    admin_paths: List[str] = []
+    api_paths: List[str] = []
+    sensitive_paths: List[str] = []
+    backup_paths: List[str] = []
 
     for payload in _iter_json_payloads(output_text):
         for item in _iter_discovery_records(payload):
@@ -1403,12 +1950,17 @@ def _parse_content_discovery_output(
             if redirect_target:
                 _append_url(urls, redirect_target, port=port, protocol=protocol, service=service, label=f"{tool_id} redirect")
             candidate_path = str(path or urlparse(str(joined_path_url or normalized_url or "")).path or "").strip()
-            if (
-                    candidate_path
-                    and status in {"200", "204", "301", "302", "307", "308", "401", "403"}
-                    and any(token in candidate_path.lower() for token in ("admin", "login", "portal", "api", "graphql", "swagger", "actuator"))
-            ):
-                interesting_paths.append(f"{candidate_path} ({status})")
+            _classify_content_discovery_path(
+                technologies,
+                tool_id=tool_id,
+                candidate_path=candidate_path,
+                status=status,
+                interesting_paths=interesting_paths,
+                admin_paths=admin_paths,
+                api_paths=api_paths,
+                sensitive_paths=sensitive_paths,
+                backup_paths=backup_paths,
+            )
 
     for raw_line in str(output_text or "").splitlines():
         line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
@@ -1424,8 +1976,38 @@ def _parse_content_discovery_output(
             if target_url:
                 _append_url(urls, target_url, port=port, protocol=protocol, service=service, label=f"{tool_id} discovered content")
                 candidate_path = str(urlparse(target_url).path or "").strip()
-                if candidate_path and status in {"200", "204", "301", "302", "307", "308", "401", "403"} and _is_interesting_web_path(candidate_path):
-                    interesting_paths.append(f"{candidate_path} ({status})")
+                _classify_content_discovery_path(
+                    technologies,
+                    tool_id=tool_id,
+                    candidate_path=candidate_path,
+                    status=status,
+                    interesting_paths=interesting_paths,
+                    admin_paths=admin_paths,
+                    api_paths=api_paths,
+                    sensitive_paths=sensitive_paths,
+                    backup_paths=backup_paths,
+                )
+            if redirect_url:
+                _append_url(urls, redirect_url, port=port, protocol=protocol, service=service, label=f"{tool_id} redirect")
+            continue
+        gobuster_url_match = _GOBUSTER_URL_LINE_RE.match(line)
+        if gobuster_url_match:
+            status = str(gobuster_url_match.group("status") or "").strip()
+            target_url = _clean_url(gobuster_url_match.group("url") or "")
+            redirect_url = _clean_url(gobuster_url_match.group("redirect") or "")
+            if target_url:
+                _append_url(urls, target_url, port=port, protocol=protocol, service=service, label=f"{tool_id} discovered content")
+                _classify_content_discovery_path(
+                    technologies,
+                    tool_id=tool_id,
+                    candidate_path=str(urlparse(target_url).path or "").strip(),
+                    status=status,
+                    interesting_paths=interesting_paths,
+                    admin_paths=admin_paths,
+                    api_paths=api_paths,
+                    sensitive_paths=sensitive_paths,
+                    backup_paths=backup_paths,
+                )
             if redirect_url:
                 _append_url(urls, redirect_url, port=port, protocol=protocol, service=service, label=f"{tool_id} redirect")
             continue
@@ -1437,8 +2019,17 @@ def _parse_content_discovery_output(
             if path:
                 joined = urljoin(f"{base_url.rstrip('/')}/", path.lstrip("/"))
                 _append_url(urls, joined, port=port, protocol=protocol, service=service, label=f"{tool_id} discovered path")
-                if status in {"200", "204", "301", "302", "307", "308", "401", "403"} and _is_interesting_web_path(path):
-                    interesting_paths.append(f"{path} ({status})")
+                _classify_content_discovery_path(
+                    technologies,
+                    tool_id=tool_id,
+                    candidate_path=path,
+                    status=status,
+                    interesting_paths=interesting_paths,
+                    admin_paths=admin_paths,
+                    api_paths=api_paths,
+                    sensitive_paths=sensitive_paths,
+                    backup_paths=backup_paths,
+                )
             if redirect_url:
                 _append_url(urls, redirect_url, port=port, protocol=protocol, service=service, label=f"{tool_id} redirect")
             continue
@@ -1457,8 +2048,40 @@ def _parse_content_discovery_output(
             evidence=f"{tool_id}: {', '.join(sorted(set(interesting_paths))[:8])}",
             evidence_items=sorted(set(interesting_paths)),
         )
+    if admin_paths:
+        _append_finding(
+            findings,
+            f"Administrative/authentication paths discovered ({len(set(admin_paths))})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(set(admin_paths))[:8])}",
+            evidence_items=sorted(set(admin_paths)),
+        )
+    if api_paths:
+        _append_finding(
+            findings,
+            f"API/diagnostic paths discovered ({len(set(api_paths))})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(set(api_paths))[:8])}",
+            evidence_items=sorted(set(api_paths)),
+        )
+    if sensitive_paths:
+        _append_finding(
+            findings,
+            f"Sensitive web files exposed ({len(set(sensitive_paths))})",
+            severity="low",
+            evidence=f"{tool_id}: {', '.join(sorted(set(sensitive_paths))[:8])}",
+            evidence_items=sorted(set(sensitive_paths)),
+        )
+    if backup_paths:
+        _append_finding(
+            findings,
+            f"Backup/config artifacts exposed ({len(set(backup_paths))})",
+            severity="low",
+            evidence=f"{tool_id}: {', '.join(sorted(set(backup_paths))[:8])}",
+            evidence_items=sorted(set(backup_paths)),
+        )
     return {
-        "technologies": [],
+        "technologies": _dedupe_rows(technologies, ("name", "version", "cpe", "evidence"), limit=16),
         "findings": _dedupe_rows(findings, ("title", "evidence"), limit=16),
         "urls": _dedupe_rows(urls, ("url",), limit=96),
     }
@@ -1734,7 +2357,8 @@ def _parse_sqlmap_output(tool_id: str, output_text: str) -> Dict[str, Any]:
 def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     technologies: List[Dict[str, Any]] = []
     findings: List[Dict[str, Any]] = []
-    lowered = str(output_text or "").lower()
+    raw_text = str(output_text or "")
+    lowered = raw_text.lower()
 
     if "windows" in lowered:
         _append_technology(technologies, "Windows", evidence=f"{tool_id} smb enumeration")
@@ -1745,7 +2369,11 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
 
     domains = {
         _clean_text(match, 96)
-        for match in list(_SMB_DOMAIN_RE.findall(str(output_text or ""))) + list(_SMB_FOUND_DOMAIN_RE.findall(str(output_text or "")))
+        for match in (
+            list(_SMB_DOMAIN_RE.findall(raw_text))
+            + list(_SMB_FOUND_DOMAIN_RE.findall(raw_text))
+            + list(_NETEXEC_DOMAIN_TOKEN_RE.findall(raw_text))
+        )
         if _clean_text(match, 96) and _clean_text(match, 96).upper() not in {"WORKGROUP", "UNKNOWN"}
     }
     for domain in sorted(domains)[:4]:
@@ -1754,12 +2382,26 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
 
     share_names = {
         _clean_text(match, 96)
-        for match in list(_SMB_SHARE_RE.findall(str(output_text or ""))) + list(_SMB_SHARE_TABLE_RE.findall(str(output_text or "")))
+        for match in list(_SMB_SHARE_RE.findall(raw_text)) + list(_SMB_SHARE_TABLE_RE.findall(raw_text))
         if _clean_text(match, 96) and _clean_text(match, 96).lower() not in {"sharename", "name", "type", "comment"}
     }
+    for raw_line in raw_text.splitlines():
+        line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).rstrip()
+        share_line_match = re.match(r"^SMB\s+\S+\s+\d+\s+\S+\s+(?P<rest>.+)$", line)
+        if not share_line_match:
+            continue
+        rest = str(share_line_match.group("rest") or "").strip()
+        if not rest or rest.startswith("[") or " rid:" in rest.lower():
+            continue
+        parts = [item.strip() for item in re.split(r"\s{2,}", rest) if item.strip()]
+        if not parts:
+            continue
+        share_name = _clean_text(parts[0], 96)
+        if share_name and ":" not in share_name and share_name.lower() not in {"share", "permissions", "remark"}:
+            share_names.add(share_name)
     try:
-        if "," in str(output_text or "") and "\n" in str(output_text or ""):
-            reader = csv.DictReader(io.StringIO(str(output_text or "")))
+        if "," in raw_text and "\n" in raw_text:
+            reader = csv.DictReader(io.StringIO(raw_text))
             for row in list(reader or [])[:64]:
                 if not isinstance(row, dict):
                     continue
@@ -1773,12 +2415,29 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     user_names = {
         _clean_text(match, 96)
         for match in (
-            list(_SMB_RPC_USER_RE.findall(str(output_text or "")))
-            + list(_SMB_USER_RE.findall(str(output_text or "")))
-            + list(_SMB_FOUND_USER_RE.findall(str(output_text or "")))
+            list(_SMB_RPC_USER_RE.findall(raw_text))
+            + list(_SMB_USER_RE.findall(raw_text))
+            + list(_SMB_FOUND_USER_RE.findall(raw_text))
         )
         if _clean_text(match, 96) and _clean_text(match, 96).lower() not in {"user", "username", "account"}
     }
+    for match in list(_NETEXEC_USER_ROW_RE.finditer(raw_text)):
+        account = _clean_text(match.group("account"), 96)
+        if "\\" in account:
+            account = account.split("\\", 1)[1].strip()
+        if account and account.lower() not in {"user", "username", "account"}:
+            user_names.add(account)
+
+    signing_disabled = any(str(match or "").strip().lower() == "false" for match in _NETEXEC_SIGNING_TOKEN_RE.findall(raw_text))
+    smbv1_enabled = any(str(match or "").strip().lower() == "true" for match in _NETEXEC_SMBV1_TOKEN_RE.findall(raw_text))
+    anonymous_allowed = False
+    for match in list(_NETEXEC_AUTH_SUCCESS_RE.finditer(raw_text)):
+        account = _clean_text(match.group("account"), 48).replace(" ", "")
+        if account in {"\\", "\\\\", "guest", ".\\guest", ".\\\\guest"}:
+            anonymous_allowed = True
+            break
+
+    password_policy_lines = [_clean_text(match, 160) for match in _SMB_PASSWORD_POLICY_RE.findall(raw_text) if _clean_text(match, 160)]
 
     if share_names:
         _append_finding(
@@ -1796,6 +2455,20 @@ def _parse_smb_enum_output(tool_id: str, output_text: str) -> Dict[str, Any]:
             evidence=f"{tool_id}: {', '.join(sorted(user_names)[:8])}",
             evidence_items=sorted(user_names),
         )
+    if password_policy_lines:
+        _append_finding(
+            findings,
+            "SMB password policy disclosed",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(password_policy_lines[:4])}",
+            evidence_items=password_policy_lines[:6],
+        )
+    if anonymous_allowed:
+        _append_finding(findings, "Anonymous SMB access allowed", severity="low", evidence=f"{tool_id}: null or guest session succeeded")
+    if signing_disabled:
+        _append_finding(findings, "SMB signing disabled", severity="medium", evidence=f"{tool_id}: signing:false")
+    if smbv1_enabled:
+        _append_finding(findings, "SMBv1 enabled", severity="medium", evidence=f"{tool_id}: smbv1:true")
     return {
         "technologies": _dedupe_rows(technologies, ("name", "version", "cpe"), limit=24),
         "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
@@ -2116,6 +2789,8 @@ def extract_tool_observations(
             current = _parse_vuln_script_output(normalized_tool, source)
         elif normalized_tool in {"sslscan", "sslyze"}:
             current = _parse_tls_output(normalized_tool, source)
+        elif normalized_tool in {"testssl", "testssl.sh"}:
+            current = _parse_testssl_output(normalized_tool, source)
         elif normalized_tool == "wafw00f":
             current = _parse_waf_output(normalized_tool, source)
         elif normalized_tool in {"curl-headers", "curl-options", "curl-robots"}:
@@ -2125,6 +2800,7 @@ def extract_tool_observations(
                 port=str(port or ""),
                 protocol=str(protocol or "tcp"),
                 service=str(service or ""),
+                base_url=base_url,
             )
         elif normalized_tool in {"web-content-discovery", "dirsearch", "ffuf"}:
             current = _parse_content_discovery_output(
@@ -2139,7 +2815,7 @@ def extract_tool_observations(
             current = _parse_sqlmap_output(normalized_tool, source)
         elif normalized_tool == "wpscan":
             current = _parse_wpscan_output(normalized_tool, source)
-        elif normalized_tool in {"enum4linux-ng", "enum4linux", "smbenum", "samrdump", "smbmap", "rpcclient-enum"} or normalized_tool.startswith("rpcclient"):
+        elif normalized_tool in {"enum4linux-ng", "enum4linux", "smbenum", "samrdump", "smbmap", "rpcclient-enum", "netexec"} or normalized_tool.startswith("rpcclient"):
             current = _parse_smb_enum_output(normalized_tool, source)
         elif normalized_tool == "nbtscan":
             current = _parse_nbtscan_output(normalized_tool, source)

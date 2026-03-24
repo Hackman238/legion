@@ -204,6 +204,51 @@ class SchedulerPlannerTest(unittest.TestCase):
             self.assertEqual("blocked", actions[0].policy_decision)
             self.assertIn("credential_bruteforce", actions[0].danger_categories)
 
+    def test_ai_mode_surfaces_manual_relay_workflows_as_approval_gated_actions(self):
+        from app.scheduler.config import SchedulerConfigManager
+        from app.scheduler.planner import SchedulerPlanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = SchedulerConfigManager(config_path=os.path.join(tmpdir, "scheduler-ai.json"))
+            manager.update_preferences({
+                "mode": "ai",
+                "provider": "none",
+                "engagement_policy": {
+                    "preset": "internal_pentest",
+                    "scope": "internal",
+                    "intent": "pentest",
+                    "allow_exploitation": True,
+                    "allow_lateral_movement": True,
+                    "credential_attack_mode": "approval",
+                    "lockout_risk_mode": "approval",
+                },
+            })
+            planner = SchedulerPlanner(manager)
+
+            settings = SimpleNamespace(
+                automatedAttacks=[],
+                portActions=[
+                    ["Prepare Responder capture workflow", "responder", "responder -I <interface> -w -F", "smb,ldap,kerberos"],
+                    ["Prepare ntlmrelayx relay workflow", "ntlmrelayx", "impacket-ntlmrelayx -t smb://[IP] -smb2support", "smb,ldap,kerberos"],
+                    ["Run netexec", "netexec", "netexec smb [IP] --port [PORT] -u '' -p '' --shares --users --pass-pol", "smb"],
+                ],
+            )
+
+            actions = planner.plan_actions(
+                "smb",
+                "tcp",
+                settings,
+                context={"signals": {"smb_signing_disabled": True}},
+            )
+
+            by_tool = {item.tool_id: item for item in actions}
+            self.assertIn("responder", by_tool)
+            self.assertIn("ntlmrelayx", by_tool)
+            self.assertTrue(by_tool["responder"].requires_approval)
+            self.assertTrue(by_tool["ntlmrelayx"].requires_approval)
+            self.assertEqual("manual", by_tool["responder"].action.runner_type)
+            self.assertEqual("manual", by_tool["ntlmrelayx"].action.runner_type)
+
     @patch("app.scheduler.planner.rank_actions_with_provider")
     def test_ai_mode_uses_provider_scores_when_available(self, mock_rank_actions):
         from app.scheduler.config import SchedulerConfigManager
@@ -828,7 +873,7 @@ class SchedulerPlannerTest(unittest.TestCase):
             tool_ids = {item.tool_id for item in actions}
             self.assertTrue({"dirsearch", "ffuf"} & tool_ids)
 
-    def test_ai_mode_internal_safe_enum_gap_prioritizes_enum4linux_smbmap_or_rpcclient(self):
+    def test_ai_mode_internal_safe_enum_gap_prioritizes_supported_smb_safe_enum_tools(self):
         from app.scheduler.config import SchedulerConfigManager
         from app.scheduler.planner import SchedulerPlanner
 
@@ -845,11 +890,13 @@ class SchedulerPlannerTest(unittest.TestCase):
                     ["enum4linux-ng", "smb", "tcp"],
                     ["smbmap", "smb", "tcp"],
                     ["rpcclient-enum", "smb", "tcp"],
+                    ["netexec", "smb", "tcp"],
                 ],
                 portActions=[
                     ["Run enum4linux-ng", "enum4linux-ng", "enum4linux-ng -A -oJ [OUTPUT] [IP]", "smb"],
                     ["Run smbmap", "smbmap", "smbmap -H [IP] -P [PORT] -q --no-write-check | tee [OUTPUT].txt", "smb"],
                     ["Run rpcclient enum", "rpcclient-enum", "rpcclient [IP] -p [PORT] -U '%' -c 'srvinfo;enumdomusers' > [OUTPUT].txt", "smb"],
+                    ["Run netexec", "netexec", "netexec smb [IP] --port [PORT] -u '' -p '' --shares --users --pass-pol > [OUTPUT].txt", "smb"],
                     ["Banner", "banner", "echo | nc -v [IP] [PORT]", "smb"],
                 ],
             )
@@ -869,7 +916,7 @@ class SchedulerPlannerTest(unittest.TestCase):
             )
 
             tool_ids = {item.tool_id for item in actions}
-            self.assertTrue({"enum4linux-ng", "smbmap", "rpcclient-enum"} & tool_ids)
+            self.assertTrue({"enum4linux-ng", "smbmap", "rpcclient-enum", "netexec"} & tool_ids)
 
     def test_deterministic_mode_uses_strategy_packs_to_close_explicit_gap_when_context_exists(self):
         from app.scheduler.config import SchedulerConfigManager

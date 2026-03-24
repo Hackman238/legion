@@ -326,7 +326,7 @@ _SUPPORTED_WORKSPACE_TOOL_IDS = {
     "smbmap",
     "sqlmap",
     "sslscan",
-    "sslyze",
+    "testssl.sh",
     "wafw00f",
     "web-content-discovery",
     "whatweb",
@@ -2135,12 +2135,14 @@ class WebRuntime:
                 resolved_family_action,
                 reason="approved via web",
             )
+            runner_type = self._runner_type_for_approval_item(item)
+            approved_reason = "approved for operator execution" if runner_type == "manual" else "approved via web"
 
             updated = update_pending_approval(
                 project.database,
                 int(approval_id),
                 status="approved",
-                decision_reason="approved via web",
+                decision_reason=approved_reason,
                 family_policy_state=applied_family_state or item.get("family_policy_state", ""),
             )
             update_scheduler_decision_for_approval(
@@ -2148,10 +2150,10 @@ class WebRuntime:
                 int(approval_id),
                 approved=True,
                 executed=False,
-                reason="approved",
+                reason=approved_reason,
             )
 
-        if not run_now:
+        if runner_type == "manual" or not run_now:
             self._emit_ui_invalidation("approvals", "decisions", "overview")
             return {"approval": updated, "job": None}
 
@@ -7190,8 +7192,8 @@ class WebRuntime:
                 _add_gap("missing_internal_safe_enum", "enum4linux-ng", "smbmap", "rpcclient-enum")
 
         if str(analysis_mode or "").strip().lower() == "dig_deeper" and not missing:
-            if is_web and not _has_any("wafw00f", "sslscan", "sslyze"):
-                _add_gap("missing_deep_tls_waf_checks", "wafw00f", "sslscan", "sslyze")
+            if is_web and not _has_any("wafw00f", "sslscan", "testssl.sh", "sslyze"):
+                _add_gap("missing_deep_tls_waf_checks", "wafw00f", "sslscan", "testssl.sh")
 
         stage = "baseline"
         if not missing:
@@ -9373,6 +9375,27 @@ class WebRuntime:
                 raise KeyError(f"Unknown approval id: {approval_id}")
             if str(item.get("status", "")).strip().lower() not in {"approved", "pending"}:
                 return {"approval_id": int(approval_id), "status": item.get("status", "")}
+            if self._runner_type_for_approval_item(item) == "manual":
+                manual_reason = "approved for operator execution"
+                update_pending_approval(
+                    project.database,
+                    int(approval_id),
+                    status="approved",
+                    decision_reason=manual_reason,
+                )
+                update_scheduler_decision_for_approval(
+                    project.database,
+                    int(approval_id),
+                    approved=True,
+                    executed=False,
+                    reason=manual_reason,
+                )
+                return {
+                    "approval_id": int(approval_id),
+                    "executed": False,
+                    "reason": "manual runner requires operator execution",
+                    "process_id": 0,
+                }
             update_pending_approval(
                 project.database,
                 int(approval_id),
@@ -11890,6 +11913,33 @@ class WebRuntime:
         if not action:
             return ""
         return str(action[2])
+
+    def _runner_type_for_tool(self, tool_id: str, command_template: str = "") -> str:
+        normalized_tool = str(tool_id or "").strip().lower()
+        if not normalized_tool and not str(command_template or "").strip():
+            return "local"
+        try:
+            registry = SchedulerPlanner.build_action_registry(self._get_settings(), dangerous_categories=[])
+            spec = registry.get_by_tool_id(normalized_tool)
+            if spec is not None and str(getattr(spec, "runner_type", "") or "").strip():
+                return str(spec.runner_type).strip().lower()
+        except Exception:
+            pass
+        if normalized_tool in {"screenshooter", "x11screen"}:
+            return "browser"
+        if normalized_tool in {"responder", "ntlmrelayx"}:
+            return "manual"
+        text = " ".join([normalized_tool, str(command_template or "")]).lower()
+        if any(token in text for token in ("manual", "operator", "clipboard")):
+            return "manual"
+        return "local"
+
+    def _runner_type_for_approval_item(self, item: Optional[Dict[str, Any]]) -> str:
+        payload = item if isinstance(item, dict) else {}
+        return self._runner_type_for_tool(
+            str(payload.get("tool_id", "") or ""),
+            str(payload.get("command_template", "") or ""),
+        )
 
     def _hostname_for_ip(self, host_ip: str) -> str:
         try:

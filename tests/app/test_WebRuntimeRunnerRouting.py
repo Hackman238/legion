@@ -1,5 +1,6 @@
 import collections
 import collections.abc
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -77,6 +78,65 @@ class WebRuntimeRunnerRoutingTest(unittest.TestCase):
         self.assertIn("kalilinux/kali-rolling", rendered_command)
         self.assertEqual("container", result["execution_record"].runner_type)
         self.assertEqual("completed", result["reason"])
+
+    @patch("app.web.runtime.update_scheduler_decision_for_approval")
+    @patch("app.web.runtime.update_pending_approval")
+    @patch("app.web.runtime.get_pending_approval")
+    @patch("app.web.runtime.ensure_scheduler_approval_table")
+    def test_approve_scheduler_approval_keeps_manual_runner_as_operator_step(
+            self,
+            _mock_ensure,
+            mock_get_pending,
+            mock_update_pending,
+            mock_update_decision,
+    ):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        database = object()
+        runtime.settings = SimpleNamespace(
+            automatedAttacks=[],
+            portActions=[
+                ["Prepare Responder capture workflow", "responder", "responder -I <interface> -w -F", "smb,ldap,kerberos"],
+            ],
+        )
+        runtime._require_active_project = lambda: SimpleNamespace(database=database)
+        runtime._apply_family_policy_action = lambda *args, **kwargs: ""
+        runtime._emit_ui_invalidation = lambda *args, **kwargs: None
+        runtime._start_job = MagicMock()
+
+        mock_get_pending.return_value = {
+            "id": 77,
+            "status": "pending",
+            "tool_id": "responder",
+            "command_template": "responder -I <interface> -w -F",
+            "family_policy_state": "",
+        }
+
+        def _update_side_effect(_database, _approval_id, **kwargs):
+            return {
+                "id": 77,
+                "status": kwargs.get("status", "approved"),
+                "decision_reason": kwargs.get("decision_reason", ""),
+                "family_policy_state": kwargs.get("family_policy_state", ""),
+            }
+
+        mock_update_pending.side_effect = _update_side_effect
+
+        result = WebRuntime.approve_scheduler_approval(runtime, 77)
+
+        self.assertIsNone(result["job"])
+        self.assertEqual("approved", result["approval"]["status"])
+        self.assertEqual("approved for operator execution", result["approval"]["decision_reason"])
+        runtime._start_job.assert_not_called()
+        mock_update_decision.assert_called_with(
+            database,
+            77,
+            approved=True,
+            executed=False,
+            reason="approved for operator execution",
+        )
 
 
 if __name__ == "__main__":
