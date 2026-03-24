@@ -106,6 +106,8 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("testssl.sh", port_action_ids)
                 self.assertIn("wpscan", port_action_ids)
                 self.assertIn("httpx", port_action_ids)
+                self.assertIn("subfinder", port_action_ids)
+                self.assertIn("nuclei-cloud", port_action_ids)
                 self.assertIn("whatweb", port_action_ids)
                 self.assertIn("whatweb-http", port_action_ids)
                 self.assertIn("whatweb-https", port_action_ids)
@@ -150,6 +152,8 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertIn("smbmap", scheduler_ids)
                 self.assertIn("rpcclient-enum", scheduler_ids)
                 self.assertIn("netexec", scheduler_ids)
+                self.assertNotIn("subfinder", scheduler_ids)
+                self.assertNotIn("nuclei-cloud", scheduler_ids)
                 self.assertNotIn("responder", scheduler_ids)
                 self.assertNotIn("ntlmrelayx", scheduler_ids)
 

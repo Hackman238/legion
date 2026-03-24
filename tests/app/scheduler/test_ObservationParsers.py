@@ -1304,6 +1304,32 @@ class ObservationParsersTest(unittest.TestCase):
         self.assertIn("www.example.com", findings["DNS subdomains discovered (2)"]["evidence_items"])
         self.assertIn("intranet.example.com", findings["DNS subdomains discovered (2)"]["evidence_items"])
         self.assertIn("intranet.example.com -> 10.0.0.5", findings["Internal DNS records disclosed (1)"]["evidence_items"])
+        self.assertEqual(
+            {"www.example.com", "intranet.example.com"},
+            {str(item).strip() for item in parsed.get("discovered_hosts", [])},
+        )
+
+    def test_extract_tool_observations_parses_subfinder_jsonl_and_plain_text_hosts(self):
+        from app.scheduler.observation_parsers import extract_tool_observations
+
+        output = (
+            "{\"host\":\"api.example.com\",\"input\":\"example.com\",\"source\":\"crtsh\"}\n"
+            "{\"host\":\"cdn.example.com\",\"input\":\"example.com\",\"source\":\"alienvault\"}\n"
+            "admin.example.com\n"
+            "[INF] completed providers\n"
+            "{\"host\":\"api.example.com\",\"input\":\"example.com\",\"source\":\"buffer\"}\n"
+        )
+
+        parsed = extract_tool_observations("subfinder", output)
+
+        titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+        discovered_hosts = {str(item).strip() for item in parsed.get("discovered_hosts", [])}
+
+        self.assertIn("Passive subdomains discovered (3)", titles)
+        self.assertEqual(
+            {"api.example.com", "cdn.example.com", "admin.example.com"},
+            discovered_hosts,
+        )
 
     def test_extract_tool_observations_parses_screenshot_metadata_artifact(self):
         from app.scheduler.observation_parsers import extract_tool_observations

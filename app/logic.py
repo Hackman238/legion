@@ -54,6 +54,7 @@ class Logic:
         Run scripted actions/automated attacks for all hosts/ports in the active project (headless/CLI mode).
         Screenshots are also taken using EyeWitness, just as in the GUI.
         """
+        from app.cli_utils import import_targets
         from app.settings import AppSettings, Settings
         from app.scheduler.approvals import ensure_scheduler_approval_table, queue_pending_approval
         from app.scheduler.audit import log_scheduler_decision
@@ -88,6 +89,23 @@ class Logic:
         repo_container = self.activeProject.repositoryContainer
         scheduler_config = SchedulerConfigManager()
         runner_settings = normalize_runner_settings(scheduler_config.load().get("runners", {}))
+
+        def import_discovered_hosts(discovered_hosts):
+            targets = [str(item or "").strip() for item in list(discovered_hosts or []) if str(item or "").strip()]
+            if not targets:
+                return []
+            database = getattr(self.activeProject, "database", None)
+            if database is None:
+                return []
+            session = database.session()
+            try:
+                host_repo = self.activeProject.repositoryContainer.hostRepository
+                return list(import_targets(session, host_repo, targets) or [])
+            except Exception:
+                session.rollback()
+                return []
+            finally:
+                session.close()
         scheduler_orchestrator = SchedulerOrchestrator(scheduler_config)
         engagement_policy = None
         database = getattr(self.activeProject, "database", None)
@@ -382,6 +400,10 @@ class Logic:
                         host_ip=str(request.host_ip or ""),
                         hostname=str(request.hostname or ""),
                     )
+                    discovered_hosts_added = import_discovered_hosts(observations.get("discovered_hosts", []))
+                    if discovered_hosts_added:
+                        observations = dict(observations)
+                        observations["discovered_hosts_added"] = discovered_hosts_added
                     print(f"[{request.tool_id} STDOUT]\n{result.stdout}")
                     if result.stderr:
                         print(f"[{request.tool_id} STDERR]\n{result.stderr}")
@@ -506,6 +528,10 @@ class Logic:
                         host_ip=str(request.host_ip or ""),
                         hostname=str(request.hostname or ""),
                     )
+                    discovered_hosts_added = import_discovered_hosts(observations.get("discovered_hosts", []))
+                    if discovered_hosts_added:
+                        observations = dict(observations)
+                        observations["discovered_hosts_added"] = discovered_hosts_added
                     exit_status = (
                         f"completed (eyewitness exited {capture.get('returncode')})"
                         if int(capture.get("returncode", 0) or 0) != 0 else

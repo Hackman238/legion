@@ -6,6 +6,102 @@ from types import SimpleNamespace
 
 
 class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
+    def test_ingest_discovered_hosts_imports_targets_and_queues_subfinder_followup(self):
+        from app.ProjectManager import ProjectManager
+        from app.logic import Logic
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.web.runtime import WebRuntime
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            runtime = WebRuntime.__new__(WebRuntime)
+            runtime._lock = threading.RLock()
+            runtime.logic = SimpleNamespace(activeProject=project)
+
+            captured = {}
+
+            def fake_start_nmap_scan_job(**kwargs):
+                captured.update(kwargs)
+                return {
+                    "id": 91,
+                    "type": "nmap-scan",
+                    "payload": {"targets": list(kwargs.get("targets", []))},
+                }
+
+            runtime.start_nmap_scan_job = fake_start_nmap_scan_job
+
+            result = runtime._ingest_discovered_hosts(
+                ["api.example.com", "admin.example.com", "api.example.com"],
+                source_tool_id="subfinder",
+            )
+
+            host_rows = project.repositoryContainer.hostRepository.getAllHostObjs()
+            imported_hosts = {
+                str(getattr(item, "hostname", "") or getattr(item, "ip", "") or "").strip()
+                for item in list(host_rows or [])
+            }
+
+            self.assertEqual({"api.example.com", "admin.example.com"}, set(result["added_hosts"]))
+            self.assertEqual({"api.example.com", "admin.example.com"}, imported_hosts)
+            self.assertEqual({"api.example.com", "admin.example.com"}, set(captured["targets"]))
+            self.assertFalse(bool(captured["run_actions"]))
+            self.assertEqual("easy", captured["scan_mode"])
+            self.assertEqual(100, int(captured["scan_options"]["top_ports"]))
+        finally:
+            project_manager.closeProject(project)
+
+    def test_existing_attempt_summary_treats_subfinder_as_host_scoped(self):
+        from app.ProjectManager import ProjectManager
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.scheduler.state import upsert_target_state
+        from app.web.runtime import WebRuntime
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            host = hostObj(ip="portal.example.com", ipv4="portal.example.com", hostname="portal.example.com")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+            session.close()
+
+            upsert_target_state(project.database, host_id, {
+                "host_ip": "portal.example.com",
+                "attempted_actions": [{
+                    "tool_id": "subfinder",
+                    "status": "executed",
+                    "port": "80",
+                    "protocol": "tcp",
+                    "attempted_at": "2026-03-23T00:00:00Z",
+                }],
+            }, merge=True)
+
+            runtime = WebRuntime.__new__(WebRuntime)
+            runtime._lock = threading.RLock()
+            runtime.logic = SimpleNamespace(activeProject=project)
+
+            summary = runtime._existing_attempt_summary_for_target(
+                host_id,
+                "portal.example.com",
+                "443",
+                "tcp",
+            )
+
+            self.assertIn("subfinder", summary["tool_ids"])
+        finally:
+            project_manager.closeProject(project)
+
     def test_find_active_job_filters_by_type_status_and_host(self):
         from app.web.runtime import WebRuntime
 

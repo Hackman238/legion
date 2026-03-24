@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import psutil
 from sqlalchemy import text
 
-from app.cli_utils import import_targets_from_textfile, is_wsl, to_windows_path
+from app.cli_utils import import_targets, import_targets_from_textfile, is_wsl, to_windows_path
 from app.core.common import getTempFolder
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.hostsfile import add_temporary_host_alias
@@ -5267,6 +5267,67 @@ class WebRuntime:
                 "added": int(added or 0),
             }
 
+    def _import_discovered_hosts_into_project(self, discovered_hosts: List[str]) -> List[str]:
+        targets = [str(item or "").strip() for item in list(discovered_hosts or []) if str(item or "").strip()]
+        if not targets:
+            return []
+        with self._lock:
+            project = self._require_active_project()
+            session = project.database.session()
+            host_repo = project.repositoryContainer.hostRepository
+            try:
+                added = import_targets(session, host_repo, targets)
+            finally:
+                session.close()
+        return list(added or [])
+
+    def _queue_discovered_host_followup_scan(self, targets: List[str]) -> Dict[str, Any]:
+        target_list = [str(item or "").strip() for item in list(targets or []) if str(item or "").strip()]
+        if not target_list:
+            return {}
+        scan_options = {
+            "discovery": True,
+            "skip_dns": False,
+            "timing": "T3",
+            "top_ports": 100,
+            "service_detection": True,
+            "default_scripts": True,
+            "os_detection": False,
+            "aggressive": False,
+            "full_ports": False,
+            "vuln_scripts": False,
+            "host_discovery_only": False,
+            "arp_ping": False,
+        }
+        return self.start_nmap_scan_job(
+            targets=target_list,
+            discovery=True,
+            staged=False,
+            run_actions=False,
+            nmap_path="nmap",
+            nmap_args="",
+            scan_mode="easy",
+            scan_options=scan_options,
+        )
+
+    def _ingest_discovered_hosts(self, discovered_hosts: List[str], *, source_tool_id: str = "") -> Dict[str, Any]:
+        observed = [str(item or "").strip() for item in list(discovered_hosts or []) if str(item or "").strip()]
+        if not observed:
+            return {"added_hosts": [], "followup_job": {}, "followup_error": ""}
+        added_hosts = self._import_discovered_hosts_into_project(observed)
+        followup_job: Dict[str, Any] = {}
+        followup_error = ""
+        if str(source_tool_id or "").strip().lower() == "subfinder" and added_hosts:
+            try:
+                followup_job = self._queue_discovered_host_followup_scan(added_hosts)
+            except Exception as exc:
+                followup_error = str(exc)
+        return {
+            "added_hosts": added_hosts,
+            "followup_job": followup_job,
+            "followup_error": followup_error,
+        }
+
     def _import_nmap_xml(self, xml_path: str, run_actions: bool = False, job_id: int = 0) -> Dict[str, Any]:
         resolved_job_id = int(job_id or 0)
         if resolved_job_id > 0:
@@ -5733,6 +5794,26 @@ class WebRuntime:
                 quality_events = list(observed_payload.get("finding_quality_events", []) or [])
                 if quality_events:
                     observed_raw["finding_quality_events"] = quality_events
+                discovered_hosts = list(observed_payload.get("discovered_hosts", []) or [])
+                if discovered_hosts:
+                    observed_raw["discovered_hosts"] = discovered_hosts
+                    discovered_summary = self._ingest_discovered_hosts(
+                        discovered_hosts,
+                        source_tool_id=str(decision.tool_id or ""),
+                    )
+                    added_hosts = list(discovered_summary.get("added_hosts", []) or [])
+                    if added_hosts:
+                        observed_raw["discovered_hosts_added"] = added_hosts
+                    followup_job = discovered_summary.get("followup_job", {})
+                    if isinstance(followup_job, dict) and int(followup_job.get("id", 0) or 0) > 0:
+                        observed_raw["discovered_hosts_followup_job"] = {
+                            "id": int(followup_job.get("id", 0) or 0),
+                            "type": str(followup_job.get("type", "") or ""),
+                            "target_count": len(added_hosts),
+                        }
+                    followup_error = str(discovered_summary.get("followup_error", "") or "").strip()
+                    if followup_error:
+                        observed_raw["discovered_hosts_followup_error"] = followup_error
             self._persist_shared_target_state(
                 host_id=int(target.host_id or 0),
                 host_ip=str(target.host_ip or ""),
@@ -6144,6 +6225,10 @@ class WebRuntime:
         merged["max_reflections_per_target"] = max(0, min(int(merged["max_reflections_per_target"]), 4))
         return merged
 
+    @staticmethod
+    def _is_host_scoped_scheduler_tool(tool_id: str) -> bool:
+        return str(tool_id or "").strip().lower() in {"subfinder", "responder", "ntlmrelayx"}
+
     def _existing_attempt_summary_for_target(self, host_id: int, host_ip: str, port: str, protocol: str) -> Dict[str, set]:
         attempted = {
             "tool_ids": set(),
@@ -6180,9 +6265,14 @@ class WebRuntime:
 
                 target_state = get_target_state(project.database, int(host_id or 0)) or {}
                 for item in list(target_state.get("attempted_actions", []) or []):
-                    if not isinstance(item, dict) or not self._target_attempt_matches(item, port, protocol):
+                    if not isinstance(item, dict):
                         continue
                     tool = str(item.get("tool_id", "") or "").strip().lower()
+                    if not (
+                            self._target_attempt_matches(item, port, protocol)
+                            or self._is_host_scoped_scheduler_tool(tool)
+                    ):
+                        continue
                     family_id = str(item.get("family_id", "") or "").strip().lower()
                     command_signature = str(item.get("command_signature", "") or "").strip().lower()
                     if tool:
@@ -6214,6 +6304,25 @@ class WebRuntime:
                     if command_signature:
                         attempted["command_signatures"].add(str(command_signature).strip().lower())
 
+                if str(host_ip or "").strip():
+                    host_process_result = session.execute(text(
+                        "SELECT COALESCE(p.name, '') AS tool_id, "
+                        "COALESCE(p.command, '') AS command_text "
+                        "FROM process AS p "
+                        "WHERE COALESCE(p.hostIp, '') = :host_ip "
+                        "ORDER BY p.id DESC LIMIT 200"
+                    ), {
+                        "host_ip": str(host_ip or ""),
+                    })
+                    for row in host_process_result.fetchall():
+                        tool = str(row[0] or "").strip().lower()
+                        if not self._is_host_scoped_scheduler_tool(tool):
+                            continue
+                        attempted["tool_ids"].add(tool)
+                        command_signature = self._command_signature_for_target(str(row[1] or ""), protocol)
+                        if command_signature:
+                            attempted["command_signatures"].add(str(command_signature).strip().lower())
+
                 approval_result = session.execute(text(
                     "SELECT COALESCE(tool_id, '') AS tool_id, "
                     "COALESCE(command_template, '') AS command_template, "
@@ -6240,6 +6349,31 @@ class WebRuntime:
                     command_signature = self._command_signature_for_target(command_template, protocol)
                     if command_signature:
                         attempted["command_signatures"].add(str(command_signature).strip().lower())
+
+                if str(host_ip or "").strip():
+                    host_approval_result = session.execute(text(
+                        "SELECT COALESCE(tool_id, '') AS tool_id, "
+                        "COALESCE(command_template, '') AS command_template, "
+                        "COALESCE(command_family_id, '') AS command_family_id "
+                        "FROM scheduler_pending_approval "
+                        "WHERE COALESCE(host_ip, '') = :host_ip "
+                        "AND LOWER(COALESCE(status, '')) IN ('pending', 'approved', 'running', 'executed') "
+                        "ORDER BY id DESC LIMIT 120"
+                    ), {
+                        "host_ip": str(host_ip or ""),
+                    })
+                    for row in host_approval_result.fetchall():
+                        tool = str(row[0] or "").strip().lower()
+                        if not self._is_host_scoped_scheduler_tool(tool):
+                            continue
+                        command_template = str(row[1] or "")
+                        family_id = str(row[2] or "").strip().lower()
+                        attempted["tool_ids"].add(tool)
+                        if family_id:
+                            attempted["family_ids"].add(family_id)
+                        command_signature = self._command_signature_for_target(command_template, protocol)
+                        if command_signature:
+                            attempted["command_signatures"].add(str(command_signature).strip().lower())
             finally:
                 session.close()
         return attempted

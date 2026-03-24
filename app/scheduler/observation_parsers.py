@@ -254,6 +254,7 @@ _SUPPORTED_ARTIFACT_PARSE_PREFIXES = (
     "smbmap",
     "rpcclient-enum",
     "nbtscan",
+    "subfinder",
     "dnsmap",
     "screenshooter",
     "sqlmap",
@@ -291,6 +292,32 @@ def _clean_url(value: Any) -> str:
     except Exception:
         return ""
     return text[:320]
+
+
+def _normalize_discovered_host(value: Any) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if "://" in candidate:
+        try:
+            parsed = urlparse(candidate)
+            candidate = str(parsed.hostname or "").strip()
+        except Exception:
+            return ""
+    candidate = candidate.lstrip("*.").rstrip(".")
+    candidate = normalize_hostname_alias(candidate)
+    candidate = str(candidate or "").strip().rstrip(".")
+    if not candidate or any(token in candidate for token in (" ", "/", "\\")):
+        return ""
+    lowered = candidate.lower()
+    if lowered in {"unknown", "localhost"}:
+        return ""
+    try:
+        ipaddress.ip_address(candidate)
+        return ""
+    except ValueError:
+        pass
+    return candidate[:253]
 
 
 def _normalize_tls_protocol_token(value: Any) -> str:
@@ -348,6 +375,10 @@ def _select_artifact_refs_for_tool(tool_id: str, artifact_refs: Iterable[Any]) -
         preferred = _with_exts(".jsonl")
         if preferred:
             return preferred
+    if token == "subfinder":
+        preferred = _with_exts(".jsonl", ".json")
+        if preferred:
+            return preferred
     return refs
 
 
@@ -376,6 +407,7 @@ def _merge_results(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any
         "technologies": list(left.get("technologies", []) or []) + list(right.get("technologies", []) or []),
         "findings": list(left.get("findings", []) or []) + list(right.get("findings", []) or []),
         "urls": list(left.get("urls", []) or []) + list(right.get("urls", []) or []),
+        "discovered_hosts": list(left.get("discovered_hosts", []) or []) + list(right.get("discovered_hosts", []) or []),
         "finding_quality_events": list(left.get("finding_quality_events", []) or []) + list(right.get("finding_quality_events", []) or []),
     }
 
@@ -2616,7 +2648,7 @@ def _parse_dnsmap_output(tool_id: str, output_text: str) -> Dict[str, Any]:
                 )
             continue
         if _DNSMAP_HOST_RE.match(line) and " " not in line:
-            current_host = _clean_text(line, 160).rstrip(".")
+            current_host = _normalize_discovered_host(line)
             if current_host:
                 discovered_hosts.add(current_host)
             continue
@@ -2651,6 +2683,45 @@ def _parse_dnsmap_output(tool_id: str, output_text: str) -> Dict[str, Any]:
         "technologies": [],
         "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
         "urls": [],
+        "discovered_hosts": sorted(discovered_hosts),
+    }
+
+
+def _parse_subfinder_output(tool_id: str, output_text: str) -> Dict[str, Any]:
+    findings: List[Dict[str, Any]] = []
+    discovered_hosts = set()
+
+    for payload in _iter_json_payloads(str(output_text or "")):
+        if not isinstance(payload, dict):
+            continue
+        for key in ("host", "name", "value", "matched", "input"):
+            candidate = _normalize_discovered_host(payload.get(key, ""))
+            if candidate and "." in candidate:
+                discovered_hosts.add(candidate)
+                break
+
+    for raw_line in str(output_text or "").splitlines():
+        line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
+        if not line or line[:1] in {"{", "["}:
+            continue
+        candidate = _normalize_discovered_host(line)
+        if candidate and "." in candidate:
+            discovered_hosts.add(candidate)
+
+    if discovered_hosts:
+        _append_finding(
+            findings,
+            f"Passive subdomains discovered ({len(discovered_hosts)})",
+            severity="info",
+            evidence=f"{tool_id}: {', '.join(sorted(discovered_hosts)[:8])}",
+            evidence_items=sorted(discovered_hosts),
+        )
+
+    return {
+        "technologies": [],
+        "findings": _dedupe_rows(findings, ("title", "evidence"), limit=24),
+        "urls": [],
+        "discovered_hosts": sorted(discovered_hosts),
     }
 
 
@@ -2752,7 +2823,7 @@ def extract_tool_observations(
     normalized_tool = str(tool_id or "").strip().lower()
     text = str(output_text or "")
     if not normalized_tool or (not text.strip() and not list(artifact_refs or [])):
-        return {"technologies": [], "findings": [], "urls": [], "finding_quality_events": []}
+        return {"technologies": [], "findings": [], "urls": [], "discovered_hosts": [], "finding_quality_events": []}
 
     base_url = _build_base_web_url(
         host_ip=host_ip,
@@ -2764,12 +2835,12 @@ def extract_tool_observations(
     if _artifact_reader_supported(normalized_tool):
         sources.extend(_load_artifact_texts(_select_artifact_refs_for_tool(normalized_tool, artifact_refs or [])))
 
-    result = {"technologies": [], "findings": [], "urls": [], "finding_quality_events": []}
+    result = {"technologies": [], "findings": [], "urls": [], "discovered_hosts": [], "finding_quality_events": []}
     for source_text in sources:
         source = str(source_text or "")
         if not source.strip():
             continue
-        current = {"technologies": [], "findings": [], "urls": [], "finding_quality_events": []}
+        current = {"technologies": [], "findings": [], "urls": [], "discovered_hosts": [], "finding_quality_events": []}
         if normalized_tool.startswith("whatweb"):
             current = _parse_whatweb_output(normalized_tool, source)
         elif normalized_tool.startswith("httpx"):
@@ -2819,6 +2890,8 @@ def extract_tool_observations(
             current = _parse_smb_enum_output(normalized_tool, source)
         elif normalized_tool == "nbtscan":
             current = _parse_nbtscan_output(normalized_tool, source)
+        elif normalized_tool == "subfinder":
+            current = _parse_subfinder_output(normalized_tool, source)
         elif normalized_tool == "dnsmap":
             current = _parse_dnsmap_output(normalized_tool, source)
         elif normalized_tool == "screenshooter":
@@ -2854,6 +2927,18 @@ def extract_tool_observations(
     result["technologies"] = _dedupe_rows(list(result.get("technologies", []) or []), ("name", "version", "cpe", "evidence"), limit=64)
     result["findings"] = _dedupe_rows(list(result.get("findings", []) or []), ("title", "cve", "evidence"), limit=64)
     result["urls"] = _dedupe_rows(extra_urls, ("url",), limit=96)
+    deduped_hosts: List[str] = []
+    seen_hosts = set()
+    for item in list(result.get("discovered_hosts", []) or []):
+        host = _normalize_discovered_host(item)
+        if not host:
+            continue
+        lowered = host.lower()
+        if lowered in seen_hosts:
+            continue
+        seen_hosts.add(lowered)
+        deduped_hosts.append(host)
+    result["discovered_hosts"] = deduped_hosts[:160]
     result["finding_quality_events"] = _dedupe_rows(
         list(result.get("finding_quality_events", []) or []),
         ("title", "cve", "action", "reason", "evidence"),

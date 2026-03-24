@@ -207,6 +207,74 @@ class LogicHeadlessActionsTest(unittest.TestCase):
         finally:
             project_manager.closeProject(project)
 
+    @patch("subprocess.run")
+    @patch("app.settings.AppSettings")
+    @patch("app.settings.Settings")
+    def test_run_scripted_actions_imports_discovered_subdomains(
+            self,
+            mock_settings_cls,
+            _mock_app_settings_cls,
+            mock_subprocess_run,
+    ):
+        from app.ProjectManager import ProjectManager
+        from app.logic import Logic
+        from app.logging.legionLog import getAppLogger, getDbLogger
+        from app.shell.DefaultShell import DefaultShell
+        from db.RepositoryFactory import RepositoryFactory
+        from db.entities.host import hostObj
+        from db.entities.port import portObj
+        from db.entities.service import serviceObj
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+
+        try:
+            session = project.database.session()
+            host = hostObj(ip="example.com", ipv4="example.com", hostname="example.com")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+
+            service = serviceObj(name="https", host=host_id)
+            session.add(service)
+            session.commit()
+
+            port = portObj("443", "tcp", "open", host_id, service.id)
+            session.add(port)
+            session.commit()
+            session.close()
+
+            settings = SimpleNamespace(
+                automatedAttacks=[["subfinder", "https", "tcp"]],
+                portActions=[[
+                    "Run subfinder passive subdomain discovery",
+                    "subfinder",
+                    "printf 'api.example.com\\nadmin.example.com\\n'",
+                    "https",
+                ]],
+            )
+            _mock_app_settings_cls._ensure_nmap_hostname_target_support.side_effect = lambda command, _target: command
+            _mock_app_settings_cls._canonicalize_web_target_placeholders.side_effect = lambda command: command
+            _mock_app_settings_cls._collapse_redundant_fallbacks.side_effect = lambda command: command
+            mock_settings_cls.return_value = settings
+            mock_subprocess_run.return_value = SimpleNamespace(stdout="api.example.com\nadmin.example.com\n", stderr="", returncode=0)
+
+            logic = Logic(MagicMock(), MagicMock(), MagicMock())
+            logic.activeProject = project
+
+            logic.run_scripted_actions()
+
+            host_rows = project.repositoryContainer.hostRepository.getAllHostObjs()
+            imported_hosts = {
+                str(getattr(item, "hostname", "") or getattr(item, "ip", "") or "").strip()
+                for item in list(host_rows or [])
+            }
+            self.assertIn("api.example.com", imported_hosts)
+            self.assertIn("admin.example.com", imported_hosts)
+        finally:
+            project_manager.closeProject(project)
+
     @patch("app.scheduler.runners.shutil.which", return_value="/usr/bin/docker")
     @patch("subprocess.run")
     @patch("app.settings.AppSettings")
