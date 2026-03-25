@@ -158,6 +158,7 @@
                     </button>
                     <div id="ribbon-settings-menu" class="ribbon-submenu" role="menu" aria-label="Settings options">
                         <button id="ribbon-scheduler-settings-button" class="ribbon-submenu-item" type="button" title="Open scheduler settings">Scheduler</button>
+                        <button id="ribbon-interface-settings-button" class="ribbon-submenu-item" type="button" title="Open interface settings">Interface</button>
                         <button id="ribbon-device-category-settings-button" class="ribbon-submenu-item" type="button" title="Open device category settings">Device Categories</button>
                         <button id="ribbon-report-provider-settings-button" class="ribbon-submenu-item" type="button" title="Open project report provider settings">Report Provider</button>
                         <button id="ribbon-app-settings-button" class="ribbon-submenu-item" type="button" title="Open and edit legion.conf settings">App Settings</button>
@@ -299,8 +300,7 @@
         </div>
     </section>
 
-    {% if graph_workspace_enabled %}
-    <section class="panel panel-full graph-panel">
+    <section id="graph-workspace-panel" class="panel panel-full graph-panel" data-graph-enabled="{{ 'true' if graph_workspace_enabled else 'false' }}"{% if not graph_workspace_enabled %} hidden{% endif %}>
         <div class="panel-header graph-panel-header">
             <div class="graph-panel-heading">
                 <h2>Graph Workspace</h2>
@@ -333,6 +333,10 @@
             </div>
         </div>
         <div id="graph-panel-body">
+        <div id="graph-workspace-disabled-state" hidden>
+            <p class="meta-note">Graph workspace is disabled in Interface Settings.</p>
+        </div>
+        <div id="graph-workspace-shell">
         <div id="graph-filters-panel" class="graph-filters-panel" hidden>
             <div class="graph-toolbar">
                 <label>
@@ -640,16 +644,8 @@
         ></div>
         <p class="meta-note graph-status-note">Graph status: <span id="graph-workspace-status">Idle</span></p>
         </div>
-    </section>
-    {% else %}
-    <section class="panel panel-full graph-panel">
-        <div class="panel-header">
-            <h2>Graph Workspace</h2>
-            <p>Disabled in scheduler settings.</p>
         </div>
-        <p class="meta-note">Graph persistence and export remain available; re-enable the interactive workspace when the engagement size is manageable enough for browser rendering.</p>
     </section>
-    {% endif %}
     <section class="panel">
         <div class="panel-header">
             <h2>Hosts</h2>
@@ -1006,7 +1002,7 @@
 <div id="nmap-scan-modal" class="legion-modal-overlay" aria-hidden="true">
     <div class="legion-modal scan-modal" role="dialog" aria-modal="true" aria-labelledby="nmap-scan-modal-title">
         <div class="panel-header modal-header">
-            <h2 id="nmap-scan-modal-title">Run Nmap Scan</h2>
+            <h2 id="nmap-scan-modal-title">Run Scan</h2>
             <p>Scans > Add Scan</p>
             <button id="nmap-scan-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
@@ -1058,31 +1054,47 @@
                             <strong>Hard Mode</strong>
                             <span>Deeper and slower enumeration.</span>
                         </label>
+                        <label id="nmap-mode-card-passive" class="mode-card" hidden>
+                            <input type="radio" name="nmap-scan-mode" value="passive_capture">
+                            <strong>Passive Capture</strong>
+                            <span>Capture local discovery traffic with Tshark, then queue bounded Easy scans for discovered internal networks.</span>
+                        </label>
                     </div>
                 </section>
 
                 <section id="nmap-wizard-step-3" class="wizard-page" data-wizard-step="3">
-                    <label>
-                        Targets (hosts, subnets, ranges; space or comma separated)
-                        <textarea id="nmap-targets" rows="3" placeholder="192.168.1.10 192.168.1.0/24"></textarea>
-                    </label>
-                    <label class="checkbox">
-                        <input id="nmap-include-rfc1918" type="checkbox">
-                        Add selected RFC1918 ranges automatically
-                    </label>
-                    <div class="wizard-subgrid">
-                        <label class="checkbox">
-                            <input id="nmap-rfc-10" type="checkbox" checked>
-                            10.0.0.0/8
+                    <div id="nmap-standard-target-controls">
+                        <label>
+                            Targets (hosts, subnets, ranges; space or comma separated)
+                            <textarea id="nmap-targets" rows="3" placeholder="192.168.1.10 192.168.1.0/24"></textarea>
                         </label>
-                        <label class="checkbox">
-                            <input id="nmap-rfc-172" type="checkbox" checked>
-                            172.16.0.0/12
+                    </div>
+                    <div id="nmap-rfc-target-controls" hidden>
+                        <p class="meta-note scheduler-group-note">RFC1918 mode scans the selected private subnet families directly. Free-form targets are not used in this mode.</p>
+                        <div class="wizard-subgrid">
+                            <label class="checkbox">
+                                <input id="nmap-rfc-10" type="checkbox" checked>
+                                10.0.0.0/8
+                            </label>
+                            <label class="checkbox">
+                                <input id="nmap-rfc-172" type="checkbox" checked>
+                                172.16.0.0/12
+                            </label>
+                            <label class="checkbox">
+                                <input id="nmap-rfc-192" type="checkbox" checked>
+                                192.168.0.0/16
+                            </label>
+                        </div>
+                    </div>
+                    <div id="nmap-passive-target-controls" hidden>
+                        <p class="meta-note scheduler-group-note">Passive Capture listens on a single local interface for ARP, broadcast, multicast, Bonjour/mDNS, NetBIOS, SSDP, DHCP, and similar discovery traffic. After the capture window ends, Legion will queue Easy scans for the internal networks it identifies.</p>
+                        <label>
+                            Capture Interface
+                            <select id="passive-capture-interface">
+                                <option value="">Loading interfaces...</option>
+                            </select>
                         </label>
-                        <label class="checkbox">
-                            <input id="nmap-rfc-192" type="checkbox" checked>
-                            192.168.0.0/16
-                        </label>
+                        <p id="passive-capture-interface-note" class="meta-note scheduler-group-note"></p>
                     </div>
                 </section>
 
@@ -1114,9 +1126,22 @@
                             </select>
                         </label>
                         <label>
-                            Top Ports (used if discovery-only is disabled)
-                            <input id="nmap-rfc-top-ports" type="number" min="1" max="65535" value="100">
+                            TCP Port Profile (used if discovery-only is disabled)
+                            <select id="nmap-rfc-profile">
+                                <option value="quick" selected>Quick low-hanging fruit</option>
+                                <option value="comprehensive">More comprehensive common services</option>
+                            </select>
                         </label>
+                        <label>
+                            Concurrent chunk scans
+                            <select id="nmap-rfc-chunk-concurrency">
+                                <option value="1" selected>1 chunk scan at a time</option>
+                                <option value="2">2 chunk scans at a time</option>
+                                <option value="3">3 chunk scans at a time</option>
+                                <option value="4">4 chunk scans at a time</option>
+                            </select>
+                        </label>
+                        <p id="nmap-rfc-profile-note" class="meta-note scheduler-group-note">Quick uses a curated low-hanging-fruit TCP list. RFC sweeps run in /24 chunks, up to 2 subnets per Nmap run, 1 chunk scan at a time by default. Disable discovery-only to apply the selected profile to responsive hosts.</p>
                         <label class="checkbox">
                             <input id="nmap-rfc-service-detection" type="checkbox">
                             Enable service detection (`-sV`)
@@ -1154,7 +1179,7 @@
                                 <option value="T4">T4</option>
                             </select>
                         </label>
-                        <label>
+                        <label id="nmap-easy-top-ports-label">
                             Top Ports
                             <input id="nmap-easy-top-ports" type="number" min="1" max="65535" value="1000">
                         </label>
@@ -1227,6 +1252,40 @@
                             Run vulnerability script set (`--script vuln`)
                         </label>
                     </div>
+
+                    <div id="nmap-options-passive_capture" class="mode-options" data-mode-options="passive_capture">
+                        <h4>Passive Capture Options</h4>
+                        <label>
+                            Capture Duration
+                            <select id="passive-capture-duration">
+                                <option value="5">5 minutes</option>
+                                <option value="15" selected>15 minutes</option>
+                                <option value="30">30 minutes</option>
+                                <option value="45">45 minutes</option>
+                                <option value="60">60 minutes</option>
+                                <option value="75">75 minutes</option>
+                                <option value="90">90 minutes</option>
+                                <option value="105">105 minutes</option>
+                                <option value="120">120 minutes</option>
+                            </select>
+                        </label>
+                        <p class="meta-note scheduler-group-note">This mode uses `tshark` for passive capture. It does not run Nmap until the capture window finishes and candidate internal networks have been inferred.</p>
+                    </div>
+
+                    <div class="nmap-final-controls">
+                        <label id="nmap-args-label">
+                            Extra Nmap Arguments
+                            <input id="nmap-args" type="text" placeholder="-p- --reason">
+                        </label>
+                        <label id="nmap-run-actions-label" class="checkbox">
+                            <input id="nmap-run-actions" type="checkbox" checked>
+                            Run scripted actions after scan
+                        </label>
+                        <div class="scheduler-actions">
+                            <button id="nmap-scan-button" type="button" disabled>Start Nmap Scan Job</button>
+                        </div>
+                        <p class="meta-note" id="nmap-command-preview"></p>
+                    </div>
                 </section>
 
                 <div class="wizard-nav">
@@ -1234,19 +1293,6 @@
                     <button id="nmap-wizard-next" type="button">Next</button>
                 </div>
             </div>
-
-            <label>
-                Extra Nmap Arguments
-                <input id="nmap-args" type="text" placeholder="-p- --reason">
-            </label>
-            <label class="checkbox">
-                <input id="nmap-run-actions" type="checkbox" checked>
-                Run scripted actions after scan
-            </label>
-            <div class="scheduler-actions">
-                <button id="nmap-scan-button" type="button" disabled>Start Nmap Scan Job</button>
-            </div>
-            <p class="meta-note" id="nmap-command-preview"></p>
         </div>
     </div>
 </div>
@@ -1565,14 +1611,6 @@
                 <p class="meta-note scheduler-group-note">This only applies to normal scheduler runs. Dig Deeper stays single-host so AI follow-up remains bounded.</p>
             </fieldset>
             <fieldset class="danger-group scheduler-settings-group">
-                <legend>Workspace Features</legend>
-                <label class="checkbox scheduler-field-span-2">
-                    <input id="feature-graph-workspace-enabled" type="checkbox" value="graph_workspace">
-                    Enable graph workspace
-                </label>
-                <p class="meta-note scheduler-group-note">Disable this for exceptionally large scopes where graph rendering would add browser overhead without much operator value.</p>
-            </fieldset>
-            <fieldset class="danger-group scheduler-settings-group">
                 <legend>Integrations</legend>
                 <label class="scheduler-field-span-2">
                     Grayhat Warfare API Key
@@ -1783,6 +1821,32 @@
     </div>
 </div>
 
+<div id="interface-settings-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="interface-settings-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="interface-settings-modal-title">Interface Settings</h2>
+            <p id="interface-settings-status">Idle</p>
+            <button id="interface-settings-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p class="meta-note">Live interface controls for the current workspace. Changes apply immediately.</p>
+        <label class="settings-inline-toggle">
+            <input id="interface-graph-workspace-enabled" type="checkbox">
+            <span>Enable graph workspace</span>
+        </label>
+        <p class="meta-note">Hide this when graph rendering is not useful for the current engagement size.</p>
+        <label class="settings-inline-toggle">
+            <input id="interface-colorful-ascii-background" type="checkbox">
+            <span>Enable colorful ASCII art background</span>
+        </label>
+        <p class="meta-note">The default background is solid black. The ASCII background is optional visual flair.</p>
+        <div class="modal-actions">
+            <button id="interface-settings-save-button" type="button">Save Interface Settings</button>
+        </div>
+    </div>
+</div>
+
 <div id="app-settings-modal" class="legion-modal-overlay" aria-hidden="true">
     <div class="legion-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
         <div class="panel-header modal-header">
@@ -1842,6 +1906,24 @@
         <div class="modal-actions">
             <button id="settings-config-refresh-button" type="button">Reload</button>
             <button id="settings-config-save-button" type="button">Save Config</button>
+        </div>
+    </div>
+</div>
+
+<div id="workspace-switch-guard-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-switch-guard-title">
+        <div class="panel-header modal-header">
+            <h2 id="workspace-switch-guard-title">Active Work In Progress</h2>
+            <p id="workspace-switch-guard-status">Stop running jobs and processes before switching workspaces.</p>
+            <button id="workspace-switch-guard-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p id="workspace-switch-guard-summary" class="meta-note">No active work detected.</p>
+        <pre id="workspace-switch-guard-details" class="modal-log-block"></pre>
+        <div class="modal-actions">
+            <button id="workspace-switch-guard-stop-button" type="button">Stop Active Work And Continue</button>
+            <button id="workspace-switch-guard-cancel-button" type="button">Cancel</button>
         </div>
     </div>
 </div>

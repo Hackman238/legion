@@ -34,15 +34,15 @@ class LegionLauncherTest(unittest.TestCase):
         self.assertEqual("0.0.0.0", legion.resolve_web_bind_host(args))
         self.assertEqual("All interfaces", legion.describe_web_bind_host("0.0.0.0"))
 
-    def test_web_opaque_ui_flag_defaults_disabled(self):
+    def test_web_opaque_ui_defaults_enabled(self):
         args = legion.build_arg_parser().parse_args(["--web"])
-        self.assertFalse(args.web_opaque_ui)
-        self.assertFalse(legion.resolve_web_opaque_ui(args))
-
-    def test_web_opaque_ui_flag_enables_opaque_mode(self):
-        args = legion.build_arg_parser().parse_args(["--web", "--web-opaque-ui"])
-        self.assertTrue(args.web_opaque_ui)
+        self.assertFalse(args.web_transparent_ui)
         self.assertTrue(legion.resolve_web_opaque_ui(args))
+
+    def test_web_transparent_ui_flag_disables_opaque_mode(self):
+        args = legion.build_arg_parser().parse_args(["--web", "--web-transparent-ui"])
+        self.assertTrue(args.web_transparent_ui)
+        self.assertFalse(legion.resolve_web_opaque_ui(args))
 
     def test_supported_python_runtime_accepts_python_312(self):
         self.assertTrue(legion.is_supported_python_runtime((3, 12, 0)))

@@ -14,7 +14,7 @@ from app.scheduler.policy import (
 from app.scheduler.runners import normalize_runner_settings
 
 DEFAULT_FEATURE_FLAGS = {
-    "graph_workspace": True,
+    "graph_workspace": False,
     "optional_runners": True,
     "context_summary_enabled": True,
     "scheduler_prompt_profiles": True,
@@ -44,6 +44,11 @@ DEFAULT_TOOL_EXECUTION_PROFILES = {
         "quiet_long_running": True,
         "activity_timeout_seconds": 900,
         "hard_timeout_seconds": 1800,
+    },
+    "tshark-passive-capture": {
+        "quiet_long_running": True,
+        "activity_timeout_seconds": 9000,
+        "hard_timeout_seconds": 7800,
     },
 }
 DEFAULT_INTEGRATIONS = {

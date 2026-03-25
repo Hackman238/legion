@@ -243,9 +243,14 @@ def build_arg_parser():
         help="When used with --web, bind the web interface to 0.0.0.0 instead of 127.0.0.1",
     )
     parser.add_argument(
+        "--web-transparent-ui",
+        action="store_true",
+        help="When used with --web, enable transparent UI effects",
+    )
+    parser.add_argument(
         "--web-opaque-ui",
         action="store_true",
-        help="When used with --web, disable transparent UI effects for better responsiveness on slower hosts",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
     parser.add_argument("--discovery", action="store_true", help="Enable host discovery (default: enabled)")
@@ -273,7 +278,9 @@ def describe_web_bind_host(host: str) -> str:
 
 
 def resolve_web_opaque_ui(args) -> bool:
-    return bool(getattr(args, "web_opaque_ui", False))
+    if bool(getattr(args, "web_transparent_ui", False)):
+        return False
+    return True
 
 if __name__ == "__main__":
     ensure_supported_python_runtime()

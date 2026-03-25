@@ -1,6 +1,8 @@
 import unittest
 import threading
 import json
+import os
+import tempfile
 from unittest import mock
 from types import SimpleNamespace
 
@@ -48,6 +50,42 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 }
             }
         }))
+
+    def test_analyze_passive_capture_infers_candidate_networks_and_protocols(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime.list_capture_interfaces = lambda: [{
+            "name": "eth0",
+            "label": "eth0 (192.168.3.10)",
+            "ipv4_addresses": ["192.168.3.10"],
+            "ipv4_networks": ["192.168.3.0/24"],
+        }]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            capture_path = os.path.join(temp_dir, "capture.pcapng")
+            analysis_path = os.path.join(temp_dir, "capture.analysis.json")
+            with open(capture_path, "wb") as handle:
+                handle.write(b"pcap")
+
+            tshark_output = (
+                "eth:ethertype:ip:udp:mdns\t192.168.3.25\t224.0.0.251\t\t\t5353\t5353\tprinter.local\n"
+                "eth:ethertype:arp\t\t\t192.168.3.44\t192.168.3.1\t\t\t\n"
+            )
+            with mock.patch("app.web.runtime.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=tshark_output, stderr="")):
+                summary = runtime._analyze_passive_capture(
+                    interface_name="eth0",
+                    capture_path=capture_path,
+                    analysis_path=analysis_path,
+                )
+
+        self.assertIn("192.168.3.0/24", summary["candidate_networks"])
+        self.assertIn("192.168.3.25", summary["observed_private_hosts"])
+        self.assertIn("192.168.3.44", summary["observed_private_hosts"])
+        signal_names = {item["name"] for item in list(summary.get("signals", []) or [])}
+        self.assertIn("bonjour", signal_names)
+        self.assertIn("mdns", signal_names)
+        self.assertIn("arp", signal_names)
 
     def test_workspace_hosts_and_services_support_device_category_filtering(self):
         from app.ProjectManager import ProjectManager

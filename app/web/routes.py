@@ -67,6 +67,22 @@ def _get_sanitized_console_logo() -> str:
     return "\n".join(lines).strip("\n")
 
 
+def _load_display_settings(runtime=None):
+    settings = getattr(runtime, "settings", None)
+    if settings is None:
+        try:
+            settings = Settings(AppSettings())
+        except Exception:
+            settings = None
+    colorful_ascii_background = _as_bool(
+        getattr(settings, "general_colorful_ascii_background", False) if settings is not None else False,
+        False,
+    )
+    return {
+        "colorful_ascii_background": bool(colorful_ascii_background),
+    }
+
+
 def _build_csv_export(snapshot):
     output = io.StringIO()
     writer = csv.writer(output)
@@ -306,8 +322,10 @@ def _render_host_ai_report_markdown(report: dict) -> str:
 def index():
     runtime = current_app.extensions["legion_runtime"]
     snapshot = runtime.get_snapshot()
+    display_settings = _load_display_settings(runtime)
+    current_app.config["LEGION_COLORFUL_ASCII_BACKGROUND"] = bool(display_settings.get("colorful_ascii_background", False))
     graph_workspace_enabled = bool(
-        ((snapshot.get("scheduler", {}) or {}).get("feature_flags", {}) or {}).get("graph_workspace", True)
+        ((snapshot.get("scheduler", {}) or {}).get("feature_flags", {}) or {}).get("graph_workspace", False)
     )
     return render_template(
         "index.html",
@@ -415,6 +433,43 @@ def settings_legion_conf_save():
             pass
 
     return jsonify({"status": "ok", "path": conf_path})
+
+
+@web_bp.get("/api/settings/display")
+def settings_display_get():
+    runtime = current_app.extensions.get("legion_runtime")
+    return jsonify(_load_display_settings(runtime))
+
+
+@web_bp.post("/api/settings/display")
+def settings_display_save():
+    payload = request.get_json(silent=True) or {}
+    colorful_ascii_background = _as_bool(payload.get("colorful_ascii_background"), False)
+
+    settings_file = AppSettings()
+    try:
+        settings_file.actions.beginGroup("GeneralSettings")
+        settings_file.actions.setValue(
+            "colorful-ascii-background",
+            "True" if colorful_ascii_background else "False",
+        )
+        settings_file.actions.endGroup()
+        settings_file.actions.sync()
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+    runtime = current_app.extensions.get("legion_runtime")
+    if runtime is not None:
+        try:
+            runtime.settings_file = AppSettings()
+            runtime.settings = Settings(runtime.settings_file)
+        except Exception:
+            pass
+    current_app.config["LEGION_COLORFUL_ASCII_BACKGROUND"] = bool(colorful_ascii_background)
+    return jsonify({
+        "status": "ok",
+        "colorful_ascii_background": bool(colorful_ascii_background),
+    })
 
 
 @web_bp.get("/api/settings/tool-audit")
@@ -699,6 +754,37 @@ def nmap_scan():
             nmap_args=nmap_args,
             scan_mode=scan_mode,
             scan_options=scan_options,
+        )
+        return jsonify({"status": "accepted", "job": job}), 202
+    except FileNotFoundError as exc:
+        return _json_error(str(exc), 404)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/network/interfaces")
+def network_interfaces():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        return jsonify(runtime.get_capture_interface_inventory())
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/scan/passive-capture")
+def passive_capture_scan():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    interface_name = str(payload.get("interface_name", "") or "")
+    duration_minutes = payload.get("duration_minutes", 15)
+    run_actions = _as_bool(payload.get("run_actions", False), default=False)
+    try:
+        job = runtime.start_passive_capture_scan_job(
+            interface_name=interface_name,
+            duration_minutes=duration_minutes,
+            run_actions=run_actions,
         )
         return jsonify({"status": "accepted", "job": job}), 202
     except FileNotFoundError as exc:

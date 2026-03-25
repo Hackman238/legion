@@ -26,11 +26,7 @@ body {
     min-height: 100vh;
     font-family: "Space Grotesk", "Segoe UI", "Helvetica Neue", sans-serif;
     color-scheme: dark;
-    background:
-            radial-gradient(circle at 12% 14%, rgba(30, 58, 95, 0.34), transparent 28%),
-            radial-gradient(circle at 78% 18%, rgba(75, 0, 130, 0.34), transparent 34%),
-            radial-gradient(circle at 88% 28%, rgba(139, 26, 58, 0.26), transparent 26%),
-            linear-gradient(165deg, var(--bg-top) 0%, var(--bg-mid) 42%, var(--bg-bottom) 100%);
+    background: #000;
     color: var(--text-main);
 }
 
@@ -40,15 +36,19 @@ body.modal-open {
 
 body.opaque-ui {
     --panel: #1a0a2e;
-    background: linear-gradient(165deg, var(--bg-top) 0%, var(--bg-mid) 42%, var(--bg-bottom) 100%);
+    background: #000;
 }
 
-body.opaque-ui .background-glow {
-    display: none;
-}
-
-body.opaque-ui .logo-watermark {
+body.opaque-ui.colorful-background .logo-watermark {
     opacity: 0.32;
+}
+
+body.colorful-background {
+    background:
+            radial-gradient(circle at 12% 14%, rgba(30, 58, 95, 0.34), transparent 28%),
+            radial-gradient(circle at 78% 18%, rgba(75, 0, 130, 0.34), transparent 34%),
+            radial-gradient(circle at 88% 28%, rgba(139, 26, 58, 0.26), transparent 26%),
+            linear-gradient(165deg, var(--bg-top) 0%, var(--bg-mid) 42%, var(--bg-bottom) 100%);
 }
 
 body.opaque-ui .panel,
@@ -120,10 +120,15 @@ body.opaque-ui .ribbon-submenu-item {
     position: fixed;
     inset: 0;
     pointer-events: none;
+    display: none;
     background:
             radial-gradient(circle at 8% 12%, rgba(30, 58, 95, 0.24), transparent 34%),
             radial-gradient(circle at 62% 18%, rgba(75, 0, 130, 0.2), transparent 36%),
             radial-gradient(circle at 92% 22%, rgba(139, 26, 58, 0.18), transparent 24%);
+}
+
+body.colorful-background .background-glow {
+    display: block;
 }
 
 .logo-watermark {
@@ -1201,18 +1206,20 @@ button:hover {
 
 .wizard-steps {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.35rem;
     margin-bottom: 0.6rem;
 }
 
 .wizard-step {
     width: 100%;
-    font-size: 0.78rem;
-    padding: 0.45rem 0.5rem;
+    font-size: 0.76rem;
+    line-height: 1.15;
+    padding: 0.42rem 0.4rem;
     border-radius: 8px;
     border: 1px solid rgba(123, 131, 255, 0.28);
     background: rgba(33, 37, 73, 0.65);
+    white-space: nowrap;
 }
 
 .wizard-step.is-active {
@@ -1235,9 +1242,19 @@ button:hover {
     margin-bottom: 0.5rem;
 }
 
+#nmap-rfc-target-controls {
+    margin-top: 0.55rem;
+}
+
+#nmap-passive-target-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
 .mode-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 0.5rem;
 }
 
@@ -1271,6 +1288,13 @@ button:hover {
 
 .mode-options h4 {
     margin-bottom: 0.45rem;
+}
+
+.nmap-final-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    margin-top: 0.7rem;
 }
 
 #nmap-easy-preset-note {
@@ -2203,8 +2227,38 @@ td button {
     width: min(1080px, 97vw);
 }
 
+.compact-modal {
+    width: min(720px, 94vw);
+}
+
 .settings-tool-audit {
     margin-bottom: 1rem;
+}
+
+.settings-display-panel {
+    margin-bottom: 1rem;
+}
+
+.settings-inline-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin: 0.35rem 0 0.85rem;
+}
+
+.modal-log-block {
+    min-height: 8rem;
+    max-height: min(34vh, 320px);
+    overflow: auto;
+    margin: 0.65rem 0 0.9rem;
+    padding: 0.8rem;
+    border-radius: 12px;
+    border: 1px solid rgba(173, 181, 227, 0.12);
+    background: rgba(13, 0, 21, 0.78);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .tool-install-controls {

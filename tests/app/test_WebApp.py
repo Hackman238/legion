@@ -629,6 +629,34 @@ class DummyRuntime:
             },
         }
 
+    def get_capture_interface_inventory(self):
+        return {
+            "interfaces": [
+                {
+                    "name": "eth0",
+                    "label": "eth0 (192.168.3.10)",
+                    "ipv4_addresses": ["192.168.3.10"],
+                    "ipv4_networks": ["192.168.3.0/24"],
+                }
+            ],
+            "default_interface": "eth0",
+        }
+
+    def start_passive_capture_scan_job(self, interface_name, duration_minutes, run_actions=False):
+        if not str(interface_name).strip():
+            raise ValueError("interface required")
+        return {
+            "id": 14,
+            "type": "passive-capture-scan",
+            "status": "queued",
+            "payload": {
+                "interface_name": str(interface_name),
+                "duration_minutes": int(duration_minutes),
+                "run_actions": bool(run_actions),
+                "scan_mode": "passive_capture",
+            },
+        }
+
     def start_scheduler_run_job(self):
         return {
             "id": 5,
@@ -1779,6 +1807,7 @@ class WebAppTest(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
+        self.assertIn('<body class="opaque-ui">', body)
         self.assertIn("<h1>LEGION</h1>", body)
         self.assertIn("v0.6.0", body)
         self.assertIn("Localhost only", body)
@@ -1831,6 +1860,12 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('id="settings-tool-install-copy-button"', body)
         self.assertIn('id="settings-tool-install-run-button"', body)
         self.assertIn('id="settings-tool-install-script"', body)
+        self.assertIn('id="ribbon-interface-settings-button"', body)
+        self.assertIn('id="interface-settings-modal"', body)
+        self.assertIn('id="interface-graph-workspace-enabled"', body)
+        self.assertIn('id="interface-colorful-ascii-background"', body)
+        self.assertIn('id="interface-settings-save-button"', body)
+        self.assertIn('id="workspace-switch-guard-modal"', body)
         self.assertIn('id="provider-openai-structured-outputs"', body)
         self.assertIn('id="scheduler-ai-feedback-enabled"', body)
         self.assertIn('id="scheduler-ai-max-rounds"', body)
@@ -1868,6 +1903,7 @@ class WebAppTest(unittest.TestCase):
         self.assertNotIn("<h2>Submitted Scans</h2>", body)
         self.assertNotIn("<h2>Scheduler Decisions</h2>", body)
         self.assertIn("<h2>Decision Rationale</h2>", body)
+        self.assertNotIn('class="logo-watermark"', body)
         self.assertLess(body.index('id="ribbon-launch-wizard-button"'), body.index("<h2>Project</h2>"))
         self.assertLess(body.index("<h2>Project</h2>"), body.index("<h2>Decision Rationale</h2>"))
         self.assertLess(body.index("<h2>Decision Rationale</h2>"), body.index('id="stat-hosts"'))
@@ -1906,15 +1942,15 @@ class WebAppTest(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
-        self.assertIn("Graph Workspace", body)
-        self.assertIn("Disabled in scheduler settings.", body)
-        self.assertNotIn("graph-workspace-canvas", body)
+        self.assertIn('id="graph-workspace-panel"', body)
+        self.assertIn('data-graph-enabled="false"', body)
+        self.assertIn('id="graph-workspace-panel" class="panel panel-full graph-panel" data-graph-enabled="false" hidden', body)
 
-    def test_index_renders_graph_workspace_scheduler_toggle(self):
+    def test_index_renders_graph_workspace_interface_toggle(self):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
-        self.assertIn('id="feature-graph-workspace-enabled"', body)
+        self.assertIn('id="interface-graph-workspace-enabled"', body)
 
     def test_index_renders_simplified_scheduler_engagement_profile(self):
         response = self.client.get("/")
@@ -1951,6 +1987,22 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('id="nmap-engagement-preset-summary"', body)
         self.assertIn('id="nmap-engagement-derived-policy"', body)
         self.assertIn('id="nmap-engagement-custom-note"', body)
+        self.assertIn('id="nmap-rfc-target-controls"', body)
+        self.assertIn('id="nmap-standard-target-controls"', body)
+        self.assertIn('id="nmap-passive-target-controls"', body)
+        self.assertIn('id="nmap-rfc-profile"', body)
+        self.assertIn('id="nmap-rfc-chunk-concurrency"', body)
+        self.assertIn('id="nmap-rfc-profile-note"', body)
+        self.assertNotIn('id="nmap-include-rfc1918"', body)
+        self.assertIn('id="nmap-mode-card-passive"', body)
+        self.assertIn('value="passive_capture"', body)
+        self.assertIn('id="passive-capture-interface"', body)
+        self.assertIn('id="passive-capture-duration"', body)
+        self.assertIn('class="nmap-final-controls"', body)
+        self.assertIn('id="nmap-args"', body)
+        self.assertIn('id="nmap-run-actions"', body)
+        self.assertIn('id="nmap-scan-button"', body)
+        self.assertIn('id="nmap-easy-top-ports-label"', body)
         self.assertIn('value="internal_quick_recon"', body)
 
     def test_index_renders_viewport_bounded_output_modals(self):
@@ -2453,6 +2505,24 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual("nmap-scan", scan.json["job"]["type"])
         self.assertEqual("-p- --reason", scan.json["job"]["payload"]["nmap_args"])
         self.assertEqual("hard", scan.json["job"]["payload"]["scan_mode"])
+
+        interfaces = self.client.get("/api/network/interfaces")
+        self.assertEqual(200, interfaces.status_code)
+        self.assertEqual("eth0", interfaces.json["default_interface"])
+
+        passive = self.client.post(
+            "/api/scan/passive-capture",
+            json={
+                "interface_name": "eth0",
+                "duration_minutes": 15,
+                "run_actions": True,
+            },
+        )
+        self.assertEqual(202, passive.status_code)
+        self.assertEqual("passive-capture-scan", passive.json["job"]["type"])
+        self.assertEqual("eth0", passive.json["job"]["payload"]["interface_name"])
+        self.assertEqual(15, passive.json["job"]["payload"]["duration_minutes"])
+        self.assertTrue(bool(passive.json["job"]["payload"]["run_actions"]))
 
     def test_jobs_endpoints(self):
         listing = self.client.get("/api/jobs?limit=10")

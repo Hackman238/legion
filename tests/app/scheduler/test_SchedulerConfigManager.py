@@ -48,7 +48,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertIn("device_categories", defaults)
             self.assertEqual([], defaults["device_categories"])
             self.assertIn("feature_flags", defaults)
-            self.assertTrue(defaults["feature_flags"]["graph_workspace"])
+            self.assertFalse(defaults["feature_flags"]["graph_workspace"])
             self.assertTrue(defaults["feature_flags"]["optional_runners"])
             self.assertTrue(defaults["feature_flags"]["context_summary_enabled"])
             self.assertTrue(defaults["feature_flags"]["scheduler_prompt_profiles"])

@@ -129,6 +129,56 @@ class WebRuntimeProcessDisplayTest(unittest.TestCase):
         self.assertIn("RPS 166", message)
         self.assertIn("Errors 16", message)
 
+    def test_extract_tshark_passive_progress_uses_duration_and_elapsed(self):
+        from app.web.runtime import WebRuntime
+
+        percent, remaining, message = WebRuntime._extract_tshark_passive_progress(
+            "tshark -i eth0 -n -q -a duration:900 -f 'arp or broadcast' -w /tmp/capture.pcapng",
+            runtime_seconds=362.0,
+        )
+
+        self.assertAlmostEqual(40.2, float(percent or 0.0), places=1)
+        self.assertEqual(538, remaining)
+        self.assertEqual("Elapsed 6m 02s", message)
+
+    def test_running_tshark_processes_include_structured_progress_summary(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._ensure_process_tables = lambda: None
+        runtime.logic = SimpleNamespace(
+            activeProject=SimpleNamespace(
+                repositoryContainer=SimpleNamespace(
+                    processRepository=_DummyProcessRepo([
+                        {
+                            "id": 11,
+                            "name": "tshark-passive-capture",
+                            "hostIp": "",
+                            "port": "",
+                            "protocol": "",
+                            "status": "Running",
+                            "startTime": "2026-03-24T19:00:00Z",
+                            "elapsed": 362,
+                            "percent": "40.2",
+                            "estimatedRemaining": 538,
+                            "progressMessage": "Elapsed 6m 02s",
+                            "progressSource": "tshark",
+                            "progressUpdatedAt": "24 Mar 2026 14:06:02.000000",
+                        },
+                    ])
+                )
+            )
+        )
+
+        rows = runtime._processes(limit=10)
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual("TShark", rows[0]["progress"]["source"])
+        self.assertIn("40.2%", rows[0]["progress"]["summary"])
+        self.assertIn("ETA 8m 58s", rows[0]["progress"]["summary"])
+        self.assertIn("Elapsed 6m 02s", rows[0]["progress"]["summary"])
+        self.assertEqual("8m 58s", rows[0]["progress"]["estimated_remaining_display"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1535,6 +1535,7 @@ class AppSettings():
         self.actions.beginGroup('GeneralSettings')
         self.actions.setValue('default-terminal', newSettings.general_default_terminal)
         self.actions.setValue('tool-output-black-background', newSettings.general_tool_output_black_background)
+        self.actions.setValue('colorful-ascii-background', newSettings.general_colorful_ascii_background)
         self.actions.setValue('screenshooter-timeout', newSettings.general_screenshooter_timeout)
         self.actions.setValue('web-services', newSettings.general_web_services)
         self.actions.setValue('enable-scheduler', newSettings.general_enable_scheduler)
@@ -1609,6 +1610,7 @@ class Settings():
         # general
         self.general_default_terminal = "gnome-terminal"
         self.general_tool_output_black_background = "False"
+        self.general_colorful_ascii_background = "False"
         self.general_screenshooter_timeout = "15000"
         self.general_web_services = "http,https,ssl,soap,http-proxy,http-alt,https-alt"
         self.general_enable_scheduler = "True"
@@ -1678,6 +1680,10 @@ class Settings():
                 # general
                 self.general_default_terminal = self.generalSettings['default-terminal']
                 self.general_tool_output_black_background = self.generalSettings['tool-output-black-background']
+                self.general_colorful_ascii_background = self.generalSettings.get(
+                    'colorful-ascii-background',
+                    self.general_colorful_ascii_background,
+                )
                 self.general_screenshooter_timeout = self.generalSettings['screenshooter-timeout']
                 self.general_web_services = self.generalSettings['web-services']
                 self.general_enable_scheduler = self.generalSettings['enable-scheduler']

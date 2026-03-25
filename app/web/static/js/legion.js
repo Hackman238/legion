@@ -20,6 +20,7 @@ const workspaceState = {
 const GRAPH_WORKSPACE_ZOOM_MIN_PERCENT = 10;
 const GRAPH_WORKSPACE_ZOOM_MAX_PERCENT = 400;
 const INTERNAL_QUICK_RECON_TCP_PORTS = "80,81,88,111,135,139,443,445,515,591,593,623,631,2049,8000,8008,8010,8080,8081,8088,8443,8888,9000,9090,9100,9443,10443";
+const RFC1918_COMPREHENSIVE_TCP_PORTS = "22,25,53,80,81,88,110,111,123,135,139,143,389,443,445,465,500,515,587,591,593,623,631,636,993,995,1025,1433,1521,2049,2375,2376,3000,3306,3389,5000,5432,5601,5672,5900,5985,5986,6379,7001,8000,8008,8010,8080,8081,8088,8443,8888,9000,9090,9100,9200,9443,10443,27017";
 
 const graphWorkspaceState = {
     viewId: "attack_surface",
@@ -267,7 +268,9 @@ const hostRemoveState = {
 const nmapWizardState = {
     step: 1,
     lastMode: "",
+    lastEngagementPreset: "",
     postSubmitLock: true,
+    captureInterfacesLoaded: false,
 };
 
 const PROCESS_OUTPUT_REFRESH_MS = 2000;
@@ -283,8 +286,17 @@ const startupWizardState = {
     },
 };
 
+const workspaceSwitchGuardState = {
+    modalOpen: false,
+    busy: false,
+    pendingAction: null,
+    pendingLabel: "",
+    latestSummary: null,
+};
+
 const uiModalState = {
     schedulerOpen: false,
+    interfaceSettingsOpen: false,
     deviceCategorySettingsOpen: false,
     reportProviderOpen: false,
     settingsOpen: false,
@@ -298,6 +310,7 @@ const uiModalState = {
     schedulerDecisionsOpen: false,
     hostRemoveOpen: false,
     graphNoteOpen: false,
+    workspaceSwitchGuardOpen: false,
 };
 
 const ribbonMenuState = {
@@ -313,6 +326,7 @@ function updateBodyModalState() {
         || screenshotModalState.modalOpen
         || startupWizardState.open
         || uiModalState.schedulerOpen
+        || uiModalState.interfaceSettingsOpen
         || uiModalState.deviceCategorySettingsOpen
         || uiModalState.reportProviderOpen
         || uiModalState.settingsOpen
@@ -326,6 +340,7 @@ function updateBodyModalState() {
         || uiModalState.schedulerDecisionsOpen
         || uiModalState.hostRemoveOpen
         || uiModalState.graphNoteOpen
+        || uiModalState.workspaceSwitchGuardOpen
     );
     document.body.classList.toggle("modal-open", anyModalOpen);
 }
@@ -1716,6 +1731,19 @@ function isInternalQuickReconPreset(preset = "") {
     return String(preset || "").trim().toLowerCase() === "internal_quick_recon";
 }
 
+function isInternalEngagementPresetSelection(preset = "") {
+    const policy = buildEngagementPolicyForPresetSelection(preset, {
+        fallbackGoalProfile: getValue("scheduler-goal-select") || "internal_recon",
+    });
+    return String(policy.scope || "").trim().toLowerCase() === "internal";
+}
+
+function getSelectedPassiveCaptureDuration() {
+    const raw = parseInt(getValue("passive-capture-duration"), 10);
+    const allowed = new Set([5, 15, 30, 45, 60, 75, 90, 105, 120]);
+    return allowed.has(raw) ? raw : 15;
+}
+
 function buildEngagementPolicyForPresetSelection(preset, options = {}) {
     const normalizedPreset = String(preset || "internal_recon").trim().toLowerCase();
     if (normalizedPreset !== "custom") {
@@ -1763,6 +1791,81 @@ function syncNmapEngagementPresetControls() {
     const customNote = document.getElementById("nmap-engagement-custom-note");
     if (customNote) {
         customNote.hidden = !isCustom;
+    }
+
+    const passiveCard = document.getElementById("nmap-mode-card-passive");
+    const passiveAllowed = String(derivedPolicy.scope || "").trim().toLowerCase() === "internal";
+    if (passiveCard) {
+        passiveCard.hidden = !passiveAllowed;
+    }
+    if (!passiveAllowed) {
+        const selectedPassiveMode = document.querySelector("input[name='nmap-scan-mode'][value='passive_capture']");
+        if (selectedPassiveMode && selectedPassiveMode.checked) {
+            const fallbackMode = document.querySelector("input[name='nmap-scan-mode'][value='easy']");
+            if (fallbackMode) {
+                fallbackMode.checked = true;
+            }
+        }
+    }
+}
+
+function setPassiveCaptureInterfaceOptions(inventory = {}) {
+    const select = document.getElementById("passive-capture-interface");
+    const note = document.getElementById("passive-capture-interface-note");
+    if (!select) {
+        return;
+    }
+    const rows = Array.isArray(inventory.interfaces) ? inventory.interfaces : [];
+    const defaultInterface = String(inventory.default_interface || "").trim();
+    const previousValue = String(select.value || "").trim();
+    select.innerHTML = "";
+    if (!rows.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No capture-ready interfaces found";
+        select.appendChild(option);
+        select.value = "";
+        if (note) {
+            note.textContent = "Passive capture needs an active non-loopback IPv4 interface.";
+        }
+        updateNmapCommandPreview();
+        return;
+    }
+    rows.forEach((item) => {
+        const option = document.createElement("option");
+        option.value = String(item.name || "").trim();
+        option.textContent = String(item.label || item.name || "").trim();
+        option.dataset.networks = Array.isArray(item.ipv4_networks) ? item.ipv4_networks.join(", ") : "";
+        select.appendChild(option);
+    });
+    const preferredValue = previousValue && rows.some((item) => String(item.name || "").trim() === previousValue)
+        ? previousValue
+        : (defaultInterface && rows.some((item) => String(item.name || "").trim() === defaultInterface)
+            ? defaultInterface
+            : String(rows[0].name || "").trim());
+    select.value = preferredValue;
+    if (note) {
+        const selectedOption = select.options[select.selectedIndex];
+        const networks = String(selectedOption?.dataset?.networks || "").trim();
+        note.textContent = networks
+            ? `Connected networks: ${networks}`
+            : "Passive capture will watch discovery traffic on the selected interface.";
+    }
+    updateNmapCommandPreview();
+}
+
+async function loadPassiveCaptureInterfaces() {
+    const select = document.getElementById("passive-capture-interface");
+    if (!select) {
+        return;
+    }
+    try {
+        const inventory = await fetchJson("/api/network/interfaces");
+        nmapWizardState.captureInterfacesLoaded = true;
+        setPassiveCaptureInterfaceOptions(inventory || {});
+    } catch (_err) {
+        nmapWizardState.captureInterfacesLoaded = false;
+        setPassiveCaptureInterfaceOptions({interfaces: [], default_interface: ""});
     }
 }
 
@@ -1903,8 +2006,12 @@ function resetNmapScanWizardState({scrollIntoView = false, focusPreset = false, 
 
     nmapWizardState.postSubmitLock = true;
     nmapWizardState.lastMode = "";
+    nmapWizardState.lastEngagementPreset = "";
+    nmapWizardState.captureInterfacesLoaded = false;
     setValue("nmap-targets", "");
     setChecked("nmap-run-actions", true);
+    setValue("passive-capture-duration", "15");
+    setPassiveCaptureInterfaceOptions({interfaces: [], default_interface: ""});
 
     const easyMode = document.querySelector("input[name='nmap-scan-mode'][value='easy']");
     if (easyMode) {
@@ -1917,6 +2024,7 @@ function resetNmapScanWizardState({scrollIntoView = false, focusPreset = false, 
     setNmapWizardStep(1);
     refreshNmapModeOptions();
     refreshNmapScanButtonState();
+    loadPassiveCaptureInterfaces().catch(() => {});
 
     const focusTargetId = focusPreset ? "nmap-engagement-preset-select" : (focusTargets ? "nmap-targets" : "");
     if (focusTargetId) {
@@ -2610,6 +2718,84 @@ function setToolInstallStatus(text, isError = false) {
     node.style.color = isError ? "#ff9b9b" : "";
 }
 
+function setDisplaySettingsStatus(text, isError = false) {
+    const node = document.getElementById("settings-display-status");
+    if (!node) {
+        return;
+    }
+    node.textContent = text || "";
+    node.style.color = isError ? "#ff9b9b" : "";
+}
+
+function setInterfaceSettingsStatus(text, isError = false) {
+    const node = document.getElementById("interface-settings-status");
+    if (!node) {
+        return;
+    }
+    node.textContent = text || "";
+    node.style.color = isError ? "#ff9b9b" : "";
+}
+
+function ensureLogoWatermark(enabled) {
+    const existing = document.querySelector(".logo-watermark");
+    if (!enabled) {
+        if (existing) {
+            existing.remove();
+        }
+        return;
+    }
+    const rawArt = String(window.LEGION_CONSOLE_LOGO_ART || "");
+    if (!rawArt.trim()) {
+        return;
+    }
+    if (existing) {
+        return;
+    }
+    const shell = document.querySelector(".shell");
+    if (!shell || !shell.parentNode) {
+        return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.className = "logo-watermark";
+    wrapper.setAttribute("aria-hidden", "true");
+    const pre = document.createElement("pre");
+    pre.textContent = rawArt;
+    wrapper.appendChild(pre);
+    shell.parentNode.insertBefore(wrapper, shell);
+}
+
+function applyColorfulAsciiBackgroundEnabled(enabled) {
+    const next = Boolean(enabled);
+    window.LEGION_COLORFUL_ASCII_BACKGROUND_ENABLED = next;
+    document.body?.classList.toggle("colorful-background", next);
+    setChecked("interface-colorful-ascii-background", next);
+    ensureLogoWatermark(next);
+}
+
+function applyGraphWorkspaceEnabled(enabled) {
+    const next = Boolean(enabled);
+    const panel = document.getElementById("graph-workspace-panel");
+    const shell = document.getElementById("graph-workspace-shell");
+    const disabledState = document.getElementById("graph-workspace-disabled-state");
+    if (panel) {
+        panel.dataset.graphEnabled = next ? "true" : "false";
+        panel.hidden = !next;
+    }
+    if (shell) {
+        shell.hidden = !next;
+    }
+    if (disabledState) {
+        disabledState.hidden = next;
+    }
+    setChecked("interface-graph-workspace-enabled", next);
+    if (!next) {
+        graphWorkspaceState.loading = false;
+        graphDismissSelection();
+        return;
+    }
+    graphLoadSnapshot({background: false}).catch(() => {});
+}
+
 function currentToolInstallPlatform() {
     const select = document.getElementById("settings-tool-install-platform");
     const value = String(select?.value || toolAuditState.recommendedPlatform || "kali").trim().toLowerCase();
@@ -2858,15 +3044,17 @@ function downloadWorkspaceBundleAction() {
     window.location.assign(`/api/project/download-zip?t=${Date.now()}`);
 }
 
-function restoreWorkspaceBundleAction() {
+async function restoreWorkspaceBundleAction() {
     closeRibbonMenus();
-    const input = document.getElementById("project-restore-zip-file");
-    if (!input) {
-        setActionStatus("Restore failed: ZIP input control missing.", true);
-        return;
-    }
-    input.value = "";
-    input.click();
+    await withWorkspaceSwitchGuard("restoring a workspace bundle", async () => {
+        const input = document.getElementById("project-restore-zip-file");
+        if (!input) {
+            setActionStatus("Restore failed: ZIP input control missing.", true);
+            return;
+        }
+        input.value = "";
+        input.click();
+    });
 }
 
 async function restoreWorkspaceBundleSelectedAction(event) {
@@ -3216,6 +3404,81 @@ async function refreshAppSettingsConfigAction() {
     }
 }
 
+async function refreshDisplaySettingsAction() {
+    setDisplaySettingsStatus("Loading display settings...");
+    try {
+        const body = await fetchJson("/api/settings/display");
+        setChecked("settings-colorful-ascii-background", Boolean(body.colorful_ascii_background));
+        setDisplaySettingsStatus("Display settings loaded");
+    } catch (err) {
+        setDisplaySettingsStatus(`Load failed: ${err.message}`, true);
+    }
+}
+
+async function saveDisplaySettingsAction() {
+    const colorfulAsciiBackground = getChecked("settings-colorful-ascii-background");
+    setDisplaySettingsStatus("Saving display settings...");
+    try {
+        const body = await postJson("/api/settings/display", {
+            colorful_ascii_background: colorfulAsciiBackground,
+        });
+        applyColorfulAsciiBackgroundEnabled(Boolean(body.colorful_ascii_background));
+        setDisplaySettingsStatus("Display settings saved");
+    } catch (err) {
+        setDisplaySettingsStatus(`Save failed: ${err.message}`, true);
+    }
+}
+
+function setInterfaceSettingsModalOpen(open) {
+    const overlay = document.getElementById("interface-settings-modal");
+    if (!overlay) {
+        return;
+    }
+    uiModalState.interfaceSettingsOpen = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    updateBodyModalState();
+}
+
+async function refreshInterfaceSettingsAction() {
+    setInterfaceSettingsStatus("Loading interface settings...");
+    try {
+        const [prefs, display] = await Promise.all([
+            fetchJson("/api/scheduler/preferences"),
+            fetchJson("/api/settings/display"),
+        ]);
+        const graphEnabled = normalizeSchedulerFeatureFlags(prefs?.feature_flags).graph_workspace;
+        setChecked("interface-graph-workspace-enabled", graphEnabled);
+        setChecked("interface-colorful-ascii-background", Boolean(display?.colorful_ascii_background));
+        setInterfaceSettingsStatus("Interface settings loaded");
+    } catch (err) {
+        setInterfaceSettingsStatus(`Load failed: ${err.message}`, true);
+    }
+}
+
+async function saveInterfaceSettingsAction() {
+    const graphWorkspace = getChecked("interface-graph-workspace-enabled");
+    const colorfulAsciiBackground = getChecked("interface-colorful-ascii-background");
+    setInterfaceSettingsStatus("Saving interface settings...");
+    try {
+        const [prefs, display] = await Promise.all([
+            postJson("/api/scheduler/preferences", {
+                feature_flags: {
+                    graph_workspace: graphWorkspace,
+                },
+            }),
+            postJson("/api/settings/display", {
+                colorful_ascii_background: colorfulAsciiBackground,
+            }),
+        ]);
+        applySchedulerPreferences(prefs);
+        applyColorfulAsciiBackgroundEnabled(Boolean(display?.colorful_ascii_background));
+        setInterfaceSettingsStatus("Interface settings saved");
+    } catch (err) {
+        setInterfaceSettingsStatus(`Save failed: ${err.message}`, true);
+    }
+}
+
 async function saveAppSettingsConfigAction() {
     const text = getValue("settings-config-text");
     setConfigSettingsStatus("Saving config...");
@@ -3239,6 +3502,155 @@ async function openAppSettingsAction() {
 
 function closeAppSettingsAction() {
     setAppSettingsModalOpen(false);
+}
+
+async function openInterfaceSettingsAction() {
+    closeRibbonMenus();
+    setInterfaceSettingsModalOpen(true);
+    await refreshInterfaceSettingsAction();
+}
+
+function closeInterfaceSettingsAction() {
+    setInterfaceSettingsModalOpen(false);
+}
+
+function setWorkspaceSwitchGuardModalOpen(open) {
+    const overlay = document.getElementById("workspace-switch-guard-modal");
+    if (!overlay) {
+        return;
+    }
+    workspaceSwitchGuardState.modalOpen = Boolean(open);
+    uiModalState.workspaceSwitchGuardOpen = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    updateBodyModalState();
+}
+
+function setWorkspaceSwitchGuardStatus(text, isError = false) {
+    const node = document.getElementById("workspace-switch-guard-status");
+    if (!node) {
+        return;
+    }
+    node.textContent = text || "";
+    node.style.color = isError ? "#ff9b9b" : "";
+}
+
+function closeWorkspaceSwitchGuardAction() {
+    workspaceSwitchGuardState.busy = false;
+    workspaceSwitchGuardState.pendingAction = null;
+    workspaceSwitchGuardState.pendingLabel = "";
+    workspaceSwitchGuardState.latestSummary = null;
+    setWorkspaceSwitchGuardStatus("Stop running jobs and processes before switching workspaces.");
+    setText("workspace-switch-guard-summary", "No active work detected.");
+    setText("workspace-switch-guard-details", "");
+    setWorkspaceSwitchGuardModalOpen(false);
+}
+
+async function fetchActiveWorkspaceWork() {
+    const [jobsBody, processesBody] = await Promise.all([
+        fetchJson("/api/jobs?limit=500"),
+        fetchJson("/api/processes?limit=500"),
+    ]);
+    const jobs = Array.isArray(jobsBody?.jobs) ? jobsBody.jobs : [];
+    const processes = Array.isArray(processesBody?.processes) ? processesBody.processes : [];
+    return {
+        jobs: jobs.filter((item) => {
+            const status = String(item?.status || "").trim().toLowerCase();
+            return status === "queued" || status === "running";
+        }),
+        processes: processes.filter((item) => {
+            const status = String(item?.status || "").trim().toLowerCase();
+            return status === "running" || status === "waiting";
+        }),
+    };
+}
+
+function describeActiveWorkspaceWork(summary) {
+    const jobs = Array.isArray(summary?.jobs) ? summary.jobs : [];
+    const processes = Array.isArray(summary?.processes) ? summary.processes : [];
+    const lines = [];
+    jobs.slice(0, 6).forEach((job) => {
+        lines.push(`Job ${job.id} | ${job.type || "job"} | ${job.status || ""}`);
+    });
+    processes.slice(0, 8).forEach((proc) => {
+        lines.push(`Process ${proc.id} | ${proc.name || "process"} | ${proc.hostIp || ""}${proc.port ? `:${proc.port}/${proc.protocol || "tcp"}` : ""} | ${proc.status || ""}`);
+    });
+    if (jobs.length > 6 || processes.length > 8) {
+        lines.push("...");
+    }
+    return lines.join("\n");
+}
+
+function showWorkspaceSwitchGuard(summary, actionLabel, actionFn) {
+    workspaceSwitchGuardState.pendingAction = actionFn;
+    workspaceSwitchGuardState.pendingLabel = String(actionLabel || "switch workspaces");
+    workspaceSwitchGuardState.latestSummary = summary;
+    const jobCount = Array.isArray(summary?.jobs) ? summary.jobs.length : 0;
+    const processCount = Array.isArray(summary?.processes) ? summary.processes.length : 0;
+    setWorkspaceSwitchGuardStatus("Active work must be stopped before switching workspaces.");
+    setText(
+        "workspace-switch-guard-summary",
+        `${jobCount} active job${jobCount === 1 ? "" : "s"} and ${processCount} active process${processCount === 1 ? "" : "es"} detected before ${workspaceSwitchGuardState.pendingLabel}.`,
+    );
+    setText("workspace-switch-guard-details", describeActiveWorkspaceWork(summary));
+    setWorkspaceSwitchGuardModalOpen(true);
+}
+
+async function waitForActiveWorkspaceWorkToStop(timeoutMs = 20000) {
+    const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 20000);
+    while (Date.now() < deadline) {
+        const summary = await fetchActiveWorkspaceWork();
+        if (!summary.jobs.length && !summary.processes.length) {
+            return summary;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+    }
+    throw new Error("Timed out waiting for running jobs and processes to stop.");
+}
+
+async function stopActiveWorkspaceWorkAndContinueAction() {
+    if (workspaceSwitchGuardState.busy) {
+        return;
+    }
+    workspaceSwitchGuardState.busy = true;
+    setWorkspaceSwitchGuardStatus("Stopping active jobs and processes...");
+    try {
+        const summary = await fetchActiveWorkspaceWork();
+        for (const job of summary.jobs) {
+            const jobId = Number(job?.id || 0);
+            if (jobId > 0) {
+                await postJson(`/api/jobs/${jobId}/stop`, {});
+            }
+        }
+        for (const process of summary.processes) {
+            const processId = Number(process?.id || 0);
+            if (processId > 0) {
+                try {
+                    await postJson(`/api/processes/${processId}/kill`, {});
+                } catch (_err) {
+                }
+            }
+        }
+        await waitForActiveWorkspaceWorkToStop();
+        await pollSnapshot();
+        const pendingAction = workspaceSwitchGuardState.pendingAction;
+        closeWorkspaceSwitchGuardAction();
+        if (typeof pendingAction === "function") {
+            await pendingAction();
+        }
+    } catch (err) {
+        workspaceSwitchGuardState.busy = false;
+        setWorkspaceSwitchGuardStatus(`Stop failed: ${err.message}`, true);
+    }
+}
+
+async function withWorkspaceSwitchGuard(actionLabel, actionFn) {
+    const summary = await fetchActiveWorkspaceWork();
+    if (summary.jobs.length || summary.processes.length) {
+        showWorkspaceSwitchGuard(summary, actionLabel, actionFn);
+        return;
+    }
+    await actionFn();
 }
 
 function setProcessOutputModalOpen(open) {
@@ -4595,7 +5007,8 @@ function applySchedulerPreferences(prefs) {
     setValue("scheduler-ai-stall-rounds", String(aiFeedback.stall_rounds_without_progress || 2));
     setValue("scheduler-ai-repeat-threshold", String(aiFeedback.stall_repeat_selection_threshold || 2));
     setValue("scheduler-ai-max-reflections", String(aiFeedback.max_reflections_per_target || 1));
-    setChecked("feature-graph-workspace-enabled", featureFlags.graph_workspace !== false);
+    applyGraphWorkspaceEnabled(featureFlags.graph_workspace !== false);
+    setChecked("interface-graph-workspace-enabled", featureFlags.graph_workspace !== false);
     setChecked("feature-context-summary-enabled", featureFlags.context_summary_enabled !== false);
     setChecked("feature-scheduler-prompt-profiles", featureFlags.scheduler_prompt_profiles !== false);
     setChecked("feature-scheduler-web-followup-sidecar", Boolean(featureFlags.scheduler_web_followup_sidecar));
@@ -5071,6 +5484,10 @@ function collectSchedulerPreferencesFromForm() {
         integrations.shodan.api_key = shodanApiKey;
     }
 
+    const graphWorkspaceToggle = document.getElementById("interface-graph-workspace-enabled");
+    const graphWorkspaceEnabledValue = graphWorkspaceToggle
+        ? Boolean(graphWorkspaceToggle.checked)
+        : graphWorkspaceEnabled();
     const engagementPolicy = normalizeEngagementPolicyPayload(
         {
             preset: selectedPreset,
@@ -5114,7 +5531,7 @@ function collectSchedulerPreferencesFromForm() {
         },
         dangerous_categories: dangerousCategories,
         feature_flags: {
-            graph_workspace: getChecked("feature-graph-workspace-enabled"),
+            graph_workspace: graphWorkspaceEnabledValue,
             context_summary_enabled: getChecked("feature-context-summary-enabled"),
             scheduler_prompt_profiles: getChecked("feature-scheduler-prompt-profiles"),
             scheduler_web_followup_sidecar: getChecked("feature-scheduler-web-followup-sidecar"),
@@ -5194,7 +5611,8 @@ async function fetchJson(url) {
 }
 
 function graphWorkspaceEnabled() {
-    return Boolean(document.getElementById("graph-workspace-canvas"));
+    const panel = document.getElementById("graph-workspace-panel");
+    return String(panel?.dataset?.graphEnabled || "").toLowerCase() === "true";
 }
 
 function getGraphWorkspacePanel() {
@@ -9614,7 +10032,6 @@ async function saveSchedulerPreferences(event) {
     if (statusNode) {
         statusNode.textContent = "Saving...";
     }
-    const graphWorkspaceWasEnabled = graphWorkspaceEnabled();
     let payload;
     try {
         payload = collectSchedulerPreferencesFromForm();
@@ -9638,14 +10055,6 @@ async function saveSchedulerPreferences(event) {
         }
         const prefs = await response.json();
         applySchedulerPreferences(prefs);
-        const graphWorkspaceEnabledNext = normalizeSchedulerFeatureFlags(prefs.feature_flags).graph_workspace;
-        if (graphWorkspaceWasEnabled !== graphWorkspaceEnabledNext) {
-            if (statusNode) {
-                statusNode.textContent = "Saved. Reloading...";
-            }
-            window.setTimeout(() => window.location.reload(), 120);
-            return;
-        }
         if (statusNode) {
             statusNode.textContent = "Saved";
         }
@@ -9761,36 +10170,52 @@ async function testSchedulerProviderAction(event) {
     }
 }
 
-async function createNewTemporaryProject() {
+async function createNewTemporaryProjectCore() {
     setActionStatus("Creating temporary project...");
+    const body = await postJson("/api/project/new-temp", {});
+    setActionStatus("Created temporary project");
+    resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: true});
+    renderProject(body?.project || {});
+    await refreshWorkspace();
+    await Promise.all([pollSnapshot(), loadApprovals()]);
+}
+
+async function createNewTemporaryProject() {
     try {
-        const body = await postJson("/api/project/new-temp", {});
-        setActionStatus("Created temporary project");
-        resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: true});
-        renderProject(body?.project || {});
-        await refreshWorkspace();
-        await Promise.all([pollSnapshot(), loadApprovals()]);
+        await withWorkspaceSwitchGuard("creating a new workspace", createNewTemporaryProjectCore);
     } catch (err) {
+        if (String(err?.message || "").toLowerCase().includes("jobs/scans are active")) {
+            await withWorkspaceSwitchGuard("creating a new workspace", createNewTemporaryProjectCore);
+            return;
+        }
         setActionStatus(`Create failed: ${err.message}`, true);
     }
 }
 
-async function openProject() {
+async function openProjectCore() {
     const path = getValue("project-open-path").trim();
     if (!path) {
         setActionStatus("Open failed: project path is required", true);
         return;
     }
     setActionStatus("Opening project...");
+    const body = await postJson("/api/project/open", {path});
+    setActionStatus("Project opened");
+    resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: false});
+    setValue("project-save-path", "");
+    renderProject(body?.project || {});
+    await refreshWorkspace();
+    await Promise.all([pollSnapshot(), loadApprovals()]);
+}
+
+async function openProject() {
     try {
-        const body = await postJson("/api/project/open", {path});
-        setActionStatus("Project opened");
-        resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: false});
-        setValue("project-save-path", "");
-        renderProject(body?.project || {});
-        await refreshWorkspace();
-        await Promise.all([pollSnapshot(), loadApprovals()]);
+        await withWorkspaceSwitchGuard("opening a workspace", openProjectCore);
     } catch (err) {
+        if (String(err?.message || "").toLowerCase().includes("jobs/scans are active")) {
+            await withWorkspaceSwitchGuard("opening a workspace", openProjectCore);
+            return;
+        }
         setActionStatus(`Open failed: ${err.message}`, true);
     }
 }
@@ -9886,19 +10311,42 @@ function normalizePortCount(value, fallback = 1000) {
 }
 
 function collectNmapWizardTargets() {
-    const dedup = new Set(parseTargets(getValue("nmap-targets")));
-    if (getChecked("nmap-include-rfc1918")) {
-        if (getChecked("nmap-rfc-10")) {
-            dedup.add("10.0.0.0/8");
-        }
-        if (getChecked("nmap-rfc-172")) {
-            dedup.add("172.16.0.0/12");
-        }
-        if (getChecked("nmap-rfc-192")) {
-            dedup.add("192.168.0.0/16");
-        }
+    const mode = getSelectedNmapMode();
+    const dedup = new Set();
+    if (mode !== "rfc1918_discovery") {
+        parseTargets(getValue("nmap-targets")).forEach((target) => dedup.add(target));
+        return Array.from(dedup);
+    }
+
+    if (getChecked("nmap-rfc-10")) {
+        dedup.add("10.0.0.0/8");
+    }
+    if (getChecked("nmap-rfc-172")) {
+        dedup.add("172.16.0.0/12");
+    }
+    if (getChecked("nmap-rfc-192")) {
+        dedup.add("192.168.0.0/16");
     }
     return Array.from(dedup);
+}
+
+function getSelectedRfcScanProfile() {
+    const node = document.getElementById("nmap-rfc-profile");
+    const value = node ? String(node.value || "quick").trim().toLowerCase() : "quick";
+    return value === "comprehensive" ? "comprehensive" : "quick";
+}
+
+function getRfcExplicitPortsForProfile(profile) {
+    return profile === "comprehensive" ? RFC1918_COMPREHENSIVE_TCP_PORTS : INTERNAL_QUICK_RECON_TCP_PORTS;
+}
+
+function getSelectedRfcChunkConcurrency() {
+    const node = document.getElementById("nmap-rfc-chunk-concurrency");
+    const parsed = parseInt(node ? String(node.value || "1").trim() : "1", 10);
+    if (!Number.isFinite(parsed)) {
+        return 1;
+    }
+    return Math.max(1, Math.min(parsed, 4));
 }
 
 function getNmapScanOptions(mode) {
@@ -9940,14 +10388,19 @@ function getNmapScanOptions(mode) {
         };
     }
 
+    const hostDiscoveryOnly = getChecked("nmap-rfc-host-discovery-only");
+    const rfcProfile = getSelectedRfcScanProfile();
     return {
         discovery: getChecked("nmap-rfc-discovery"),
-        host_discovery_only: getChecked("nmap-rfc-host-discovery-only"),
+        host_discovery_only: hostDiscoveryOnly,
         skip_dns: getChecked("nmap-rfc-skip-dns"),
         arp_ping: getChecked("nmap-rfc-arp-ping"),
-        force_pn: getChecked("nmap-rfc-force-pn"),
+        force_pn: false,
         timing: normalizeTiming(getValue("nmap-rfc-timing"), "T3"),
-        top_ports: normalizePortCount(getValue("nmap-rfc-top-ports"), 100),
+        top_ports: 0,
+        explicit_ports: hostDiscoveryOnly ? "" : getRfcExplicitPortsForProfile(rfcProfile),
+        scan_profile: rfcProfile,
+        chunk_concurrency: getSelectedRfcChunkConcurrency(),
         service_detection: getChecked("nmap-rfc-service-detection"),
         default_scripts: getChecked("nmap-rfc-default-scripts"),
         os_detection: getChecked("nmap-rfc-os-detection"),
@@ -9963,10 +10416,6 @@ function getSelectedRfcSubnetCount() {
 }
 
 function setRfcTargetControlsEnabled(enabled) {
-    const include = document.getElementById("nmap-include-rfc1918");
-    if (include) {
-        include.disabled = !enabled;
-    }
     ["nmap-rfc-10", "nmap-rfc-172", "nmap-rfc-192"].forEach((id) => {
         const node = document.getElementById(id);
         if (node) {
@@ -9977,17 +10426,27 @@ function setRfcTargetControlsEnabled(enabled) {
 
 function applyNmapModeTargetDefaults(mode) {
     if (mode === "rfc1918_discovery") {
-        setChecked("nmap-include-rfc1918", true);
+        setChecked("nmap-rfc-discovery", true);
+        setChecked("nmap-rfc-host-discovery-only", true);
+        setChecked("nmap-rfc-arp-ping", false);
+        setChecked("nmap-rfc-skip-dns", true);
+        setValue("nmap-rfc-timing", "T3");
+        setValue("nmap-rfc-profile", "quick");
+        setValue("nmap-rfc-chunk-concurrency", "1");
+        setChecked("nmap-rfc-service-detection", false);
+        setChecked("nmap-rfc-default-scripts", false);
+        setChecked("nmap-rfc-os-detection", false);
+        setChecked("nmap-rfc-force-pn", false);
         setChecked("nmap-rfc-10", true);
         setChecked("nmap-rfc-172", true);
         setChecked("nmap-rfc-192", true);
         setRfcTargetControlsEnabled(true);
         return;
     }
-    setChecked("nmap-include-rfc1918", false);
     setChecked("nmap-rfc-10", false);
     setChecked("nmap-rfc-172", false);
     setChecked("nmap-rfc-192", false);
+    setChecked("nmap-rfc-force-pn", false);
     setRfcTargetControlsEnabled(false);
 }
 
@@ -10006,11 +10465,22 @@ function isValidTopPortsValue(inputId) {
 
 function validateNmapWizardState() {
     const mode = getSelectedNmapMode();
-    const explicitTargets = parseTargets(getValue("nmap-targets"));
+    if (mode === "passive_capture") {
+        if (!isInternalEngagementPresetSelection(getSelectedNmapEngagementPreset())) {
+            return {valid: false, reason: "Passive Capture is available only for internal engagement presets."};
+        }
+        if (!String(getValue("passive-capture-interface") || "").trim()) {
+            return {valid: false, reason: "Select a capture interface."};
+        }
+        const duration = getSelectedPassiveCaptureDuration();
+        if (![5, 15, 30, 45, 60, 75, 90, 105, 120].includes(duration)) {
+            return {valid: false, reason: "Select a valid capture duration."};
+        }
+        return {valid: true, reason: ""};
+    }
+    const explicitTargets = mode === "rfc1918_discovery" ? [] : parseTargets(getValue("nmap-targets"));
     const hasExplicitTargets = explicitTargets.length > 0;
-    const hasRfcRanges = mode === "rfc1918_discovery"
-        && getChecked("nmap-include-rfc1918")
-        && getSelectedRfcSubnetCount() > 0;
+    const hasRfcRanges = mode === "rfc1918_discovery" && getSelectedRfcSubnetCount() > 0;
     if (!hasExplicitTargets && !hasRfcRanges) {
         return {valid: false, reason: "Add targets, or select RFC1918 ranges in RFC1918 mode."};
     }
@@ -10035,10 +10505,6 @@ function validateNmapWizardState() {
         return {valid: true, reason: ""};
     }
 
-    const discoveryOnly = getChecked("nmap-rfc-host-discovery-only");
-    if (!discoveryOnly && !isValidTopPortsValue("nmap-rfc-top-ports")) {
-        return {valid: false, reason: "RFC1918 mode Top Ports must be 1-65535 when discovery-only is disabled."};
-    }
     return {valid: true, reason: ""};
 }
 
@@ -10089,8 +10555,43 @@ function updateNmapCommandPreview() {
     if (!previewNode) {
         return;
     }
-    const targets = collectNmapWizardTargets();
     const mode = getSelectedNmapMode();
+    const scanButton = document.getElementById("nmap-scan-button");
+    const runActionsLabel = document.getElementById("nmap-run-actions-label");
+    const argsLabel = document.getElementById("nmap-args-label");
+    if (scanButton) {
+        scanButton.textContent = mode === "passive_capture" ? "Start Passive Capture Job" : "Start Nmap Scan Job";
+    }
+    if (runActionsLabel) {
+        runActionsLabel.lastChild.textContent = mode === "passive_capture"
+            ? " Run scripted actions after spawned Easy scans"
+            : " Run scripted actions after scan";
+    }
+    if (argsLabel) {
+        argsLabel.hidden = mode === "passive_capture";
+    }
+    if (mode === "passive_capture") {
+        const iface = String(getValue("passive-capture-interface") || "<interface>").trim() || "<interface>";
+        const duration = getSelectedPassiveCaptureDuration();
+        const seconds = duration * 60;
+        const cmd = joinShellTokens([
+            "tshark",
+            "-i",
+            iface,
+            "-n",
+            "-q",
+            "-a",
+            `duration:${seconds}`,
+            "-f",
+            "arp or broadcast or multicast or udp port 67 or udp port 68 or udp port 137 or udp port 138 or udp port 5353 or udp port 5355 or udp port 1900",
+            "-w",
+            "<output_prefix>.pcapng",
+        ]);
+        previewNode.textContent = `Command Preview: ${cmd}  |  Then queue Easy scans for discovered internal networks`;
+        refreshNmapScanButtonState();
+        return;
+    }
+    const targets = collectNmapWizardTargets();
     const options = getNmapScanOptions(mode);
     const nmapPath = "nmap";
     const extraArgs = getValue("nmap-args").trim();
@@ -10161,11 +10662,29 @@ function updateNmapCommandPreview() {
 }
 
 function syncNmapPresetDerivedOptions() {
-    const quickReconPreset = isInternalQuickReconPreset(getSelectedNmapEngagementPreset());
+    const preset = getSelectedNmapEngagementPreset();
+    const quickReconPreset = isInternalQuickReconPreset(preset);
+    const presetChanged = preset !== nmapWizardState.lastEngagementPreset;
     const topPortsNode = document.getElementById("nmap-easy-top-ports");
+    const topPortsLabel = document.getElementById("nmap-easy-top-ports-label");
     const noteNode = document.getElementById("nmap-easy-preset-note");
+    const serviceDetectionNode = document.getElementById("nmap-easy-service-detection");
+    const defaultScriptsNode = document.getElementById("nmap-easy-default-scripts");
+
+    if (presetChanged) {
+        if (serviceDetectionNode) {
+            serviceDetectionNode.checked = !quickReconPreset;
+        }
+        if (defaultScriptsNode) {
+            defaultScriptsNode.checked = !quickReconPreset;
+        }
+    }
+
     if (topPortsNode) {
         topPortsNode.disabled = quickReconPreset;
+    }
+    if (topPortsLabel) {
+        topPortsLabel.hidden = quickReconPreset;
     }
     if (noteNode) {
         noteNode.hidden = !quickReconPreset;
@@ -10173,6 +10692,7 @@ function syncNmapPresetDerivedOptions() {
             ? `Internal Quick Recon uses a curated TCP port list instead of Top Ports: ${INTERNAL_QUICK_RECON_TCP_PORTS}. Add UDP-specific follow-up separately if needed.`
             : "";
     }
+    nmapWizardState.lastEngagementPreset = preset;
 }
 
 function setNmapWizardStep(step) {
@@ -10213,18 +10733,64 @@ function refreshNmapModeOptions() {
         const blockMode = String(block.getAttribute("data-mode-options") || "");
         block.classList.toggle("is-active", blockMode === mode);
     });
+    const standardTargetControls = document.getElementById("nmap-standard-target-controls");
+    if (standardTargetControls) {
+        standardTargetControls.hidden = mode === "passive_capture" || mode === "rfc1918_discovery";
+    }
+    const passiveTargetControls = document.getElementById("nmap-passive-target-controls");
+    if (passiveTargetControls) {
+        passiveTargetControls.hidden = mode !== "passive_capture";
+    }
+    const rfcTargetControls = document.getElementById("nmap-rfc-target-controls");
+    if (rfcTargetControls) {
+        rfcTargetControls.hidden = mode !== "rfc1918_discovery";
+    }
     const hardTopPorts = document.getElementById("nmap-hard-top-ports");
     if (hardTopPorts) {
         hardTopPorts.disabled = getChecked("nmap-hard-full-ports");
     }
     const rfcDiscoveryOnly = getChecked("nmap-rfc-host-discovery-only");
-    ["nmap-rfc-top-ports", "nmap-rfc-service-detection", "nmap-rfc-default-scripts", "nmap-rfc-os-detection", "nmap-rfc-force-pn"]
+    const rfcDiscoveryNode = document.getElementById("nmap-rfc-discovery");
+    if (rfcDiscoveryNode) {
+        rfcDiscoveryNode.checked = true;
+        rfcDiscoveryNode.disabled = mode === "rfc1918_discovery";
+    }
+    const rfcForcePnNode = document.getElementById("nmap-rfc-force-pn");
+    if (rfcForcePnNode) {
+        rfcForcePnNode.checked = false;
+        rfcForcePnNode.disabled = true;
+    }
+    ["nmap-rfc-profile", "nmap-rfc-service-detection", "nmap-rfc-default-scripts", "nmap-rfc-os-detection"]
         .forEach((id) => {
             const node = document.getElementById(id);
             if (node) {
                 node.disabled = rfcDiscoveryOnly;
             }
         });
+    const rfcProfileNote = document.getElementById("nmap-rfc-profile-note");
+    if (rfcProfileNote) {
+        const rfcProfile = getSelectedRfcScanProfile();
+        const chunkConcurrency = getSelectedRfcChunkConcurrency();
+        const profileLabel = rfcProfile === "comprehensive"
+            ? "More comprehensive uses a broader common-internal-services TCP list"
+            : "Quick uses the curated low-hanging-fruit TCP list";
+        const ports = getRfcExplicitPortsForProfile(rfcProfile);
+        const chunkLabel = `${chunkConcurrency} chunk scan${chunkConcurrency === 1 ? "" : "s"} at a time`;
+        rfcProfileNote.textContent = rfcDiscoveryOnly
+            ? `${profileLabel}. RFC sweeps run in /24 chunks, up to 2 subnets per Nmap run, with ${chunkLabel}. Disable discovery-only to scan responsive hosts on: ${ports}.`
+            : `${profileLabel}. RFC sweeps run in /24 chunks, up to 2 subnets per Nmap run, with ${chunkLabel}: ${ports}.`;
+    }
+    const passiveInterfaceNote = document.getElementById("passive-capture-interface-note");
+    const passiveSelect = document.getElementById("passive-capture-interface");
+    if (mode === "passive_capture" && passiveSelect && passiveInterfaceNote) {
+        const selectedOption = passiveSelect.options[passiveSelect.selectedIndex];
+        if (selectedOption) {
+            const networks = String(selectedOption.dataset.networks || "").trim();
+            passiveInterfaceNote.textContent = networks
+                ? `Connected networks: ${networks}`
+                : "Passive capture will watch discovery traffic on the selected interface.";
+        }
+    }
     syncNmapPresetDerivedOptions();
     updateNmapCommandPreview();
     refreshNmapScanButtonState();
@@ -10240,7 +10806,7 @@ async function runNmapScan() {
     if (!validation.valid) {
         setActionStatus(`Scan failed: ${validation.reason}`, true);
         const reason = String(validation.reason || "").toLowerCase();
-        if (reason.includes("target") || reason.includes("rfc1918")) {
+        if (reason.includes("target") || reason.includes("rfc1918") || reason.includes("interface")) {
             setNmapWizardStep(3);
         } else {
             setNmapWizardStep(4);
@@ -10264,18 +10830,29 @@ async function runNmapScan() {
         });
         applySchedulerPreferences(schedulerPrefs);
         syncStartupSchedulerFromMain();
-        const body = await postJson("/api/nmap/scan", {
-            targets,
-            discovery,
-            staged,
-            run_actions: getChecked("nmap-run-actions"),
-            nmap_path: "nmap",
-            nmap_args: getValue("nmap-args").trim(),
-            scan_mode: scanMode,
-            scan_options: scanOptions,
-        });
+        const body = scanMode === "passive_capture"
+            ? await postJson("/api/scan/passive-capture", {
+                interface_name: getValue("passive-capture-interface").trim(),
+                duration_minutes: getSelectedPassiveCaptureDuration(),
+                run_actions: getChecked("nmap-run-actions"),
+                scan_mode: scanMode,
+            })
+            : await postJson("/api/nmap/scan", {
+                targets,
+                discovery,
+                staged,
+                run_actions: getChecked("nmap-run-actions"),
+                nmap_path: "nmap",
+                nmap_args: getValue("nmap-args").trim(),
+                scan_mode: scanMode,
+                scan_options: scanOptions,
+            });
         const jobId = body?.job?.id;
-        setActionStatus(jobId ? `Nmap scan queued (job ${jobId})` : "Nmap scan queued");
+        setActionStatus(
+            jobId
+                ? `${scanMode === "passive_capture" ? "Passive capture" : "Nmap scan"} queued (job ${jobId})`
+                : (scanMode === "passive_capture" ? "Passive capture queued" : "Nmap scan queued"),
+        );
         closeNmapScanModalAction();
         setValue("nmap-targets", "");
         nmapWizardState.postSubmitLock = true;
@@ -10329,6 +10906,7 @@ function bindActionButtons() {
     bind("ribbon-logging-scheduler-decisions-button", openSchedulerDecisionsAction);
     bind("ribbon-logging-ai-provider-button", openProviderLogsAction);
     bind("ribbon-scheduler-settings-button", openSchedulerSettingsAction);
+    bind("ribbon-interface-settings-button", openInterfaceSettingsAction);
     bind("ribbon-device-category-settings-button", openDeviceCategorySettingsAction);
     bind("ribbon-report-provider-settings-button", openReportProviderAction);
     bind("ribbon-app-settings-button", openAppSettingsAction);
@@ -10561,6 +11139,8 @@ function bindActionButtons() {
     bind("scheduler-test-provider-button", testSchedulerProviderAction);
     bind("project-report-push-button", pushProjectAiReportAction);
     bind("scheduler-modal-close", closeSchedulerSettingsAction);
+    bind("interface-settings-modal-close", closeInterfaceSettingsAction);
+    bind("interface-settings-save-button", saveInterfaceSettingsAction);
     bind("device-category-modal-close", closeDeviceCategorySettingsAction);
     bind("device-category-add-rule-button", () => {
         const body = document.getElementById("device-category-rules-body");
@@ -10576,6 +11156,9 @@ function bindActionButtons() {
     bind("settings-tool-audit-refresh-button", refreshToolAuditAction);
     bind("settings-tool-install-copy-button", copyToolInstallScriptAction);
     bind("settings-tool-install-run-button", startToolInstallAction);
+    bind("workspace-switch-guard-close", closeWorkspaceSwitchGuardAction);
+    bind("workspace-switch-guard-cancel-button", closeWorkspaceSwitchGuardAction);
+    bind("workspace-switch-guard-stop-button", stopActiveWorkspaceWorkAndContinueAction);
     bind("nmap-scan-modal-close", closeNmapScanModalAction);
     bind("manual-scan-modal-close", closeManualScanModalAction);
     bind("host-selection-modal-close", closeHostSelectionModalAction);
@@ -10686,6 +11269,24 @@ function bindActionButtons() {
         manualScanModal.addEventListener("click", (event) => {
             if (event.target === manualScanModal) {
                 closeManualScanModalAction();
+            }
+        });
+    }
+
+    const interfaceSettingsModal = document.getElementById("interface-settings-modal");
+    if (interfaceSettingsModal) {
+        interfaceSettingsModal.addEventListener("click", (event) => {
+            if (event.target === interfaceSettingsModal) {
+                closeInterfaceSettingsAction();
+            }
+        });
+    }
+
+    const workspaceSwitchGuardModal = document.getElementById("workspace-switch-guard-modal");
+    if (workspaceSwitchGuardModal) {
+        workspaceSwitchGuardModal.addEventListener("click", (event) => {
+            if (event.target === workspaceSwitchGuardModal) {
+                closeWorkspaceSwitchGuardAction();
             }
         });
     }
@@ -10902,6 +11503,8 @@ function bindActionButtons() {
             || uiModalState.schedulerDecisionsOpen
             || uiModalState.hostRemoveOpen
             || uiModalState.graphNoteOpen
+            || uiModalState.interfaceSettingsOpen
+            || uiModalState.workspaceSwitchGuardOpen
             || uiModalState.settingsOpen
             || uiModalState.deviceCategorySettingsOpen
             || uiModalState.schedulerOpen
