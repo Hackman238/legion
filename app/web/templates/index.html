@@ -2,6 +2,7 @@
 {% block title %}Legion{% endblock %}
 {% block content %}
 <main class="grid">
+    {% set credential_capture = snapshot.get('credential_capture', {}) %}
     <div class="state-cache" aria-hidden="true">
         <input id="project-open-path" type="text">
         <input id="project-save-path" type="text">
@@ -142,6 +143,16 @@
                         <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View provider request and response logs">Provider Logs</button>
                     </div>
                 </div>
+                <button
+                    id="ribbon-credential-capture-toggle-button"
+                    class="ribbon-btn ribbon-btn-toggle{% if credential_capture.get('panel_enabled', True) %} is-active{% endif %}"
+                    type="button"
+                    title="{{ 'Hide' if credential_capture.get('panel_enabled', True) else 'Show' }} Responder / NTLM Relay panel"
+                    aria-pressed="{{ 'true' if credential_capture.get('panel_enabled', True) else 'false' }}"
+                >
+                    <i class="fa-solid fa-user-secret" aria-hidden="true"></i>
+                    <span>Responder / Relay</span>
+                </button>
                 <div class="ribbon-menu" data-ribbon-menu="settings">
                     <button
                         id="ribbon-settings-menu-button"
@@ -297,6 +308,86 @@
                     </table>
                 </div>
             </div>
+        </div>
+    </section>
+
+    <section id="credential-capture-panel" class="panel panel-full credential-capture-panel"{% if not credential_capture.get('panel_enabled', True) %} hidden{% endif %}>
+        <div class="panel-header credential-capture-header">
+            <div class="credential-capture-heading">
+                <h2>Credential Capture</h2>
+                <p>
+                    <span id="credential-capture-count">{{ credential_capture.get('capture_count', 0) }}</span> captures |
+                    <span id="credential-capture-hash-count">{{ credential_capture.get('unique_hash_count', 0) }}</span> unique hashes
+                </p>
+            </div>
+            <div class="modal-actions credential-capture-header-actions">
+                <button id="credential-capture-open-credentials-button" type="button">Credentials</button>
+                <button id="credential-capture-open-config-button" type="button">Configuration</button>
+            </div>
+        </div>
+        <div class="credential-capture-grid">
+            <article class="credential-capture-card">
+                <div class="credential-capture-card-header">
+                    <div>
+                        <h3>Responder</h3>
+                        <p id="credential-capture-responder-status">{{ credential_capture.get('responder', {}).get('session', {}).get('status', 'Idle') }}</p>
+                    </div>
+                    <label class="credential-capture-inline-select">
+                        Mode
+                        <select id="credential-capture-responder-mode-quick">
+                            <option value="active" {% if credential_capture.get('responder', {}).get('config', {}).get('mode', 'active') != 'passive' %}selected{% endif %}>active</option>
+                            <option value="passive" {% if credential_capture.get('responder', {}).get('config', {}).get('mode', '') == 'passive' %}selected{% endif %}>passive</option>
+                        </select>
+                    </label>
+                </div>
+                <p id="credential-capture-responder-meta" class="meta-note">
+                    Interface: {{ credential_capture.get('responder', {}).get('config', {}).get('interface_name', '') or 'not configured' }}
+                </p>
+                <div class="modal-actions">
+                    <button id="credential-capture-responder-start-button" type="button">Start</button>
+                    <button id="credential-capture-responder-stop-button" type="button">Stop</button>
+                    <button id="credential-capture-responder-view-log-button" type="button">View Log</button>
+                    <button id="credential-capture-responder-download-log-button" type="button">Download Log</button>
+                </div>
+            </article>
+            <article class="credential-capture-card">
+                <div class="credential-capture-card-header">
+                    <div>
+                        <h3>ntlmrelayx</h3>
+                        <p id="credential-capture-ntlmrelayx-status">{{ credential_capture.get('ntlmrelayx', {}).get('session', {}).get('status', 'Idle') }}</p>
+                    </div>
+                </div>
+                <p id="credential-capture-ntlmrelayx-meta" class="meta-note">
+                    Target: {{ credential_capture.get('ntlmrelayx', {}).get('config', {}).get('target', '') or credential_capture.get('ntlmrelayx', {}).get('config', {}).get('targets_file', '') or 'not configured' }}
+                </p>
+                <div class="modal-actions">
+                    <button id="credential-capture-ntlmrelayx-start-button" type="button">Start</button>
+                    <button id="credential-capture-ntlmrelayx-stop-button" type="button">Stop</button>
+                    <button id="credential-capture-ntlmrelayx-view-log-button" type="button">View Log</button>
+                    <button id="credential-capture-ntlmrelayx-download-log-button" type="button">Download Log</button>
+                </div>
+            </article>
+            <article class="credential-capture-card credential-capture-recent-card">
+                <div class="credential-capture-card-header">
+                    <div>
+                        <h3>Recent Captures</h3>
+                        <p class="meta-note">Latest observed hashes and credentials.</p>
+                    </div>
+                </div>
+                <div id="credential-capture-recent-list" class="credential-capture-recent-list">
+                    {% if credential_capture.get('recent_captures') %}
+                        {% for capture in credential_capture.get('recent_captures', []) %}
+                            <div class="credential-capture-recent-item">
+                                <strong>{{ capture.get('username', '') or 'unknown-user' }}</strong>
+                                <span>{{ capture.get('source', '') or capture.get('tool', '') }}</span>
+                                <small>{{ capture.get('capturedAt', '') }}</small>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="meta-note credential-capture-empty">No captured credentials yet.</p>
+                    {% endif %}
+                </div>
+            </article>
         </div>
     </section>
 
@@ -1841,9 +1932,141 @@
             <span>Enable colorful ASCII art background</span>
         </label>
         <p class="meta-note">The default background is solid black. The ASCII background is optional visual flair.</p>
+        <label class="settings-inline-toggle">
+            <input id="interface-credential-capture-panel-enabled" type="checkbox">
+            <span>Enable credential capture panel</span>
+        </label>
+        <p class="meta-note">Show the shared Responder and ntlmrelayx monitoring panel on the main screen.</p>
         <div class="modal-actions">
             <button id="interface-settings-save-button" type="button">Save Interface Settings</button>
         </div>
+    </div>
+</div>
+
+<div id="credentials-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="credentials-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="credentials-modal-title">Captured Credentials</h2>
+            <p id="credentials-modal-meta">0 captures</p>
+            <button id="credentials-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="modal-actions">
+            <button id="credentials-copy-hashes-button" type="button">Copy Dedupe Hashes</button>
+            <button id="credentials-download-hashes-button" type="button">Download Dedupe Hashes</button>
+            <button id="credentials-download-json-button" type="button">Download JSON</button>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Captured</th>
+                    <th>Tool</th>
+                    <th>Source</th>
+                    <th>Username</th>
+                    <th>Hash</th>
+                    <th>Details</th>
+                </tr>
+                </thead>
+                <tbody id="credential-captures-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="credential-capture-config-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="credential-capture-config-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="credential-capture-config-modal-title">Credential Capture Configuration</h2>
+            <p id="credential-capture-config-status">Idle</p>
+            <button id="credential-capture-config-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p class="meta-note">Common high-value Responder and ntlmrelayx options live here. Use Advanced Arguments for the rest.</p>
+        <form id="credential-capture-config-form" class="scheduler-form">
+            <fieldset class="danger-group scheduler-settings-group">
+                <legend>Responder</legend>
+                <label>
+                    Interface
+                    <select id="credential-config-responder-interface"></select>
+                </label>
+                <label>
+                    Mode
+                    <select id="credential-config-responder-mode">
+                        <option value="active">active</option>
+                        <option value="passive">passive</option>
+                    </select>
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-responder-wpad" type="checkbox">
+                    Enable WPAD serving
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-responder-force-wpad-auth" type="checkbox">
+                    Force WPAD authentication
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-responder-proxy-auth" type="checkbox">
+                    Enable proxy authentication prompts
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-responder-dhcp" type="checkbox">
+                    Enable DHCP poisoning
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-responder-dhcp-dns" type="checkbox">
+                    Enable DHCP DNS poisoning
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-responder-basic-auth" type="checkbox">
+                    Enable basic auth prompts
+                </label>
+                <label>
+                    Advanced Arguments
+                    <input id="credential-config-responder-extra-args" type="text" placeholder="-r -v">
+                </label>
+            </fieldset>
+            <fieldset class="danger-group scheduler-settings-group">
+                <legend>ntlmrelayx</legend>
+                <label>
+                    Relay Target
+                    <input id="credential-config-ntlmrelayx-target" type="text" placeholder="smb://192.168.3.50">
+                </label>
+                <label>
+                    Relay Targets File
+                    <input id="credential-config-ntlmrelayx-targets-file" type="text" placeholder="/path/to/targets.txt">
+                </label>
+                <label>
+                    Listener IP
+                    <input id="credential-config-ntlmrelayx-interface-ip" type="text" placeholder="192.168.3.10">
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-ntlmrelayx-smb2support" type="checkbox">
+                    Enable SMB2 support
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-ntlmrelayx-interactive" type="checkbox">
+                    Enable interactive mode
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-ntlmrelayx-socks" type="checkbox">
+                    Enable SOCKS relay
+                </label>
+                <label class="checkbox">
+                    <input id="credential-config-ntlmrelayx-output-hashes" type="checkbox">
+                    Write captured hashes to a file
+                </label>
+                <label>
+                    Advanced Arguments
+                    <input id="credential-config-ntlmrelayx-extra-args" type="text" placeholder="--no-http-server">
+                </label>
+            </fieldset>
+            <div class="modal-actions">
+                <button id="credential-capture-config-save-button" type="submit">Save Credential Capture Configuration</button>
+            </div>
+        </form>
     </div>
 </div>
 

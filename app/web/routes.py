@@ -1577,6 +1577,119 @@ def workspace_process_output(process_id):
         return _json_error(str(exc), 500)
 
 
+@web_bp.get("/api/workspace/credential-capture")
+def workspace_credential_capture_state():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        return jsonify(runtime.get_credential_capture_state(include_captures=False))
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/workspace/credential-capture/config")
+def workspace_credential_capture_config_save():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(runtime.save_credential_capture_config(payload))
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/workspace/credential-capture/start")
+def workspace_credential_capture_start():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    tool_id = str(payload.get("tool", "") or "").strip().lower()
+    try:
+        job = runtime.start_credential_capture_session_job(tool_id)
+        return jsonify({"status": "accepted", "job": job}), 202
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.post("/api/workspace/credential-capture/stop")
+def workspace_credential_capture_stop():
+    runtime = current_app.extensions["legion_runtime"]
+    payload = request.get_json(silent=True) or {}
+    tool_id = str(payload.get("tool", "") or "").strip().lower()
+    try:
+        return jsonify(runtime.stop_credential_capture_session(tool_id))
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/workspace/credential-capture/log")
+def workspace_credential_capture_log_download():
+    runtime = current_app.extensions["legion_runtime"]
+    tool_id = str(request.args.get("tool", "") or "").strip().lower()
+    try:
+        payload = runtime.get_credential_capture_log_payload(tool_id)
+        content = str(payload.get("text", "") or "")
+        if not content:
+            return _json_error("No credential capture log output available.", 404)
+        filename = f"{_safe_filename_token(tool_id or 'credential-capture')}-log.txt"
+        buffer = io.BytesIO(content.encode("utf-8"))
+        buffer.seek(0)
+        return send_file(buffer, mimetype="text/plain", as_attachment=True, download_name=filename)
+    except KeyError as exc:
+        return _json_error(str(exc), 404)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/workspace/credentials")
+def workspace_credentials():
+    runtime = current_app.extensions["legion_runtime"]
+    try:
+        limit = int(request.args.get("limit", 5000) or 5000)
+    except (TypeError, ValueError):
+        limit = 5000
+    try:
+        return jsonify(runtime.get_workspace_credential_captures(limit=limit))
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
+@web_bp.get("/api/workspace/credentials/download")
+def workspace_credentials_download():
+    runtime = current_app.extensions["legion_runtime"]
+    export_format = str(request.args.get("format", "txt") or "txt").strip().lower()
+    if export_format not in {"txt", "json"}:
+        return _json_error("format must be txt or json", 400)
+    try:
+        payload = runtime.get_workspace_credential_captures(limit=5000)
+        if export_format == "json":
+            buffer = io.BytesIO(json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"))
+            buffer.seek(0)
+            return send_file(
+                buffer,
+                mimetype="application/json",
+                as_attachment=True,
+                download_name="credentials.json",
+            )
+        deduped_hashes = list(payload.get("deduped_hashes", []) or [])
+        content = "\n".join(str(item or "") for item in deduped_hashes if str(item or "").strip())
+        buffer = io.BytesIO(content.encode("utf-8"))
+        buffer.seek(0)
+        return send_file(
+            buffer,
+            mimetype="text/plain",
+            as_attachment=True,
+            download_name="credential-hashes.txt",
+        )
+    except Exception as exc:
+        return _json_error(str(exc), 500)
+
+
 @web_bp.get("/api/screenshots/<path:filename>")
 def workspace_screenshot(filename):
     runtime = current_app.extensions["legion_runtime"]

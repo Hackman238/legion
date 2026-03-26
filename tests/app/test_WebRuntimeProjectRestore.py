@@ -393,6 +393,65 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
             if active_project is not None:
                 runtime._close_active_project()
 
+    def test_project_bundle_includes_credential_capture_artifacts(self):
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+
+        bundle_path = ""
+        try:
+            repo = project.repositoryContainer.credentialRepository
+            repo.storeCapture(
+                tool="responder",
+                source="10.0.0.25",
+                username="CORP\\alice",
+                hash_value="alice::CORP:1122334455667788:AAAABBBBCCCCDDDDEEEEFFFF00001111:0101000000000000",
+                details="NTLMv2-SSP hash",
+            )
+            repo.storeCapture(
+                tool="ntlmrelayx",
+                source="10.0.0.25",
+                username="CORP\\alice",
+                hash_value="alice::CORP:1122334455667788:AAAABBBBCCCCDDDDEEEEFFFF00001111:0101000000000000",
+                details="Relayed SMB auth",
+            )
+            repo.storeCapture(
+                tool="responder",
+                source="10.0.0.31",
+                username="CORP\\bob",
+                hash_value="bob::CORP:8877665544332211:11112222333344445555666677778888:0101000000000000",
+                details="NTLMv2-SSP hash",
+            )
+            runtime.save_credential_capture_config({
+                "responder": {"interface_name": "eth0", "mode": "passive"},
+                "ntlmrelayx": {"target": "smb://10.0.0.20", "socks": True},
+            })
+
+            bundle_path, _bundle_name = runtime.build_project_bundle_zip()
+            with zipfile.ZipFile(bundle_path, "r") as archive:
+                names = set(str(item or "") for item in archive.namelist())
+                manifest_name = next(name for name in names if name.endswith("/manifest.json"))
+                credentials_name = next(name for name in names if name.endswith("/credentials.json"))
+                state_name = next(name for name in names if name.endswith("/credential-capture-state.json"))
+                manifest = json.loads(archive.read(manifest_name).decode("utf-8"))
+                credentials_payload = json.loads(archive.read(credentials_name).decode("utf-8"))
+                state_payload = json.loads(archive.read(state_name).decode("utf-8"))
+
+            self.assertEqual(3, int(manifest.get("credential_capture_count", 0) or 0))
+            self.assertEqual(2, int(manifest.get("credential_unique_hash_count", 0) or 0))
+            self.assertEqual(3, int(credentials_payload.get("capture_count", 0) or 0))
+            self.assertEqual(2, len(list(credentials_payload.get("deduped_hashes", []) or [])))
+            self.assertEqual("eth0", state_payload["responder"]["config"]["interface_name"])
+            self.assertEqual("passive", state_payload["responder"]["config"]["mode"])
+            self.assertEqual("smb://10.0.0.20", state_payload["ntlmrelayx"]["config"]["target"])
+            self.assertTrue(bool(state_payload["ntlmrelayx"]["config"]["socks"]))
+        finally:
+            if bundle_path and os.path.isfile(bundle_path):
+                os.remove(bundle_path)
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
+
     def test_project_bundle_reconciles_reversed_mixed_process_timestamps(self):
         project_manager, logic, runtime = self._create_runtime()
         project = project_manager.createNewProject(projectType="legion", isTemp=True)

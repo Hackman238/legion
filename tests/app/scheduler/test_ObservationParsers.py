@@ -1527,9 +1527,11 @@ class ObservationParsersTest(unittest.TestCase):
             )
 
         titles = {str(item.get("title", "")).strip() for item in parsed["findings"]}
+        evidence_texts = {str(item.get("evidence", "")).strip() for item in parsed["findings"]}
         urls = {str(item.get("url", "")).strip() for item in parsed["urls"]}
 
-        self.assertIn("Visual capture available for http://portal.example", titles)
+        self.assertIn("Visual capture available", titles)
+        self.assertTrue(any("http://portal.example" in item for item in evidence_texts))
         self.assertIn("http://portal.example", urls)
 
     def test_extract_tool_observations_parses_internal_database_info_scripts(self):

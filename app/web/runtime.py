@@ -488,8 +488,19 @@ class WebRuntime:
     def _handle_job_change(self, job: Dict[str, Any], event_name: str):
         channels = {"jobs", "overview"}
         job_type = str(job.get("type", "") or "").strip().lower()
-        if job_type in {"nmap-scan", "import-nmap-xml", "scheduler-run", "scheduler-approval-execute", "scheduler-dig-deeper", "tool-run", "process-retry"}:
+        if job_type in {
+            "nmap-scan",
+            "import-nmap-xml",
+            "scheduler-run",
+            "scheduler-approval-execute",
+            "scheduler-dig-deeper",
+            "tool-run",
+            "process-retry",
+            "credential-capture-session",
+        }:
             channels.add("processes")
+        if job_type in {"credential-capture-session"}:
+            channels.add("credential_capture")
         if job_type in {"nmap-scan", "import-nmap-xml", "project-restore-zip"}:
             channels.update({"scan_history", "hosts", "services", "graph"})
         self._emit_ui_invalidation(*sorted(channels))
@@ -527,6 +538,7 @@ class WebRuntime:
                     "has_more": bool(tools_page.get("has_more", False)),
                     "next_offset": tools_page.get("next_offset"),
                 },
+                "credential_capture": self._credential_capture_state_locked(include_captures=False),
                 "scheduler": self._scheduler_preferences(),
                 "scheduler_decisions": self.get_scheduler_decisions(limit=80),
                 "scheduler_rationale_feed": self._scheduler_rationale_feed_locked(limit=12),
@@ -539,6 +551,30 @@ class WebRuntime:
     def get_scheduler_preferences(self) -> Dict[str, Any]:
         with self._lock:
             return self._scheduler_preferences()
+
+    def get_credential_capture_state(self, *, include_captures: bool = False) -> Dict[str, Any]:
+        with self._lock:
+            return self._credential_capture_state_locked(include_captures=include_captures)
+
+    def get_workspace_credential_captures(self, limit: Optional[int] = None) -> Dict[str, Any]:
+        with self._lock:
+            state = self._credential_capture_state_locked(include_captures=True)
+        captures = list(state.get("captures", []) or [])
+        if limit is not None:
+            try:
+                resolved_limit = max(1, int(limit or 0))
+            except (TypeError, ValueError):
+                resolved_limit = 0
+            if resolved_limit > 0:
+                captures = captures[:resolved_limit]
+        deduped_hashes = self._dedupe_credential_hashes(captures)
+        return {
+            "captures": captures,
+            "capture_count": int(state.get("capture_count", len(captures)) or 0),
+            "unique_hash_count": len(deduped_hashes),
+            "deduped_hashes": deduped_hashes,
+            "panel_enabled": bool(state.get("panel_enabled", True)),
+        }
 
     @staticmethod
     def _merge_engagement_policy_payload(
@@ -2504,6 +2540,14 @@ class WebRuntime:
             process_history = self._process_history_records(project)
         except Exception:
             process_history = []
+        try:
+            credentials_payload = self.get_workspace_credential_captures(limit=5000)
+        except Exception:
+            credentials_payload = {"captures": [], "capture_count": 0, "unique_hash_count": 0, "deduped_hashes": []}
+        try:
+            credential_capture_state = self.get_credential_capture_state(include_captures=False)
+        except Exception:
+            credential_capture_state = {}
 
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
         bundle_name = f"legion-session-{timestamp}.zip"
@@ -2520,6 +2564,8 @@ class WebRuntime:
                 "running_folder": running_folder,
                 "provider_log_count": len(provider_logs) if isinstance(provider_logs, list) else 0,
                 "process_history_count": len(process_history) if isinstance(process_history, list) else 0,
+                "credential_capture_count": int(credentials_payload.get("capture_count", 0) or 0),
+                "credential_unique_hash_count": int(credentials_payload.get("unique_hash_count", 0) or 0),
             }
             archive.writestr(
                 f"{root_name}/manifest.json",
@@ -2537,6 +2583,14 @@ class WebRuntime:
             archive.writestr(
                 f"{root_name}/process-history.json",
                 json.dumps(list(process_history or []), indent=2, sort_keys=True),
+            )
+            archive.writestr(
+                f"{root_name}/credentials.json",
+                json.dumps(dict(credentials_payload or {}), indent=2, sort_keys=True),
+            )
+            archive.writestr(
+                f"{root_name}/credential-capture-state.json",
+                json.dumps(dict(credential_capture_state or {}), indent=2, sort_keys=True),
             )
             self._zip_add_dir_if_exists(archive, output_folder, f"{root_name}/tool-output")
             self._zip_add_dir_if_exists(archive, running_folder, f"{root_name}/running")
@@ -11887,6 +11941,19 @@ class WebRuntime:
                 "artifact_refs": self._collect_command_artifacts(outputfile),
             },)
 
+        def _persist_special_output(output_text: str):
+            normalized_tool = str(tool_name or "").strip().lower()
+            if normalized_tool not in {"responder", "ntlmrelayx", "ntlmrelay"}:
+                return
+            try:
+                self._persist_credential_capture_output(
+                    tool_name=str(tool_name or ""),
+                    output_text=str(output_text or ""),
+                    default_source=str(host_ip or ""),
+                )
+            except Exception:
+                pass
+
         try:
             proc = subprocess.Popen(
                 command,
@@ -12035,12 +12102,14 @@ class WebRuntime:
                 process_repo.storeProcessProblemStatus(str(process_id))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
+                _persist_special_output(combined_output)
                 return _build_result(False, f"failed: {timeout_reason}", int(process_id))
 
             if killed:
                 process_repo.storeProcessKillStatus(str(process_id))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
+                _persist_special_output(combined_output)
                 return _build_result(False, "killed", int(process_id))
 
             if int(proc.returncode or 0) in allowed_exit_codes:
@@ -12053,12 +12122,14 @@ class WebRuntime:
                 except Exception:
                     pass
                 process_repo.storeProcessOutput(str(process_id), combined_output)
+                _persist_special_output(combined_output)
                 return _build_result(True, f"completed (allowed exit {int(proc.returncode or 0)})", int(process_id))
 
             if int(proc.returncode or 0) != 0:
                 _store_failure_status(_classify_nonzero_exit(proc.returncode, runtime_seconds))
                 process_repo.storeProcessProgress(str(process_id), estimated_remaining=None)
                 process_repo.storeProcessOutput(str(process_id), combined_output)
+                _persist_special_output(combined_output)
                 return _build_result(False, f"failed: exit {proc.returncode}", int(process_id))
 
             try:
@@ -12071,6 +12142,7 @@ class WebRuntime:
                 pass
 
             process_repo.storeProcessOutput(str(process_id), combined_output)
+            _persist_special_output(combined_output)
             return _build_result(True, "completed", int(process_id))
         except Exception as exc:
             process_repo.storeProcessProblemStatus(str(process_id))
@@ -13460,6 +13532,754 @@ class WebRuntime:
             session.rollback()
         finally:
             session.close()
+
+    def _ensure_workspace_settings_table(self):
+        project = getattr(self.logic, "activeProject", None)
+        if not project:
+            return
+        session = project.database.session()
+        try:
+            session.execute(text(
+                "CREATE TABLE IF NOT EXISTS workspace_setting ("
+                "key TEXT PRIMARY KEY,"
+                "value_json TEXT"
+                ")"
+            ))
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def _get_workspace_setting_locked(self, key: str, default: Any = None) -> Any:
+        project = self._require_active_project()
+        self._ensure_workspace_settings_table()
+        session = project.database.session()
+        try:
+            row = session.execute(text(
+                "SELECT value_json FROM workspace_setting WHERE key = :key LIMIT 1"
+            ), {"key": str(key or "")}).fetchone()
+            if not row or row[0] in (None, ""):
+                return default
+            try:
+                return json.loads(str(row[0] or ""))
+            except Exception:
+                return default
+        finally:
+            session.close()
+
+    def _set_workspace_setting_locked(self, key: str, value: Any):
+        project = self._require_active_project()
+        self._ensure_workspace_settings_table()
+        session = project.database.session()
+        try:
+            encoded = json.dumps(value, sort_keys=True)
+            session.execute(text(
+                "INSERT INTO workspace_setting (key, value_json) VALUES (:key, :value_json) "
+                "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json"
+            ), {
+                "key": str(key or ""),
+                "value_json": encoded,
+            })
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    @staticmethod
+    def _default_credential_capture_config() -> Dict[str, Any]:
+        return {
+            "responder": {
+                "interface_name": "",
+                "mode": "active",
+                "wpad": True,
+                "force_wpad_auth": True,
+                "proxy_auth": False,
+                "dhcp": False,
+                "dhcp_dns": False,
+                "basic_auth": False,
+                "extra_args": "",
+            },
+            "ntlmrelayx": {
+                "target": "",
+                "targets_file": "",
+                "smb2support": True,
+                "interactive": False,
+                "socks": False,
+                "interface_ip": "",
+                "output_hashes": True,
+                "extra_args": "",
+            },
+        }
+
+    @classmethod
+    def _normalize_credential_capture_config(cls, value: Any) -> Dict[str, Any]:
+        defaults = cls._default_credential_capture_config()
+        source = value if isinstance(value, dict) else {}
+        normalized = {
+            "responder": dict(defaults["responder"]),
+            "ntlmrelayx": dict(defaults["ntlmrelayx"]),
+        }
+        responder = source.get("responder") if isinstance(source.get("responder"), dict) else {}
+        relay = source.get("ntlmrelayx") if isinstance(source.get("ntlmrelayx"), dict) else {}
+        normalized["responder"].update({
+            "interface_name": str(responder.get("interface_name", defaults["responder"]["interface_name"]) or "").strip()[:120],
+            "mode": "passive" if str(responder.get("mode", defaults["responder"]["mode"]) or "").strip().lower() == "passive" else "active",
+            "wpad": bool(responder.get("wpad", defaults["responder"]["wpad"])),
+            "force_wpad_auth": bool(responder.get("force_wpad_auth", defaults["responder"]["force_wpad_auth"])),
+            "proxy_auth": bool(responder.get("proxy_auth", defaults["responder"]["proxy_auth"])),
+            "dhcp": bool(responder.get("dhcp", defaults["responder"]["dhcp"])),
+            "dhcp_dns": bool(responder.get("dhcp_dns", defaults["responder"]["dhcp_dns"])),
+            "basic_auth": bool(responder.get("basic_auth", defaults["responder"]["basic_auth"])),
+            "extra_args": str(responder.get("extra_args", defaults["responder"]["extra_args"]) or "").strip(),
+        })
+        normalized["ntlmrelayx"].update({
+            "target": str(relay.get("target", defaults["ntlmrelayx"]["target"]) or "").strip()[:320],
+            "targets_file": str(relay.get("targets_file", defaults["ntlmrelayx"]["targets_file"]) or "").strip()[:512],
+            "smb2support": bool(relay.get("smb2support", defaults["ntlmrelayx"]["smb2support"])),
+            "interactive": bool(relay.get("interactive", defaults["ntlmrelayx"]["interactive"])),
+            "socks": bool(relay.get("socks", defaults["ntlmrelayx"]["socks"])),
+            "interface_ip": str(relay.get("interface_ip", defaults["ntlmrelayx"]["interface_ip"]) or "").strip()[:120],
+            "output_hashes": bool(relay.get("output_hashes", defaults["ntlmrelayx"]["output_hashes"])),
+            "extra_args": str(relay.get("extra_args", defaults["ntlmrelayx"]["extra_args"]) or "").strip(),
+        })
+        return normalized
+
+    @staticmethod
+    def _dedupe_credential_hashes(captures: List[Dict[str, Any]]) -> List[str]:
+        seen: Set[str] = set()
+        hashes: List[str] = []
+        for capture in list(captures or []):
+            hash_value = str((capture or {}).get("hash", "") or "").strip()
+            if not hash_value:
+                continue
+            key = hash_value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            hashes.append(hash_value)
+        return hashes
+
+    @staticmethod
+    def _extract_credential_data(line: Any) -> Tuple[str, str]:
+        text_value = str(line or "").strip()
+        if not text_value:
+            return "", ""
+        username = ""
+        hash_value = ""
+        match = re.search(r"from\s+([^:]+):\s*(.+)", text_value, re.IGNORECASE)
+        if match:
+            candidate = str(match.group(1) or "").split("/")[-1].split("\\")[-1]
+            username = candidate.strip()
+            hash_value = str(match.group(2) or "").strip()
+            return username, hash_value
+        if "::" in text_value:
+            left, right = text_value.split("::", 1)
+            username = left.split()[-1]
+            hash_value = right.strip()
+        return username, hash_value
+
+    @staticmethod
+    def _normalize_credential_capture_source(source: Any) -> str:
+        token = str(source or "").strip()
+        if not token:
+            return ""
+        try:
+            if "://" in token:
+                parsed = urlparse(token)
+                token = str(parsed.hostname or "").strip() or token
+        except Exception:
+            pass
+        token = token.strip().strip("[]")
+        if "/" in token and not re.match(r"^\d+\.\d+\.\d+\.\d+$", token):
+            token = token.rsplit("/", 1)[-1].strip()
+        return token
+
+    @staticmethod
+    def _split_credential_principal(value: Any) -> Tuple[str, str]:
+        principal = str(value or "").strip()
+        if not principal:
+            return "", ""
+        if "\\" in principal:
+            realm, username = principal.split("\\", 1)
+            return realm.strip()[:160], username.strip()[:160]
+        if "/" in principal and not principal.startswith("/"):
+            realm, username = principal.split("/", 1)
+            return realm.strip()[:160], username.strip()[:160]
+        if "@" in principal:
+            username, realm = principal.split("@", 1)
+            return realm.strip()[:160], username.strip()[:160]
+        return "", principal[:160]
+
+    @staticmethod
+    def _extract_cleartext_password(details: Any) -> str:
+        match = re.search(
+            r"\bclear\s+text\s+password\s*:\s*(?P<password>.+)$",
+            str(details or "").strip(),
+            flags=re.IGNORECASE,
+        )
+        return str(match.group("password") or "").strip() if match else ""
+
+    @classmethod
+    def _build_scheduler_credential_row(cls, tool_name: str, capture: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(capture, dict):
+            return None
+        details = str(capture.get("details", "") or "").strip()
+        username_raw = str(capture.get("username", "") or "").strip()
+        hash_value = str(capture.get("hash_value", "") or "").strip()
+        realm, username = cls._split_credential_principal(username_raw)
+        secret_ref = ""
+        cred_type = ""
+        if hash_value:
+            secret_ref = hash_value[:240]
+            cred_type = "ntlm_hash"
+        else:
+            cleartext = cls._extract_cleartext_password(details)
+            if cleartext:
+                secret_ref = cleartext[:240]
+                cred_type = "cleartext_password"
+        if not username and not secret_ref:
+            return None
+        if not cred_type:
+            cred_type = "captured_credential"
+        return {
+            "username": username,
+            "realm": realm,
+            "secret_ref": secret_ref,
+            "type": cred_type,
+            "evidence": details[:280],
+            "confidence": 88.0 if secret_ref else 72.0,
+            "source_kind": "observed",
+            "observed": True,
+        }
+
+    @classmethod
+    def _build_scheduler_session_row(cls, tool_name: str, capture: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(capture, dict):
+            return None
+        lowered_tool = str(tool_name or "").strip().lower()
+        details = str(capture.get("details", "") or "").strip()
+        if lowered_tool not in {"ntlmrelay", "ntlmrelayx"} or "authenticating against" not in details.lower():
+            return None
+        target = str(capture.get("source", "") or "").strip()
+        target_host = cls._normalize_credential_capture_source(target)
+        realm, username = cls._split_credential_principal(capture.get("username", ""))
+        port = ""
+        protocol = "tcp"
+        try:
+            parsed = urlparse(target)
+            scheme = str(parsed.scheme or "").strip().lower()
+            if scheme == "smb":
+                port = str(parsed.port or 445)
+            elif scheme in {"ldap", "ldaps", "http", "https"}:
+                port = str(parsed.port or "")
+        except Exception:
+            pass
+        if not username and not target_host:
+            return None
+        return {
+            "session_type": "ntlm_relay_auth",
+            "username": username,
+            "host": target_host,
+            "port": port,
+            "protocol": protocol,
+            "evidence": details[:280],
+            "obtained_at": getTimestamp(True),
+            "confidence": 82.0,
+            "source_kind": "observed",
+            "observed": True,
+            "realm": realm,
+        }
+
+    @classmethod
+    def _extract_credential_capture_entries(
+            cls,
+            tool_name: str,
+            line: Any,
+            *,
+            default_source: str = "",
+            context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        stripped = str(line or "").strip()
+        if not stripped:
+            return []
+        lowered_tool = str(tool_name or "").strip().lower()
+        default_source_value = str(default_source or "").strip()
+        state = context if isinstance(context, dict) else {}
+        captures: List[Dict[str, Any]] = []
+
+        if lowered_tool in {"ntlmrelay", "ntlmrelayx"}:
+            auth_match = re.search(
+                r"Authenticating against\s+(?P<target>\S+)\s+as\s+(?P<account>[^\s]+)\s+"
+                r"(?P<result>SUCCEED|SUCCESS|SUCCEEDED|FAILED|FAIL(?:ED)?)\b",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            if auth_match:
+                result = str(auth_match.group("result") or "").strip().lower()
+                if result.startswith("suc"):
+                    captures.append({
+                        "source": str(auth_match.group("target") or "").strip() or default_source_value,
+                        "details": stripped,
+                        "username": str(auth_match.group("account") or "").strip(),
+                        "hash_value": "",
+                    })
+                    return captures
+
+            sam_match = re.match(
+                r"^(?P<account>[^:\s]+):(?P<rid>\d+):(?P<lm>[A-Fa-f0-9]{32}):(?P<nt>[A-Fa-f0-9]{32})(?:::.*)?$",
+                stripped,
+            )
+            if sam_match:
+                captures.append({
+                    "source": default_source_value,
+                    "details": stripped,
+                    "username": str(sam_match.group("account") or "").strip(),
+                    "hash_value": f"{sam_match.group('lm')}:{sam_match.group('nt')}",
+                })
+                return captures
+            return []
+
+        if lowered_tool == "responder":
+            client_match = re.search(r"\bclient\s*:\s*(?P<source>\S+)", stripped, flags=re.IGNORECASE)
+            if client_match:
+                state["source"] = str(client_match.group("source") or "").strip()
+                return []
+
+            user_match = re.search(r"\busername\s*:\s*(?P<username>.+)$", stripped, flags=re.IGNORECASE)
+            if user_match:
+                state["username"] = str(user_match.group("username") or "").strip()
+                return []
+
+            hash_match = re.search(r"\bhash\s*:\s*(?P<hash>.+)$", stripped, flags=re.IGNORECASE)
+            if hash_match:
+                raw_hash = str(hash_match.group("hash") or "").strip()
+                username, hash_value = cls._extract_credential_data(raw_hash)
+                captures.append({
+                    "source": state.get("source", "") or default_source_value,
+                    "details": stripped,
+                    "username": state.get("username", "") or username,
+                    "hash_value": hash_value or raw_hash,
+                })
+                return captures
+
+            cleartext_match = re.search(r"\bclear\s+text\s+password\s*:\s*(?P<password>.+)$", stripped, flags=re.IGNORECASE)
+            if cleartext_match:
+                captures.append({
+                    "source": state.get("source", "") or default_source_value,
+                    "details": stripped,
+                    "username": state.get("username", ""),
+                    "hash_value": "",
+                })
+                return captures
+
+            if "::" in stripped:
+                username, hash_value = cls._extract_credential_data(stripped)
+                captures.append({
+                    "source": state.get("source", "") or default_source_value,
+                    "details": stripped,
+                    "username": state.get("username", "") or username,
+                    "hash_value": hash_value,
+                })
+                return captures
+            return captures
+
+        interests = ("ntlm", "hash", "relay", "captured", "credential")
+        if (
+                not any(keyword in stripped.lower() for keyword in interests)
+                and "::" not in stripped
+                and not re.search(r"from\s+[^:]+:\s*.+", stripped, re.IGNORECASE)
+        ):
+            return []
+        username, hash_value = cls._extract_credential_data(stripped)
+        captures.append({
+            "source": default_source_value,
+            "details": stripped,
+            "username": username,
+            "hash_value": hash_value,
+        })
+        return captures
+
+    def _persist_credential_captures_to_scheduler(
+            self,
+            captures: List[Dict[str, Any]],
+            *,
+            tool_name: str = "",
+            default_source: str = "",
+    ):
+        if not isinstance(captures, list) or not captures:
+            return
+        project = getattr(self.logic, "activeProject", None)
+        if project is None:
+            return
+        database = getattr(project, "database", None)
+        host_repo = getattr(getattr(project, "repositoryContainer", None), "hostRepository", None)
+        if database is None or host_repo is None:
+            return
+        ensure_scheduler_target_state_table(database)
+        default_source_token = self._normalize_credential_capture_source(default_source)
+        grouped: Dict[int, Dict[str, Any]] = {}
+
+        for capture in captures:
+            if not isinstance(capture, dict):
+                continue
+            source_token = self._normalize_credential_capture_source(capture.get("source", "") or default_source_token)
+            host_obj = None
+            if source_token:
+                host_obj = host_repo.getHostByIP(source_token) or host_repo.getHostByHostname(source_token)
+            if host_obj is None and default_source_token:
+                host_obj = host_repo.getHostByIP(default_source_token) or host_repo.getHostByHostname(default_source_token)
+            if host_obj is None:
+                continue
+            host_id = int(getattr(host_obj, "id", 0) or 0)
+            host_ip = str(getattr(host_obj, "ip", "") or source_token or default_source_token).strip()
+            if host_id <= 0 or not host_ip:
+                continue
+            bucket = grouped.setdefault(host_id, {
+                "host_ip": host_ip,
+                "credentials": [],
+                "sessions": [],
+            })
+            credential_row = self._build_scheduler_credential_row(tool_name, capture)
+            if credential_row:
+                bucket["credentials"].append(credential_row)
+            session_row = self._build_scheduler_session_row(tool_name, capture)
+            if session_row:
+                bucket["sessions"].append(session_row)
+
+        updated_at = getTimestamp(True)
+        normalized_tool = str(tool_name or "").strip().lower()
+        for host_id, payload in grouped.items():
+            upsert_target_state(database, int(host_id), {
+                "host_ip": str(payload.get("host_ip", "") or ""),
+                "updated_at": updated_at,
+                "credentials": list(payload.get("credentials", []) or []),
+                "sessions": list(payload.get("sessions", []) or []),
+                "raw": {
+                    "credential_capture_tools": [normalized_tool] if normalized_tool else [],
+                },
+            }, merge=True)
+
+    def _persist_credential_capture_output(self, *, tool_name: str, output_text: str, default_source: str = ""):
+        project = getattr(self.logic, "activeProject", None)
+        if project is None:
+            return
+        repo = getattr(getattr(project, "repositoryContainer", None), "credentialRepository", None)
+        if repo is None:
+            return
+        output_lines = str(output_text or "").splitlines()
+        seen = set()
+        capture_context: Dict[str, Any] = {}
+        scheduler_captures: List[Dict[str, Any]] = []
+        for line in output_lines:
+            stripped = str(line or "").strip()
+            if not stripped:
+                continue
+            captures = self._extract_credential_capture_entries(
+                tool_name,
+                stripped,
+                default_source=str(default_source or ""),
+                context=capture_context,
+            )
+            for capture in captures:
+                dedupe_key = (
+                    str(capture.get("source", "") or ""),
+                    str(capture.get("username", "") or ""),
+                    str(capture.get("hash_value", "") or ""),
+                    str(capture.get("details", "") or ""),
+                )
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                repo.storeCapture(
+                    str(tool_name or ""),
+                    capture.get("source", "") or "",
+                    capture.get("details", "") or stripped,
+                    username=capture.get("username", "") or "",
+                    hash_value=capture.get("hash_value", "") or "",
+                )
+                scheduler_captures.append(dict(capture))
+        self._persist_credential_captures_to_scheduler(
+            scheduler_captures,
+            tool_name=str(tool_name or ""),
+            default_source=str(default_source or ""),
+        )
+
+    def _latest_credential_capture_session_locked(self, tool_name: str) -> Dict[str, Any]:
+        project = self._require_active_project()
+        self._ensure_process_tables()
+        session = project.database.session()
+        try:
+            result = session.execute(text(
+                "SELECT p.id, COALESCE(p.name, '') AS name, COALESCE(p.status, '') AS status, "
+                "COALESCE(p.startTime, '') AS startTime, COALESCE(p.endTime, '') AS endTime, "
+                "COALESCE(p.command, '') AS command, COALESCE(p.outputfile, '') AS outputfile, "
+                "COALESCE(p.percent, '') AS percent, p.estimatedRemaining AS estimatedRemaining, "
+                "COALESCE(p.elapsed, 0) AS elapsed, COALESCE(p.progressMessage, '') AS progressMessage, "
+                "COALESCE(p.progressSource, '') AS progressSource, COALESCE(p.progressUpdatedAt, '') AS progressUpdatedAt, "
+                "COALESCE(p.hostIp, '') AS hostIp, COALESCE(p.port, '') AS port, COALESCE(p.protocol, '') AS protocol "
+                "FROM process AS p "
+                "WHERE LOWER(COALESCE(p.name, '')) = LOWER(:tool_name) "
+                "ORDER BY p.id DESC LIMIT 1"
+            ), {"tool_name": str(tool_name or "")})
+            row = result.fetchone()
+            if row is None:
+                return {}
+            data = dict(zip(result.keys(), row))
+        finally:
+            session.close()
+        status = str(data.get("status", "") or "")
+        return {
+            "process_id": int(data.get("id", 0) or 0),
+            "tool": str(data.get("name", "") or tool_name or ""),
+            "status": status,
+            "running": str(status).strip().lower() in {"running", "waiting"},
+            "start_time": str(data.get("startTime", "") or ""),
+            "end_time": str(data.get("endTime", "") or ""),
+            "command": self._redact_command_secrets(data.get("command", "")),
+            "outputfile": str(data.get("outputfile", "") or ""),
+            "progress": self._build_process_progress_payload(
+                status=status,
+                percent=data.get("percent", ""),
+                estimated_remaining=data.get("estimatedRemaining"),
+                elapsed=data.get("elapsed", 0),
+                progress_message=data.get("progressMessage", ""),
+                progress_source=data.get("progressSource", ""),
+                progress_updated_at=data.get("progressUpdatedAt", ""),
+            ),
+        }
+
+    def _credential_capture_state_locked(self, *, include_captures: bool = False) -> Dict[str, Any]:
+        project = getattr(self.logic, "activeProject", None)
+        captures: List[Dict[str, Any]] = []
+        config = self._normalize_credential_capture_config(
+            self._get_workspace_setting_locked("credential_capture_config", self._default_credential_capture_config())
+        ) if project else self._default_credential_capture_config()
+        if project is not None:
+            repo = getattr(getattr(project, "repositoryContainer", None), "credentialRepository", None)
+            if repo is not None:
+                try:
+                    captures = list(repo.getAllCaptures() or [])
+                except Exception:
+                    captures = []
+        deduped_hashes = self._dedupe_credential_hashes(captures)
+        recent_captures = captures[:8]
+        panel_enabled = bool(self._scheduler_preferences().get("feature_flags", {}).get("credential_capture_panel", True))
+        responder_session = self._latest_credential_capture_session_locked("responder") if project else {}
+        relay_session = self._latest_credential_capture_session_locked("ntlmrelayx") if project else {}
+        state = {
+            "panel_enabled": panel_enabled,
+            "capture_count": len(captures),
+            "unique_hash_count": len(deduped_hashes),
+            "recent_captures": recent_captures,
+            "responder": {
+                "config": dict(config.get("responder", {})),
+                "session": responder_session,
+            },
+            "ntlmrelayx": {
+                "config": dict(config.get("ntlmrelayx", {})),
+                "session": relay_session,
+            },
+        }
+        if include_captures:
+            state["captures"] = captures
+            state["deduped_hashes"] = deduped_hashes
+        return state
+
+    def save_credential_capture_config(self, updates: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        with self._lock:
+            current = self._normalize_credential_capture_config(
+                self._get_workspace_setting_locked("credential_capture_config", self._default_credential_capture_config())
+            )
+            incoming = updates if isinstance(updates, dict) else {}
+            merged = {
+                "responder": dict(current.get("responder", {})),
+                "ntlmrelayx": dict(current.get("ntlmrelayx", {})),
+            }
+            if isinstance(incoming.get("responder"), dict):
+                merged["responder"].update(incoming.get("responder", {}))
+            if isinstance(incoming.get("ntlmrelayx"), dict):
+                merged["ntlmrelayx"].update(incoming.get("ntlmrelayx", {}))
+            normalized = self._normalize_credential_capture_config(merged)
+            self._set_workspace_setting_locked("credential_capture_config", normalized)
+            state = self._credential_capture_state_locked(include_captures=False)
+        self._emit_ui_invalidation("overview", "credential_capture", throttle_seconds=0.1)
+        return state
+
+    def start_credential_capture_session_job(self, tool_id: str) -> Dict[str, Any]:
+        normalized_tool = str(tool_id or "").strip().lower()
+        if normalized_tool not in {"responder", "ntlmrelayx"}:
+            raise ValueError("Unsupported credential capture tool.")
+        with self._lock:
+            session_state = self._latest_credential_capture_session_locked(normalized_tool)
+            if bool(session_state.get("running")):
+                raise ValueError(f"{normalized_tool} is already running.")
+            config = self._normalize_credential_capture_config(
+                self._get_workspace_setting_locked("credential_capture_config", self._default_credential_capture_config())
+            )
+            payload = {
+                "tool": normalized_tool,
+                "config": dict(config.get(normalized_tool, {})),
+            }
+        return self._start_job(
+            "credential-capture-session",
+            lambda job_id: self._run_credential_capture_session(tool_id=normalized_tool, job_id=int(job_id or 0)),
+            payload=payload,
+        )
+
+    def stop_credential_capture_session(self, tool_id: str) -> Dict[str, Any]:
+        normalized_tool = str(tool_id or "").strip().lower()
+        if normalized_tool not in {"responder", "ntlmrelayx"}:
+            raise ValueError("Unsupported credential capture tool.")
+        with self._lock:
+            session_state = self._latest_credential_capture_session_locked(normalized_tool)
+            process_id = int(session_state.get("process_id", 0) or 0)
+        if process_id <= 0 or not bool(session_state.get("running")):
+            return {"stopped": False, "tool": normalized_tool, "reason": "not running"}
+        result = self.kill_process(int(process_id))
+        self._emit_ui_invalidation("processes", "overview", "credential_capture", throttle_seconds=0.1)
+        return {
+            "stopped": True,
+            "tool": normalized_tool,
+            "process_id": int(process_id),
+            **result,
+        }
+
+    def get_credential_capture_log_payload(self, tool_id: str) -> Dict[str, Any]:
+        normalized_tool = str(tool_id or "").strip().lower()
+        if normalized_tool not in {"responder", "ntlmrelayx"}:
+            raise ValueError("Unsupported credential capture tool.")
+        with self._lock:
+            session_state = self._latest_credential_capture_session_locked(normalized_tool)
+        process_id = int(session_state.get("process_id", 0) or 0)
+        if process_id <= 0:
+            raise KeyError(f"No {normalized_tool} session found.")
+        output = self.get_process_output(process_id, offset=0, max_chars=50000)
+        full_text = str(output.get("output", "") or "")
+        chunk = str(output.get("output_chunk", "") or "")
+        if full_text:
+            text_value = full_text
+        else:
+            text_value = chunk
+            next_offset = int(output.get("next_offset", len(chunk)) or len(chunk))
+            output_length = int(output.get("output_length", len(chunk)) or len(chunk))
+            while next_offset < output_length:
+                next_payload = self.get_process_output(process_id, offset=next_offset, max_chars=50000)
+                next_chunk = str(next_payload.get("output_chunk", "") or "")
+                if not next_chunk:
+                    break
+                text_value += next_chunk
+                next_offset = int(next_payload.get("next_offset", next_offset + len(next_chunk)) or (next_offset + len(next_chunk)))
+        return {
+            "tool": normalized_tool,
+            "process_id": process_id,
+            "status": str(output.get("status", "") or session_state.get("status", "")),
+            "text": text_value,
+        }
+
+    def _run_credential_capture_session(self, *, tool_id: str, job_id: int = 0) -> Dict[str, Any]:
+        with self._lock:
+            state = self._credential_capture_state_locked(include_captures=False)
+            config = dict((state.get(tool_id, {}) or {}).get("config", {}))
+            command, outputfile = self._build_credential_capture_command(tool_id, config)
+            target_label = self._credential_capture_target_label(tool_id, config)
+        result = self._run_command_with_tracking(
+            tool_name=str(tool_id),
+            tab_title=f"{tool_id} ({target_label})" if target_label else str(tool_id),
+            host_ip=str(target_label or ""),
+            port="",
+            protocol="",
+            command=command,
+            outputfile=outputfile,
+            timeout=0,
+            job_id=int(job_id or 0),
+            return_metadata=True,
+        )
+        executed, reason, process_id, metadata = result
+        self._emit_ui_invalidation("processes", "overview", "credential_capture", throttle_seconds=0.1)
+        return {
+            "executed": bool(executed),
+            "reason": str(reason or ""),
+            "process_id": int(process_id or 0),
+            "tool": str(tool_id),
+            "started_at": str((metadata or {}).get("started_at", "") or ""),
+            "finished_at": str((metadata or {}).get("finished_at", "") or ""),
+        }
+
+    def _build_credential_capture_command(self, tool_id: str, config: Dict[str, Any]) -> Tuple[str, str]:
+        normalized_tool = str(tool_id or "").strip().lower()
+        running_dir = str(getattr(self._require_active_project().properties, "runningFolder", "") or "")
+        timestamp = getTimestamp(True).replace(":", "").replace("-", "").replace("T", "").replace("Z", "")
+        if normalized_tool == "responder":
+            inventory = self.get_capture_interface_inventory()
+            configured_interface = str(config.get("interface_name", "") or "").strip()
+            default_interface = str(inventory.get("default_interface", "") or "").strip()
+            interface_name = configured_interface or default_interface
+            if not interface_name:
+                raise ValueError("Responder requires a capture interface.")
+            outputfile = os.path.join(running_dir, f"{timestamp}-responder.log")
+            tool_path = shlex.quote(str(getattr(self._get_settings(), "tools_path_responder", "responder") or "responder"))
+            command_parts = [tool_path, "-I", shlex.quote(interface_name)]
+            if str(config.get("mode", "active") or "").strip().lower() == "passive":
+                command_parts.append("-A")
+            if bool(config.get("wpad")):
+                command_parts.append("-w")
+            if bool(config.get("force_wpad_auth")):
+                command_parts.append("-F")
+            if bool(config.get("proxy_auth")):
+                command_parts.append("-P")
+            if bool(config.get("dhcp")):
+                command_parts.append("-d")
+            if bool(config.get("dhcp_dns")):
+                command_parts.append("-D")
+            if bool(config.get("basic_auth")):
+                command_parts.append("-b")
+            extra_args = str(config.get("extra_args", "") or "").strip()
+            if extra_args:
+                command_parts.append(extra_args)
+            return " ".join(command_parts), outputfile
+
+        if normalized_tool == "ntlmrelayx":
+            target = str(config.get("target", "") or "").strip()
+            targets_file = str(config.get("targets_file", "") or "").strip()
+            if not target and not targets_file:
+                raise ValueError("ntlmrelayx requires a relay target or targets file.")
+            output_base = os.path.join(running_dir, f"{timestamp}-ntlmrelayx")
+            outputfile = f"{output_base}.log"
+            tool_path = shlex.quote(str(getattr(self._get_settings(), "tools_path_ntlmrelay", "impacket-ntlmrelayx") or "impacket-ntlmrelayx"))
+            command_parts = [tool_path]
+            if target:
+                command_parts.extend(["-t", shlex.quote(target)])
+            if targets_file:
+                command_parts.extend(["-tf", shlex.quote(targets_file)])
+            if bool(config.get("smb2support", True)):
+                command_parts.append("-smb2support")
+            if bool(config.get("interactive")):
+                command_parts.append("-i")
+            if bool(config.get("socks")):
+                command_parts.append("-socks")
+            interface_ip = str(config.get("interface_ip", "") or "").strip()
+            if interface_ip:
+                command_parts.extend(["-ip", shlex.quote(interface_ip)])
+            if bool(config.get("output_hashes", True)):
+                command_parts.extend(["-of", shlex.quote(f"{output_base}.hashes")])
+            extra_args = str(config.get("extra_args", "") or "").strip()
+            if extra_args:
+                command_parts.append(extra_args)
+            return " ".join(command_parts), outputfile
+        raise ValueError("Unsupported credential capture tool.")
+
+    @staticmethod
+    def _credential_capture_target_label(tool_id: str, config: Dict[str, Any]) -> str:
+        normalized_tool = str(tool_id or "").strip().lower()
+        if normalized_tool == "responder":
+            return str(config.get("interface_name", "") or "").strip()
+        if normalized_tool == "ntlmrelayx":
+            return str(config.get("target", "") or config.get("targets_file", "") or "").strip()
+        return ""
 
     def _close_active_project(self):
         project = getattr(self.logic, "activeProject", None)

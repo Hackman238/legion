@@ -64,6 +64,7 @@ class DummySchedulerConfig:
             },
             "feature_flags": {
                 "graph_workspace": True,
+                "credential_capture_panel": True,
                 "optional_runners": True,
                 "context_summary_enabled": True,
                 "scheduler_prompt_profiles": True,
@@ -303,6 +304,108 @@ class DummyRuntime:
                 "tags": ["Ranking", "Service Fingerprint", "SMB"],
             }
         ]
+        self.credential_capture_state = {
+            "panel_enabled": True,
+            "capture_count": 3,
+            "unique_hash_count": 2,
+            "recent_captures": [
+                {
+                    "id": 1,
+                    "tool": "responder",
+                    "source": "10.0.0.25",
+                    "username": "CORP\\alice",
+                    "hash": "alice::CORP:1122334455667788:AAAABBBBCCCCDDDDEEEEFFFF00001111:0101000000000000",
+                    "details": "NTLMv2-SSP hash",
+                    "capturedAt": "2026-02-18 12:32:00 UTC",
+                },
+                {
+                    "id": 2,
+                    "tool": "ntlmrelayx",
+                    "source": "10.0.0.25",
+                    "username": "CORP\\alice",
+                    "hash": "alice::CORP:1122334455667788:AAAABBBBCCCCDDDDEEEEFFFF00001111:0101000000000000",
+                    "details": "Relayed SMB auth",
+                    "capturedAt": "2026-02-18 12:33:00 UTC",
+                },
+                {
+                    "id": 3,
+                    "tool": "responder",
+                    "source": "10.0.0.31",
+                    "username": "CORP\\bob",
+                    "hash": "bob::CORP:8877665544332211:11112222333344445555666677778888:0101000000000000",
+                    "details": "NTLMv2-SSP hash",
+                    "capturedAt": "2026-02-18 12:34:00 UTC",
+                },
+            ],
+            "captures": [
+                {
+                    "id": 1,
+                    "tool": "responder",
+                    "source": "10.0.0.25",
+                    "username": "CORP\\alice",
+                    "hash": "alice::CORP:1122334455667788:AAAABBBBCCCCDDDDEEEEFFFF00001111:0101000000000000",
+                    "details": "NTLMv2-SSP hash",
+                    "capturedAt": "2026-02-18 12:32:00 UTC",
+                },
+                {
+                    "id": 2,
+                    "tool": "ntlmrelayx",
+                    "source": "10.0.0.25",
+                    "username": "CORP\\alice",
+                    "hash": "alice::CORP:1122334455667788:AAAABBBBCCCCDDDDEEEEFFFF00001111:0101000000000000",
+                    "details": "Relayed SMB auth",
+                    "capturedAt": "2026-02-18 12:33:00 UTC",
+                },
+                {
+                    "id": 3,
+                    "tool": "responder",
+                    "source": "10.0.0.31",
+                    "username": "CORP\\bob",
+                    "hash": "bob::CORP:8877665544332211:11112222333344445555666677778888:0101000000000000",
+                    "details": "NTLMv2-SSP hash",
+                    "capturedAt": "2026-02-18 12:34:00 UTC",
+                },
+            ],
+            "deduped_hashes": [
+                "alice::CORP:1122334455667788:AAAABBBBCCCCDDDDEEEEFFFF00001111:0101000000000000",
+                "bob::CORP:8877665544332211:11112222333344445555666677778888:0101000000000000",
+            ],
+            "responder": {
+                "config": {
+                    "interface_name": "eth0",
+                    "mode": "active",
+                    "wpad": False,
+                    "force_wpad_auth": False,
+                    "proxy_auth": False,
+                    "dhcp": False,
+                    "dhcp_dns": False,
+                    "basic_auth": False,
+                    "extra_args": "",
+                },
+                "session": {
+                    "running": False,
+                    "status": "Idle",
+                    "process_id": 0,
+                },
+            },
+            "ntlmrelayx": {
+                "config": {
+                    "target": "smb://10.0.0.20",
+                    "targets_file": "",
+                    "interface_ip": "10.0.0.10",
+                    "smb2support": True,
+                    "interactive": False,
+                    "socks": False,
+                    "output_hashes": True,
+                    "extra_args": "",
+                },
+                "session": {
+                    "running": False,
+                    "status": "Idle",
+                    "process_id": 0,
+                },
+            },
+        }
         self.graph_snapshot = {
             "nodes": [
                 {
@@ -493,6 +596,7 @@ class DummyRuntime:
             "scheduler_approvals": list(self.scheduler_approvals),
             "scan_history": list(self.scan_history),
             "jobs": list(self.jobs),
+            "credential_capture": self.get_credential_capture_state(include_captures=False),
         }
 
     def get_workspace_overview(self):
@@ -564,10 +668,23 @@ class DummyRuntime:
 
     def build_project_bundle_zip(self):
         temp = tempfile.NamedTemporaryFile(prefix="legion-test-bundle-", suffix=".zip", delete=False)
-        try:
-            temp.write(b"PK\x05\x06" + b"\x00" * 18)
-        finally:
-            temp.close()
+        temp.close()
+        with zipfile.ZipFile(temp.name, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "legion-session-test/manifest.json",
+                json.dumps({
+                    "credential_capture_count": self.credential_capture_state["capture_count"],
+                    "credential_unique_hash_count": self.credential_capture_state["unique_hash_count"],
+                }),
+            )
+            archive.writestr(
+                "legion-session-test/credentials.json",
+                json.dumps(self.get_workspace_credential_captures(limit=5000)),
+            )
+            archive.writestr(
+                "legion-session-test/credential-capture-state.json",
+                json.dumps(self.get_credential_capture_state(include_captures=False)),
+            )
         return temp.name, "legion-session-test.zip"
 
     def start_restore_project_zip_job(self, path):
@@ -803,6 +920,81 @@ class DummyRuntime:
 
     def clear_processes(self, reset_all=False):
         return {"cleared": True, "reset_all": bool(reset_all)}
+
+    def get_credential_capture_state(self, include_captures=False):
+        state = json.loads(json.dumps(self.credential_capture_state))
+        if not include_captures:
+            state.pop("captures", None)
+            state.pop("deduped_hashes", None)
+        return state
+
+    def get_workspace_credential_captures(self, limit=None):
+        captures = list(self.credential_capture_state.get("captures", []))
+        if limit is not None:
+            captures = captures[: max(1, int(limit or 1))]
+        deduped_hashes = []
+        for capture in captures:
+            value = str(capture.get("hash", "") or "").strip()
+            if value and value not in deduped_hashes:
+                deduped_hashes.append(value)
+        return {
+            "captures": captures,
+            "capture_count": int(self.credential_capture_state.get("capture_count", len(captures)) or 0),
+            "unique_hash_count": len(deduped_hashes),
+            "deduped_hashes": deduped_hashes,
+            "panel_enabled": bool(self.credential_capture_state.get("panel_enabled", True)),
+        }
+
+    def save_credential_capture_config(self, updates=None):
+        updates = dict(updates or {})
+        if isinstance(updates.get("responder"), dict):
+            self.credential_capture_state["responder"]["config"].update(updates["responder"])
+        if isinstance(updates.get("ntlmrelayx"), dict):
+            self.credential_capture_state["ntlmrelayx"]["config"].update(updates["ntlmrelayx"])
+        return self.get_credential_capture_state(include_captures=False)
+
+    def start_credential_capture_session_job(self, tool_id):
+        normalized = str(tool_id or "").strip().lower()
+        if normalized not in {"responder", "ntlmrelayx"}:
+            raise ValueError("Unsupported credential capture tool.")
+        self.credential_capture_state[normalized]["session"] = {
+            "running": True,
+            "status": "Running",
+            "process_id": 601 if normalized == "responder" else 602,
+        }
+        return {
+            "id": 15 if normalized == "responder" else 16,
+            "type": "credential-capture-session",
+            "status": "queued",
+            "payload": {"tool": normalized},
+        }
+
+    def stop_credential_capture_session(self, tool_id):
+        normalized = str(tool_id or "").strip().lower()
+        if normalized not in {"responder", "ntlmrelayx"}:
+            raise ValueError("Unsupported credential capture tool.")
+        running = bool(self.credential_capture_state[normalized]["session"].get("running"))
+        self.credential_capture_state[normalized]["session"] = {
+            "running": False,
+            "status": "Stopped" if running else "Idle",
+            "process_id": 0,
+        }
+        return {
+            "stopped": running,
+            "tool": normalized,
+            "process_id": 601 if normalized == "responder" and running else 602 if normalized == "ntlmrelayx" and running else 0,
+        }
+
+    def get_credential_capture_log_payload(self, tool_id):
+        normalized = str(tool_id or "").strip().lower()
+        if normalized not in {"responder", "ntlmrelayx"}:
+            raise ValueError("Unsupported credential capture tool.")
+        return {
+            "tool": normalized,
+            "process_id": 601 if normalized == "responder" else 602,
+            "status": "Finished",
+            "text": f"{normalized} log line 1\n{normalized} log line 2\n",
+        }
 
     def get_workspace_processes(self, limit=75):
         rows = [
@@ -1952,6 +2144,22 @@ class WebAppTest(unittest.TestCase):
         body = response.get_data(as_text=True)
         self.assertIn('id="interface-graph-workspace-enabled"', body)
 
+    def test_index_renders_credential_capture_panel_and_modals(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('id="ribbon-credential-capture-toggle-button"', body)
+        self.assertIn('id="credential-capture-panel"', body)
+        self.assertIn('id="credential-capture-open-credentials-button"', body)
+        self.assertIn('id="credential-capture-open-config-button"', body)
+        self.assertIn('id="credential-capture-responder-start-button"', body)
+        self.assertIn('id="credential-capture-ntlmrelayx-start-button"', body)
+        self.assertIn('id="interface-credential-capture-panel-enabled"', body)
+        self.assertIn('id="credentials-modal"', body)
+        self.assertIn('id="credential-capture-config-modal"', body)
+        self.assertIn("Captured Credentials", body)
+        self.assertIn("Credential Capture Configuration", body)
+
     def test_index_renders_simplified_scheduler_engagement_profile(self):
         response = self.client.get("/")
         self.assertEqual(200, response.status_code)
@@ -2162,6 +2370,56 @@ class WebAppTest(unittest.TestCase):
         self.assertEqual(2, response.json["ai_feedback"]["stall_repeat_selection_threshold"])
         self.assertEqual(1, response.json["ai_feedback"]["max_reflections_per_target"])
 
+    def test_workspace_credential_capture_endpoints(self):
+        state = self.client.get("/api/workspace/credential-capture")
+        self.assertEqual(200, state.status_code)
+        self.assertEqual(3, state.json["capture_count"])
+        self.assertEqual("eth0", state.json["responder"]["config"]["interface_name"])
+        self.assertNotIn("captures", state.json)
+
+        captures = self.client.get("/api/workspace/credentials?limit=2")
+        self.assertEqual(200, captures.status_code)
+        self.assertEqual(2, len(captures.json["captures"]))
+        self.assertEqual(1, captures.json["unique_hash_count"])
+
+        saved = self.client.post(
+            "/api/workspace/credential-capture/config",
+            json={
+                "responder": {"mode": "passive"},
+                "ntlmrelayx": {"socks": True},
+            },
+        )
+        self.assertEqual(200, saved.status_code)
+        self.assertEqual("passive", saved.json["responder"]["config"]["mode"])
+        self.assertTrue(saved.json["ntlmrelayx"]["config"]["socks"])
+
+        started = self.client.post("/api/workspace/credential-capture/start", json={"tool": "responder"})
+        self.assertEqual(202, started.status_code)
+        self.assertEqual("credential-capture-session", started.json["job"]["type"])
+
+        stopped = self.client.post("/api/workspace/credential-capture/stop", json={"tool": "responder"})
+        self.assertEqual(200, stopped.status_code)
+        self.assertTrue(stopped.json["stopped"])
+
+    def test_workspace_credential_capture_download_endpoints(self):
+        hashes = self.client.get("/api/workspace/credentials/download?format=txt")
+        self.assertEqual(200, hashes.status_code)
+        self.assertIn("attachment; filename=credential-hashes.txt", hashes.headers.get("Content-Disposition", ""))
+        hash_text = hashes.get_data(as_text=True)
+        self.assertIn("alice::CORP:", hash_text)
+        self.assertIn("bob::CORP:", hash_text)
+        self.assertEqual(2, len([line for line in hash_text.splitlines() if line.strip()]))
+
+        payload = self.client.get("/api/workspace/credentials/download?format=json")
+        self.assertEqual(200, payload.status_code)
+        self.assertIn("attachment; filename=credentials.json", payload.headers.get("Content-Disposition", ""))
+        self.assertEqual(3, payload.get_json()["capture_count"])
+
+        log_response = self.client.get("/api/workspace/credential-capture/log?tool=responder")
+        self.assertEqual(200, log_response.status_code)
+        self.assertIn("attachment; filename=responder-log.txt", log_response.headers.get("Content-Disposition", ""))
+        self.assertIn("responder log line 1", log_response.get_data(as_text=True))
+
     def test_scheduler_preferences_update_endpoint(self):
         response = self.client.post(
             "/api/scheduler/preferences",
@@ -2194,6 +2452,7 @@ class WebAppTest(unittest.TestCase):
             json={
                 "feature_flags": {
                     "graph_workspace": False,
+                    "credential_capture_panel": False,
                     "optional_runners": False,
                     "context_summary_enabled": False,
                     "scheduler_prompt_profiles": False,
@@ -2203,6 +2462,7 @@ class WebAppTest(unittest.TestCase):
         )
         self.assertEqual(200, response.status_code)
         self.assertFalse(response.json["feature_flags"]["graph_workspace"])
+        self.assertFalse(response.json["feature_flags"]["credential_capture_panel"])
         self.assertFalse(response.json["feature_flags"]["optional_runners"])
         self.assertFalse(response.json["feature_flags"]["context_summary_enabled"])
         self.assertFalse(response.json["feature_flags"]["scheduler_prompt_profiles"])

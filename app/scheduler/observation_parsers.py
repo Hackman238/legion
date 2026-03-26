@@ -3470,14 +3470,14 @@ def _parse_screenshot_output(
             label=tool_id,
         )
         evidence_items.append(target_url)
-        evidence = f"{tool_id}: screenshot captured"
+        evidence = f"{tool_id}: screenshot captured for {target_url}"
         if capture_engine:
             evidence += f" via {capture_engine}"
         if filename:
             evidence += f" ({filename})"
         _append_finding(
             findings,
-            f"Visual capture available for {target_url}",
+            "Visual capture available",
             severity="info",
             evidence=evidence,
             evidence_items=evidence_items,
@@ -3497,14 +3497,14 @@ def _parse_screenshot_output(
         target_label = resolved_service
     else:
         target_label = "target"
-    evidence = f"{tool_id}: screenshot captured"
+    evidence = f"{tool_id}: screenshot captured for {target_label}"
     if capture_engine:
         evidence += f" via {capture_engine}"
     if filename:
         evidence += f" ({filename})"
     _append_finding(
         findings,
-        f"Visual capture available for {target_label}",
+        "Visual capture available",
         severity="info",
         evidence=evidence,
         evidence_items=evidence_items,
