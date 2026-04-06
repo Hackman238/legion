@@ -6,12 +6,16 @@ BRANCH="${LEGION_BRANCH:-master}"
 INSTALL_DIR="${LEGION_DEV_INSTALL_DIR:-$HOME/.local/opt/legion-web-dev}"
 DATA_DIR="${LEGION_DEV_DATA_DIR:-$HOME/.local/share/legion-web-dev}"
 BIN_DIR="${LEGION_DEV_BIN_DIR:-$HOME/.local/bin}"
-LAUNCHER_PATH="$BIN_DIR/legion-web-dev"
+WRAPPER_DIR="${LEGION_DEV_WRAPPER_DIR:-$DATA_DIR/bin}"
+WRAPPER_PATH="$WRAPPER_DIR/legion-launcher"
+SYSTEM_LAUNCHER_PATH="${LEGION_SYSTEM_LAUNCHER_PATH:-/usr/bin/legion-web}"
+USER_LAUNCHER_PATH="$BIN_DIR/legion"
+LEGACY_LAUNCHER_PATH="$BIN_DIR/legion-web-dev"
 VENV_DIR="$INSTALL_DIR/.venv"
 PYTHON_BIN="${PYTHON_BIN:-}"
 
 log() {
-  printf '[legion-web-dev installer] %s\n' "$*"
+  printf '[legion installer] %s\n' "$*"
 }
 
 die() {
@@ -48,32 +52,34 @@ resolve_python_bin() {
 }
 
 write_launcher() {
-  mkdir -p "$BIN_DIR"
-  cat > "$LAUNCHER_PATH" <<EOF
+  mkdir -p "$WRAPPER_DIR"
+  cat > "$WRAPPER_PATH" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
 INSTALL_DIR="$INSTALL_DIR"
-VENV_PY="$VENV_DIR/bin/python3"
-export LEGION_HOME="$DATA_DIR"
+VENV_DIR="$VENV_DIR"
+LEGION_HOME="$DATA_DIR"
 
-if [[ ! -x "\$VENV_PY" ]]; then
-  echo "legion-web-dev is not fully installed. Re-run installer." >&2
+export LEGION_HOME
+cd "\$INSTALL_DIR"
+
+if [[ ! -f "\$VENV_DIR/bin/activate" ]]; then
+  echo "Legion side-by-side install is not fully installed. Re-run the installer." >&2
   exit 1
 fi
 
-if ! "\$VENV_PY" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
-  echo "legion-web-dev requires a Python 3.12+ virtual environment. Re-run installer with python3.12." >&2
+# shellcheck disable=SC1090
+source "\$VENV_DIR/bin/activate"
+
+if ! python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
+  echo "Legion requires a Python 3.12+ virtual environment. Re-run the installer with python3.12." >&2
   exit 1
 fi
 
-if [[ \$# -eq 0 ]]; then
-  exec "\$VENV_PY" "\$INSTALL_DIR/legion.py" --web
-fi
-
-exec "\$VENV_PY" "\$INSTALL_DIR/legion.py" "\$@"
+exec python legion.py --web "\$@"
 EOF
-  chmod +x "$LAUNCHER_PATH"
+  chmod +x "$WRAPPER_PATH"
 }
 
 install_latest_repo() {
@@ -82,14 +88,23 @@ install_latest_repo() {
   backup_dir="${INSTALL_DIR}.previous"
 
   mkdir -p "$install_parent"
+  if [[ -d "$INSTALL_DIR/.git" ]]; then
+    log "Updating existing git checkout at $INSTALL_DIR"
+    git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
+    git -C "$INSTALL_DIR" fetch --depth=1 origin "$BRANCH"
+    git -C "$INSTALL_DIR" reset --hard FETCH_HEAD
+    git -C "$INSTALL_DIR" clean -fdx
+    return
+  fi
+
   stage_dir="$(mktemp -d "${install_parent}/.legion-web-dev-stage-XXXXXX")"
 
   log "Cloning $REPO_URL ($BRANCH) into temporary staging dir"
   git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$stage_dir"
 
-  rm -rf "$backup_dir"
   if [[ -e "$INSTALL_DIR" ]]; then
     log "Removing previous side-by-side install at $INSTALL_DIR"
+    rm -rf "$backup_dir"
     mv "$INSTALL_DIR" "$backup_dir"
   fi
 
@@ -98,7 +113,8 @@ install_latest_repo() {
 }
 
 setup_python_env() {
-  log "Creating/updating virtual environment at $VENV_DIR"
+  log "Creating a fresh virtual environment at $VENV_DIR"
+  rm -rf "$VENV_DIR"
   "$PYTHON_BIN" -m venv "$VENV_DIR"
   supports_python_312_plus "$VENV_DIR/bin/python3" || die "Virtual environment at $VENV_DIR is not using Python 3.12+."
   "$VENV_DIR/bin/python3" -m pip install --upgrade pip wheel setuptools
@@ -112,6 +128,24 @@ prepare_data_dir() {
   fi
 }
 
+install_launchers() {
+  mkdir -p "$BIN_DIR"
+  ln -sfn "$WRAPPER_PATH" "$USER_LAUNCHER_PATH"
+  ln -sfn "$WRAPPER_PATH" "$LEGACY_LAUNCHER_PATH"
+
+  if [[ $EUID -eq 0 ]]; then
+    ln -sfn "$WRAPPER_PATH" "$SYSTEM_LAUNCHER_PATH"
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo ln -sfn "$WRAPPER_PATH" "$SYSTEM_LAUNCHER_PATH"
+    return 0
+  fi
+
+  return 1
+}
+
 main() {
   need_cmd git
   resolve_python_bin
@@ -120,24 +154,26 @@ main() {
   setup_python_env
   prepare_data_dir
   write_launcher
+  install_launchers || log "WARNING: Could not create $SYSTEM_LAUNCHER_PATH. Use $USER_LAUNCHER_PATH or rerun the installer with sudo."
 
   log "Done."
-  log "Packaged Kali Legion remains untouched."
-  log "Launcher: $LAUNCHER_PATH"
+  log "Source checkout and runtime data stay side-by-side."
+  log "Launcher wrapper: $WRAPPER_PATH"
+  log "User launcher: $USER_LAUNCHER_PATH"
+  log "Compatibility launcher: $LEGACY_LAUNCHER_PATH"
+  log "System launcher: $SYSTEM_LAUNCHER_PATH"
   log "Install dir: $INSTALL_DIR"
   log "Data dir (LEGION_HOME): $DATA_DIR"
   log ""
   log "Recommended run flow:"
-  log "  cd \"$INSTALL_DIR\""
-  log "  source \"$VENV_DIR/bin/activate\""
-  log "  python legion.py --web"
+  log "  legion"
   log ""
   log "Optional:"
-  log "  python legion.py --web --web-port 5000 --web-bind-all"
-  log "  python legion.py --web --web-port 5001"
-  log "  python legion.py --headless --input-file targets.txt --discovery"
+  log "  legion --web-port 5000 --web-bind-all"
+  log "  legion --web-port 5001"
+  log "  cd \"$INSTALL_DIR\" && source \"$VENV_DIR/bin/activate\" && python legion.py --headless --input-file targets.txt --discovery"
   log ""
-  log "Convenience launcher still available:"
+  log "Legacy alias still available:"
   log "  legion-web-dev"
 
   if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
