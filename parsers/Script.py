@@ -8,10 +8,13 @@ __modified_by = 'ketchup'
 import parsers.CVE as CVE
 
 try:
-    from pyExploitDb import PyExploitDb
-except Exception as import_error:
-    PyExploitDb = None
-    PY_EXPLOIT_DB_IMPORT_ERROR = import_error
+    from pyexploitdb import PyExploitDb
+except ImportError:
+    try:
+        from pyExploitDb import PyExploitDb
+    except Exception as import_error:
+        PyExploitDb = None
+        PY_EXPLOIT_DB_IMPORT_ERROR = import_error
 else:
     PY_EXPLOIT_DB_IMPORT_ERROR = None
 
