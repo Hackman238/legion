@@ -6,12 +6,12 @@ BRANCH="${LEGION_BRANCH:-master}"
 INSTALL_DIR="${LEGION_DEV_INSTALL_DIR:-$HOME/.local/opt/legion-web-dev}"
 DATA_DIR="${LEGION_DEV_DATA_DIR:-$HOME/.local/share/legion-web-dev}"
 BIN_DIR="${LEGION_DEV_BIN_DIR:-$HOME/.local/bin}"
-WRAPPER_DIR="${LEGION_DEV_WRAPPER_DIR:-$DATA_DIR/bin}"
-WRAPPER_PATH="$WRAPPER_DIR/legion-launcher"
-SYSTEM_LAUNCHER_PATH="${LEGION_SYSTEM_LAUNCHER_PATH:-/usr/bin/legion-web}"
-USER_LAUNCHER_PATH="$BIN_DIR/legion"
-LEGACY_LAUNCHER_PATH="$BIN_DIR/legion-web-dev"
 VENV_DIR="$INSTALL_DIR/.venv"
+SYSTEM_LAUNCHER_PATH="${LEGION_SYSTEM_LAUNCHER_PATH:-/usr/bin/legion-web}"
+SYSTEM_COMPAT_LAUNCHER_PATH="${LEGION_SYSTEM_COMPAT_LAUNCHER_PATH:-/usr/bin/legion-web-dev}"
+USER_LAUNCHER_PATH="$BIN_DIR/legion"
+LEGACY_USER_LAUNCHER_PATH="$BIN_DIR/legion-web-dev"
+SYSTEM_LAUNCHER_SOURCE="$INSTALL_DIR/scripts/legion-web-launcher.sh"
 PYTHON_BIN="${PYTHON_BIN:-}"
 
 log() {
@@ -49,37 +49,6 @@ resolve_python_bin() {
   done
 
   die "Python 3.12+ is required. Install python3.12 and recreate the virtual environment."
-}
-
-write_launcher() {
-  mkdir -p "$WRAPPER_DIR"
-  cat > "$WRAPPER_PATH" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-INSTALL_DIR="$INSTALL_DIR"
-VENV_DIR="$VENV_DIR"
-LEGION_HOME="$DATA_DIR"
-
-export LEGION_HOME
-cd "\$INSTALL_DIR"
-
-if [[ ! -f "\$VENV_DIR/bin/activate" ]]; then
-  echo "Legion side-by-side install is not fully installed. Re-run the installer." >&2
-  exit 1
-fi
-
-# shellcheck disable=SC1090
-source "\$VENV_DIR/bin/activate"
-
-if ! python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
-  echo "Legion requires a Python 3.12+ virtual environment. Re-run the installer with python3.12." >&2
-  exit 1
-fi
-
-exec python legion.py --web "\$@"
-EOF
-  chmod +x "$WRAPPER_PATH"
 }
 
 install_latest_repo() {
@@ -129,21 +98,25 @@ prepare_data_dir() {
 }
 
 install_launchers() {
-  mkdir -p "$BIN_DIR"
-  ln -sfn "$WRAPPER_PATH" "$USER_LAUNCHER_PATH"
-  ln -sfn "$WRAPPER_PATH" "$LEGACY_LAUNCHER_PATH"
+  if [[ ! -f "$SYSTEM_LAUNCHER_SOURCE" ]]; then
+    die "Missing launcher source: $SYSTEM_LAUNCHER_SOURCE"
+  fi
 
   if [[ $EUID -eq 0 ]]; then
-    ln -sfn "$WRAPPER_PATH" "$SYSTEM_LAUNCHER_PATH"
-    return 0
+    install -m 0755 "$SYSTEM_LAUNCHER_SOURCE" "$SYSTEM_LAUNCHER_PATH"
+    ln -sfn "$SYSTEM_LAUNCHER_PATH" "$SYSTEM_COMPAT_LAUNCHER_PATH"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo install -m 0755 "$SYSTEM_LAUNCHER_SOURCE" "$SYSTEM_LAUNCHER_PATH"
+    sudo ln -sfn "$SYSTEM_LAUNCHER_PATH" "$SYSTEM_COMPAT_LAUNCHER_PATH"
+  elif [[ -x "$SYSTEM_LAUNCHER_PATH" ]]; then
+    log "System launcher already exists at $SYSTEM_LAUNCHER_PATH"
+  else
+    return 1
   fi
 
-  if command -v sudo >/dev/null 2>&1; then
-    sudo ln -sfn "$WRAPPER_PATH" "$SYSTEM_LAUNCHER_PATH"
-    return 0
-  fi
-
-  return 1
+  mkdir -p "$BIN_DIR"
+  ln -sfn "$SYSTEM_LAUNCHER_PATH" "$USER_LAUNCHER_PATH"
+  rm -f "$LEGACY_USER_LAUNCHER_PATH"
 }
 
 main() {
@@ -153,15 +126,13 @@ main() {
   install_latest_repo
   setup_python_env
   prepare_data_dir
-  write_launcher
   install_launchers || log "WARNING: Could not create $SYSTEM_LAUNCHER_PATH. Use $USER_LAUNCHER_PATH or rerun the installer with sudo."
 
   log "Done."
   log "Source checkout and runtime data stay side-by-side."
-  log "Launcher wrapper: $WRAPPER_PATH"
   log "User launcher: $USER_LAUNCHER_PATH"
-  log "Compatibility launcher: $LEGACY_LAUNCHER_PATH"
   log "System launcher: $SYSTEM_LAUNCHER_PATH"
+  log "System compatibility launcher: $SYSTEM_COMPAT_LAUNCHER_PATH"
   log "Install dir: $INSTALL_DIR"
   log "Data dir (LEGION_HOME): $DATA_DIR"
   log ""
@@ -169,13 +140,10 @@ main() {
   log "  legion"
   log ""
   log "Optional:"
-  log "  legion --web-port 5000 --web-bind-all"
-  log "  legion --web-port 5001"
+  log "  legion-web"
+  log "  legion-web-dev"
   log "  cd \"$INSTALL_DIR\" && source \"$VENV_DIR/bin/activate\" && python legion.py --headless --input-file targets.txt --discovery"
   log ""
-  log "Legacy alias still available:"
-  log "  legion-web-dev"
-
   if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     log ""
     log "NOTE: $BIN_DIR is not currently in PATH."

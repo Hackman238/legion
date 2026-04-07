@@ -152,9 +152,9 @@ python legion.py --web
 
 Open `http://127.0.0.1:5000` unless you used `--web-bind-all`.
 
-### Kali Side-By-Side Dev Install (No Package Overwrite)
+### Kali Side-By-Side Dev Install
 
-To install a separate development copy on Kali without overwriting the packaged `legion`, use:
+To install a separate development copy on Kali, use:
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/Hackman238/legion/master/scripts/install-kali-side-by-side.sh | bash
@@ -162,13 +162,22 @@ curl -fsSL https://raw.githubusercontent.com/Hackman238/legion/master/scripts/in
 
 This creates:
 
-- source + venv under `~/.local/opt/legion-web-dev`
+- source checkout and venv under `~/.local/opt/legion-web-dev`
 - isolated Legion data/config under `~/.local/share/legion-web-dev`
-- launcher `~/.local/bin/legion-web-dev`
+- user launcher `~/.local/bin/legion`
+- system launchers `/usr/bin/legion-web` and `/usr/bin/legion-web-dev`
 
-Re-running the installer replaces the prior side-by-side source tree with a fresh copy of the current branch before rebuilding the venv.
+The installer will prompt for `sudo` when it refreshes the system launchers. It also removes the old user-local `legion-web-dev` alias so `pkexec legion-web-dev` resolves to the root-owned launcher instead of a writable wrapper.
+
+Re-running the installer fetches the latest branch with git, resets the checkout in place, recreates the venv, refreshes the launchers, and keeps the `pkexec` path clean.
 
 Recommended way to launch the side-by-side install:
+
+```shell
+legion
+```
+
+If you want to run it manually from the checkout:
 
 ```shell
 cd ~/.local/opt/legion-web-dev
