@@ -35,6 +35,32 @@ class PathsTest(unittest.TestCase):
             self.assertEqual(os.path.join(custom_home, "legion.conf"), conf_path)
             self.assertTrue(os.path.isfile(conf_path))
 
+    def test_default_legion_home_falls_back_when_default_path_is_not_writable(self):
+        import app.paths as paths
+
+        default_home = os.path.abspath(os.path.expanduser(paths._DEFAULT_LEGION_HOME))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            expected_home = os.path.join(tmpdir, "legion-home", "fallback-user")
+
+            def fake_is_writable(path: str) -> bool:
+                normalized = os.path.abspath(os.path.expanduser(path))
+                if normalized == default_home:
+                    return False
+                if normalized == expected_home:
+                    os.makedirs(normalized, exist_ok=True)
+                    return True
+                return True
+
+            with patch.dict(os.environ, {}, clear=False):
+                with patch("app.paths.tempfile.gettempdir", return_value=tmpdir):
+                    with patch("app.paths._current_user_token", return_value="fallback-user"):
+                        with patch("app.paths._is_writable_directory", side_effect=fake_is_writable):
+                            self.assertEqual(expected_home, paths.get_legion_home())
+                            self.assertEqual(
+                                os.path.join(expected_home, "legion.conf"),
+                                paths.get_legion_conf_path(),
+                            )
+
 
 if __name__ == "__main__":
     unittest.main()

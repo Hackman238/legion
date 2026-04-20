@@ -75,6 +75,14 @@ snmp-brute=Bruteforce community strings (medusa), bash -c \\"medusa -h [IP] -u r
 rpcclient=Open with rpcclient (NULL session), [term] rpcclient [IP] -p [PORT] -U%, "netbios-ssn,microsoft-ds"
 """
 
+LEGACY_STRUCTURED_SETTINGS_CONFIG = """[BruteSettings]
+passlist=/tmp/legacy-passwords.txt
+userlist=/tmp/legacy-users.txt
+
+[GeneralSettings]
+hydra_path=/opt/legacy/hydra
+"""
+
 
 class SettingsMigrationTest(unittest.TestCase):
     def test_legacy_dirbuster_is_replaced_with_headless_tools(self):
@@ -640,6 +648,34 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertNotIn("http-vuln-zimbra-lfi.nse", port_action_ids)
                 self.assertNotIn("http-drupal-modules.nse", scheduler_ids)
                 self.assertNotIn("http-vuln-zimbra-lfi.nse", scheduler_ids)
+
+    def test_structured_settings_migrate_legacy_aliases_into_modern_groups(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, ".local", "share", "legion")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "legion.conf")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write(LEGACY_STRUCTURED_SETTINGS_CONFIG)
+
+            with patch.dict(os.environ, {"HOME": tmpdir}, clear=False):
+                with patch("app.settings.log") as mocked_log:
+                    from app.settings import AppSettings, Settings
+
+                    app_settings = AppSettings()
+                    settings = Settings(app_settings)
+
+                brute_settings = app_settings.getBruteSettings()
+                tool_settings = app_settings.getToolSettings()
+                general_settings = app_settings.getGeneralSettings()
+
+                self.assertEqual("/tmp/legacy-users.txt", brute_settings["username-wordlist-path"])
+                self.assertEqual("/tmp/legacy-passwords.txt", brute_settings["password-wordlist-path"])
+                self.assertEqual("/opt/legacy/hydra", tool_settings["hydra-path"])
+                self.assertNotIn("hydra_path", general_settings)
+                self.assertEqual("/tmp/legacy-users.txt", settings.brute_username_wordlist_path)
+                self.assertEqual("/tmp/legacy-passwords.txt", settings.brute_password_wordlist_path)
+                self.assertEqual("/opt/legacy/hydra", settings.tools_path_hydra)
+                mocked_log.error.assert_not_called()
 
 
 if __name__ == "__main__":

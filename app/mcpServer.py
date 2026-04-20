@@ -298,224 +298,117 @@ class MCPServer:
 
     async def list_projects(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
+        from app.web.services.project_service import ProjectService
+
+        service = ProjectService(runtime)
+        listing = service.list_projects({"limit": _int_arg(arguments, "limit", 500)})
         return {
-            "projects": runtime.list_projects(limit=_int_arg(arguments, "limit", 500)),
+            "projects": listing.get("projects", []),
             "current_project": runtime.get_project_details(),
         }
 
     async def open_project(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        path = str(arguments.get("path", "") or "").strip()
-        if not path:
-            raise ValueError("path is required")
         runtime = self._ensure_runtime()
-        return {"project": runtime.open_project(path)}
+        from app.web.services.project_service import ProjectService
+
+        return ProjectService(runtime).open_project(arguments)
 
     async def save_project(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        path = str(arguments.get("path", "") or "").strip()
-        if not path:
-            raise ValueError("path is required")
         runtime = self._ensure_runtime()
-        return {
-            "project": runtime.save_project_as(
-                path,
-                replace=_bool_arg(arguments, "replace", True),
-            )
-        }
+        from app.web.services.project_service import ProjectService
+
+        body, _status_code = ProjectService(runtime).save_project_as({
+            "path": str(arguments.get("path", "") or "").strip(),
+            "replace": _bool_arg(arguments, "replace", True),
+        }, prefer_async=False)
+        return {"project": body.get("project", {})}
 
     async def run_discovery(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        debug_info = {
-            "sys_executable": sys.executable,
-            "sys_path": sys.path,
-        }
-        try:
-            import os
-            import time
+        runtime = self._ensure_runtime()
+        from app.web.services.scan_service import ScanService
 
-            from app.cli_utils import run_nmap_scan
-            from app.importers.nmap_runner import import_nmap_xml_into_project
-
-            runtime = self._ensure_runtime()
-            logic = runtime.logic
-            target = str(arguments.get("target", "localhost") or "localhost")
-            run_actions = _bool_arg(arguments, "run_actions", False)
-
-            runtime.create_new_temporary_project()
-            host_repository = logic.activeProject.repositoryContainer.hostRepository
-            session = logic.activeProject.database.session()
-            try:
-                db_host = host_repository.getHostInformation(target)
-                if not db_host:
-                    from db.entities.host import hostObj
-                    hid = hostObj(
-                        ip=target,
-                        ipv4=target,
-                        ipv6="",
-                        macaddr="",
-                        status="",
-                        hostname=target,
-                        vendor="",
-                        uptime="",
-                        lastboot="",
-                        distance="",
-                        state="",
-                        count="",
-                    )
-                    session.add(hid)
-                    session.commit()
-            finally:
-                session.close()
-
-            output_prefix = os.path.join(
-                logic.activeProject.properties.runningFolder,
-                f"mcp-nmap-{int(time.time())}",
-            )
-            nmap_xml = run_nmap_scan(
-                target,
-                output_prefix,
-                discovery=True,
-                staged=False,
-            )
-            if not nmap_xml or not os.path.isfile(nmap_xml):
-                return {
-                    "target": target,
-                    "error": "Nmap scan failed or produced no XML output",
-                    "debug_info": debug_info,
-                }
-
-            import_nmap_xml_into_project(
-                project=logic.activeProject,
-                xml_path=nmap_xml,
-                output="",
-                update_progress_observable=None,
-                host_repository=host_repository,
-            )
-            if run_actions:
-                logic.run_scripted_actions()
-
-            hosts = host_repository.getAllHostObjs()
-            results = []
-            for host in hosts:
-                host_dict = host.__dict__.copy()
-                host_dict.pop("_sa_instance_state", None)
-                try:
-                    ports = logic.activeProject.repositoryContainer.portRepository.getPortsByHostId(host.id)
-                except Exception:
-                    ports = []
-                ports_data = []
-                for port in ports:
-                    port_dict = port.__dict__.copy()
-                    port_dict.pop("_sa_instance_state", None)
-                    try:
-                        service = (
-                            logic.activeProject.repositoryContainer.serviceRepository.getServiceById(port.serviceId)
-                            if hasattr(port, "serviceId") and port.serviceId
-                            else None
-                        )
-                    except Exception:
-                        service = None
-                    if service:
-                        service_dict = service.__dict__.copy()
-                        service_dict.pop("_sa_instance_state", None)
-                        port_dict["service"] = service_dict
-                    ports_data.append(port_dict)
-                host_dict["ports"] = ports_data
-                results.append(host_dict)
-
-            return {
-                "target": target,
-                "run_actions": run_actions,
-                "project": runtime.get_project_details(),
-                "results": results,
-                "debug_info": debug_info,
-            }
-        except Exception as exc:
-            return {
-                "target": str(arguments.get("target", "localhost") or "localhost"),
-                "error": str(exc),
-                "debug_info": debug_info,
-            }
+        service = ScanService(runtime)
+        return service.run_discovery({
+            "target": str(arguments.get("target", "localhost") or "localhost"),
+            "run_actions": _bool_arg(arguments, "run_actions", False),
+        })
 
     async def get_engagement_policy(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         _ = arguments
         runtime = self._ensure_runtime()
-        return runtime.get_engagement_policy()
+        from app.web.services.scheduler_service import SchedulerService
+
+        return SchedulerService(runtime).get_engagement_policy()
 
     async def set_engagement_policy(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        return runtime.set_engagement_policy(arguments or {})
+        from app.web.services.scheduler_service import SchedulerService
+
+        return SchedulerService(runtime).update_engagement_policy(arguments or {})
 
     async def get_plan_preview(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        return runtime.get_scheduler_plan_preview(
-            host_id=_int_arg(arguments, "host_id", 0),
-            host_ip=str(arguments.get("host_ip", "") or ""),
-            service=str(arguments.get("service", "") or ""),
-            port=str(arguments.get("port", "") or ""),
-            protocol=str(arguments.get("protocol", "tcp") or "tcp"),
-            mode=str(arguments.get("mode", "compare") or "compare"),
-            limit_targets=_int_arg(arguments, "limit_targets", 20),
-            limit_actions=_int_arg(arguments, "limit_actions", 6),
-        )
+        from app.web.services.scheduler_service import SchedulerService
+
+        return SchedulerService(runtime).get_plan_preview(arguments)
 
     async def list_approvals(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        return {
-            "approvals": runtime.get_scheduler_approvals(
-                limit=_int_arg(arguments, "limit", 200),
-                status=str(arguments.get("status", "") or "").strip().lower() or None,
-            )
-        }
+        from app.web.services.scheduler_service import SchedulerService
+
+        return SchedulerService(runtime).list_approvals(arguments)
 
     async def approve_approval(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
         approval_id = _int_arg(arguments, "approval_id", 0)
         if approval_id <= 0:
             raise ValueError("approval_id is required")
-        return runtime.approve_scheduler_approval(
-            approval_id=approval_id,
-            approve_family=_bool_arg(arguments, "approve_family", False),
-            run_now=_bool_arg(arguments, "run_now", False),
-            family_action=str(arguments.get("family_action", "") or ""),
-        )
+        from app.web.services.scheduler_service import SchedulerService
+
+        body, _status_code = SchedulerService(runtime).approve_approval(approval_id, {
+            "approve_family": _bool_arg(arguments, "approve_family", False),
+            "run_now": _bool_arg(arguments, "run_now", False),
+            "family_action": str(arguments.get("family_action", "") or ""),
+        })
+        return {
+            "approval": body.get("approval", {}),
+            "job": body.get("job"),
+        }
 
     async def execute_approved_plan_step(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
         approval_id = _int_arg(arguments, "approval_id", 0)
         if approval_id <= 0:
             raise ValueError("approval_id is required")
-        return runtime.approve_scheduler_approval(
-            approval_id=approval_id,
-            approve_family=_bool_arg(arguments, "approve_family", False),
-            run_now=True,
-            family_action=str(arguments.get("family_action", "") or ""),
-        )
+        from app.web.services.scheduler_service import SchedulerService
+
+        body, _status_code = SchedulerService(runtime).approve_approval(approval_id, {
+            "approve_family": _bool_arg(arguments, "approve_family", False),
+            "run_now": True,
+            "family_action": str(arguments.get("family_action", "") or ""),
+        })
+        return {
+            "approval": body.get("approval", {}),
+            "job": body.get("job"),
+        }
 
     async def reject_approval(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
         approval_id = _int_arg(arguments, "approval_id", 0)
         if approval_id <= 0:
             raise ValueError("approval_id is required")
-        return {
-            "approval": runtime.reject_scheduler_approval(
-                approval_id=approval_id,
-                reason=str(arguments.get("reason", "rejected via MCP") or "rejected via MCP"),
-                family_action=str(arguments.get("family_action", "") or ""),
-            )
-        }
+        from app.web.services.scheduler_service import SchedulerService
+
+        return SchedulerService(runtime).reject_approval(approval_id, {
+            "reason": str(arguments.get("reason", "rejected via MCP") or "rejected via MCP"),
+            "family_action": str(arguments.get("family_action", "") or ""),
+        })
 
     async def query_graph(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        return runtime.get_evidence_graph(filters={
-            "node_types": list(arguments.get("node_types", []) or []),
-            "edge_types": list(arguments.get("edge_types", []) or []),
-            "source_kinds": list(arguments.get("source_kinds", []) or []),
-            "min_confidence": float(arguments.get("min_confidence", 0.0) or 0.0),
-            "search": str(arguments.get("search", "") or ""),
-            "include_ai_suggested": _bool_arg(arguments, "include_ai_suggested", True),
-            "host_id": _int_arg(arguments, "host_id", 0) or None,
-            "limit_nodes": _int_arg(arguments, "limit_nodes", 600),
-            "limit_edges": _int_arg(arguments, "limit_edges", 1200),
-        })
+        from app.web.services.graph_service import GraphService
+
+        return GraphService(runtime).get_graph(arguments)
 
     async def query_findings(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
@@ -533,87 +426,30 @@ class MCPServer:
 
     async def export_report(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        scope = str(arguments.get("scope", "project") or "project").strip().lower() or "project"
-        output_format = str(arguments.get("format", "json") or "json").strip().lower() or "json"
-        if output_format not in {"json", "md", "markdown"}:
-            output_format = "json"
-        if output_format == "markdown":
-            output_format = "md"
+        from app.web.services.report_service import ReportService
 
-        if scope == "host":
-            host_id = _int_arg(arguments, "host_id", 0)
-            if host_id <= 0:
-                raise ValueError("host_id is required when scope=host")
-            report = runtime.get_host_report(host_id) if hasattr(runtime, "get_host_report") else runtime.get_host_ai_report(host_id)
-            if output_format == "md":
-                return {
-                    "scope": "host",
-                    "format": "md",
-                    "host_id": host_id,
-                    "body": (
-                        runtime.render_host_report_markdown(report)
-                        if hasattr(runtime, "render_host_report_markdown")
-                        else runtime.render_host_ai_report_markdown(report)
-                    ),
-                }
-            return {
-                "scope": "host",
-                "format": "json",
-                "host_id": host_id,
-                "report": report,
-            }
-
-        report = runtime.get_project_report() if hasattr(runtime, "get_project_report") else runtime.get_project_ai_report()
-        if output_format == "md":
-            return {
-                "scope": "project",
-                "format": "md",
-                "body": (
-                    runtime.render_project_report_markdown(report)
-                    if hasattr(runtime, "render_project_report_markdown")
-                    else runtime.render_project_ai_report_markdown(report)
-                ),
-            }
-        return {
-            "scope": "project",
-            "format": "json",
-            "report": report,
-        }
+        return ReportService(runtime).export_report(arguments)
 
     async def list_execution_traces(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        return {
-            "executions": runtime.get_scheduler_execution_traces(
-                limit=_int_arg(arguments, "limit", 200),
-                host_id=_int_arg(arguments, "host_id", 0),
-                host_ip=str(arguments.get("host_ip", "") or ""),
-                tool_id=str(arguments.get("tool_id", "") or ""),
-                include_output=_bool_arg(arguments, "include_output", False),
-            )
-        }
+        from app.web.services.scheduler_service import SchedulerService
+
+        return SchedulerService(runtime).list_executions(arguments)
 
     async def get_execution_trace(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
         execution_id = str(arguments.get("execution_id", "") or "").strip()
         if not execution_id:
             raise ValueError("execution_id is required")
-        return runtime.get_scheduler_execution_trace(
-            execution_id,
-            output_max_chars=_int_arg(arguments, "max_chars", 4000),
-        )
+        from app.web.services.scheduler_service import SchedulerService
+
+        return SchedulerService(runtime).get_execution_trace(execution_id, arguments)
 
     async def create_annotation(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        return {
-            "annotation": runtime.save_evidence_graph_annotation(
-                target_kind=str(arguments.get("target_kind", "") or ""),
-                target_ref=str(arguments.get("target_ref", "") or ""),
-                body=str(arguments.get("body", "") or ""),
-                created_by=str(arguments.get("created_by", "") or "operator"),
-                source_ref=str(arguments.get("source_ref", "") or ""),
-                annotation_id=str(arguments.get("annotation_id", "") or ""),
-            )
-        }
+        from app.web.services.graph_service import GraphService
+
+        return {"annotation": GraphService(runtime).save_annotation(arguments)["annotation"]}
 
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         if request.get("method") == "list_tools":

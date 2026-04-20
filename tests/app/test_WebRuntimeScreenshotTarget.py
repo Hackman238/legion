@@ -59,9 +59,9 @@ class WebRuntimeScreenshotTargetTest(unittest.TestCase):
             )
             runtime._require_active_project = lambda: project
 
-            with patch("app.web.runtime.choose_preferred_screenshot_host", return_value="bing.com") as mock_choose:
-                with patch("app.web.runtime.isHttps", return_value=False):
-                    with patch("app.web.runtime.run_eyewitness_capture", return_value={
+            with patch("app.web.runtime_screenshots.choose_preferred_screenshot_host", return_value="bing.com") as mock_choose:
+                with patch("app.web.runtime_screenshots.isHttps", return_value=False):
+                    with patch("app.web.runtime_screenshots.run_eyewitness_capture", return_value={
                         "ok": True,
                         "screenshot_path": src_path,
                         "returncode": 0,
@@ -93,9 +93,9 @@ class WebRuntimeScreenshotTargetTest(unittest.TestCase):
             )
             runtime._require_active_project = lambda: project
 
-            with patch("app.web.runtime.choose_preferred_screenshot_host", return_value="portal.example"):
-                with patch("app.web.runtime.isHttps", return_value=False):
-                    with patch("app.web.runtime.run_eyewitness_capture", return_value={
+            with patch("app.web.runtime_screenshots.choose_preferred_screenshot_host", return_value="portal.example"):
+                with patch("app.web.runtime_screenshots.isHttps", return_value=False):
+                    with patch("app.web.runtime_screenshots.run_eyewitness_capture", return_value={
                         "ok": True,
                         "screenshot_path": src_path,
                         "returncode": 0,

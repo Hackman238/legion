@@ -207,7 +207,8 @@ python legion.py --web
 ### Configuration Notes
 
 - Legion stores its runtime data under `${LEGION_HOME:-~/.local/share/legion}`.
-- Scheduler AI preferences are stored in plaintext at `${LEGION_HOME:-~/.local/share/legion}/scheduler-ai.json`.
+- Scheduler AI preferences live at `${LEGION_HOME:-~/.local/share/legion}/scheduler-ai.json`, but provider and integration API keys are stored outside that JSON via the local secret store when available.
+- Supported secret inputs can also come from environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `SHODAN_API_KEY`, `CHAOS_API_KEY`, and `GRAYHATWARFARE_API_KEY`.
 - The checked-in action mappings still live in `legion.conf`.
 - Tool paths, providers, and runtime behavior can be reviewed from the web UI under `Settings`.
 

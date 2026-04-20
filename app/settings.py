@@ -359,7 +359,162 @@ class AppSettings():
                 log.error(f"Default configuration file not found at {default_conf}.")
         log.info(f"Loading settings file: {config_path}")
         self.actions = IniSettingsStore(config_path)
+        self._apply_default_settings_migrations()
         self._apply_default_action_migrations()
+
+    @staticmethod
+    def _default_settings_group_values(defaults) -> dict:
+        return {
+            "GeneralSettings": {
+                "default-terminal": defaults.general_default_terminal,
+                "tool-output-black-background": defaults.general_tool_output_black_background,
+                "colorful-ascii-background": defaults.general_colorful_ascii_background,
+                "screenshooter-timeout": defaults.general_screenshooter_timeout,
+                "web-services": defaults.general_web_services,
+                "enable-scheduler": defaults.general_enable_scheduler,
+                "enable-scheduler-on-import": defaults.general_enable_scheduler_on_import,
+                "max-fast-processes": defaults.general_max_fast_processes,
+                "max-slow-processes": defaults.general_max_slow_processes,
+                "notes-autosave-minutes": defaults.general_notes_autosave_minutes,
+            },
+            "BruteSettings": {
+                "store-cleartext-passwords-on-exit": defaults.brute_store_cleartext_passwords_on_exit,
+                "username-wordlist-path": defaults.brute_username_wordlist_path,
+                "password-wordlist-path": defaults.brute_password_wordlist_path,
+                "default-username": defaults.brute_default_username,
+                "default-password": defaults.brute_default_password,
+                "services": defaults.brute_services,
+                "no-username-services": defaults.brute_no_username_services,
+                "no-password-services": defaults.brute_no_password_services,
+            },
+            "ToolSettings": {
+                "nmap-path": defaults.tools_path_nmap,
+                "hydra-path": defaults.tools_path_hydra,
+                "texteditor-path": defaults.tools_path_texteditor,
+                "pyshodan-api-key": defaults.tools_pyshodan_api_key,
+                "responder-path": defaults.tools_path_responder,
+                "ntlmrelay-path": defaults.tools_path_ntlmrelay,
+            },
+            "StagedNmapSettings": {
+                "stage1-ports": defaults.tools_nmap_stage1_ports,
+                "stage2-ports": defaults.tools_nmap_stage2_ports,
+                "stage3-ports": defaults.tools_nmap_stage3_ports,
+                "stage4-ports": defaults.tools_nmap_stage4_ports,
+                "stage5-ports": defaults.tools_nmap_stage5_ports,
+                "stage6-ports": defaults.tools_nmap_stage6_ports,
+            },
+            "GUISettings": {
+                "process-tab-column-widths": defaults.gui_process_tab_column_widths,
+                "process-tab-detail": defaults.gui_process_tab_detail,
+            },
+        }
+
+    @staticmethod
+    def _legacy_settings_aliases() -> dict:
+        return {
+            "GeneralSettings": {
+                "default-terminal": [("GeneralSettings", "default_terminal")],
+                "tool-output-black-background": [("GeneralSettings", "tool_output_black_background")],
+                "colorful-ascii-background": [("GeneralSettings", "colorful_ascii_background")],
+                "screenshooter-timeout": [("GeneralSettings", "screenshooter_timeout")],
+                "web-services": [("GeneralSettings", "web_services")],
+                "enable-scheduler": [("GeneralSettings", "enable_scheduler")],
+                "enable-scheduler-on-import": [("GeneralSettings", "enable_scheduler_on_import")],
+                "max-fast-processes": [("GeneralSettings", "max_fast_processes")],
+                "max-slow-processes": [("GeneralSettings", "max_slow_processes")],
+                "notes-autosave-minutes": [("GeneralSettings", "notes_autosave_minutes")],
+            },
+            "BruteSettings": {
+                "username-wordlist-path": [("BruteSettings", "userlist")],
+                "password-wordlist-path": [("BruteSettings", "passlist")],
+                "default-username": [("BruteSettings", "default_username")],
+                "default-password": [("BruteSettings", "default_password")],
+                "no-username-services": [("BruteSettings", "no_username_services")],
+                "no-password-services": [("BruteSettings", "no_password_services")],
+                "store-cleartext-passwords-on-exit": [("BruteSettings", "store_cleartext_passwords_on_exit")],
+            },
+            "ToolSettings": {
+                "nmap-path": [("ToolSettings", "nmap_path"), ("GeneralSettings", "nmap_path")],
+                "hydra-path": [("ToolSettings", "hydra_path"), ("GeneralSettings", "hydra_path")],
+                "texteditor-path": [("ToolSettings", "texteditor_path"), ("GeneralSettings", "texteditor_path")],
+                "pyshodan-api-key": [("ToolSettings", "pyshodan_api_key"), ("GeneralSettings", "pyshodan_api_key")],
+                "responder-path": [("ToolSettings", "responder_path"), ("GeneralSettings", "responder_path")],
+                "ntlmrelay-path": [("ToolSettings", "ntlmrelay_path"), ("GeneralSettings", "ntlmrelay_path")],
+            },
+            "StagedNmapSettings": {
+                "stage1-ports": [("StagedNmapSettings", "stage1_ports")],
+                "stage2-ports": [("StagedNmapSettings", "stage2_ports")],
+                "stage3-ports": [("StagedNmapSettings", "stage3_ports")],
+                "stage4-ports": [("StagedNmapSettings", "stage4_ports")],
+                "stage5-ports": [("StagedNmapSettings", "stage5_ports")],
+                "stage6-ports": [("StagedNmapSettings", "stage6_ports")],
+            },
+            "GUISettings": {
+                "process-tab-column-widths": [("GUISettings", "process_tab_column_widths")],
+                "process-tab-detail": [("GUISettings", "process_tab_detail")],
+            },
+        }
+
+    def _read_group_value(self, group_name: str, key: str):
+        parser = getattr(self.actions, "_parser", None)
+        if parser is None:
+            return None
+        section = str(group_name or "").strip()
+        option = str(key or "").strip()
+        if not section or not option:
+            return None
+        if not parser.has_section(section) or not parser.has_option(section, option):
+            return None
+        raw = parser.get(section, option, raw=True, fallback=None)
+        if raw is None:
+            return None
+        if section in getattr(self.actions, "_list_value_groups", set()):
+            return self.actions._decode_csv(raw)
+        return self.actions._decode_scalar(raw)
+
+    def _remove_group_key(self, group_name: str, key: str) -> bool:
+        parser = getattr(self.actions, "_parser", None)
+        if parser is None:
+            return False
+        section = str(group_name or "").strip()
+        option = str(key or "").strip()
+        if not section or not option or not parser.has_section(section):
+            return False
+        return bool(parser.remove_option(section, option))
+
+    def _apply_default_settings_migrations(self):
+        defaults = Settings()
+        group_defaults = self._default_settings_group_values(defaults)
+        legacy_aliases = self._legacy_settings_aliases()
+        changed = False
+        removals = set()
+
+        for group_name, entries in group_defaults.items():
+            self.actions.beginGroup(group_name)
+            try:
+                for key, default_value in entries.items():
+                    if self.actions.value(key) is not None:
+                        continue
+                    resolved_value = default_value
+                    for alias_group, alias_key in legacy_aliases.get(group_name, {}).get(key, []):
+                        alias_value = self._read_group_value(alias_group, alias_key)
+                        if alias_value is None:
+                            continue
+                        resolved_value = alias_value
+                        if alias_group != group_name or alias_key != key:
+                            removals.add((alias_group, alias_key))
+                        break
+                    self.actions.setValue(key, resolved_value)
+                    changed = True
+            finally:
+                self.actions.endGroup()
+
+        for alias_group, alias_key in sorted(removals):
+            changed = self._remove_group_key(alias_group, alias_key) or changed
+
+        if changed:
+            self.actions.sync()
+            log.info("Applied legion.conf settings migration updates (general/tool defaults, legacy aliases).")
 
     def _apply_default_action_migrations(self):
         changed = False
@@ -1678,53 +1833,137 @@ class Settings():
                 self.automatedAttacks = appSettings.getSchedulerSettings()
 
                 # general
-                self.general_default_terminal = self.generalSettings['default-terminal']
-                self.general_tool_output_black_background = self.generalSettings['tool-output-black-background']
+                self.general_default_terminal = self.generalSettings.get(
+                    'default-terminal',
+                    self.general_default_terminal,
+                )
+                self.general_tool_output_black_background = self.generalSettings.get(
+                    'tool-output-black-background',
+                    self.general_tool_output_black_background,
+                )
                 self.general_colorful_ascii_background = self.generalSettings.get(
                     'colorful-ascii-background',
                     self.general_colorful_ascii_background,
                 )
-                self.general_screenshooter_timeout = self.generalSettings['screenshooter-timeout']
-                self.general_web_services = self.generalSettings['web-services']
-                self.general_enable_scheduler = self.generalSettings['enable-scheduler']
-                self.general_enable_scheduler_on_import = self.generalSettings['enable-scheduler-on-import']
-                self.general_max_fast_processes = self.generalSettings['max-fast-processes']
-                self.general_max_slow_processes = self.generalSettings['max-slow-processes']
+                self.general_screenshooter_timeout = self.generalSettings.get(
+                    'screenshooter-timeout',
+                    self.general_screenshooter_timeout,
+                )
+                self.general_web_services = self.generalSettings.get(
+                    'web-services',
+                    self.general_web_services,
+                )
+                self.general_enable_scheduler = self.generalSettings.get(
+                    'enable-scheduler',
+                    self.general_enable_scheduler,
+                )
+                self.general_enable_scheduler_on_import = self.generalSettings.get(
+                    'enable-scheduler-on-import',
+                    self.general_enable_scheduler_on_import,
+                )
+                self.general_max_fast_processes = self.generalSettings.get(
+                    'max-fast-processes',
+                    self.general_max_fast_processes,
+                )
+                self.general_max_slow_processes = self.generalSettings.get(
+                    'max-slow-processes',
+                    self.general_max_slow_processes,
+                )
                 self.general_notes_autosave_minutes = self.generalSettings.get(
                     'notes-autosave-minutes',
                     self.general_notes_autosave_minutes
                 )
 
                 # brute
-                self.brute_store_cleartext_passwords_on_exit = self.bruteSettings['store-cleartext-passwords-on-exit']
-                self.brute_username_wordlist_path = self.bruteSettings['username-wordlist-path']
-                self.brute_password_wordlist_path = self.bruteSettings['password-wordlist-path']
-                self.brute_default_username = self.bruteSettings['default-username']
-                self.brute_default_password = self.bruteSettings['default-password']
-                self.brute_services = self.bruteSettings['services']
-                self.brute_no_username_services = self.bruteSettings['no-username-services']
-                self.brute_no_password_services = self.bruteSettings['no-password-services']
+                self.brute_store_cleartext_passwords_on_exit = self.bruteSettings.get(
+                    'store-cleartext-passwords-on-exit',
+                    self.brute_store_cleartext_passwords_on_exit,
+                )
+                self.brute_username_wordlist_path = self.bruteSettings.get(
+                    'username-wordlist-path',
+                    self.brute_username_wordlist_path,
+                )
+                self.brute_password_wordlist_path = self.bruteSettings.get(
+                    'password-wordlist-path',
+                    self.brute_password_wordlist_path,
+                )
+                self.brute_default_username = self.bruteSettings.get(
+                    'default-username',
+                    self.brute_default_username,
+                )
+                self.brute_default_password = self.bruteSettings.get(
+                    'default-password',
+                    self.brute_default_password,
+                )
+                self.brute_services = self.bruteSettings.get(
+                    'services',
+                    self.brute_services,
+                )
+                self.brute_no_username_services = self.bruteSettings.get(
+                    'no-username-services',
+                    self.brute_no_username_services,
+                )
+                self.brute_no_password_services = self.bruteSettings.get(
+                    'no-password-services',
+                    self.brute_no_password_services,
+                )
 
                 # tools
-                self.tools_nmap_stage1_ports = self.stagedNmapSettings['stage1-ports']
-                self.tools_nmap_stage2_ports = self.stagedNmapSettings['stage2-ports']
-                self.tools_nmap_stage3_ports = self.stagedNmapSettings['stage3-ports']
-                self.tools_nmap_stage4_ports = self.stagedNmapSettings['stage4-ports']
-                self.tools_nmap_stage5_ports = self.stagedNmapSettings['stage5-ports']
-                self.tools_nmap_stage6_ports = self.stagedNmapSettings['stage6-ports']
+                self.tools_nmap_stage1_ports = self.stagedNmapSettings.get(
+                    'stage1-ports',
+                    self.tools_nmap_stage1_ports,
+                )
+                self.tools_nmap_stage2_ports = self.stagedNmapSettings.get(
+                    'stage2-ports',
+                    self.tools_nmap_stage2_ports,
+                )
+                self.tools_nmap_stage3_ports = self.stagedNmapSettings.get(
+                    'stage3-ports',
+                    self.tools_nmap_stage3_ports,
+                )
+                self.tools_nmap_stage4_ports = self.stagedNmapSettings.get(
+                    'stage4-ports',
+                    self.tools_nmap_stage4_ports,
+                )
+                self.tools_nmap_stage5_ports = self.stagedNmapSettings.get(
+                    'stage5-ports',
+                    self.tools_nmap_stage5_ports,
+                )
+                self.tools_nmap_stage6_ports = self.stagedNmapSettings.get(
+                    'stage6-ports',
+                    self.tools_nmap_stage6_ports,
+                )
 
-                self.tools_path_nmap = self.toolSettings['nmap-path']
-                self.tools_path_hydra = self.toolSettings['hydra-path']
-                self.tools_path_texteditor = self.toolSettings['texteditor-path']
-                self.tools_pyshodan_api_key = self.toolSettings['pyshodan-api-key']
+                self.tools_path_nmap = self.toolSettings.get(
+                    'nmap-path',
+                    self.tools_path_nmap,
+                )
+                self.tools_path_hydra = self.toolSettings.get(
+                    'hydra-path',
+                    self.tools_path_hydra,
+                )
+                self.tools_path_texteditor = self.toolSettings.get(
+                    'texteditor-path',
+                    self.tools_path_texteditor,
+                )
+                self.tools_pyshodan_api_key = self.toolSettings.get(
+                    'pyshodan-api-key',
+                    self.tools_pyshodan_api_key,
+                )
                 self.tools_path_responder = self.toolSettings.get('responder-path', self.tools_path_responder)
                 self.tools_path_ntlmrelay = self.toolSettings.get('ntlmrelay-path', self.tools_path_ntlmrelay)
                 self.tools_path_responder = self.toolSettings.get('responder-path', self.tools_path_responder)
                 self.tools_path_ntlmrelay = self.toolSettings.get('ntlmrelay-path', self.tools_path_ntlmrelay)
 
                 # gui
-                self.gui_process_tab_column_widths = self.guiSettings['process-tab-column-widths']
-                self.gui_process_tab_detail = self.guiSettings['process-tab-detail']
+                self.gui_process_tab_column_widths = self.guiSettings.get(
+                    'process-tab-column-widths',
+                    self.gui_process_tab_column_widths,
+                )
+                self.gui_process_tab_detail = self.guiSettings.get(
+                    'process-tab-detail',
+                    self.gui_process_tab_detail,
+                )
 
             except KeyError as e:
                 log.info('Something went wrong while loading the configuration file. Falling back to default ' +

@@ -120,15 +120,17 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             session.commit()
             session.add(portObj("22", "tcp", "open", linux_host.id, ssh_service.id))
             session.commit()
+            windows_host_id = int(windows_host.id)
+            linux_host_id = int(linux_host.id)
             session.close()
 
-            upsert_target_state(project.database, int(windows_host.id), {
+            upsert_target_state(project.database, windows_host_id, {
                 "host_ip": "10.0.0.10",
                 "os_match": "Windows Server",
                 "service_inventory": [{"port": "445", "protocol": "tcp", "state": "open", "service": "microsoft-ds", "service_product": "Microsoft Directory Services"}],
                 "technologies": [{"name": "windows", "cpe": "cpe:/o:microsoft:windows", "evidence": "service detection"}],
             })
-            upsert_target_state(project.database, int(linux_host.id), {
+            upsert_target_state(project.database, linux_host_id, {
                 "host_ip": "10.0.0.20",
                 "os_match": "Linux",
                 "service_inventory": [{"port": "22", "protocol": "tcp", "state": "open", "service": "ssh", "service_product": "OpenSSH"}],

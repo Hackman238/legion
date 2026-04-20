@@ -20,6 +20,12 @@ import os
 import logging
 from logging import Logger
 
+# Python 3.12's LogRecord.taskName path calls asyncio.current_task().
+# In this environment that segfaults once sqlalchemy/greenlet are loaded,
+# so disable asyncio task-name capture globally before any records are created.
+if hasattr(logging, "logAsyncioTasks"):
+    logging.logAsyncioTasks = False
+
 cachedAppLogger = None
 cachedStartupLogger = None
 cachedDbLogger = None

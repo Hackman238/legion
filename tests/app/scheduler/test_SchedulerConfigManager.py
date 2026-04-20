@@ -4,6 +4,28 @@ import unittest
 from unittest.mock import patch
 
 
+class _MemorySecretStore:
+    def __init__(self, write_available=True):
+        self.write_enabled = bool(write_available)
+        self.secrets = {}
+
+    def write_available(self):
+        return bool(self.write_enabled)
+
+    def describe(self):
+        return {"backend": "memory", "write_available": bool(self.write_enabled)}
+
+    def get_secret(self, secret_ref, *, env_var=""):
+        return str(self.secrets.get(str(secret_ref or ""), "") or "")
+
+    def set_secret(self, secret_ref, value):
+        self.secrets[str(secret_ref or "")] = str(value or "")
+        return str(secret_ref or "")
+
+    def delete_secret(self, secret_ref):
+        self.secrets.pop(str(secret_ref or ""), None)
+
+
 class SchedulerConfigManagerTest(unittest.TestCase):
     def test_default_config_path_uses_legion_home_override(self):
         from app.scheduler.config import get_default_scheduler_config_path
@@ -21,7 +43,7 @@ class SchedulerConfigManagerTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "scheduler-ai.json")
-            manager = SchedulerConfigManager(config_path=path)
+            manager = SchedulerConfigManager(config_path=path, secret_store=_MemorySecretStore())
 
             defaults = manager.load()
             self.assertEqual("deterministic", defaults["mode"])
@@ -269,6 +291,73 @@ class SchedulerConfigManagerTest(unittest.TestCase):
 
             manager.block_family("abc123", {"tool_id": "hydra", "label": "Hydra"}, reason="out of scope")
             self.assertEqual("blocked", manager.get_family_policy_state("abc123"))
+
+    def test_secure_store_keeps_provider_secrets_out_of_scheduler_json(self):
+        from app.scheduler.config import SchedulerConfigManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "scheduler-ai.json")
+            secret_store = _MemorySecretStore()
+            manager = SchedulerConfigManager(config_path=path, secret_store=secret_store)
+
+            updated = manager.update_preferences({
+                "providers": {
+                    "openai": {
+                        "enabled": True,
+                        "api_key": "sk-test-openai",
+                    }
+                },
+                "integrations": {
+                    "shodan": {
+                        "api_key": "shodan-test-key",
+                    }
+                },
+            })
+
+            self.assertEqual("sk-test-openai", updated["providers"]["openai"]["api_key"])
+            self.assertEqual("shodan-test-key", updated["integrations"]["shodan"]["api_key"])
+            with open(path, "r", encoding="utf-8") as handle:
+                persisted = handle.read()
+            self.assertNotIn("sk-test-openai", persisted)
+            self.assertNotIn("shodan-test-key", persisted)
+            self.assertIn("api_key_secret_ref", persisted)
+            self.assertEqual(
+                "sk-test-openai",
+                secret_store.get_secret("scheduler.providers.openai.api_key"),
+            )
+            self.assertEqual(
+                "shodan-test-key",
+                secret_store.get_secret("scheduler.integrations.shodan.api_key"),
+            )
+
+    def test_load_migrates_plaintext_provider_secret_into_secure_store_when_available(self):
+        from app.scheduler.config import SchedulerConfigManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "scheduler-ai.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "{\n"
+                    '  "provider": "openai",\n'
+                    '  "providers": {\n'
+                    '    "openai": {"enabled": true, "api_key": "legacy-openai-key"}\n'
+                    "  }\n"
+                    "}\n"
+                )
+
+            secret_store = _MemorySecretStore()
+            manager = SchedulerConfigManager(config_path=path, secret_store=secret_store)
+            loaded = manager.load()
+
+            self.assertEqual("legacy-openai-key", loaded["providers"]["openai"]["api_key"])
+            self.assertEqual(
+                "legacy-openai-key",
+                secret_store.get_secret("scheduler.providers.openai.api_key"),
+            )
+            with open(path, "r", encoding="utf-8") as handle:
+                persisted = handle.read()
+            self.assertNotIn("legacy-openai-key", persisted)
+            self.assertIn("api_key_secret_ref", persisted)
 
 
 if __name__ == "__main__":

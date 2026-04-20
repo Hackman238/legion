@@ -1,8 +1,9 @@
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
+from app.core.secret_store import SecretStore, SecretStoreError, build_secret_ref
 from app.device_categories import normalize_custom_device_category_rules
 from app.paths import ensure_legion_home, get_scheduler_config_path
 from app.scheduler.policy_engine import VALID_FAMILY_POLICY_STATES
@@ -64,6 +65,14 @@ DEFAULT_INTEGRATIONS = {
     }
 }
 DEFAULT_DEVICE_CATEGORIES: List[Dict[str, Any]] = []
+
+
+def _provider_secret_ref(provider_name: str) -> str:
+    return build_secret_ref("scheduler", "providers", provider_name, "api_key")
+
+
+def _integration_secret_ref(integration_name: str) -> str:
+    return build_secret_ref("scheduler", "integrations", integration_name, "api_key")
 
 
 def normalize_feature_flags(raw: Any) -> Dict[str, bool]:
@@ -159,6 +168,8 @@ def normalize_integrations(raw: Any) -> Dict[str, Dict[str, str]]:
         cfg = integration_cfg if isinstance(integration_cfg, dict) else {}
         normalized[token] = {
             "api_key": str(cfg.get("api_key", "") or "").strip(),
+            "api_key_secret_ref": str(cfg.get("api_key_secret_ref", "") or "").strip(),
+            "api_key_env_var": str(cfg.get("api_key_env_var", "") or "").strip(),
         }
     return normalized
 
@@ -251,17 +262,19 @@ def get_default_scheduler_config_path() -> str:
 
 
 class SchedulerConfigManager:
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: str = None, secret_store: SecretStore = None):
         self.config_path = config_path or get_default_scheduler_config_path()
+        self.secret_store = secret_store or SecretStore()
         self._cache = None
+        self._legacy_plaintext_secret_refs: Set[str] = set()
+        self._pending_secret_migration = False
 
     def load(self) -> Dict[str, Any]:
         if self._cache is not None:
             return self._cache
 
         if not os.path.exists(self.config_path):
-            self._cache = self._normalize_config(dict(DEFAULT_SCHEDULER_CONFIG))
-            self.save(self._cache)
+            self.save(dict(DEFAULT_SCHEDULER_CONFIG))
             return self._cache
 
         try:
@@ -270,15 +283,17 @@ class SchedulerConfigManager:
         except Exception:
             parsed = dict(DEFAULT_SCHEDULER_CONFIG)
 
-        self._cache = self._normalize_config(parsed)
-        self.save(self._cache)
+        normalized = self._normalize_config(parsed)
+        hydrated = self._hydrate_config_secrets(normalized)
+        self._cache = hydrated
+        if self._pending_secret_migration:
+            self._write_config_file(self._sanitize_config_for_disk(hydrated))
         return self._cache
 
     def save(self, config: Dict[str, Any]):
         normalized = self._normalize_config(config)
-        with open(self.config_path, "w", encoding="utf-8") as handle:
-            json.dump(normalized, handle, indent=2, sort_keys=True)
-        self._cache = normalized
+        self._cache = self._hydrate_config_secrets(normalized)
+        self._write_config_file(self._sanitize_config_for_disk(self._cache))
 
     def merge_preferences(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         current = self.load()
@@ -363,6 +378,124 @@ class SchedulerConfigManager:
             else:
                 merged[key] = value
         return self._normalize_config(merged)
+
+    def secret_storage_status(self) -> Dict[str, Any]:
+        status = dict(self.secret_store.describe())
+        status["legacy_plaintext_secrets_present"] = bool(self._legacy_plaintext_secret_refs)
+        return status
+
+    def _write_config_file(self, config: Dict[str, Any]):
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, indent=2, sort_keys=True)
+
+    def _hydrate_config_secrets(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        hydrated = dict(config)
+        self._legacy_plaintext_secret_refs = set()
+        self._pending_secret_migration = False
+
+        providers = {}
+        for provider_name, provider_cfg in dict(hydrated.get("providers", {}) or {}).items():
+            providers[provider_name] = self._hydrate_secret_entry(
+                provider_cfg,
+                secret_ref=str(provider_cfg.get("api_key_secret_ref", "") or _provider_secret_ref(provider_name)),
+                default_env_var=SecretStore.provider_env_var(provider_name),
+            )
+        hydrated["providers"] = providers
+
+        integrations = {}
+        for integration_name, integration_cfg in dict(hydrated.get("integrations", {}) or {}).items():
+            integrations[integration_name] = self._hydrate_secret_entry(
+                integration_cfg,
+                secret_ref=str(integration_cfg.get("api_key_secret_ref", "") or _integration_secret_ref(integration_name)),
+                default_env_var=SecretStore.integration_env_var(integration_name),
+            )
+        hydrated["integrations"] = integrations
+        return hydrated
+
+    def _hydrate_secret_entry(
+            self,
+            entry: Any,
+            *,
+            secret_ref: str,
+            default_env_var: str = "",
+    ) -> Dict[str, Any]:
+        value = dict(entry or {}) if isinstance(entry, dict) else {}
+        resolved_secret_ref = str(value.get("api_key_secret_ref", "") or secret_ref or "").strip()
+        resolved_env_var = str(value.get("api_key_env_var", "") or default_env_var or "").strip()
+        raw_secret = str(value.get("api_key", "") or "")
+
+        if raw_secret.strip():
+            if self.secret_store.write_available():
+                try:
+                    self.secret_store.set_secret(resolved_secret_ref, raw_secret)
+                    self._pending_secret_migration = True
+                except SecretStoreError:
+                    self._legacy_plaintext_secret_refs.add(resolved_secret_ref)
+            else:
+                self._legacy_plaintext_secret_refs.add(resolved_secret_ref)
+            value["api_key"] = raw_secret
+        else:
+            value["api_key"] = self.secret_store.get_secret(resolved_secret_ref, env_var=resolved_env_var)
+
+        if resolved_secret_ref:
+            value["api_key_secret_ref"] = resolved_secret_ref
+        if resolved_env_var:
+            value["api_key_env_var"] = resolved_env_var
+        return value
+
+    def _sanitize_config_for_disk(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized = dict(config)
+
+        providers = {}
+        for provider_name, provider_cfg in dict(sanitized.get("providers", {}) or {}).items():
+            providers[provider_name] = self._sanitize_secret_entry(
+                provider_cfg,
+                secret_ref=str(provider_cfg.get("api_key_secret_ref", "") or _provider_secret_ref(provider_name)),
+                default_env_var=SecretStore.provider_env_var(provider_name),
+            )
+        sanitized["providers"] = providers
+
+        integrations = {}
+        for integration_name, integration_cfg in dict(sanitized.get("integrations", {}) or {}).items():
+            integrations[integration_name] = self._sanitize_secret_entry(
+                integration_cfg,
+                secret_ref=str(integration_cfg.get("api_key_secret_ref", "") or _integration_secret_ref(integration_name)),
+                default_env_var=SecretStore.integration_env_var(integration_name),
+            )
+        sanitized["integrations"] = integrations
+        return sanitized
+
+    def _sanitize_secret_entry(
+            self,
+            entry: Any,
+            *,
+            secret_ref: str,
+            default_env_var: str = "",
+    ) -> Dict[str, Any]:
+        value = dict(entry or {}) if isinstance(entry, dict) else {}
+        resolved_secret_ref = str(value.get("api_key_secret_ref", "") or secret_ref or "").strip()
+        resolved_env_var = str(value.get("api_key_env_var", "") or default_env_var or "").strip()
+        raw_secret = str(value.get("api_key", "") or "")
+
+        if raw_secret.strip():
+            if self.secret_store.write_available():
+                self.secret_store.set_secret(resolved_secret_ref, raw_secret)
+                self._legacy_plaintext_secret_refs.discard(resolved_secret_ref)
+                value["api_key"] = ""
+            elif resolved_secret_ref in self._legacy_plaintext_secret_refs:
+                value["api_key"] = raw_secret
+            else:
+                raise SecretStoreError(
+                    "Secure secret storage is unavailable. Configure a supported keyring backend or use environment variables."
+                )
+        else:
+            value["api_key"] = ""
+
+        if resolved_secret_ref:
+            value["api_key_secret_ref"] = resolved_secret_ref
+        if resolved_env_var:
+            value["api_key_env_var"] = resolved_env_var
+        return value
 
     def update_preferences(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         normalized = self.merge_preferences(updates)

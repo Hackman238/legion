@@ -75,4 +75,4 @@
   - `credential_bruteforce`
   - `network_flooding`
   - `destructive_write_actions`
-- Provider credentials are stored in plaintext config for now and hardened later.
+- Provider credentials must not remain in plaintext config. Persist only non-secret provider metadata in config and use the local secret store or environment-backed secrets for API keys.
