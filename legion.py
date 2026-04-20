@@ -21,9 +21,16 @@ import re
 import shutil
 import subprocess
 import sys
+import logging
 from typing import Optional
 
 MIN_SUPPORTED_PYTHON = (3, 12)
+
+# Python 3.12's logging task-name capture uses asyncio.current_task().
+# In this environment that segfaults after sqlalchemy/greenlet imports,
+# so disable it before importing Legion modules.
+if hasattr(logging, "logAsyncioTasks"):
+    logging.logAsyncioTasks = False
 
 
 def _coerce_python_version_tuple(version_info=None):

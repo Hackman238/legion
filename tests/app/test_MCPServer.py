@@ -1,5 +1,12 @@
-import asyncio
 import unittest
+
+
+def _drain_coroutine(coro):
+    try:
+        coro.send(None)
+    except StopIteration as stop:
+        return stop.value
+    raise RuntimeError("Coroutine yielded unexpectedly; this test helper only supports synchronous coroutines.")
 
 
 class DummyMCPRuntime:
@@ -129,6 +136,17 @@ class DummyMCPRuntime:
         )
         return {"annotation_id": annotation_id or "annotation-1", "target_ref": target_ref, "body": body}
 
+    def run_governed_discovery(self, target, *, run_actions=False):
+        self.last_calls.append(("run_governed_discovery", str(target), bool(run_actions)))
+        return {
+            "target": str(target),
+            "run_actions": bool(run_actions),
+            "project": dict(self.project),
+            "results": [{"id": 1, "ip": str(target)}],
+            "services": [],
+            "scan": {"targets": [str(target)], "run_actions": bool(run_actions)},
+        }
+
 
 class MCPServerTest(unittest.TestCase):
     def setUp(self):
@@ -147,12 +165,12 @@ class MCPServerTest(unittest.TestCase):
                 "arguments": dict(arguments or {}),
             },
         }
-        response = asyncio.run(self.server.handle_request(request))
+        response = _drain_coroutine(self.server.handle_request(request))
         self.assertNotIn("error", response)
         return response["result"]
 
     def test_list_tools_exposes_phase10_tools(self):
-        response = asyncio.run(self.server.handle_request({
+        response = _drain_coroutine(self.server.handle_request({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "list_tools",
@@ -225,6 +243,12 @@ class MCPServerTest(unittest.TestCase):
             {"target_kind": "node", "target_ref": "graph-node-host", "body": "focus this node"},
         )
         self.assertEqual("focus this node", annotation["annotation"]["body"])
+
+    def test_run_discovery_delegates_to_governed_runtime_path(self):
+        payload = self._call_tool("run_discovery", {"target": "10.0.0.5", "run_actions": True})
+        self.assertEqual("10.0.0.5", payload["target"])
+        self.assertTrue(payload["run_actions"])
+        self.assertIn(("run_governed_discovery", "10.0.0.5", True), self.runtime.last_calls)
 
 
 if __name__ == "__main__":
