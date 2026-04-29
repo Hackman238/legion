@@ -16,26 +16,34 @@ Copyright (c) 2025 Shane William Scott
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 class QtUpdateProgressObserverTest(unittest.TestCase):
-    @patch("ui.ancillaryDialog.ProgressWidget")
-    @patch('utilities.stenoLogging.get_logger')
-    def setUp(self, mockProgressWidget, mockLogging) -> None:
+    def setUp(self) -> None:
         from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
-        self.mockProgressWidget = mockProgressWidget
+
+        self.mockProgressWidget = MagicMock()
         self.qtUpdateProgressObserver = QtUpdateProgressObserver(self.mockProgressWidget)
 
     def test_onStart_callsShowOnProgressWidget(self):
-        self.qtUpdateProgressObserver.onStart()
-        self.mockProgressWidget.show.assert_called_once()
+        with patch("ui.observers.QtUpdateProgressObserver.QtCore.QMetaObject.invokeMethod") as invoke_method:
+            self.qtUpdateProgressObserver.onStart()
+
+        invoke_method.assert_called_once()
+        self.assertEqual(self.mockProgressWidget, invoke_method.call_args.args[0])
+        self.assertEqual("show", invoke_method.call_args.args[1])
 
     def test_onFinished_callsHideOnProgressWidget(self):
-        self.qtUpdateProgressObserver.onFinished()
-        self.mockProgressWidget.hide.assert_called_once()
+        with patch("ui.observers.QtUpdateProgressObserver.QtCore.QMetaObject.invokeMethod") as invoke_method:
+            self.qtUpdateProgressObserver.onFinished()
+
+        invoke_method.assert_called_once()
+        self.assertEqual(self.mockProgressWidget, invoke_method.call_args.args[0])
+        self.assertEqual("hide", invoke_method.call_args.args[1])
 
     def test_onProgressUpdate_callsSetProgressAndShow(self):
         self.qtUpdateProgressObserver.onProgressUpdate(25)
+        self.mockProgressWidget.setText.assert_called_once_with("")
         self.mockProgressWidget.setProgress.assert_called_once_with(25)
         self.mockProgressWidget.show.assert_called_once()

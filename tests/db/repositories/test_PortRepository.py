@@ -17,9 +17,9 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 import unittest
 from unittest import mock
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
-from tests.db.helpers.db_helpers import mockFirstByReturnValue, mockExecuteFetchAll
+from tests.db.helpers.db_helpers import mockExecuteRows
 
 
 class PortRepositoryTest(unittest.TestCase):
@@ -33,22 +33,29 @@ class PortRepositoryTest(unittest.TestCase):
     def test_getPortsByIPAndProtocol_ReturnsPorts(self):
         expected_query = ("SELECT ports.portId FROM portObj AS ports "
                           "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
-                          "WHERE hosts.ip = ? and ports.protocol = ?")
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockFirstByReturnValue(
-            [['port-id1'], ['port-id2']])
+                          "WHERE hosts.ip = :host_ip and ports.protocol = :protocol")
+        query_result = MagicMock()
+        query_result.first.return_value = ("port-id1",)
+        self.mockDbSession.execute.return_value = query_result
         ports = self.repository.getPortsByIPAndProtocol("some_host_ip", "tcp")
 
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expected_query, "some_host_ip", "tcp")
-        self.assertEqual([['port-id1'], ['port-id2']], ports)
+        query, params = self.mockDbSession.execute.call_args.args
+        self.assertEqual(expected_query, str(query))
+        self.assertEqual({"host_ip": "some_host_ip", "protocol": "tcp"}, params)
+        self.assertEqual(("port-id1",), ports)
 
     def test_getPortStatesByHostId_ReturnsPortsStates(self):
-        expected_query = 'SELECT port.state FROM portObj as port WHERE port.hostId = ?'
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll(
-            [['port-state1'], ['port-state2']])
+        expected_query = 'SELECT port.state FROM portObj as port WHERE port.hostId = :host_id'
+        self.mockDbSession.execute.return_value = mockExecuteRows(
+            [('port-state1',), ('port-state2',)],
+            ['state'],
+        )
         port_states = self.repository.getPortStatesByHostId("some_host_id")
 
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expected_query, "some_host_id")
-        self.assertEqual([['port-state1'], ['port-state2']], port_states)
+        query, params = self.mockDbSession.execute.call_args.args
+        self.assertEqual(expected_query, str(query))
+        self.assertEqual({"host_id": "some_host_id"}, params)
+        self.assertEqual([('port-state1',), ('port-state2',)], port_states)
 
     def test_getPortsAndServicesByHostIP_InvokedWithNoFilters_ReturnsPortsAndServices(self):
         from app.auxiliary import Filters
@@ -57,16 +64,18 @@ class PortRepositoryTest(unittest.TestCase):
                           "services.name, services.product, services.version, services.extrainfo, services.fingerprint "
                           "FROM portObj AS ports INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
                           "LEFT OUTER JOIN serviceObj AS services ON services.id = ports.serviceId "
-                          "WHERE hosts.ip = ?")
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll([['ip1'], ['ip2']])
+                          "WHERE hosts.ip = :host_ip")
+        self.mockDbSession.execute.return_value = mockExecuteRows([('ip1',), ('ip2',)], ['ip'])
 
         filters: Filters = Filters()
         filters.apply(up=True, down=True, checked=True, portopen=True, portfiltered=True, portclosed=True,
                       tcp=True, udp=True)
         results = self.repository.getPortsAndServicesByHostIP("some_host_ip", filters)
 
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expected_query, "some_host_ip")
-        self.assertEqual([['ip1'], ['ip2']], results)
+        query, params = self.mockDbSession.execute.call_args.args
+        self.assertEqual(expected_query, str(query))
+        self.assertEqual({"host_ip": "some_host_ip"}, params)
+        self.assertEqual([{'ip': 'ip1'}, {'ip': 'ip2'}], results)
 
     def test_getPortsAndServicesByHostIP_InvokedWithFewFilters_ReturnsPortsAndServices(self):
         from app.auxiliary import Filters
@@ -75,16 +84,18 @@ class PortRepositoryTest(unittest.TestCase):
                           "services.name, services.product, services.version, services.extrainfo, services.fingerprint "
                           "FROM portObj AS ports INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
                           "LEFT OUTER JOIN serviceObj AS services ON services.id = ports.serviceId "
-                          "WHERE hosts.ip = ? AND ports.protocol != 'tcp' AND ports.protocol != 'udp'")
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll([['ip1'], ['ip2']])
+                          "WHERE hosts.ip = :host_ip AND ports.protocol != 'tcp' AND ports.protocol != 'udp'")
+        self.mockDbSession.execute.return_value = mockExecuteRows([('ip1',), ('ip2',)], ['ip'])
 
         filters: Filters = Filters()
         filters.apply(up=True, down=True, checked=True, portopen=True, portfiltered=True, portclosed=True,
                       tcp=False, udp=False)
         results = self.repository.getPortsAndServicesByHostIP("some_host_ip", filters)
 
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expected_query, "some_host_ip")
-        self.assertEqual([['ip1'], ['ip2']], results)
+        query, params = self.mockDbSession.execute.call_args.args
+        self.assertEqual(expected_query, str(query))
+        self.assertEqual({"host_ip": "some_host_ip"}, params)
+        self.assertEqual([{'ip': 'ip1'}, {'ip': 'ip2'}], results)
 
     def test_deleteAllPortsAndScriptsByHostId_WhenProvidedByHostIDAndProtocol_DeletesAllPortsAndScripts(self):
         mockFilterHost = mockProtocolFilter = mockReturnAll = MagicMock()

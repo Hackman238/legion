@@ -30,8 +30,7 @@ class QtUpdateProgressObserver(AbstractUpdateProgressObserver):
     def onFinished(self) -> None:
         QtCore.QMetaObject.invokeMethod(self.progressWidget, "hide", QtCore.Qt.ConnectionType.QueuedConnection)
 
-    def onProgressUpdate(self, progress: int, title: str) -> None:
-        print(f"[DEBUG] QtUpdateProgressObserver.onProgressUpdate called: progress={progress}, title={title}")
+    def onProgressUpdate(self, progress: int, title: str = "") -> None:
         # Directly call setText and setProgress, as ProgressWidget is not a QObject with registered slots
         self.progressWidget.setText(title)
         self.progressWidget.setProgress(progress)

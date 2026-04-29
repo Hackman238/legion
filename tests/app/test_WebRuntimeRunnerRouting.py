@@ -183,6 +183,46 @@ class WebRuntimeRunnerRoutingTest(unittest.TestCase):
             reason="approved for operator execution",
         )
 
+    @patch("app.web.runtime.update_scheduler_decision_for_approval")
+    @patch("app.web.runtime.update_pending_approval")
+    @patch("app.web.runtime.get_pending_approval")
+    @patch("app.web.runtime.ensure_scheduler_approval_table")
+    def test_approve_scheduler_approval_returns_existing_execution_job(
+            self,
+            _mock_ensure,
+            mock_get_pending,
+            mock_update_pending,
+            mock_update_decision,
+    ):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        database = object()
+        runtime._require_active_project = lambda: SimpleNamespace(database=database)
+        runtime._start_job = MagicMock()
+        runtime._apply_family_policy_action = MagicMock(return_value="")
+        runtime.jobs = SimpleNamespace(
+            get_job=MagicMock(return_value={"id": 99, "type": "scheduler-approval-execute", "status": "queued"})
+        )
+        mock_get_pending.return_value = {
+            "id": 77,
+            "status": "approved",
+            "execution_job_id": "99",
+            "tool_id": "nuclei-web",
+            "command_template": "nuclei -u http://10.0.0.5",
+            "family_policy_state": "",
+        }
+
+        result = WebRuntime.approve_scheduler_approval(runtime, 77)
+
+        self.assertEqual(99, result["job"]["id"])
+        self.assertEqual("queued", result["job"]["status"])
+        runtime._start_job.assert_not_called()
+        runtime._apply_family_policy_action.assert_not_called()
+        mock_update_pending.assert_not_called()
+        mock_update_decision.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

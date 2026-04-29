@@ -4,6 +4,7 @@ Shared helpers for choosing hostname-vs-IP targets for commands and URLs.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import socket
 from functools import lru_cache
@@ -75,6 +76,27 @@ def choose_preferred_command_host(hostname: str, ip: str, command_template: str)
     return choose_preferred_host(hostname, ip, prefer_unresolved_hostname=True)
 
 
+def _normalized_ip_token(value: str) -> str:
+    token = str(value or "").strip()
+    if token.startswith("[") and token.endswith("]"):
+        token = token[1:-1]
+    if "%" in token and ":" in token:
+        token = token.split("%", 1)[0]
+    if not token:
+        return ""
+    try:
+        return str(ipaddress.ip_address(token))
+    except ValueError:
+        return token.lower()
+
+
+def _resolved_addresses_include_ip(addresses: Tuple[str, ...], ip: str) -> bool:
+    expected = _normalized_ip_token(ip)
+    if not expected:
+        return False
+    return any(_normalized_ip_token(address) == expected for address in addresses)
+
+
 def choose_preferred_web_scheme(service_name: str) -> str:
     token = str(service_name or "").strip().rstrip("?").lower()
     if token in _TLS_WEB_SERVICE_IDS:
@@ -114,4 +136,14 @@ def apply_preferred_target_placeholders(
 
 
 def choose_preferred_screenshot_host(hostname: str, ip: str) -> str:
-    return choose_preferred_host(hostname, ip, prefer_unresolved_hostname=True)
+    ip_text = str(ip or "").strip()
+    candidate = normalize_hostname_alias(hostname)
+    if not candidate or is_unknown_hostname(candidate):
+        return ip_text or candidate
+
+    resolved_addresses = resolve_hostname_addresses(candidate)
+    if not resolved_addresses:
+        return ip_text or candidate
+    if not ip_text or _resolved_addresses_include_ip(resolved_addresses, ip_text):
+        return candidate
+    return ip_text or candidate

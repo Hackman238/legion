@@ -267,6 +267,7 @@ class SchedulerConfigManager:
         self.secret_store = secret_store or SecretStore()
         self._cache = None
         self._legacy_plaintext_secret_refs: Set[str] = set()
+        self._legacy_plaintext_secret_values: Dict[str, str] = {}
         self._pending_secret_migration = False
 
     def load(self) -> Dict[str, Any]:
@@ -284,7 +285,7 @@ class SchedulerConfigManager:
             parsed = dict(DEFAULT_SCHEDULER_CONFIG)
 
         normalized = self._normalize_config(parsed)
-        hydrated = self._hydrate_config_secrets(normalized)
+        hydrated = self._hydrate_config_secrets(normalized, allow_plaintext_fallback=True)
         self._cache = hydrated
         if self._pending_secret_migration:
             self._write_config_file(self._sanitize_config_for_disk(hydrated))
@@ -292,7 +293,7 @@ class SchedulerConfigManager:
 
     def save(self, config: Dict[str, Any]):
         normalized = self._normalize_config(config)
-        self._cache = self._hydrate_config_secrets(normalized)
+        self._cache = self._hydrate_config_secrets(normalized, allow_plaintext_fallback=False)
         self._write_config_file(self._sanitize_config_for_disk(self._cache))
 
     def merge_preferences(self, updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -388,9 +389,16 @@ class SchedulerConfigManager:
         with open(self.config_path, "w", encoding="utf-8") as handle:
             json.dump(config, handle, indent=2, sort_keys=True)
 
-    def _hydrate_config_secrets(self, config: Dict[str, Any]) -> Dict[str, Any]:
+    def _hydrate_config_secrets(
+            self,
+            config: Dict[str, Any],
+            *,
+            allow_plaintext_fallback: bool,
+    ) -> Dict[str, Any]:
         hydrated = dict(config)
+        previous_legacy_secret_values = dict(self._legacy_plaintext_secret_values)
         self._legacy_plaintext_secret_refs = set()
+        self._legacy_plaintext_secret_values = {}
         self._pending_secret_migration = False
 
         providers = {}
@@ -399,6 +407,8 @@ class SchedulerConfigManager:
                 provider_cfg,
                 secret_ref=str(provider_cfg.get("api_key_secret_ref", "") or _provider_secret_ref(provider_name)),
                 default_env_var=SecretStore.provider_env_var(provider_name),
+                allow_plaintext_fallback=allow_plaintext_fallback,
+                previous_legacy_secret_values=previous_legacy_secret_values,
             )
         hydrated["providers"] = providers
 
@@ -408,6 +418,8 @@ class SchedulerConfigManager:
                 integration_cfg,
                 secret_ref=str(integration_cfg.get("api_key_secret_ref", "") or _integration_secret_ref(integration_name)),
                 default_env_var=SecretStore.integration_env_var(integration_name),
+                allow_plaintext_fallback=allow_plaintext_fallback,
+                previous_legacy_secret_values=previous_legacy_secret_values,
             )
         hydrated["integrations"] = integrations
         return hydrated
@@ -418,6 +430,8 @@ class SchedulerConfigManager:
             *,
             secret_ref: str,
             default_env_var: str = "",
+            allow_plaintext_fallback: bool,
+            previous_legacy_secret_values: Dict[str, str],
     ) -> Dict[str, Any]:
         value = dict(entry or {}) if isinstance(entry, dict) else {}
         resolved_secret_ref = str(value.get("api_key_secret_ref", "") or secret_ref or "").strip()
@@ -430,9 +444,22 @@ class SchedulerConfigManager:
                     self.secret_store.set_secret(resolved_secret_ref, raw_secret)
                     self._pending_secret_migration = True
                 except SecretStoreError:
+                    if not allow_plaintext_fallback:
+                        raise
                     self._legacy_plaintext_secret_refs.add(resolved_secret_ref)
+                    self._legacy_plaintext_secret_values[resolved_secret_ref] = raw_secret
             else:
+                legacy_value = str(previous_legacy_secret_values.get(resolved_secret_ref, "") or "")
+                preserve_existing_legacy = bool(
+                    resolved_secret_ref in previous_legacy_secret_values
+                    and raw_secret == legacy_value
+                )
+                if not allow_plaintext_fallback and not preserve_existing_legacy:
+                    raise SecretStoreError(
+                        "Secure secret storage is unavailable. Configure a supported keyring backend or use environment variables."
+                    )
                 self._legacy_plaintext_secret_refs.add(resolved_secret_ref)
+                self._legacy_plaintext_secret_values[resolved_secret_ref] = raw_secret
             value["api_key"] = raw_secret
         else:
             value["api_key"] = self.secret_store.get_secret(resolved_secret_ref, env_var=resolved_env_var)

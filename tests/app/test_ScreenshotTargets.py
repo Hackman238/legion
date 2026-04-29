@@ -29,14 +29,40 @@ class ScreenshotTargetSelectionTest(unittest.TestCase):
         self.assertEqual("203.0.113.11", actual)
 
     @patch("app.screenshot_targets.socket.getaddrinfo", side_effect=socket.gaierror("nope"))
-    def test_choose_preferred_screenshot_host_prefers_fqdn_even_when_resolution_is_unavailable(self, _mock_getaddrinfo):
+    def test_choose_preferred_screenshot_host_falls_back_to_ip_when_hostname_does_not_resolve(self, _mock_getaddrinfo):
         from app.screenshot_targets import choose_preferred_screenshot_host, resolve_hostname_addresses
 
         resolve_hostname_addresses.cache_clear()
 
         actual = choose_preferred_screenshot_host("portal.example", "203.0.113.11")
 
+        self.assertEqual("203.0.113.11", actual)
+
+    @patch("app.screenshot_targets.socket.getaddrinfo")
+    def test_choose_preferred_screenshot_host_prefers_hostname_when_it_resolves_to_host_ip(self, mock_getaddrinfo):
+        from app.screenshot_targets import choose_preferred_screenshot_host, resolve_hostname_addresses
+
+        resolve_hostname_addresses.cache_clear()
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.11", 0)),
+        ]
+
+        actual = choose_preferred_screenshot_host("portal.example", "203.0.113.11")
+
         self.assertEqual("portal.example", actual)
+
+    @patch("app.screenshot_targets.socket.getaddrinfo")
+    def test_choose_preferred_screenshot_host_falls_back_to_ip_when_hostname_resolves_elsewhere(self, mock_getaddrinfo):
+        from app.screenshot_targets import choose_preferred_screenshot_host, resolve_hostname_addresses
+
+        resolve_hostname_addresses.cache_clear()
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.99", 0)),
+        ]
+
+        actual = choose_preferred_screenshot_host("portal.example", "203.0.113.11")
+
+        self.assertEqual("203.0.113.11", actual)
 
     def test_choose_preferred_host_falls_back_to_ip_for_unknown_hostname(self):
         from app.screenshot_targets import choose_preferred_host

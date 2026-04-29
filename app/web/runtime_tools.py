@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import os
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
+from app.scheduler.planner import SchedulerPlanner
 from app.scheduler.risk import classify_command_danger
+from app.screenshot_targets import apply_preferred_target_placeholders
+from app.settings import AppSettings, Settings
+from app.timing import getTimestamp
 
 _SCHEDULER_ONLY_LABELS = {
     "screenshooter": "Capture web screenshot",
@@ -64,6 +69,151 @@ def _is_supported_tool(tool_id: str) -> bool:
     if normalized_tool in _SUPPORTED_WORKSPACE_TOOL_IDS:
         return True
     return any(normalized_tool.startswith(prefix) for prefix in _SUPPORTED_WORKSPACE_TOOL_PREFIXES)
+
+
+def get_settings(runtime) -> Settings:
+    return runtime.settings
+
+
+def find_port_action(settings: Settings, tool_id: str):
+    for action in settings.portActions:
+        if str(action[1]) == str(tool_id):
+            return action
+    return None
+
+
+def find_command_template_for_tool(runtime, settings: Settings, tool_id: str) -> str:
+    action = find_port_action(settings, tool_id)
+    if not action:
+        return ""
+    return str(action[2])
+
+
+def runner_type_for_tool(runtime, tool_id: str, command_template: str = "") -> str:
+    normalized_tool = str(tool_id or "").strip().lower()
+    if not normalized_tool and not str(command_template or "").strip():
+        return "local"
+    try:
+        registry = SchedulerPlanner.build_action_registry(runtime._get_settings(), dangerous_categories=[])
+        spec = registry.get_by_tool_id(normalized_tool)
+        if spec is not None and str(getattr(spec, "runner_type", "") or "").strip():
+            return str(spec.runner_type).strip().lower()
+    except Exception:
+        pass
+    if normalized_tool in {"screenshooter", "x11screen"}:
+        return "browser"
+    if normalized_tool in {"responder", "ntlmrelayx"}:
+        return "manual"
+    text = " ".join([normalized_tool, str(command_template or "")]).lower()
+    if any(token in text for token in ("manual", "operator", "clipboard")):
+        return "manual"
+    return "local"
+
+
+def runner_type_for_approval_item(runtime, item: Optional[Dict[str, Any]]) -> str:
+    payload = item if isinstance(item, dict) else {}
+    return runner_type_for_tool(
+        runtime,
+        str(payload.get("tool_id", "") or ""),
+        str(payload.get("command_template", "") or ""),
+    )
+
+
+def tool_run_stats(project) -> Dict[str, Dict[str, Any]]:
+    session = project.database.session()
+    try:
+        result = session.execute(text(
+            "SELECT p.name, COUNT(*) AS run_count, MAX(p.id) AS max_id "
+            "FROM process AS p GROUP BY p.name"
+        ))
+        rows = result.fetchall()
+        stats = {}
+        for name, run_count, max_id in rows:
+            name_key = str(name or "")
+            last_status = ""
+            last_start = ""
+            if max_id:
+                detail = session.execute(text(
+                    "SELECT status, startTime FROM process WHERE id = :id LIMIT 1"
+                ), {"id": int(max_id)}).fetchone()
+                if detail:
+                    last_status = str(detail[0] or "")
+                    last_start = str(detail[1] or "")
+            stats[name_key] = {
+                "run_count": int(run_count or 0),
+                "last_status": last_status,
+                "last_start": last_start,
+            }
+        return stats
+    except Exception:
+        return {}
+    finally:
+        session.close()
+
+
+def build_command(
+        runtime,
+        template: str,
+        host_ip: str,
+        port: str,
+        protocol: str,
+        tool_id: str,
+        service_name: str = "",
+):
+    project = runtime._require_active_project()
+    running_folder = project.properties.runningFolder
+    outputfile = os.path.join(running_folder, f"{getTimestamp()}-{tool_id}-{host_ip}-{port}")
+    outputfile = os.path.normpath(outputfile).replace("\\", "/")
+
+    command = str(template or "")
+    normalized_tool = str(tool_id or "").strip().lower()
+    scheduler_config = getattr(runtime, "scheduler_config", None)
+    if scheduler_config is not None and hasattr(scheduler_config, "load"):
+        scheduler_preferences = scheduler_config.load()
+    else:
+        scheduler_preferences = {}
+    resolved_service_name = str(service_name or "").strip() or runtime._service_name_for_target(host_ip, port, protocol)
+    if normalized_tool == "banner":
+        command = AppSettings._ensure_banner_command(command)
+    if normalized_tool == "nuclei-web":
+        command = AppSettings._ensure_nuclei_auto_scan(command)
+    elif "nuclei" in normalized_tool or "nuclei" in str(command).lower():
+        command = AppSettings._ensure_nuclei_command(command, automatic_scan=False)
+    if str(tool_id or "").strip().lower() == "web-content-discovery":
+        command = AppSettings._ensure_web_content_discovery_command(command)
+    if normalized_tool == "httpx":
+        command = AppSettings._ensure_httpx_command(command)
+    if normalized_tool == "nikto":
+        command = AppSettings._ensure_nikto_command(command)
+    if normalized_tool == "wpscan":
+        command = AppSettings._ensure_wpscan_command(command)
+    if "wapiti" in str(command).lower():
+        normalized_tool = str(tool_id or "").strip().lower()
+        scheme = "https" if "https-wapiti" in normalized_tool else "http"
+        command = AppSettings._ensure_wapiti_command(command, scheme=scheme)
+    command = AppSettings._canonicalize_web_target_placeholders(command)
+    if "nmap" in str(command).lower():
+        command = AppSettings._ensure_nmap_stats_every(command)
+    hostname = runtime._hostname_for_ip(host_ip)
+    command, target_host = apply_preferred_target_placeholders(
+        command,
+        hostname=hostname,
+        ip=str(host_ip),
+        port=str(port),
+        output=outputfile,
+        service_name=resolved_service_name,
+        extra_placeholders=runtime._scheduler_command_placeholders(
+            host_ip=str(host_ip),
+            hostname=hostname,
+            preferences=scheduler_preferences,
+        ),
+    )
+    command = AppSettings._collapse_redundant_fallbacks(command)
+    command = AppSettings._ensure_nmap_hostname_target_support(command, target_host)
+    command = AppSettings._ensure_nmap_output_argument(command, outputfile)
+    if "nmap" in command and str(protocol).lower() == "udp":
+        command = command.replace("-sV", "-sVU")
+    return command, outputfile
 
 
 def start_tool_run_job(

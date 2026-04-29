@@ -16,6 +16,7 @@ from app.web.routes_projects import projects_bp
 from app.web.routes_runtime import runtime_bp
 from app.web.routes_scans import scans_bp
 from app.web.routes_scheduler import scheduler_bp
+from app.web.routes_settings import settings_bp
 from app.web.routes_workspace import workspace_bp
 from app.web.ws import register_websocket_routes
 
@@ -49,6 +50,7 @@ def create_app(runtime: "WebRuntime") -> Flask:
 
     app.register_blueprint(web_bp)
     app.register_blueprint(runtime_bp)
+    app.register_blueprint(settings_bp)
     app.register_blueprint(projects_bp)
     app.register_blueprint(scans_bp)
     app.register_blueprint(workspace_bp)

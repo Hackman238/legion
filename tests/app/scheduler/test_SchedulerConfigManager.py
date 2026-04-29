@@ -359,6 +359,68 @@ class SchedulerConfigManagerTest(unittest.TestCase):
             self.assertNotIn("legacy-openai-key", persisted)
             self.assertIn("api_key_secret_ref", persisted)
 
+    def test_unavailable_secret_store_rejects_new_plaintext_provider_secret(self):
+        from app.core.secret_store import SecretStoreError
+        from app.scheduler.config import SchedulerConfigManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "scheduler-ai.json")
+            manager = SchedulerConfigManager(
+                config_path=path,
+                secret_store=_MemorySecretStore(write_available=False),
+            )
+            manager.load()
+
+            with self.assertRaises(SecretStoreError):
+                manager.update_preferences({
+                    "providers": {
+                        "openai": {
+                            "enabled": True,
+                            "api_key": "new-openai-key",
+                        }
+                    }
+                })
+
+            with open(path, "r", encoding="utf-8") as handle:
+                persisted = handle.read()
+            self.assertNotIn("new-openai-key", persisted)
+
+    def test_unavailable_secret_store_rejects_changed_legacy_plaintext_secret(self):
+        from app.core.secret_store import SecretStoreError
+        from app.scheduler.config import SchedulerConfigManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "scheduler-ai.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "{\n"
+                    '  "provider": "openai",\n'
+                    '  "providers": {\n'
+                    '    "openai": {"enabled": true, "api_key": "legacy-openai-key"}\n'
+                    "  }\n"
+                    "}\n"
+                )
+
+            manager = SchedulerConfigManager(
+                config_path=path,
+                secret_store=_MemorySecretStore(write_available=False),
+            )
+            loaded = manager.load()
+            self.assertEqual("legacy-openai-key", loaded["providers"]["openai"]["api_key"])
+            self.assertTrue(manager.secret_storage_status()["legacy_plaintext_secrets_present"])
+
+            updated = manager.update_preferences({"max_concurrency": 2})
+            self.assertEqual(2, int(updated["max_concurrency"]))
+
+            with self.assertRaises(SecretStoreError):
+                manager.update_preferences({
+                    "providers": {
+                        "openai": {
+                            "api_key": "changed-openai-key",
+                        }
+                    }
+                })
+
 
 if __name__ == "__main__":
     unittest.main()

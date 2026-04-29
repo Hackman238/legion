@@ -228,8 +228,8 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         repo = _DummyProcessRepo()
         runtime = self._make_runtime(repo)
 
-        with patch("app.web.runtime._PROCESS_READER_EXIT_GRACE_SECONDS", 0.0):
-            with patch("app.web.runtime.subprocess.Popen", return_value=_ExitedProc()):
+        with patch("app.web.runtime_execution._PROCESS_READER_EXIT_GRACE_SECONDS", 0.0):
+            with patch("app.web.runtime_execution.subprocess.Popen", return_value=_ExitedProc()):
                 executed, reason, process_id = WebRuntime._run_command_with_tracking(
                     runtime,
                     tool_name="test-tool",
@@ -279,7 +279,7 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         repo = _DummyProcessRepo()
         runtime = self._make_runtime(repo)
 
-        with patch("app.web.runtime.subprocess.Popen", return_value=_ExitCodeProc(2)):
+        with patch("app.web.runtime_execution.subprocess.Popen", return_value=_ExitCodeProc(2)):
             executed, reason, process_id = WebRuntime._run_command_with_tracking(
                 runtime,
                 tool_name="test-tool",
@@ -304,7 +304,7 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         repo = _DummyProcessRepo()
         runtime = self._make_runtime(repo)
 
-        with patch("app.web.runtime.subprocess.Popen", return_value=_ExitCodeProc(1)):
+        with patch("app.web.runtime_execution.subprocess.Popen", return_value=_ExitCodeProc(1)):
             executed, reason, process_id = WebRuntime._run_command_with_tracking(
                 runtime,
                 tool_name="nikto",
@@ -330,9 +330,9 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         runtime = self._make_runtime(repo)
         monotonic_values = iter([100.0, 106.2, 106.2])
 
-        with patch("app.web.runtime.subprocess.Popen", return_value=_ExitCodeProc(139)):
-            with patch("app.web.runtime.time.monotonic", side_effect=lambda: next(monotonic_values)):
-                with patch("app.web.runtime.time.sleep", return_value=None):
+        with patch("app.web.runtime_execution.subprocess.Popen", return_value=_ExitCodeProc(139)):
+            with patch("app.web.runtime_execution.time.monotonic", side_effect=lambda: next(monotonic_values)):
+                with patch("app.web.runtime_execution.time.sleep", return_value=None):
                     executed, reason, process_id = WebRuntime._run_command_with_tracking(
                         runtime,
                         tool_name="test-tool",
@@ -365,9 +365,9 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
             pid=65010,
         )
 
-        with patch("app.web.runtime.subprocess.Popen", return_value=proc):
-            with patch("app.web.runtime.time.monotonic", side_effect=clock.monotonic):
-                with patch("app.web.runtime.time.sleep", side_effect=clock.sleep):
+        with patch("app.web.runtime_execution.subprocess.Popen", return_value=proc):
+            with patch("app.web.runtime_execution.time.monotonic", side_effect=clock.monotonic):
+                with patch("app.web.runtime_execution.time.sleep", side_effect=clock.sleep):
                     executed, reason, process_id = WebRuntime._run_command_with_tracking(
                         runtime,
                         tool_name="test-tool",
@@ -401,10 +401,10 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
             pid=65011,
         )
 
-        with patch("app.web.runtime._PROCESS_READER_EXIT_GRACE_SECONDS", 0.0):
-            with patch("app.web.runtime.subprocess.Popen", return_value=proc):
-                with patch("app.web.runtime.time.monotonic", side_effect=clock.monotonic):
-                    with patch("app.web.runtime.time.sleep", side_effect=clock.sleep):
+        with patch("app.web.runtime_execution._PROCESS_READER_EXIT_GRACE_SECONDS", 0.0):
+            with patch("app.web.runtime_execution.subprocess.Popen", return_value=proc):
+                with patch("app.web.runtime_execution.time.monotonic", side_effect=clock.monotonic):
+                    with patch("app.web.runtime_execution.time.sleep", side_effect=clock.sleep):
                         executed, reason, process_id = WebRuntime._run_command_with_tracking(
                             runtime,
                             tool_name="test-tool",
@@ -444,9 +444,9 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
             pid=65012,
         )
 
-        with patch("app.web.runtime.subprocess.Popen", return_value=proc):
-            with patch("app.web.runtime.time.monotonic", side_effect=clock.monotonic):
-                with patch("app.web.runtime.time.sleep", side_effect=clock.sleep):
+        with patch("app.web.runtime_execution.subprocess.Popen", return_value=proc):
+            with patch("app.web.runtime_execution.time.monotonic", side_effect=clock.monotonic):
+                with patch("app.web.runtime_execution.time.sleep", side_effect=clock.sleep):
                     executed, reason, process_id = WebRuntime._run_command_with_tracking(
                         runtime,
                         tool_name="nikto",
@@ -491,9 +491,9 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
 
         runtime._sample_process_tree_activity = activity_sample
 
-        with patch("app.web.runtime.subprocess.Popen", return_value=proc):
-            with patch("app.web.runtime.time.monotonic", side_effect=clock.monotonic):
-                with patch("app.web.runtime.time.sleep", side_effect=clock.sleep):
+        with patch("app.web.runtime_execution.subprocess.Popen", return_value=proc):
+            with patch("app.web.runtime_execution.time.monotonic", side_effect=clock.monotonic):
+                with patch("app.web.runtime_execution.time.sleep", side_effect=clock.sleep):
                     executed, reason, process_id = WebRuntime._run_command_with_tracking(
                         runtime,
                         tool_name="nikto",

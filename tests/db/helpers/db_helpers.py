@@ -7,6 +7,13 @@ def mockExecuteFetchAll(return_value):
     return mock_db_execute
 
 
+def mockExecuteRows(rows, keys):
+    mock_db_execute = MagicMock()
+    mock_db_execute.fetchall.return_value = rows
+    mock_db_execute.keys.return_value = keys
+    return mock_db_execute
+
+
 def mockExecuteAll(return_value):
     mock_db_execute = MagicMock()
     mock_db_execute.all.return_value = return_value

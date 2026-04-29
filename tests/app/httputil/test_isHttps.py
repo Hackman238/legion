@@ -16,7 +16,8 @@ Copyright (c) 2025 Shane William Scott
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 import unittest
-from unittest.mock import patch, MagicMock
+import urllib.request
+from unittest.mock import MagicMock, patch
 from urllib.error import URLError
 
 

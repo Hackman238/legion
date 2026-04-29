@@ -198,8 +198,8 @@ class WorkspaceService:
     def get_host_workspace(self, host_id: int) -> Dict[str, Any]:
         return self.runtime.get_host_workspace(int(host_id))
 
-    def get_host_target_state(self, host_id: int) -> Dict[str, Any]:
-        return self.runtime.get_target_state_view(host_id=int(host_id))
+    def get_host_target_state(self, host_id: int, limit: int = 500) -> Dict[str, Any]:
+        return self.runtime.get_target_state_view(host_id=int(host_id), limit=int(limit or 500))
 
     def list_findings(self, args) -> Dict[str, Any]:
         query = WorkspaceFindingsQuery.from_args(args)

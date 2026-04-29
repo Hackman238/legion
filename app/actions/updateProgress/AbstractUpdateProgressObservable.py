@@ -22,7 +22,7 @@ from app.actions.AbstractObservable import AbstractObservable
 
 class AbstractUpdateProgressObservable(AbstractObservable):
     @abstractmethod
-    def updateProgress(self, progress):
+    def updateProgress(self, progress, title=""):
         pass
 
     @abstractmethod

@@ -287,7 +287,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             runtime._run_command_with_tracking = fake_run_command_with_tracking
             runtime.get_process_output = lambda *_args, **_kwargs: {"output": ""}
 
-            with mock.patch("app.web.runtime.rebuild_evidence_graph"):
+            with mock.patch("app.web.runtime_scan_discovery.rebuild_evidence_graph"):
                 result = runtime._run_httpx_bootstrap(["api.example.com"], job_id=0)
 
             port_rows = project.repositoryContainer.portRepository.getPortsByHostId(host_id)
@@ -542,8 +542,8 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             },
         }
 
-        with mock.patch("app.web.runtime.ensure_scheduler_ai_state_table"), \
-                mock.patch("app.web.runtime.get_host_ai_state", return_value=ai_row):
+        with mock.patch("app.web.runtime_scheduler_target_state.ensure_scheduler_ai_state_table"), \
+                mock.patch("app.web.runtime_scheduler_target_state.get_host_ai_state", return_value=ai_row):
             loaded = runtime._load_host_ai_analysis(project, 11, "10.0.0.5")
 
         self.assertEqual("openai", loaded["provider"])
@@ -998,9 +998,9 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             "raw": {},
         }
 
-        with mock.patch("app.web.runtime.ensure_scheduler_ai_state_table"), \
-                mock.patch("app.web.runtime.get_host_ai_state", return_value=existing_state), \
-                mock.patch("app.web.runtime.upsert_host_ai_state") as upsert_host_state:
+        with mock.patch("app.web.runtime_scheduler_ai_state.ensure_scheduler_ai_state_table"), \
+                mock.patch("app.web.runtime_scheduler_ai_state.get_host_ai_state", return_value=existing_state), \
+                mock.patch("app.web.runtime_scheduler_ai_state.upsert_host_ai_state") as upsert_host_state:
             runtime._persist_scheduler_ai_analysis(
                 host_id=11,
                 host_ip="10.0.0.5",

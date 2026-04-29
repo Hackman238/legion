@@ -1,123 +1,44 @@
-import datetime
 import ipaddress
-import json
-import mimetypes
-import os
 import re
-import shlex
-import signal
 import sqlite3
 import subprocess
 import sys
 import threading
-import time
 import zipfile
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy import text
 
-from app.hostsfile import add_temporary_host_alias, registrable_root_domain
-from app.httputil.isHttps import isHttps
-from app.nmap_enrichment import (
-    infer_hostname_from_nmap_data,
-    infer_os_from_service_inventory,
-    infer_os_from_nmap_scripts,
-    is_unknown_hostname,
-    is_unknown_os_match,
-)
 from app.scheduler.approvals import (
     ensure_scheduler_approval_table,
     get_pending_approval,
-    list_pending_approvals,
-    queue_pending_approval,
     update_pending_approval,
 )
 from app.scheduler.audit import (
-    ensure_scheduler_audit_table,
-    log_scheduler_decision,
     update_scheduler_decision_for_approval,
 )
-from app.scheduler.execution import (
-    ensure_scheduler_execution_table,
-    get_execution_record,
-    list_execution_records,
-    store_execution_record,
-)
-from app.scheduler.graph import rebuild_evidence_graph
 from app.scheduler.models import ExecutionRecord
-from app.scheduler.orchestrator import SchedulerDecisionDisposition, SchedulerOrchestrator
-from app.scheduler.policy import (
-    ensure_scheduler_engagement_policy_table,
-    get_project_engagement_policy,
-    list_engagement_presets,
-    normalize_engagement_policy,
-    preset_from_legacy_goal_profile,
-    upsert_project_engagement_policy,
-)
-from app.scheduler.runners import (
-    RunnerExecutionRequest,
-    RunnerExecutionResult,
-    execute_runner_request,
-    normalize_runner_settings,
-)
-from app.scheduler.insights import (
-    delete_host_ai_state,
-    ensure_scheduler_ai_state_table,
-    get_host_ai_state,
-    upsert_host_ai_state,
-)
-from app.scheduler.state import (
-    build_artifact_entries,
-    build_target_urls,
-    ensure_scheduler_target_state_table,
-    get_target_state,
-    upsert_target_state,
-)
-from app.scheduler.scan_history import list_scan_submissions
-from app.screenshot_metadata import (
-    build_screenshot_state_row,
-    load_screenshot_metadata,
-)
-from app.scheduler.config import (
-    SchedulerConfigManager,
-    normalize_device_categories,
-)
+from app.scheduler.orchestrator import SchedulerOrchestrator
+from app.scheduler.config import SchedulerConfigManager
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
-from app.scheduler.providers import (
-    determine_scheduler_phase,
-    get_provider_logs,
-    reflect_on_scheduler_progress,
-    test_provider_connection,
-)
-from app.screenshot_targets import (
-    apply_preferred_target_placeholders,
-)
 from app.settings import AppSettings, Settings
-from app.timing import getTimestamp
-from app.tooling import (
-    audit_legion_tools,
-    build_tool_install_plan,
-    detect_supported_tool_install_platform,
-    execute_tool_install_plan,
-    normalize_tool_install_platform,
-    tool_audit_summary,
-)
 from app.web import runtime_artifacts as web_runtime_artifacts
 from app.web import runtime_credential_capture as web_runtime_credential_capture
 from app.web import runtime_execution as web_runtime_execution
 from app.web import runtime_graph as web_runtime_graph
+from app.web import runtime_jobs as web_runtime_jobs
 from app.web import runtime_processes as web_runtime_processes
 from app.web import runtime_projects as web_runtime_projects
 from app.web import runtime_reports as web_runtime_reports
 from app.web import runtime_scheduler as web_runtime_scheduler
+from app.web import runtime_scheduler_state as web_runtime_scheduler_state
 from app.web import runtime_scans as web_runtime_scans
 from app.web import runtime_screenshots as web_runtime_screenshots
+from app.web import runtime_settings as web_runtime_settings
 from app.web import runtime_status as web_runtime_status
 from app.web import runtime_tools as web_runtime_tools
 from app.web import runtime_workspace as web_runtime_workspace
 from app.web.jobs import WebJobManager
-from db.entities.host import hostObj
 
 
 _NMAP_PROGRESS_PERCENT_RE = re.compile(r"About\s+([0-9]+(?:\.[0-9]+)?)%\s+done", flags=re.IGNORECASE)
@@ -133,126 +54,8 @@ _NUCLEI_PROGRESS_REQUESTS_RE = re.compile(
 _NUCLEI_PROGRESS_RPS_RE = re.compile(r"RPS:\s*([0-9]+(?:\.[0-9]+)?)", flags=re.IGNORECASE)
 _NUCLEI_PROGRESS_MATCHED_RE = re.compile(r"Matched:\s*([0-9]+)", flags=re.IGNORECASE)
 _NUCLEI_PROGRESS_ERRORS_RE = re.compile(r"Errors:\s*([0-9]+)", flags=re.IGNORECASE)
-_CPE22_TOKEN_RE = re.compile(r"\bcpe:/[aho]:[a-z0-9._:-]+\b", flags=re.IGNORECASE)
-_CPE23_TOKEN_RE = re.compile(r"\bcpe:2\.3:[aho]:[a-z0-9._:-]+\b", flags=re.IGNORECASE)
-_CVE_TOKEN_RE = re.compile(r"\bcve-\d{4}-\d+\b", flags=re.IGNORECASE)
-_TECH_VERSION_RE = re.compile(r"\b(\d+(?:[._-][0-9a-z]+){0,4})\b", flags=re.IGNORECASE)
-_REFERENCE_ONLY_FINDING_RE = re.compile(
-    r"^(?:https?://|//|bid:\d+\s+cve:cve-\d{4}-\d+|cve:cve-\d{4}-\d+)",
-    flags=re.IGNORECASE,
-)
-_MISSING_NSE_SCRIPT_RE = re.compile(
-    r"'([a-z][a-z0-9_.-]+\.nse)'\s+did not match a category, filename, or directory",
-    flags=re.IGNORECASE,
-)
-_PYTHON_TOOL_IMPORT_FAILURE_RE = re.compile(
-    r"(?:^|\n)\s*(?:modulenotfounderror|importerror):",
-    flags=re.IGNORECASE,
-)
-_SCHEDULER_METHOD_PATH_RE = re.compile(
-    r"\b(?:get|post|head|options|put|delete|patch)\b[^\n]{0,96}\s/[a-z0-9._~!$&'()*+,;=:@%/\-?]*",
-    flags=re.IGNORECASE,
-)
-_SCHEDULER_STATUS_PATH_RE = re.compile(
-    r"\b\d{3}\b[^\n]{0,48}\s/[a-z0-9._~!$&'()*+,;=:@%/\-?]*",
-    flags=re.IGNORECASE,
-)
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_IPV4_LIKE_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
-_TECH_CPE_HINTS = (
-    (("jetty",), "Jetty", "cpe:/a:eclipse:jetty"),
-    (("traccar",), "Traccar", "cpe:/a:traccar:traccar"),
-    (("pi-hole", "pihole", "pi.hole"), "Pi-hole", ""),
-    (("openssh",), "OpenSSH", "cpe:/a:openbsd:openssh"),
-    (("nginx",), "nginx", "cpe:/a:nginx:nginx"),
-    (("apache http server", "apache httpd"), "Apache HTTP Server", "cpe:/a:apache:http_server"),
-    (("apache",), "Apache HTTP Server", "cpe:/a:apache:http_server"),
-    (("microsoft-iis", "microsoft iis", " iis "), "Microsoft IIS", "cpe:/a:microsoft:iis"),
-    (("node.js", "nodejs", "node js"), "Node.js", "cpe:/a:nodejs:node.js"),
-    (("php",), "PHP", "cpe:/a:php:php"),
-)
-_WEAK_TECH_NAME_TOKENS = {
-    "domain",
-    "webdav",
-    "commplex-link",
-    "rfe",
-    "filemaker",
-    "avt-profile-1",
-    "airport-admin",
-    "surfpass",
-    "jtnetd-server",
-    "mmcc",
-    "ida-agent",
-    "rlm-admin",
-    "sip",
-    "sip-tls",
-    "onscreen",
-    "biotic",
-    "admd",
-    "admdog",
-    "admeng",
-    "barracuda-bbs",
-    "targus-getdata",
-    "3exmp",
-    "xmpp-client",
-    "hp-server",
-    "hp-status",
-}
-_TECH_STRONG_EVIDENCE_MARKERS = (
-    "ssh banner",
-    "service ",
-    "whatweb",
-    "http-title",
-    "ssl-cert",
-    "nuclei",
-    "nmap",
-    "fingerprint",
-    "output cpe",
-    "server header",
-)
-_PSEUDO_TECH_NAME_TOKENS = {
-    "cache-control",
-    "content-language",
-    "content-security-policy",
-    "content-type",
-    "etag",
-    "referrer-policy",
-    "strict-transport-security",
-    "uncommonheaders",
-    "vary",
-    "x-content-type-options",
-    "x-frame-options",
-    "x-powered-by",
-    "x-xss-protection",
-    "true",
-    "false",
-    "truncated",
-}
-_GENERIC_TECH_NAME_TOKENS = {
-    "unknown",
-    "generic",
-    "service",
-    "tcpwrapped",
-    "http",
-    "https",
-    "ssl",
-    "ssh",
-    "smtp",
-    "imap",
-    "pop3",
-    "domain",
-    "msrpc",
-    "rpc",
-    "vmrdp",
-    "rdp",
-    "vnc",
-}
-_DIG_DEEPER_MAX_RUNTIME_SECONDS = 900
-_DIG_DEEPER_MAX_TOTAL_ACTIONS = 24
-_DIG_DEEPER_TASK_TIMEOUT_SECONDS = 180
 _PROCESS_READER_EXIT_GRACE_SECONDS = 2.0
 _PROCESS_CRASH_MIN_RUNTIME_SECONDS = 5.0
-_AI_HOST_UPDATE_MIN_CONFIDENCE = 70.0
 
 
 def _get_requests_module():
@@ -320,74 +123,21 @@ class WebRuntime:
         self._autosave_last_error = ""
 
     def _emit_ui_invalidation(self, *channels: str, throttle_seconds: float = 0.0):
-        normalized = sorted({str(item or "").strip() for item in channels if str(item or "").strip()})
-        if not normalized:
-            return
-        key = ",".join(normalized)
-        with self._ui_event_condition:
-            now = time.monotonic()
-            if float(throttle_seconds or 0.0) > 0.0:
-                last_emitted = float(self._ui_last_emit_monotonic.get(key, 0.0) or 0.0)
-                if (now - last_emitted) < float(throttle_seconds):
-                    return
-            self._ui_last_emit_monotonic[key] = now
-            self._ui_event_seq += 1
-            self._ui_events.append({
-                "type": "invalidate",
-                "seq": int(self._ui_event_seq),
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "channels": normalized,
-            })
-            if len(self._ui_events) > 256:
-                self._ui_events = self._ui_events[-256:]
-            self._ui_event_condition.notify_all()
+        return web_runtime_jobs.emit_ui_invalidation(
+            self,
+            *channels,
+            throttle_seconds=throttle_seconds,
+        )
 
     def wait_for_ui_event(self, after_seq: int = 0, timeout_seconds: float = 30.0) -> Dict[str, Any]:
-        cursor = max(0, int(after_seq or 0))
-        timeout_value = max(0.0, float(timeout_seconds or 0.0))
-        deadline = time.monotonic() + timeout_value if timeout_value > 0 else None
-        with self._ui_event_condition:
-            while True:
-                pending = [item for item in self._ui_events if int(item.get("seq", 0) or 0) > cursor]
-                if pending:
-                    channels = sorted({
-                        str(channel or "").strip()
-                        for item in pending
-                        for channel in list(item.get("channels", []) or [])
-                        if str(channel or "").strip()
-                    })
-                    return {
-                        "type": "invalidate",
-                        "seq": max(int(item.get("seq", 0) or 0) for item in pending),
-                        "channels": channels,
-                    }
-                if deadline is None:
-                    self._ui_event_condition.wait()
-                    continue
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return {"type": "heartbeat", "seq": cursor, "channels": []}
-                self._ui_event_condition.wait(remaining)
+        return web_runtime_jobs.wait_for_ui_event(
+            self,
+            after_seq=after_seq,
+            timeout_seconds=timeout_seconds,
+        )
 
     def _handle_job_change(self, job: Dict[str, Any], event_name: str):
-        channels = {"jobs", "overview"}
-        job_type = str(job.get("type", "") or "").strip().lower()
-        if job_type in {
-            "nmap-scan",
-            "import-nmap-xml",
-            "scheduler-run",
-            "scheduler-approval-execute",
-            "scheduler-dig-deeper",
-            "tool-run",
-            "process-retry",
-            "credential-capture-session",
-        }:
-            channels.add("processes")
-        if job_type in {"credential-capture-session"}:
-            channels.add("credential_capture")
-        if job_type in {"nmap-scan", "import-nmap-xml", "project-restore-zip"}:
-            channels.update({"scan_history", "hosts", "services", "graph"})
-        self._emit_ui_invalidation(*sorted(channels))
+        return web_runtime_jobs.handle_job_change(self, job, event_name)
 
     def get_workspace_overview(self) -> Dict[str, Any]:
         return web_runtime_workspace.get_workspace_overview(self)
@@ -807,41 +557,11 @@ class WebRuntime:
         return web_runtime_projects.get_project_details(self)
 
     def get_tool_audit(self) -> Dict[str, Any]:
-        settings = getattr(self, "settings", None)
-        if settings is None:
-            settings = Settings(AppSettings())
-        entries = audit_legion_tools(settings)
-        return {
-            "summary": tool_audit_summary(entries),
-            "tools": [entry.to_dict() for entry in entries],
-            "supported_platforms": ["kali", "ubuntu"],
-            "recommended_platform": detect_supported_tool_install_platform(),
-        }
+        return web_runtime_settings.get_tool_audit(self)
 
     @staticmethod
     def _tool_audit_availability(entries: Any) -> Dict[str, List[str]]:
-        available = set()
-        unavailable = set()
-        for item in list(entries or []):
-            status = ""
-            key = ""
-            if isinstance(item, dict):
-                key = str(item.get("key", "") or "").strip().lower()
-                status = str(item.get("status", "") or "").strip().lower()
-            else:
-                key = str(getattr(item, "key", "") or "").strip().lower()
-                status = str(getattr(item, "status", "") or "").strip().lower()
-            if not key:
-                continue
-            if status == "installed":
-                available.add(key)
-            elif status in {"missing", "configured-missing"}:
-                unavailable.add(key)
-        unavailable.difference_update(available)
-        return {
-            "available_tool_ids": sorted(available),
-            "unavailable_tool_ids": sorted(unavailable),
-        }
+        return web_runtime_settings.tool_audit_availability(entries)
 
     def _scheduler_tool_audit_snapshot(self) -> Dict[str, List[str]]:
         return web_runtime_scheduler.scheduler_tool_audit_snapshot(self)
@@ -853,12 +573,8 @@ class WebRuntime:
             scope: str = "missing",
             tool_keys: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        settings = getattr(self, "settings", None)
-        if settings is None:
-            settings = Settings(AppSettings())
-        entries = audit_legion_tools(settings)
-        return build_tool_install_plan(
-            entries,
+        return web_runtime_settings.get_tool_install_plan(
+            self,
             platform=platform,
             scope=scope,
             tool_keys=tool_keys,
@@ -873,23 +589,14 @@ class WebRuntime:
             queue_front: bool = False,
             exclusive: bool = False,
     ) -> Dict[str, Any]:
-        if not callable(runner_with_job_id):
-            raise ValueError("runner_with_job_id must be callable.")
-
-        job_ref = {"id": 0}
-
-        def _wrapped_runner():
-            return runner_with_job_id(int(job_ref.get("id", 0) or 0)) or {}
-
-        job = self.jobs.start(
-            str(job_type),
-            _wrapped_runner,
-            payload=dict(payload or {}),
-            queue_front=bool(queue_front),
-            exclusive=bool(exclusive),
+        return web_runtime_jobs.start_job(
+            self,
+            job_type,
+            runner_with_job_id,
+            payload=payload,
+            queue_front=queue_front,
+            exclusive=exclusive,
         )
-        job_ref["id"] = int(job.get("id", 0) or 0)
-        return job
 
     def start_tool_install_job(
             self,
@@ -898,23 +605,11 @@ class WebRuntime:
             scope: str = "missing",
             tool_keys: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        normalized_platform = normalize_tool_install_platform(platform)
-        normalized_scope = str(scope or "missing").strip().lower() or "missing"
-        normalized_keys = [str(item or "").strip() for item in list(tool_keys or []) if str(item or "").strip()]
-        payload = {
-            "platform": normalized_platform,
-            "scope": normalized_scope,
-            "tool_keys": normalized_keys,
-        }
-        return self._start_job(
-            "tool-install",
-            lambda job_id: self._run_tool_install_job(
-                platform=normalized_platform,
-                scope=normalized_scope,
-                tool_keys=normalized_keys,
-                job_id=int(job_id or 0),
-            ),
-            payload=payload,
+        return web_runtime_settings.start_tool_install_job(
+            self,
+            platform=platform,
+            scope=scope,
+            tool_keys=tool_keys,
         )
 
     def _run_tool_install_job(
@@ -925,11 +620,12 @@ class WebRuntime:
             tool_keys: Optional[List[str]] = None,
             job_id: int = 0,
     ) -> Dict[str, Any]:
-        plan = self.get_tool_install_plan(platform=platform, scope=scope, tool_keys=tool_keys)
-        resolved_job_id = int(job_id or 0)
-        return execute_tool_install_plan(
-            plan,
-            is_cancel_requested=(lambda: self.jobs.is_cancel_requested(resolved_job_id)) if resolved_job_id > 0 else None,
+        return web_runtime_settings.run_tool_install_job(
+            self,
+            platform=platform,
+            scope=scope,
+            tool_keys=tool_keys,
+            job_id=job_id,
         )
 
     def _register_job_process(self, job_id: int, process_id: int):
@@ -1045,12 +741,11 @@ class WebRuntime:
             *,
             engagement_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        options = dict(scan_options or {})
-        preset = str((engagement_policy or {}).get("preset", "") or "").strip().lower()
-        if preset == "internal_quick_recon":
-            options["explicit_ports"] = cls.INTERNAL_QUICK_RECON_TCP_PORTS
-            options["top_ports"] = 0
-        return options
+        return web_runtime_scans.apply_engagement_scan_profile(
+            cls,
+            scan_options,
+            engagement_policy=engagement_policy,
+        )
 
     @staticmethod
     def _preferred_capture_interface_sort_key(item: Dict[str, Any]) -> Tuple[int, str]:
@@ -1156,22 +851,7 @@ class WebRuntime:
         )
 
     def _find_active_job(self, *, job_type: str, host_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        for job in self.jobs.list_jobs(limit=200):
-            if str(job.get("type", "")).strip() != str(job_type or "").strip():
-                continue
-            status = str(job.get("status", "")).strip().lower()
-            if status not in {"queued", "running"}:
-                continue
-            if host_id is None:
-                return job
-            payload = job.get("payload", {}) if isinstance(job.get("payload", {}), dict) else {}
-            try:
-                payload_host_id = int(payload.get("host_id", 0) or 0)
-            except (TypeError, ValueError):
-                payload_host_id = 0
-            if payload_host_id == int(host_id):
-                return job
-        return None
+        return web_runtime_jobs.find_active_job(self, job_type=job_type, host_id=host_id)
 
     def start_tool_run_job(
             self,
@@ -1341,21 +1021,7 @@ class WebRuntime:
 
     @staticmethod
     def _normalize_project_report_headers(headers: Any) -> Dict[str, str]:
-        source = headers
-        if isinstance(source, str):
-            try:
-                source = json.loads(source)
-            except Exception:
-                source = {}
-        if not isinstance(source, dict):
-            return {}
-        normalized = {}
-        for name, value in source.items():
-            key = str(name or "").strip()
-            if not key:
-                continue
-            normalized[key] = str(value or "")
-        return normalized
+        return web_runtime_scheduler.normalize_project_report_headers(headers)
 
     def update_host_note(self, host_id: int, text_value: str) -> Dict[str, Any]:
         return web_runtime_workspace.update_host_note(self, host_id, text_value)
@@ -1725,12 +1391,7 @@ class WebRuntime:
 
     @staticmethod
     def _job_worker_count(preferences: Optional[Dict[str, Any]] = None) -> int:
-        source = preferences if isinstance(preferences, dict) else {}
-        try:
-            value = int(source.get("max_concurrency", 1))
-        except (TypeError, ValueError):
-            value = 1
-        return max(1, min(value, 8))
+        return web_runtime_scheduler.job_worker_count(preferences)
 
     @staticmethod
     def _scheduler_max_concurrency(preferences: Optional[Dict[str, Any]] = None) -> int:
@@ -1746,61 +1407,7 @@ class WebRuntime:
 
     @staticmethod
     def _project_report_delivery_config(preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        source = preferences if isinstance(preferences, dict) else {}
-        raw = source.get("project_report_delivery", {})
-        defaults = {
-            "provider_name": "",
-            "endpoint": "",
-            "method": "POST",
-            "format": "json",
-            "headers": {},
-            "timeout_seconds": 30,
-            "mtls": {
-                "enabled": False,
-                "client_cert_path": "",
-                "client_key_path": "",
-                "ca_cert_path": "",
-            },
-        }
-        if isinstance(raw, dict):
-            defaults.update(raw)
-
-        headers = WebRuntime._normalize_project_report_headers(defaults.get("headers", {}))
-
-        method = str(defaults.get("method", "POST") or "POST").strip().upper()
-        if method not in {"POST", "PUT", "PATCH"}:
-            method = "POST"
-
-        report_format = str(defaults.get("format", "json") or "json").strip().lower()
-        if report_format in {"markdown"}:
-            report_format = "md"
-        if report_format not in {"json", "md"}:
-            report_format = "json"
-
-        try:
-            timeout_seconds = int(defaults.get("timeout_seconds", 30))
-        except (TypeError, ValueError):
-            timeout_seconds = 30
-        timeout_seconds = max(5, min(timeout_seconds, 300))
-
-        mtls_raw = defaults.get("mtls", {})
-        if not isinstance(mtls_raw, dict):
-            mtls_raw = {}
-
-        return {
-            "provider_name": str(defaults.get("provider_name", "") or ""),
-            "endpoint": str(defaults.get("endpoint", "") or ""),
-            "method": method,
-            "format": report_format,
-            "headers": headers,
-            "timeout_seconds": int(timeout_seconds),
-            "mtls": {
-                "enabled": bool(mtls_raw.get("enabled", False)),
-                "client_cert_path": str(mtls_raw.get("client_cert_path", "") or ""),
-                "client_key_path": str(mtls_raw.get("client_key_path", "") or ""),
-                "ca_cert_path": str(mtls_raw.get("ca_cert_path", "") or ""),
-            },
-        }
+        return web_runtime_scheduler.project_report_delivery_config(preferences)
 
     def _execute_scheduler_task_batch(self, tasks: List[Dict[str, Any]], max_concurrency: int) -> List[Dict[str, Any]]:
         return web_runtime_scheduler.execute_scheduler_task_batch(
@@ -1821,157 +1428,22 @@ class WebRuntime:
         return web_runtime_scheduler.is_host_scoped_scheduler_tool(tool_id)
 
     def _existing_attempt_summary_for_target(self, host_id: int, host_ip: str, port: str, protocol: str) -> Dict[str, set]:
-        attempted = {
-            "tool_ids": set(),
-            "family_ids": set(),
-            "command_signatures": set(),
-        }
-        with self._lock:
-            project = getattr(self.logic, "activeProject", None)
-            if not project:
-                return attempted
-
-            self._ensure_scheduler_approval_store()
-            self._ensure_scheduler_table()
-            session = project.database.session()
-            try:
-                scripts_result = session.execute(text(
-                    "SELECT COALESCE(s.scriptId, '') AS script_id "
-                    "FROM l1ScriptObj AS s "
-                    "LEFT JOIN portObj AS p ON p.id = s.portId "
-                    "WHERE s.hostId = :host_id "
-                    "AND s.portId IS NOT NULL "
-                    "AND COALESCE(p.portId, '') = :port "
-                    "AND LOWER(COALESCE(p.protocol, '')) = LOWER(:protocol) "
-                    "ORDER BY s.id DESC LIMIT 100"
-                ), {
-                    "host_id": int(host_id or 0),
-                    "port": str(port or ""),
-                    "protocol": str(protocol or "tcp"),
-                })
-                for row in scripts_result.fetchall():
-                    tool = str(row[0] or "").strip().lower()
-                    if tool:
-                        attempted["tool_ids"].add(tool)
-
-                target_state = get_target_state(project.database, int(host_id or 0)) or {}
-                for item in list(target_state.get("attempted_actions", []) or []):
-                    if not isinstance(item, dict):
-                        continue
-                    tool = str(item.get("tool_id", "") or "").strip().lower()
-                    if not (
-                            self._target_attempt_matches(item, port, protocol)
-                            or self._is_host_scoped_scheduler_tool(tool)
-                    ):
-                        continue
-                    family_id = str(item.get("family_id", "") or "").strip().lower()
-                    command_signature = str(item.get("command_signature", "") or "").strip().lower()
-                    if tool:
-                        attempted["tool_ids"].add(tool)
-                    if family_id:
-                        attempted["family_ids"].add(family_id)
-                    if command_signature:
-                        attempted["command_signatures"].add(command_signature)
-
-                process_result = session.execute(text(
-                    "SELECT COALESCE(p.name, '') AS tool_id, "
-                    "COALESCE(p.command, '') AS command_text "
-                    "FROM process AS p "
-                    "WHERE COALESCE(p.hostIp, '') = :host_ip "
-                    "AND COALESCE(p.port, '') = :port "
-                    "AND LOWER(COALESCE(p.protocol, '')) = LOWER(:protocol) "
-                    "ORDER BY p.id DESC LIMIT 160"
-                ), {
-                    "host_ip": str(host_ip or ""),
-                    "port": str(port or ""),
-                    "protocol": str(protocol or "tcp"),
-                })
-                for row in process_result.fetchall():
-                    tool = str(row[0] or "").strip().lower()
-                    command_text = str(row[1] or "")
-                    if tool:
-                        attempted["tool_ids"].add(tool)
-                    command_signature = self._command_signature_for_target(command_text, protocol)
-                    if command_signature:
-                        attempted["command_signatures"].add(str(command_signature).strip().lower())
-
-                if str(host_ip or "").strip():
-                    host_process_result = session.execute(text(
-                        "SELECT COALESCE(p.name, '') AS tool_id, "
-                        "COALESCE(p.command, '') AS command_text "
-                        "FROM process AS p "
-                        "WHERE COALESCE(p.hostIp, '') = :host_ip "
-                        "ORDER BY p.id DESC LIMIT 200"
-                    ), {
-                        "host_ip": str(host_ip or ""),
-                    })
-                    for row in host_process_result.fetchall():
-                        tool = str(row[0] or "").strip().lower()
-                        if not self._is_host_scoped_scheduler_tool(tool):
-                            continue
-                        attempted["tool_ids"].add(tool)
-                        command_signature = self._command_signature_for_target(str(row[1] or ""), protocol)
-                        if command_signature:
-                            attempted["command_signatures"].add(str(command_signature).strip().lower())
-
-                approval_result = session.execute(text(
-                    "SELECT COALESCE(tool_id, '') AS tool_id, "
-                    "COALESCE(command_template, '') AS command_template, "
-                    "COALESCE(command_family_id, '') AS command_family_id "
-                    "FROM scheduler_pending_approval "
-                    "WHERE COALESCE(host_ip, '') = :host_ip "
-                    "AND COALESCE(port, '') = :port "
-                    "AND LOWER(COALESCE(protocol, '')) = LOWER(:protocol) "
-                    "AND LOWER(COALESCE(status, '')) IN ('pending', 'approved', 'running', 'executed') "
-                    "ORDER BY id DESC LIMIT 100"
-                ), {
-                    "host_ip": str(host_ip or ""),
-                    "port": str(port or ""),
-                    "protocol": str(protocol or "tcp"),
-                })
-                for row in approval_result.fetchall():
-                    tool = str(row[0] or "").strip().lower()
-                    command_template = str(row[1] or "")
-                    family_id = str(row[2] or "").strip().lower()
-                    if tool:
-                        attempted["tool_ids"].add(tool)
-                    if family_id:
-                        attempted["family_ids"].add(family_id)
-                    command_signature = self._command_signature_for_target(command_template, protocol)
-                    if command_signature:
-                        attempted["command_signatures"].add(str(command_signature).strip().lower())
-
-                if str(host_ip or "").strip():
-                    host_approval_result = session.execute(text(
-                        "SELECT COALESCE(tool_id, '') AS tool_id, "
-                        "COALESCE(command_template, '') AS command_template, "
-                        "COALESCE(command_family_id, '') AS command_family_id "
-                        "FROM scheduler_pending_approval "
-                        "WHERE COALESCE(host_ip, '') = :host_ip "
-                        "AND LOWER(COALESCE(status, '')) IN ('pending', 'approved', 'running', 'executed') "
-                        "ORDER BY id DESC LIMIT 120"
-                    ), {
-                        "host_ip": str(host_ip or ""),
-                    })
-                    for row in host_approval_result.fetchall():
-                        tool = str(row[0] or "").strip().lower()
-                        if not self._is_host_scoped_scheduler_tool(tool):
-                            continue
-                        command_template = str(row[1] or "")
-                        family_id = str(row[2] or "").strip().lower()
-                        attempted["tool_ids"].add(tool)
-                        if family_id:
-                            attempted["family_ids"].add(family_id)
-                        command_signature = self._command_signature_for_target(command_template, protocol)
-                        if command_signature:
-                            attempted["command_signatures"].add(str(command_signature).strip().lower())
-            finally:
-                session.close()
-        return attempted
+        return web_runtime_scheduler_state.existing_attempt_summary_for_target(
+            self,
+            host_id,
+            host_ip,
+            port,
+            protocol,
+        )
 
     def _existing_tool_attempts_for_target(self, host_id: int, host_ip: str, port: str, protocol: str) -> set:
-        summary = self._existing_attempt_summary_for_target(host_id, host_ip, port, protocol)
-        return set(summary.get("tool_ids", set()) or set())
+        return web_runtime_scheduler_state.existing_tool_attempts_for_target(
+            self,
+            host_id,
+            host_ip,
+            port,
+            protocol,
+        )
 
     def _build_scheduler_target_context(
             self,
@@ -2148,81 +1620,27 @@ class WebRuntime:
 
     @staticmethod
     def _ai_confidence_value(value: Any) -> float:
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return 0.0
-        return max(0.0, min(parsed, 100.0))
+        return web_runtime_scheduler_state.ai_confidence_value(value)
 
     @staticmethod
     def _sanitize_ai_hostname(value: Any) -> str:
-        raw = str(value or "").strip()
-        if not raw:
-            return ""
-        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "", raw)
-        if len(cleaned) < 2:
-            return ""
-        return cleaned[:160]
+        return web_runtime_scheduler_state.sanitize_ai_hostname(value)
 
     @staticmethod
     def _extract_cpe_tokens(value: Any, limit: int = 8) -> List[str]:
-        text_value = str(value or "").strip()
-        if not text_value:
-            return []
-        found = []
-        seen = set()
-        for pattern in (_CPE22_TOKEN_RE, _CPE23_TOKEN_RE):
-            for match in pattern.findall(text_value):
-                token = str(match or "").strip().lower()
-                if not token or token in seen:
-                    continue
-                seen.add(token)
-                found.append(token[:220])
-                if len(found) >= int(limit):
-                    return found
-        return found
+        return web_runtime_scheduler_state.extract_cpe_tokens(value, limit=limit)
 
     @staticmethod
     def _extract_version_token(value: Any) -> str:
-        text_value = str(value or "").strip()
-        if not text_value:
-            return ""
-        match = _TECH_VERSION_RE.search(text_value)
-        if not match:
-            return ""
-        return WebRuntime._sanitize_technology_version(match.group(1))
+        return web_runtime_scheduler_state.extract_version_token(value)
 
     @staticmethod
     def _is_ipv4_like(value: Any) -> bool:
-        token = str(value or "").strip()
-        if not token or not _IPV4_LIKE_RE.match(token):
-            return False
-        try:
-            return all(0 <= int(part) <= 255 for part in token.split("."))
-        except Exception:
-            return False
+        return web_runtime_scheduler_state.is_ipv4_like(value)
 
     @staticmethod
     def _sanitize_technology_version(value: Any) -> str:
-        token = str(value or "").strip().strip("[](){};,")
-        if not token:
-            return ""
-        if len(token) > 80:
-            token = token[:80]
-        lowered = token.lower()
-        if lowered in {"unknown", "generic", "none", "n/a", "na", "-", "*"}:
-            return ""
-        if re.fullmatch(r"0+", lowered):
-            return ""
-        if re.fullmatch(r"0+[a-z]{1,2}", lowered):
-            return ""
-        if WebRuntime._is_ipv4_like(token):
-            return ""
-        if "/" in token and not re.search(r"\d", token):
-            return ""
-        if not re.search(r"[0-9]", token):
-            return ""
-        return token
+        return web_runtime_scheduler_state.sanitize_technology_version(value)
 
     @staticmethod
     def _sanitize_technology_version_for_tech(
@@ -2232,155 +1650,53 @@ class WebRuntime:
             cpe: Any = "",
             evidence: Any = "",
     ) -> str:
-        cleaned = WebRuntime._sanitize_technology_version(version)
-        if not cleaned:
-            return ""
-        lowered_name = re.sub(r"[^a-z0-9]+", " ", str(name or "").strip().lower()).strip()
-        cpe_base = WebRuntime._cpe_base(cpe)
-        evidence_text = str(evidence or "").strip().lower()
-        major_match = re.match(r"^(\d+)", cleaned)
-        major = int(major_match.group(1)) if major_match else None
-
-        if major is not None:
-            if lowered_name in {"apache", "apache http server"} or "cpe:/a:apache:http_server" in cpe_base:
-                if major > 3:
-                    return ""
-            if lowered_name == "nginx" or "cpe:/a:nginx:nginx" in cpe_base:
-                if major > 2:
-                    return ""
-            if lowered_name == "php" or "cpe:/a:php:php" in cpe_base:
-                if major < 3:
-                    return ""
-
-        if (
-                re.fullmatch(r"[78]\.\d{2}", cleaned)
-                and any(marker in evidence_text for marker in ("nmap", ".nse", "output fingerprint", "service fingerprint"))
-        ):
-            return ""
-        return cleaned
+        return web_runtime_scheduler_state.sanitize_technology_version_for_tech(
+            name=name,
+            version=version,
+            cpe=cpe,
+            evidence=evidence,
+        )
 
     @staticmethod
     def _technology_hint_source_text(source_id: Any, output_text: Any) -> str:
-        return WebRuntime._observation_text_for_analysis(source_id, output_text)
+        return web_runtime_scheduler_state.technology_hint_source_text(
+            source_id,
+            output_text,
+            strip_nmap_preamble_fn=web_runtime_workspace.strip_nmap_preamble,
+        )
 
     @staticmethod
     def _observation_text_for_analysis(source_id: Any, output_text: Any) -> str:
-        cleaned = _ANSI_ESCAPE_RE.sub("", str(output_text or ""))
-        if not cleaned.strip():
-            return ""
-        source_token = str(source_id or "").strip().lower()
-        lowered = cleaned.lower()
-        if (
-                "nmap" in source_token
-                or "nse" in source_token
-                or "starting nmap" in lowered
-                or "nmap done:" in lowered
-        ):
-            cleaned = WebRuntime._strip_nmap_preamble(cleaned)
-        return cleaned.strip()
+        return web_runtime_scheduler_state.observation_text_for_analysis(
+            source_id,
+            output_text,
+            strip_nmap_preamble_fn=web_runtime_workspace.strip_nmap_preamble,
+        )
 
     @staticmethod
     def _cve_evidence_lines(source_id: Any, output_text: Any, limit: int = 24) -> List[Tuple[str, str]]:
-        cleaned = WebRuntime._observation_text_for_analysis(source_id, output_text)
-        if not cleaned:
-            return []
-        rows: List[Tuple[str, str]] = []
-        seen = set()
-        for raw_line in cleaned.splitlines():
-            line = _ANSI_ESCAPE_RE.sub("", str(raw_line or "")).strip()
-            if not line:
-                continue
-            lowered = line.lower()
-            if lowered.startswith(("stats:", "initiating ", "completed ", "discovered open port ")):
-                continue
-            if "nmap.org" in lowered:
-                continue
-            for match in _CVE_TOKEN_RE.findall(line):
-                cve_id = str(match or "").strip().upper()
-                if not cve_id:
-                    continue
-                key = (cve_id, line.lower())
-                if key in seen:
-                    continue
-                seen.add(key)
-                rows.append((cve_id, line))
-                if len(rows) >= int(limit):
-                    return rows
-        return rows
+        return web_runtime_scheduler_state.cve_evidence_lines(
+            source_id,
+            output_text,
+            limit=limit,
+            strip_nmap_preamble_fn=web_runtime_workspace.strip_nmap_preamble,
+        )
 
     @staticmethod
     def _extract_version_near_tokens(value: Any, tokens: Any) -> str:
-        text_value = str(value or "")
-        if not text_value:
-            return ""
-        for raw_token in list(tokens or []):
-            token = str(raw_token or "").strip().lower()
-            if not token:
-                continue
-            token_pattern = re.escape(token)
-            direct_match = re.search(
-                rf"{token_pattern}(?:[^a-z0-9]{{0,24}})(?:version\s*)?v?(\d+(?:[._-][0-9a-z]+)+|\d+[a-z]+\d*)",
-                text_value,
-                flags=re.IGNORECASE,
-            )
-            if direct_match:
-                version = WebRuntime._sanitize_technology_version(direct_match.group(1))
-                if version:
-                    return version
-
-            lowered = text_value.lower()
-            search_at = lowered.find(token)
-            while search_at >= 0:
-                window = text_value[search_at: search_at + 160]
-                version = WebRuntime._extract_version_token(window)
-                if version and (("." in version) or bool(re.search(r"[a-z]", version, flags=re.IGNORECASE))):
-                    return version
-                search_at = lowered.find(token, search_at + len(token))
-        return ""
+        return web_runtime_scheduler_state.extract_version_near_tokens(value, tokens)
 
     @staticmethod
     def _normalize_cpe_token(value: Any) -> str:
-        token = str(value or "").strip().lower()[:220]
-        if not token:
-            return ""
-        if token.startswith("cpe:/"):
-            parts = token.split(":")
-            if len(parts) >= 5:
-                version = WebRuntime._sanitize_technology_version(parts[4])
-                if version:
-                    parts[4] = version.lower()
-                    return ":".join(parts)
-                return ":".join(parts[:4])
-            return token
-        if token.startswith("cpe:2.3:"):
-            parts = token.split(":")
-            if len(parts) >= 6:
-                version = WebRuntime._sanitize_technology_version(parts[5])
-                if version:
-                    parts[5] = version.lower()
-                else:
-                    parts[5] = "*"
-                return ":".join(parts)
-            return token
-        return token
+        return web_runtime_scheduler_state.normalize_cpe_token(value)
 
     @staticmethod
     def _cpe_base(value: Any) -> str:
-        token = WebRuntime._normalize_cpe_token(value)
-        if token.startswith("cpe:/"):
-            parts = token.split(":")
-            return ":".join(parts[:4]) if len(parts) >= 4 else token
-        if token.startswith("cpe:2.3:"):
-            parts = token.split(":")
-            return ":".join(parts[:5]) if len(parts) >= 5 else token
-        return token
+        return web_runtime_scheduler_state.cpe_base(value)
 
     @staticmethod
     def _is_weak_technology_name(value: Any) -> bool:
-        token = str(value or "").strip().lower()
-        if not token:
-            return False
-        return token in _WEAK_TECH_NAME_TOKENS or token in _GENERIC_TECH_NAME_TOKENS
+        return web_runtime_scheduler_state.is_weak_technology_name(value)
 
     @staticmethod
     def _is_placeholder_scheduler_text(value: Any) -> bool:
@@ -2388,115 +1704,32 @@ class WebRuntime:
 
     @staticmethod
     def _technology_canonical_key(name: Any, cpe: Any) -> str:
-        normalized_name = re.sub(r"[^a-z0-9]+", " ", str(name or "").strip().lower()).strip()
-        cpe_base = WebRuntime._cpe_base(cpe)
-        if normalized_name:
-            return f"name:{normalized_name}"
-        if cpe_base:
-            return f"cpe:{cpe_base}"
-        return ""
+        return web_runtime_scheduler_state.technology_canonical_key(name, cpe)
 
     @staticmethod
     def _technology_quality_score(*, name: Any, version: Any, cpe: Any, evidence: Any) -> int:
-        score = 0
-        tech_name = str(name or "").strip().lower()
-        tech_version = WebRuntime._sanitize_technology_version(version)
-        tech_cpe = WebRuntime._normalize_cpe_token(cpe)
-        evidence_text = str(evidence or "").strip().lower()
-
-        if tech_name and not WebRuntime._is_weak_technology_name(tech_name):
-            score += 18
-        if tech_version:
-            score += 18
-        if tech_cpe:
-            score += 32
-            if WebRuntime._version_from_cpe(tech_cpe):
-                score += 6
-
-        if "ssh banner" in evidence_text:
-            score += 48
-        elif "banner" in evidence_text:
-            score += 22
-        if "service " in evidence_text:
-            score += 28
-        if "output cpe" in evidence_text or "service cpe" in evidence_text:
-            score += 20
-        if "fingerprint" in evidence_text:
-            score += 14
-        if "whatweb" in evidence_text or "http-title" in evidence_text or "ssl-cert" in evidence_text:
-            score += 12
-
-        if WebRuntime._is_weak_technology_name(tech_name) and not tech_cpe:
-            score -= 42
-        if not tech_name and not tech_cpe:
-            score -= 60
-
-        return int(score)
+        return web_runtime_scheduler_state.technology_quality_score(
+            name=name,
+            version=version,
+            cpe=cpe,
+            evidence=evidence,
+        )
 
     @staticmethod
     def _name_from_cpe(cpe: str) -> str:
-        token = str(cpe or "").strip().lower()
-        if token.startswith("cpe:/"):
-            parts = token.split(":")
-            if len(parts) >= 4:
-                product = str(parts[3] or "").replace("_", " ").strip()
-                return product[:120]
-        if token.startswith("cpe:2.3:"):
-            parts = token.split(":")
-            if len(parts) >= 5:
-                product = str(parts[4] or "").replace("_", " ").strip()
-                return product[:120]
-        return ""
+        return web_runtime_scheduler_state.name_from_cpe(cpe)
 
     @staticmethod
     def _version_from_cpe(cpe: str) -> str:
-        token = WebRuntime._normalize_cpe_token(cpe)
-        if token.startswith("cpe:/"):
-            parts = token.split(":")
-            if len(parts) >= 5:
-                return WebRuntime._sanitize_technology_version(parts[4])
-            return ""
-        if token.startswith("cpe:2.3:"):
-            parts = token.split(":")
-            if len(parts) >= 6:
-                return WebRuntime._sanitize_technology_version(parts[5])
-            return ""
-        return ""
+        return web_runtime_scheduler_state.version_from_cpe(cpe)
 
     @staticmethod
     def _guess_technology_hint(name_or_text: Any, version_hint: Any = "") -> Tuple[str, str]:
-        hints = WebRuntime._guess_technology_hints(name_or_text, version_hint=version_hint)
-        if hints:
-            return hints[0]
-        return "", ""
+        return web_runtime_scheduler_state.guess_technology_hint(name_or_text, version_hint=version_hint)
 
     @staticmethod
     def _guess_technology_hints(name_or_text: Any, version_hint: Any = "") -> List[Tuple[str, str]]:
-        blob = str(name_or_text or "").strip().lower()
-        version_text = str(version_hint or "")
-        version = WebRuntime._extract_version_token(version_text)
-        if version and ("." not in version) and (not re.search(r"[a-z]", version, flags=re.IGNORECASE)):
-            version = ""
-        if not blob:
-            return []
-        rows: List[Tuple[str, str]] = []
-        seen = set()
-        for tokens, normalized_name, cpe_base in _TECH_CPE_HINTS:
-            if any(str(token).lower() in blob for token in tokens):
-                version_candidate = WebRuntime._extract_version_near_tokens(version_text, tokens) or version
-                normalized_cpe_base = str(cpe_base or "").strip().lower()
-                if version_candidate and normalized_cpe_base:
-                    cpe = f"{normalized_cpe_base}:{version_candidate}".lower()
-                elif normalized_cpe_base:
-                    cpe = normalized_cpe_base
-                else:
-                    cpe = ""
-                key = f"{str(normalized_name).lower()}|{cpe}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                rows.append((str(normalized_name), cpe))
-        return rows
+        return web_runtime_scheduler_state.guess_technology_hints(name_or_text, version_hint=version_hint)
 
     def _infer_technologies_from_observations(
             self,
@@ -2536,16 +1769,7 @@ class WebRuntime:
 
     @staticmethod
     def _severity_from_text(value: Any) -> str:
-        token = str(value or "").strip().lower()
-        if "critical" in token:
-            return "critical"
-        if "high" in token:
-            return "high"
-        if "medium" in token:
-            return "medium"
-        if "low" in token:
-            return "low"
-        return "info"
+        return web_runtime_scheduler_state.severity_from_text(value)
 
     def _infer_findings_from_observations(
             self,
@@ -2606,18 +1830,7 @@ class WebRuntime:
 
     @staticmethod
     def _finding_sort_key(item: Dict[str, Any]) -> Tuple[int, float]:
-        severity_rank = {
-            "critical": 5,
-            "high": 4,
-            "medium": 3,
-            "low": 2,
-            "info": 1,
-        }.get(str(item.get("severity", "info")).strip().lower(), 0)
-        try:
-            cvss = float(item.get("cvss", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            cvss = 0.0
-        return severity_rank, cvss
+        return web_runtime_scheduler_state.finding_sort_key(item)
 
     def _normalize_ai_manual_tests(self, items: Any) -> List[Dict[str, str]]:
         return web_runtime_scheduler.normalize_ai_manual_tests(self, items)
@@ -3191,27 +2404,8 @@ class WebRuntime:
 
     @classmethod
     def _redact_command_secrets(cls, value: Any) -> str:
-        text_value = str(value or "")
-        if not text_value:
-            return ""
-
-        def _replace(match: re.Match) -> str:
-            prefix = str(match.group("prefix") or "")
-            secret_value = str(match.group("value") or "")
-            stripped = secret_value.strip()
-            lowered = stripped.lower()
-            if not stripped:
-                return match.group(0)
-            if "***redacted***" in lowered:
-                return match.group(0)
-            if stripped.startswith("[") and stripped.endswith("]"):
-                return match.group(0)
-            return f"{prefix}***redacted***"
-
-        redacted = text_value
-        for pattern in cls._COMMAND_SECRET_PATTERNS:
-            redacted = pattern.sub(_replace, redacted)
-        return redacted
+        _ = cls
+        return web_runtime_processes.redact_command_secrets(value)
 
     @staticmethod
     def _normalize_progress_source_label(value: Any) -> str:
@@ -3248,7 +2442,7 @@ class WebRuntime:
         return web_runtime_processes.process_history_records(
             project,
             limit=limit,
-            redact_command=WebRuntime._redact_command_secrets,
+            redact_command=web_runtime_processes.redact_command_secrets,
         )
 
     @staticmethod
@@ -3289,14 +2483,10 @@ class WebRuntime:
         return web_runtime_scheduler.scheduler_integration_api_key(integration_name, preferences)
 
     def _shodan_integration_enabled(self, preferences: Optional[Dict[str, Any]] = None) -> bool:
-        config = preferences if isinstance(preferences, dict) else self.scheduler_config.load()
-        api_key = self._scheduler_integration_api_key("shodan", config)
-        return bool(api_key and api_key.lower() not in {"yourkeygoeshere", "changeme"})
+        return web_runtime_scheduler.shodan_integration_enabled(self, preferences)
 
     def _grayhatwarfare_integration_enabled(self, preferences: Optional[Dict[str, Any]] = None) -> bool:
-        config = preferences if isinstance(preferences, dict) else self.scheduler_config.load()
-        api_key = self._scheduler_integration_api_key("grayhatwarfare", config)
-        return bool(api_key and api_key.lower() not in {"yourkeygoeshere", "changeme"})
+        return web_runtime_scheduler.grayhatwarfare_integration_enabled(self, preferences)
 
     def _scheduler_command_placeholders(
             self,
@@ -3316,18 +2506,11 @@ class WebRuntime:
         return web_runtime_scheduler.scheduler_preferences(self)
 
     def _device_category_options(self) -> List[Dict[str, Any]]:
-        from app.device_categories import device_category_options
-
-        return device_category_options(self.scheduler_config.get_device_categories())
+        return web_runtime_scheduler.device_category_options_for_runtime(self)
 
     @staticmethod
     def _built_in_device_category_options() -> List[Dict[str, Any]]:
-        from app.device_categories import built_in_device_category_rules
-
-        return [
-            {"id": str(item.get("id", "") or ""), "name": str(item.get("name", "") or ""), "built_in": True}
-            for item in built_in_device_category_rules()
-        ]
+        return web_runtime_scheduler.built_in_device_category_options()
 
     def _ensure_scheduler_table(self):
         return web_runtime_scheduler.ensure_scheduler_table(self)
@@ -3339,60 +2522,13 @@ class WebRuntime:
         return web_runtime_processes.ensure_process_tables(self)
 
     def _ensure_workspace_settings_table(self):
-        project = getattr(self.logic, "activeProject", None)
-        if not project:
-            return
-        session = project.database.session()
-        try:
-            session.execute(text(
-                "CREATE TABLE IF NOT EXISTS workspace_setting ("
-                "key TEXT PRIMARY KEY,"
-                "value_json TEXT"
-                ")"
-            ))
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        return web_runtime_workspace.ensure_workspace_settings_table(self)
 
     def _get_workspace_setting_locked(self, key: str, default: Any = None) -> Any:
-        project = self._require_active_project()
-        self._ensure_workspace_settings_table()
-        session = project.database.session()
-        try:
-            row = session.execute(text(
-                "SELECT value_json FROM workspace_setting WHERE key = :key LIMIT 1"
-            ), {"key": str(key or "")}).fetchone()
-            if not row or row[0] in (None, ""):
-                return default
-            try:
-                return json.loads(str(row[0] or ""))
-            except Exception:
-                return default
-        finally:
-            session.close()
+        return web_runtime_workspace.get_workspace_setting_locked(self, key, default=default)
 
     def _set_workspace_setting_locked(self, key: str, value: Any):
-        project = self._require_active_project()
-        self._ensure_workspace_settings_table()
-        session = project.database.session()
-        try:
-            encoded = json.dumps(value, sort_keys=True)
-            session.execute(text(
-                "INSERT INTO workspace_setting (key, value_json) VALUES (:key, :value_json) "
-                "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json"
-            ), {
-                "key": str(key or ""),
-                "value_json": encoded,
-            })
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        return web_runtime_workspace.set_workspace_setting_locked(self, key, value)
 
     @staticmethod
     def _default_credential_capture_config() -> Dict[str, Any]:
@@ -3509,38 +2645,13 @@ class WebRuntime:
         return web_runtime_projects.close_active_project(self)
 
     def _require_active_project(self):
-        project = getattr(self.logic, "activeProject", None)
-        if project is None:
-            raise RuntimeError("No active project is loaded.")
-        return project
+        return web_runtime_projects.require_active_project(self)
 
     def _resolve_host(self, host_id: int):
-        project = self._require_active_project()
-        session = project.database.session()
-        try:
-            result = session.execute(text("SELECT id FROM hostObj WHERE id = :id LIMIT 1"), {"id": int(host_id)}).fetchone()
-            if not result:
-                return None
-        finally:
-            session.close()
-        hosts = project.repositoryContainer.hostRepository.getAllHostObjs()
-        for host in hosts:
-            if int(getattr(host, "id", 0) or 0) == int(host_id):
-                return host
-        return None
+        return web_runtime_workspace.resolve_host(self, host_id)
 
     def _load_cves_for_host(self, project, host_id: int) -> List[Dict[str, Any]]:
-        session = project.database.session()
-        try:
-            result = session.execute(text(
-                "SELECT id, name, severity, product, version, url, source, exploitId, exploit, exploitUrl "
-                "FROM cve WHERE hostId = :host_id ORDER BY id DESC"
-            ), {"host_id": str(host_id)})
-            rows = result.fetchall()
-            keys = result.keys()
-            return [dict(zip(keys, row)) for row in rows]
-        finally:
-            session.close()
+        return web_runtime_workspace.load_cves_for_host(project, host_id)
 
     def _load_host_ai_analysis(self, project, host_id: int, host_ip: str) -> Dict[str, Any]:
         return web_runtime_scheduler.load_host_ai_analysis(self, project, host_id, host_ip)
@@ -3549,152 +2660,40 @@ class WebRuntime:
         return web_runtime_screenshots.list_screenshots_for_host(self, project, host_ip)
 
     def _tool_run_stats(self, project) -> Dict[str, Dict[str, Any]]:
-        session = project.database.session()
-        try:
-            result = session.execute(text(
-                "SELECT p.name, COUNT(*) AS run_count, MAX(p.id) AS max_id "
-                "FROM process AS p GROUP BY p.name"
-            ))
-            rows = result.fetchall()
-            stats = {}
-            for name, run_count, max_id in rows:
-                name_key = str(name or "")
-                last_status = ""
-                last_start = ""
-                if max_id:
-                    detail = session.execute(text(
-                        "SELECT status, startTime FROM process WHERE id = :id LIMIT 1"
-                    ), {"id": int(max_id)}).fetchone()
-                    if detail:
-                        last_status = str(detail[0] or "")
-                        last_start = str(detail[1] or "")
-                stats[name_key] = {
-                    "run_count": int(run_count or 0),
-                    "last_status": last_status,
-                    "last_start": last_start,
-                }
-            return stats
-        except Exception:
-            return {}
-        finally:
-            session.close()
+        return web_runtime_tools.tool_run_stats(project)
 
     def _get_settings(self) -> Settings:
-        return self.settings
+        return web_runtime_tools.get_settings(self)
 
     @staticmethod
     def _find_port_action(settings: Settings, tool_id: str):
-        for action in settings.portActions:
-            if str(action[1]) == str(tool_id):
-                return action
-        return None
+        return web_runtime_tools.find_port_action(settings, tool_id)
 
     def _find_command_template_for_tool(self, settings: Settings, tool_id: str) -> str:
-        action = self._find_port_action(settings, tool_id)
-        if not action:
-            return ""
-        return str(action[2])
+        return web_runtime_tools.find_command_template_for_tool(self, settings, tool_id)
 
     def _runner_type_for_tool(self, tool_id: str, command_template: str = "") -> str:
-        normalized_tool = str(tool_id or "").strip().lower()
-        if not normalized_tool and not str(command_template or "").strip():
-            return "local"
-        try:
-            registry = SchedulerPlanner.build_action_registry(self._get_settings(), dangerous_categories=[])
-            spec = registry.get_by_tool_id(normalized_tool)
-            if spec is not None and str(getattr(spec, "runner_type", "") or "").strip():
-                return str(spec.runner_type).strip().lower()
-        except Exception:
-            pass
-        if normalized_tool in {"screenshooter", "x11screen"}:
-            return "browser"
-        if normalized_tool in {"responder", "ntlmrelayx"}:
-            return "manual"
-        text = " ".join([normalized_tool, str(command_template or "")]).lower()
-        if any(token in text for token in ("manual", "operator", "clipboard")):
-            return "manual"
-        return "local"
+        return web_runtime_tools.runner_type_for_tool(self, tool_id, command_template)
 
     def _runner_type_for_approval_item(self, item: Optional[Dict[str, Any]]) -> str:
-        payload = item if isinstance(item, dict) else {}
-        return self._runner_type_for_tool(
-            str(payload.get("tool_id", "") or ""),
-            str(payload.get("command_template", "") or ""),
-        )
+        return web_runtime_tools.runner_type_for_approval_item(self, item)
 
     def _hostname_for_ip(self, host_ip: str) -> str:
-        try:
-            project = self._require_active_project()
-            host_repo = getattr(getattr(project, "repositoryContainer", None), "hostRepository", None)
-            host_obj = host_repo.getHostByIP(str(host_ip)) if host_repo else None
-            return str(getattr(host_obj, "hostname", "") or "")
-        except Exception:
-            return ""
+        return web_runtime_workspace.hostname_for_ip(self, host_ip)
 
     def _service_name_for_target(self, host_ip: str, port: str, protocol: str) -> str:
-        try:
-            project = self._require_active_project()
-            host_repo = getattr(getattr(project, "repositoryContainer", None), "hostRepository", None)
-            host_obj = host_repo.getHostByIP(str(host_ip)) if host_repo else None
-            host_id = int(getattr(host_obj, "id", 0) or 0)
-            if host_id <= 0:
-                return ""
-
-            session = project.database.session()
-            try:
-                result = session.execute(text(
-                    "SELECT COALESCE(s.name, '') "
-                    "FROM portObj AS p "
-                    "LEFT JOIN serviceObj AS s ON s.id = p.serviceId "
-                    "WHERE p.hostId = :host_id "
-                    "AND COALESCE(p.portId, '') = :port "
-                    "AND LOWER(COALESCE(p.protocol, '')) = LOWER(:protocol) "
-                    "ORDER BY p.id DESC LIMIT 1"
-                ), {
-                    "host_id": host_id,
-                    "port": str(port or ""),
-                    "protocol": str(protocol or "tcp"),
-                }).fetchone()
-                return str(result[0] or "") if result else ""
-            finally:
-                session.close()
-        except Exception:
-            return ""
+        return web_runtime_workspace.service_name_for_target(self, host_ip, port, protocol)
 
     @staticmethod
     def _normalize_command_signature_source(command_text: str) -> str:
-        normalized = str(command_text or "").strip().lower()
-        if not normalized:
-            return ""
-        replacements = (
-            (r"(?i)(-oA\s+)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
-            (r"(?i)(-o\s+)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
-            (r"(?i)(--output(?:-dir)?\s+)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
-            (r"(?i)(--resume\s+)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
-            (r"(?i)(>\s*)(?:\"[^\"]+\"|'[^']+'|\S+)", r"\1[OUTPUT]"),
-        )
-        for pattern, replacement in replacements:
-            normalized = re.sub(pattern, replacement, normalized)
-        normalized = re.sub(r"\s{2,}", " ", normalized).strip()
-        return normalized
+        return web_runtime_scheduler_state.normalize_command_signature_source(command_text)
 
     def _command_signature_for_target(self, command_text: str, protocol: str) -> str:
-        normalized = self._normalize_command_signature_source(command_text)
-        if not normalized:
-            return ""
-        return SchedulerPlanner._command_signature(str(protocol or "tcp"), normalized)
+        return web_runtime_scheduler_state.command_signature_for_target(command_text, protocol)
 
     @staticmethod
     def _target_attempt_matches(item: Dict[str, Any], port: str, protocol: str) -> bool:
-        entry_port = str(item.get("port", "") or "").strip()
-        entry_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
-        target_port = str(port or "").strip()
-        target_protocol = str(protocol or "tcp").strip().lower() or "tcp"
-        if entry_protocol != target_protocol:
-            return False
-        if target_port:
-            return entry_port == target_port
-        return not entry_port
+        return web_runtime_scheduler_state.target_attempt_matches(item, port, protocol)
 
     def _build_command(
             self,
@@ -3705,55 +2704,15 @@ class WebRuntime:
             tool_id: str,
             service_name: str = "",
     ) -> Tuple[str, str]:
-        project = self._require_active_project()
-        running_folder = project.properties.runningFolder
-        outputfile = os.path.join(running_folder, f"{getTimestamp()}-{tool_id}-{host_ip}-{port}")
-        outputfile = os.path.normpath(outputfile).replace("\\", "/")
-
-        command = str(template or "")
-        normalized_tool = str(tool_id or "").strip().lower()
-        scheduler_preferences = self.scheduler_config.load()
-        resolved_service_name = str(service_name or "").strip() or self._service_name_for_target(host_ip, port, protocol)
-        if normalized_tool == "banner":
-            command = AppSettings._ensure_banner_command(command)
-        if normalized_tool == "nuclei-web":
-            command = AppSettings._ensure_nuclei_auto_scan(command)
-        elif "nuclei" in normalized_tool or "nuclei" in str(command).lower():
-            command = AppSettings._ensure_nuclei_command(command, automatic_scan=False)
-        if str(tool_id or "").strip().lower() == "web-content-discovery":
-            command = AppSettings._ensure_web_content_discovery_command(command)
-        if normalized_tool == "httpx":
-            command = AppSettings._ensure_httpx_command(command)
-        if normalized_tool == "nikto":
-            command = AppSettings._ensure_nikto_command(command)
-        if normalized_tool == "wpscan":
-            command = AppSettings._ensure_wpscan_command(command)
-        if "wapiti" in str(command).lower():
-            normalized_tool = str(tool_id or "").strip().lower()
-            scheme = "https" if "https-wapiti" in normalized_tool else "http"
-            command = AppSettings._ensure_wapiti_command(command, scheme=scheme)
-        command = AppSettings._canonicalize_web_target_placeholders(command)
-        if "nmap" in str(command).lower():
-            command = AppSettings._ensure_nmap_stats_every(command)
-        command, target_host = apply_preferred_target_placeholders(
-            command,
-            hostname=self._hostname_for_ip(host_ip),
-            ip=str(host_ip),
-            port=str(port),
-            output=outputfile,
-            service_name=resolved_service_name,
-            extra_placeholders=self._scheduler_command_placeholders(
-                host_ip=str(host_ip),
-                hostname=self._hostname_for_ip(host_ip),
-                preferences=scheduler_preferences,
-            ),
+        return web_runtime_tools.build_command(
+            self,
+            template,
+            host_ip,
+            port,
+            protocol,
+            tool_id,
+            service_name=service_name,
         )
-        command = AppSettings._collapse_redundant_fallbacks(command)
-        command = AppSettings._ensure_nmap_hostname_target_support(command, target_host)
-        command = AppSettings._ensure_nmap_output_argument(command, outputfile)
-        if "nmap" in command and str(protocol).lower() == "udp":
-            command = command.replace("-sV", "-sVU")
-        return command, outputfile
 
     def _build_nmap_scan_plan(
             self,
@@ -3932,32 +2891,15 @@ class WebRuntime:
 
     @staticmethod
     def _is_nmap_command(tool_name: str, command: str) -> bool:
-        name = str(tool_name or "").strip().lower()
-        if name.startswith("nmap"):
-            return True
-        command_text = str(command or "").strip().lower()
-        return " nmap " in f" {command_text} " or command_text.startswith("nmap ")
+        return web_runtime_processes.is_nmap_command(tool_name, command)
 
     @staticmethod
     def _is_nuclei_command(tool_name: str, command: str) -> bool:
-        name = str(tool_name or "").strip().lower()
-        if name.startswith("nuclei"):
-            return True
-        command_text = str(command or "").strip().lower()
-        return " nuclei " in f" {command_text} " or command_text.startswith("nuclei ")
+        return web_runtime_processes.is_nuclei_command(tool_name, command)
 
     @staticmethod
     def _is_tshark_passive_capture_command(tool_name: str, command: str) -> bool:
-        name = str(tool_name or "").strip().lower()
-        if name == "tshark-passive-capture":
-            return True
-        command_text = str(command or "").strip().lower()
-        if not command_text:
-            return False
-        return (
-            (" tshark " in f" {command_text} " or command_text.startswith("tshark "))
-            and bool(_TSHARK_DURATION_RE.search(command_text))
-        )
+        return web_runtime_processes.is_tshark_passive_capture_command(tool_name, command)
 
     @classmethod
     def _process_progress_adapter_for_command(cls, tool_name: str, command: str) -> str:
@@ -4038,10 +2980,7 @@ class WebRuntime:
         return web_runtime_processes.parse_duration_seconds(raw)
 
     def _is_temp_project(self) -> bool:
-        project = getattr(self.logic, "activeProject", None)
-        if not project:
-            return False
-        return bool(getattr(project.properties, "isTemporary", False))
+        return web_runtime_projects.is_temp_project(self)
 
     @staticmethod
     def _normalize_project_path(path: str) -> str:
@@ -4053,28 +2992,4 @@ class WebRuntime:
 
     @staticmethod
     def _normalize_targets(targets) -> List[str]:
-        if isinstance(targets, str):
-            source = targets.replace(",", " ").split()
-        elif isinstance(targets, list):
-            source = []
-            for item in targets:
-                text = str(item or "").strip()
-                if text:
-                    source.extend(text.replace(",", " ").split())
-        else:
-            source = []
-
-        deduped = []
-        seen = set()
-        for value in source:
-            key = value.strip()
-            if not key:
-                continue
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(key)
-
-        if not deduped:
-            raise ValueError("At least one target is required.")
-        return deduped
+        return web_runtime_scans.normalize_targets(targets)

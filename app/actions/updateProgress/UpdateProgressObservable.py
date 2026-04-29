@@ -27,6 +27,12 @@ class UpdateProgressObservable(AbstractUpdateProgressObservable):
         for observer in self._observers:
             observer.onStart()
 
-    def updateProgress(self, progress, title):
+    def updateProgress(self, progress, title=""):
         for observer in self._observers:
-            observer.onProgressUpdate(progress, title)
+            try:
+                observer.onProgressUpdate(progress, title)
+            except TypeError as exc:
+                try:
+                    observer.onProgressUpdate(progress)
+                except TypeError:
+                    raise exc

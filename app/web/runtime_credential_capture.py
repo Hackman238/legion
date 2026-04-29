@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from sqlalchemy import text
 
 from app.timing import getTimestamp
+from app.web import runtime_processes as web_runtime_processes
 
 
 def default_credential_capture_config() -> Dict[str, Any]:
@@ -197,7 +198,7 @@ def latest_credential_capture_session_locked(runtime, tool_name: str) -> Dict[st
         "running": str(status).strip().lower() in {"running", "waiting"},
         "start_time": str(data.get("startTime", "") or ""),
         "end_time": str(data.get("endTime", "") or ""),
-        "command": runtime._redact_command_secrets(data.get("command", "")),
+        "command": web_runtime_processes.redact_command_secrets(data.get("command", "")),
         "outputfile": str(data.get("outputfile", "") or ""),
         "progress": runtime._build_process_progress_payload(
             status=status,

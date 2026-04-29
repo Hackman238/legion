@@ -16,23 +16,28 @@ Copyright (c) 2025 Shane William Scott
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from tests.db.helpers.db_helpers import mockExecuteFetchAll, mockFirstByReturnValue
+from tests.db.helpers.db_helpers import mockExecuteRows
 
 
 class ServiceRepositoryTest(unittest.TestCase):
     def setUp(self) -> None:
         from db.repositories.ServiceRepository import ServiceRepository
         self.mockDbAdapter = MagicMock()
+        self.mockDbSession = MagicMock()
+        self.mockDbAdapter.session.return_value = self.mockDbSession
         self.repository = ServiceRepository(self.mockDbAdapter)
 
     def getServiceNamesTestCase(self, filters, expectedQuery):
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll(
-            [{'name': 'service_name1'}, {'name': 'service_name2'}])
+        self.mockDbSession.execute.return_value = mockExecuteRows(
+            [('service_name1',), ('service_name2',)],
+            ['name'],
+        )
         service_names = self.repository.getServiceNames(filters)
 
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expectedQuery)
+        query = self.mockDbSession.execute.call_args.args[0]
+        self.assertEqual(expectedQuery, str(query))
         self.assertEqual([{'name': 'service_name1'}, {'name': 'service_name2'}], service_names)
 
     def test_getServiceNames_InvokedWithNoFilters_FetchesAllServiceNames(self):
@@ -63,12 +68,15 @@ class ServiceRepositoryTest(unittest.TestCase):
         self.getServiceNamesTestCase(filters=filters, expectedQuery=expectedQuery)
 
     def test_getServiceNamesByHostIPAndPort_WhenProvidedWithHostIpAndPort_ReturnsServiceNames(self):
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockFirstByReturnValue(
-            [['service-name1'], ['service-name2']])
+        query_result = MagicMock()
+        query_result.first.return_value = ("service-name1",)
+        self.mockDbSession.execute.return_value = query_result
         expectedQuery = ("SELECT services.name FROM serviceObj AS services "
                          "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
                          "INNER JOIN portObj AS ports ON services.id=ports.serviceId "
-                         "WHERE hosts.ip=? and ports.portId = ?")
+                         "WHERE hosts.ip=:host_ip and ports.portId = :port")
         result = self.repository.getServiceNamesByHostIPAndPort("some_host", "1234")
-        self.assertEqual([['service-name1'], ['service-name2']], result)
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expectedQuery, "some_host", "1234")
+        self.assertEqual(("service-name1",), result)
+        query, params = self.mockDbSession.execute.call_args.args
+        self.assertEqual(expectedQuery, str(query))
+        self.assertEqual({"host_ip": "some_host", "port": "1234"}, params)

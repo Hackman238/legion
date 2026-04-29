@@ -73,6 +73,40 @@ class WebRuntimeScreenshotTargetTest(unittest.TestCase):
         mock_choose.assert_called_once_with("bing.com", "203.0.113.44")
         self.assertEqual("http://bing.com:80", mock_capture.call_args.kwargs["url"])
 
+    @patch("app.screenshot_targets.socket.getaddrinfo", side_effect=OSError("dns unavailable"))
+    def test_take_screenshot_uses_ip_when_hostname_is_not_resolvable(self, _mock_getaddrinfo):
+        from app.screenshot_targets import resolve_hostname_addresses
+        from app.web.runtime import WebRuntime
+
+        resolve_hostname_addresses.cache_clear()
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        runtime._hostname_for_ip = lambda _ip: "unifi.local"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            src_path = os.path.join(temp_dir, "capture.png")
+            with open(src_path, "wb") as handle:
+                handle.write(b"png")
+
+            project = SimpleNamespace(
+                properties=SimpleNamespace(outputFolder=temp_dir),
+                repositoryContainer=SimpleNamespace(hostRepository=_HostRepo("unifi.local")),
+            )
+            runtime._require_active_project = lambda: project
+
+            with patch("app.web.runtime_screenshots.isHttps", return_value=False):
+                with patch("app.web.runtime_screenshots.run_eyewitness_capture", return_value={
+                    "ok": True,
+                    "screenshot_path": src_path,
+                    "returncode": 0,
+                }) as mock_capture:
+                    executed, reason = WebRuntime._take_screenshot(runtime, "203.0.113.44", "80", "http")
+
+        self.assertTrue(executed)
+        self.assertEqual("completed", reason)
+        self.assertEqual("http://203.0.113.44:80", mock_capture.call_args.kwargs["url"])
+
     def test_take_screenshot_return_artifacts_writes_metadata_sidecar(self):
         from app.web.runtime import WebRuntime
 
