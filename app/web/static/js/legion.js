@@ -3517,6 +3517,7 @@ async function setHostServiceFiltersAction(services) {
         loadWorkspaceHosts(),
         loadWorkspaceServices(),
     ]);
+    await graphLoadSnapshot({background: false}).catch(() => {});
 }
 
 async function setServicesCategoryFilterAction(category) {
@@ -6669,6 +6670,8 @@ function graphCollectServerQuery() {
         hostFilter: String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
             ? "show_all"
             : "hide_down",
+        serviceFilters: selectedHostServiceFilters(),
+        category: String(workspaceState.hostCategoryFilter || "").trim(),
         nodeType: String(getValue("graph-node-type-filter") || "").trim().toLowerCase(),
         edgeType: String(getValue("graph-edge-type-filter") || "").trim().toLowerCase(),
         sourceKind: String(getValue("graph-source-kind-filter") || "").trim().toLowerCase(),
@@ -9285,6 +9288,12 @@ async function graphLoadSnapshot({background = false, forceMetadata = false} = {
         const filters = graphCollectServerQuery();
         const params = new URLSearchParams();
         params.set("filter", String(filters.hostFilter || "hide_down"));
+        (Array.isArray(filters.serviceFilters) ? filters.serviceFilters : []).forEach((service) => {
+            params.append("service", service);
+        });
+        if (filters.category) {
+            params.set("category", filters.category);
+        }
         if (filters.hostId > 0) {
             params.set("host_id", String(filters.hostId));
         }

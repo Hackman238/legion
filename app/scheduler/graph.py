@@ -2077,6 +2077,7 @@ def query_evidence_graph(
         hide_nmap_xml_artifacts: bool = False,
         hide_down_hosts: bool = False,
         host_id: Optional[int] = None,
+        host_ids: Optional[Iterable[int]] = None,
         limit_nodes: int = 600,
         limit_edges: int = 1200,
 ) -> Dict[str, Any]:
@@ -2085,6 +2086,21 @@ def query_evidence_graph(
     requested_edge_types = set(_normalize_filter_list(edge_types, limit=24, lower=True))
     requested_source_kinds = set(_normalize_filter_list(source_kinds, limit=12, lower=True))
     resolved_host_id = int(host_id or 0)
+    host_scope_requested = host_ids is not None or resolved_host_id > 0
+    resolved_host_ids = set()
+    if host_ids is not None:
+        for item in list(host_ids or []):
+            try:
+                normalized_host_id = int(item or 0)
+            except (TypeError, ValueError):
+                normalized_host_id = 0
+            if normalized_host_id > 0:
+                resolved_host_ids.add(normalized_host_id)
+    if resolved_host_id > 0:
+        if host_ids is not None:
+            resolved_host_ids = resolved_host_ids.intersection({resolved_host_id})
+        else:
+            resolved_host_ids = {resolved_host_id}
     resolved_search = str(search or "").strip().lower()
     min_conf = _safe_float(min_confidence, default=0.0, minimum=0.0, maximum=100.0)
     max_nodes = max(1, min(int(limit_nodes or 600), 10000))
@@ -2113,12 +2129,12 @@ def query_evidence_graph(
             continue
         nodes.append(dict(item))
 
-    if resolved_host_id > 0:
+    if host_scope_requested:
         base_node_ids = {
             str(item.get("node_id", "") or "")
             for item in nodes
             if isinstance(item.get("properties", {}), dict)
-            and int(item.get("properties", {}).get("host_id", 0) or 0) == resolved_host_id
+            and int(item.get("properties", {}).get("host_id", 0) or 0) in resolved_host_ids
         }
         expanded_ids = set(base_node_ids)
         for edge in list(snapshot.get("edges", []) or []):
@@ -2129,8 +2145,7 @@ def query_evidence_graph(
             if from_node_id in base_node_ids or to_node_id in base_node_ids:
                 expanded_ids.add(from_node_id)
                 expanded_ids.add(to_node_id)
-        if expanded_ids:
-            nodes = [item for item in nodes if str(item.get("node_id", "") or "") in expanded_ids]
+        nodes = [item for item in nodes if str(item.get("node_id", "") or "") in expanded_ids]
 
     node_ids = {str(item.get("node_id", "") or "") for item in nodes}
     edges = []
@@ -2177,6 +2192,7 @@ def query_evidence_graph(
                 "hide_nmap_xml_artifacts": bool(hide_nmap_xml_artifacts),
                 "hide_down_hosts": bool(hide_down_hosts),
                 "host_id": int(resolved_host_id or 0) or None,
+                "host_ids": sorted(resolved_host_ids) if host_ids is not None else None,
                 "limit_nodes": max_nodes,
                 "limit_edges": max_edges,
             },

@@ -28,6 +28,25 @@ def _split_query_tokens(value: Any) -> List[str]:
     return [str(item).strip() for item in items if str(item).strip()]
 
 
+def _multi_value_query_tokens(args: Any, *names: str) -> List[str]:
+    values: List[Any] = []
+    for name in names:
+        if hasattr(args, "getlist"):
+            values.extend(args.getlist(name))
+        elif hasattr(args, "get"):
+            values.append(args.get(name, ""))
+
+    rows: List[str] = []
+    seen = set()
+    for token in _split_query_tokens(values):
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(token)
+    return rows
+
+
 def _normalized_host_filter(value: Any) -> str:
     token = str(value or "").strip().lower()
     if token in {"all", "show_all", "show-all"}:
@@ -45,6 +64,8 @@ class GraphQuery:
     include_ai_suggested: bool
     hide_nmap_xml_artifacts: bool
     host_filter: str
+    service_filters: List[str]
+    category_filter: str
     host_id: int
     limit_nodes: int
     limit_edges: int
@@ -63,6 +84,8 @@ class GraphQuery:
             include_ai_suggested=include_ai_suggested,
             hide_nmap_xml_artifacts=as_bool(args.get("hide_nmap_xml_artifacts", False), default=False),
             host_filter=_normalized_host_filter(args.get("host_filter", args.get("filter", "hide_down"))),
+            service_filters=_multi_value_query_tokens(args, "service", "services"),
+            category_filter=str(args.get("category", "") or "").strip(),
             host_id=_parse_int(args.get("host_id", 0), 0),
             limit_nodes=clamp_int(args.get("limit_nodes"), 600, 1, 10000),
             limit_edges=clamp_int(args.get("limit_edges"), 1200, 1, 30000),
@@ -78,6 +101,8 @@ class GraphQuery:
             "include_ai_suggested": self.include_ai_suggested,
             "hide_nmap_xml_artifacts": self.hide_nmap_xml_artifacts,
             "host_filter": self.host_filter,
+            "service_filters": self.service_filters,
+            "category_filter": self.category_filter,
             "host_id": self.host_id or None,
             "limit_nodes": self.limit_nodes,
             "limit_edges": self.limit_edges,
