@@ -1,3 +1,25 @@
+legion (0.7.0-0) UNRELEASED; urgency=medium
+
+  * Continue the web-first replatform by splitting routes into domain modules,
+    adding service/schema boundaries, and shrinking the monolithic WebRuntime
+    into focused runtime modules for projects, scans, scheduler, workspace,
+    graph, reports, artifacts, processes, and settings.
+  * Harden high-risk execution and control paths, including bind-all handling,
+    public tool execution, approval idempotency, MCP state contracts, and local
+    secret-store backed provider credential storage.
+  * Improve project bundle export/restore fidelity, restore staging, restored
+    path rebasing, artifact handling, and damaged legacy project behavior.
+  * Add service/open-port filtering, graph filtering tied to host filters,
+    service port visibility, stronger OS enrichment, and expanded device
+    categorization for phone and out-of-band management systems.
+  * Add bundled pipettes for Cisco Smart Install, internal SMTP/SPF review,
+    Windows SMB/RDP discovery, and IPMI/iDRAC/iLO discovery.
+  * Improve Nmap output isolation, screenshot target handling, process/tool
+    execution paths, artifact cleanup, Responder/NTLMRelay workspace handling,
+    and cross-surface regression coverage.
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Wed, 29 Apr 2026 18:27:37 -0500
+
 legion (0.6.0-0) UNRELEASED; urgency=medium
 
   * Promote the web UI to the primary operator workflow while keeping the shared

@@ -1,3 +1,14 @@
+LEGION 0.7.0
+
+* Continued the web-first replatform by splitting the Flask surface into domain route modules, adding service/schema boundaries, and shrinking `WebRuntime` into focused project, scan, scheduler, graph, workspace, process, report, artifact, and settings modules.
+* Hardened high-risk control paths: bind-all now has safer handling, public tool execution no longer accepts arbitrary shell overrides, approval execution is idempotent, and MCP state/approval paths stay aligned with the governed runtime contracts.
+* Added local secret-store support for provider and integration credentials, keeping AI/provider keys out of the plaintext scheduler preference file when an OS-backed or encrypted local store is available.
+* Improved project bundle fidelity with stricter artifact export/restore handling, safer restore staging before swapping the active project, path rebasing for restored workspaces, and clearer restore failure behavior for legacy or damaged `.legion` projects.
+* Expanded workspace analysis with service/open-port filtering, service port visibility, graph filtering tied to host filters, improved host/service selection sync, stronger OS enrichment from service evidence, and phone/OOB/device category classification improvements.
+* Added bundled pipettes: Cisco Smart Install exposure checks, internal SMTP discovery and optional SPF review, Windows SMB/RDP discovery, and IPMI/iDRAC/iLO out-of-band management discovery.
+* Improved scan/runtime reliability with unique Nmap output prefixes, screenshot target selection fixes, artifact cleanup paths, process/tool execution extraction, and Responder/NTLMRelay workspace handling.
+* Expanded route, schema, pipette, bundle, scheduler, MCP, workspace, graph, and tooling tests to lock down cross-surface behavior as the web/runtime split continues.
+
 LEGION 0.6.0
 
 * Introduced the shared orchestrator core across web, headless, MCP/API, and remaining Qt compatibility surfaces so planning, approvals, execution, observation, and reporting use the same governed path.

@@ -15,7 +15,7 @@
 
 This is the active home of `LEGION`.
 
-`0.6.0` is the release where Legion becomes meaningfully web-first: the web UI is now the primary operator interface, while headless CLI and MCP share the same orchestrator, approvals, evidence graph, state store, and reporting path.
+`0.7.0` hardens that web-first foundation: the web runtime is split into clearer domains, high-risk execution paths are stricter, bundle restore/export fidelity is improved, workspace filtering is more useful on large engagements, and the first bundled pipettes provide repeatable aggregate checks for high-value service families.
 
 After upgrading, review tool paths and provider settings under `Settings`, especially if you customize Nmap, browsers/screenshot tooling, Responder, NTLMRelay, or AI providers.
 
@@ -66,28 +66,27 @@ The web interface includes:
 - Keeps operator-visible evidence, artifacts, screenshots, execution history, and graph annotations in-project.
 - Exposes the same orchestration path through the web UI, headless CLI, and MCP/API surfaces.
 
-## 🚀 0.6.0 Highlights
+## 🚀 0.7.0 Highlights
 
-- Web-first operator workflow with a ribbon-driven dashboard, compact project/process trays, logging modals, host exports/filters, and a graph-centric workspace.
-- Shared orchestrator core across web, headless, MCP, and remaining Qt compatibility paths.
-- First-class `deterministic` and `ai` scheduling modes using shared `ActionSpec`, `PlanStep`, and `ExecutionRecord` models.
-- Engagement policy presets, richer risk taxonomy, auditable approvals, policy-aware blocking, and family-level approval controls.
-- Shared target-state persistence and a local evidence graph with query/export APIs, graph layouts, annotations, and graph-backed reporting.
-- Strategy-pack driven planning, optional runner abstraction, scan history, and intent-based process retry.
-- Broader governed action coverage, including deeper web follow-up and safer internal SMB enumeration.
-- Kali-first tool audit coverage with install hints for the external tools Legion launches or depends on.
-- MCP expansion for governed project access, planning, approvals, graph queries, findings, state, execution traces, and reports.
+- Domain route modules, service wrappers, typed schemas, and focused runtime modules continue the migration away from a monolithic web/runtime surface.
+- High-risk execution paths are stricter: bind-all behavior, public tool execution, approval idempotency, MCP state contracts, and provider secret storage were hardened.
+- Project bundle export/restore now preserves artifact fidelity more reliably, stages restored projects before swapping the active workspace, and rebases restored paths more consistently.
+- Workspace filtering now supports service/open-port filters, host-filtered graph views, service port visibility, improved host/service sync, and stronger OS/category enrichment for phones, Windows systems, and out-of-band management devices.
+- Bundled pipettes add repeatable aggregate checks for Cisco Smart Install, internal SMTP/SPF review, Windows SMB/RDP discovery, and IPMI/iDRAC/iLO discovery.
+- Runtime reliability improved across Nmap output isolation, screenshots, artifact cleanup, process/tool execution paths, and Responder/NTLMRelay workspaces.
+- Regression coverage expanded across routes, schemas, bundles, scheduler/approval flows, MCP, graph/reporting, workspace filters, pipettes, and tooling.
 
 ## 🧰 Action And Tooling Coverage
 
-Legion 0.6.0 now has two useful coverage counts:
+Legion 0.7.0 now has three useful coverage counts:
 
-- `273` normalized governed `ActionSpec` entries in the shared orchestrator registry.
-- `338` checked-in configured action entries in `legion.conf`:
-  - `42` scheduler mappings
-  - `271` port actions
+- `289` normalized governed `ActionSpec` entries in the shared orchestrator registry.
+- `358` default loaded configured action entries after migrations:
+  - `46` scheduler mappings
+  - `287` port actions
   - `11` host actions
   - `14` port terminal launchers
+- `4` bundled pipettes for focused aggregate checks.
 
 Additional runtime integrations outside static `legion.conf` include:
 
