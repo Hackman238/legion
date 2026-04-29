@@ -780,6 +780,22 @@
                             <p class="panel-submenu-title">Filter</p>
                             <button id="hosts-filter-show-all-button" class="ribbon-submenu-item" type="button" title="Show all hosts regardless of status">Show All</button>
                             <button id="hosts-filter-hide-down-button" class="ribbon-submenu-item" type="button" title="Hide hosts with down status">Hide Down Hosts</button>
+                            <div class="panel-filter-dropdown panel-filter-dropdown-menu" id="hosts-service-filter-dropdown">
+                                <button
+                                    id="hosts-service-filter-button"
+                                    class="ribbon-submenu-item panel-filter-button"
+                                    type="button"
+                                    aria-haspopup="true"
+                                    aria-expanded="false"
+                                >Services</button>
+                                <div id="hosts-service-filter-popover" class="panel-filter-popover" hidden>
+                                    <div class="panel-filter-popover-header">
+                                        <strong>Open services</strong>
+                                        <button id="hosts-service-filter-clear-button" type="button">Clear</button>
+                                    </div>
+                                    <div id="hosts-service-filter-list" class="panel-filter-list"></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -814,6 +830,7 @@
                         <option value="">all categories</option>
                     </select>
                 </label>
+                <p id="services-scope-label" class="panel-scope-label">all hosts</p>
                 <p id="service-count">{{ snapshot.services | length }}</p>
                 <button
                     id="services-panel-toggle-button"

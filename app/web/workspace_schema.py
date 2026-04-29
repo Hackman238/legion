@@ -7,6 +7,28 @@ from app.web.http_utils import as_bool
 from app.web.http_utils import clamp_int
 
 
+def _multi_value_args(args: Any, *names: str) -> List[str]:
+    values: List[str] = []
+    for name in names:
+        if hasattr(args, "getlist"):
+            values.extend(args.getlist(name))
+        else:
+            value = args.get(name, "") if hasattr(args, "get") else ""
+            values.append(value)
+
+    rows: List[str] = []
+    seen = set()
+    for value in values:
+        for token in str(value or "").split(","):
+            normalized = token.strip()
+            key = normalized.lower()
+            if not normalized or key in seen:
+                continue
+            seen.add(key)
+            rows.append(normalized)
+    return rows
+
+
 @dataclass(frozen=True)
 class CredentialCaptureConfigRequest:
     updates: Dict[str, Any]
@@ -57,9 +79,13 @@ class CredentialsDownloadQuery:
 @dataclass(frozen=True)
 class WorkspaceHostsQuery:
     host_filter: str
-    service_filter: str
+    service_filters: List[str]
     category_filter: str
     limit: Optional[int]
+
+    @property
+    def service_filter(self) -> str:
+        return ",".join(self.service_filters)
 
     @property
     def include_down(self) -> bool:
@@ -72,7 +98,7 @@ class WorkspaceHostsQuery:
             host_filter = "show_all"
         else:
             host_filter = "hide_down"
-        service_filter = str(args.get("service", "") or "").strip()
+        service_filters = _multi_value_args(args, "service", "services")
         category_filter = str(args.get("category", "") or "").strip()
         limit_value = args.get("limit")
         limit: Optional[int]
@@ -86,7 +112,7 @@ class WorkspaceHostsQuery:
             limit = parsed_limit if parsed_limit > 0 else None
         return cls(
             host_filter=host_filter,
-            service_filter=service_filter,
+            service_filters=service_filters,
             category_filter=category_filter,
             limit=limit,
         )

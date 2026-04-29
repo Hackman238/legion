@@ -2,6 +2,7 @@ const workspaceState = {
     hosts: [],
     hostFilter: "hide_down",
     hostServiceFilter: "",
+    hostServiceFilters: [],
     hostCategoryFilter: "",
     servicesHostFilterId: 0,
     servicesHostFilterLabel: "",
@@ -436,6 +437,34 @@ function normalizeCategoryList(items) {
     return rows;
 }
 
+function normalizeServiceFilterList(items) {
+    const source = Array.isArray(items) ? items : String(items || "").split(",");
+    const seen = new Set();
+    const rows = [];
+    source.forEach((item) => {
+        const value = String(item || "").trim();
+        const key = value.toLowerCase();
+        if (!value || seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        rows.push(value);
+    });
+    return rows;
+}
+
+function selectedHostServiceFilters() {
+    const selected = normalizeServiceFilterList(workspaceState.hostServiceFilters || []);
+    if (selected.length) {
+        return selected;
+    }
+    return normalizeServiceFilterList(workspaceState.hostServiceFilter || "");
+}
+
+function hostServiceFilterLabel() {
+    return selectedHostServiceFilters().join(", ");
+}
+
 function renderCategoryChipList(target, categories, emptyText = "No categories") {
     const node = typeof target === "string" ? document.getElementById(target) : target;
     if (!node) {
@@ -506,6 +535,127 @@ function syncCategoryFilterOptions() {
             select.value = previous;
         }
     });
+}
+
+function collectWorkspaceServiceOptions() {
+    const rowsByKey = new Map();
+    const addService = (name, hostCount = 0) => {
+        const value = String(name || "").trim();
+        const key = value.toLowerCase();
+        if (!value) {
+            return;
+        }
+        const count = Number(hostCount || 0);
+        const existing = rowsByKey.get(key);
+        if (existing) {
+            return;
+        }
+        rowsByKey.set(key, {
+            service: value,
+            host_count: Number.isFinite(count) ? count : 0,
+        });
+    };
+
+    const visibleHostCounts = new Map();
+    (workspaceState.hosts || []).forEach((host) => {
+        const hostServices = new Map();
+        (host?.services || []).forEach((service) => {
+            const value = String(service || "").trim();
+            const key = value.toLowerCase();
+            if (value && !hostServices.has(key)) {
+                hostServices.set(key, value);
+            }
+        });
+        hostServices.forEach((value, key) => {
+            const existing = visibleHostCounts.get(key) || {service: value, host_count: 0};
+            existing.host_count += 1;
+            visibleHostCounts.set(key, existing);
+        });
+    });
+
+    visibleHostCounts.forEach((service) => {
+        addService(service.service, service.host_count);
+    });
+    (workspaceState.services || []).forEach((service) => {
+        addService(service?.service || "", service?.host_count || 0);
+    });
+    selectedHostServiceFilters().forEach((service) => addService(service, 0));
+    const rows = Array.from(rowsByKey.values());
+    rows.sort((left, right) => left.service.localeCompare(right.service));
+    return rows;
+}
+
+function syncHostServiceFilterOptions() {
+    const list = document.getElementById("hosts-service-filter-list");
+    const button = document.getElementById("hosts-service-filter-button");
+    const clearButton = document.getElementById("hosts-service-filter-clear-button");
+    const selected = selectedHostServiceFilters();
+    const selectedKeys = new Set(selected.map((item) => item.toLowerCase()));
+    const label = hostServiceFilterLabel();
+    if (button) {
+        button.textContent = selected.length ? `Services (${selected.length})` : "Services";
+        button.classList.toggle("is-active", selected.length > 0);
+        button.title = selected.length ? `Host service filters: ${label}` : "Filter hosts by open service";
+        button.setAttribute("aria-label", button.title);
+    }
+    if (clearButton) {
+        clearButton.disabled = selected.length === 0;
+    }
+    if (!list) {
+        return;
+    }
+    const options = collectWorkspaceServiceOptions();
+    list.innerHTML = "";
+    if (!options.length) {
+        const empty = document.createElement("p");
+        empty.className = "meta-note";
+        empty.textContent = "No open services available.";
+        list.appendChild(empty);
+        return;
+    }
+    options.forEach((service) => {
+        const row = document.createElement("label");
+        row.className = "panel-filter-option";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = service.service;
+        checkbox.checked = selectedKeys.has(String(service.service || "").toLowerCase());
+        checkbox.addEventListener("change", async () => {
+            const next = selectedHostServiceFilters();
+            const key = String(service.service || "").trim().toLowerCase();
+            const hasService = next.some((item) => item.toLowerCase() === key);
+            const filtered = checkbox.checked && !hasService
+                ? next.concat([service.service])
+                : next.filter((item) => item.toLowerCase() !== key);
+            await setHostServiceFiltersAction(filtered);
+        });
+        const text = document.createElement("span");
+        text.className = "panel-filter-option-name";
+        text.textContent = service.service;
+        row.appendChild(checkbox);
+        row.appendChild(text);
+        const count = document.createElement("span");
+        const hostCount = Number(service.host_count || 0);
+        count.className = "panel-filter-option-count";
+        count.textContent = String(Number.isFinite(hostCount) ? hostCount : 0);
+        row.appendChild(count);
+        list.appendChild(row);
+    });
+}
+
+function setHostServiceFilterPopoverOpen(open) {
+    const popover = document.getElementById("hosts-service-filter-popover");
+    const button = document.getElementById("hosts-service-filter-button");
+    const expanded = Boolean(open);
+    if (popover) {
+        popover.hidden = !expanded;
+    }
+    if (button) {
+        button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    }
+    if (expanded) {
+        syncHostServiceFilterOptions();
+    }
 }
 
 function buildLaunchToolButton(title = "Run supported tool") {
@@ -1300,6 +1450,29 @@ function renderHostSelector(hosts) {
     select.value = String(workspaceState.selectedHostId);
 }
 
+function workspaceHostLabel(hostId) {
+    const normalizedHostId = parseInt(hostId, 10);
+    if (!Number.isFinite(normalizedHostId) || normalizedHostId <= 0) {
+        return "";
+    }
+    const host = (workspaceState.hosts || []).find((item) => String(item?.id || "") === String(normalizedHostId));
+    if (!host) {
+        return "";
+    }
+    return String(host.hostname || host.ip || `host ${host.id || normalizedHostId}`).trim();
+}
+
+function setServicesHostScope(hostId, hostLabel = "") {
+    const normalizedHostId = parseInt(hostId, 10);
+    const nextHostId = Number.isFinite(normalizedHostId) && normalizedHostId > 0 ? normalizedHostId : 0;
+    const nextLabel = nextHostId ? String(hostLabel || workspaceHostLabel(nextHostId) || `host ${nextHostId}`).trim() : "";
+    const previousHostId = parseInt(workspaceState.servicesHostFilterId, 10);
+    const previousLabel = String(workspaceState.servicesHostFilterLabel || "").trim();
+    workspaceState.servicesHostFilterId = nextHostId;
+    workspaceState.servicesHostFilterLabel = nextLabel;
+    return String(previousHostId || 0) !== String(nextHostId || 0) || previousLabel !== nextLabel;
+}
+
 function renderHostSelectionState({syncGraph = false, preserveGraphDetail = true} = {}) {
     const selectedHostId = String(workspaceState.selectedHostId || "");
     const select = document.getElementById("workspace-host-select");
@@ -1333,25 +1506,32 @@ async function selectHost(hostId, {loadDetail = true, syncGraph = true, preserve
     if (!Number.isFinite(normalizedHostId) || normalizedHostId <= 0) {
         workspaceState.selectedHostId = null;
         workspaceState.hostDetail = null;
+        const servicesScopeChanged = setServicesHostScope(0);
         clearHostDetailView({resetForms: true});
         renderHostSelectionState({syncGraph, preserveGraphDetail});
+        if (servicesScopeChanged) {
+            await loadWorkspaceServices();
+        }
         return;
     }
 
     const hostChanged = String(workspaceState.selectedHostId || "") !== String(normalizedHostId);
     workspaceState.selectedHostId = normalizedHostId;
+    const servicesScopeChanged = setServicesHostScope(normalizedHostId);
     renderHostSelectionState({syncGraph, preserveGraphDetail});
 
-    if (!loadDetail) {
-        return;
+    const tasks = [];
+    if (servicesScopeChanged) {
+        syncHostFilterControls();
+        renderHosts(workspaceState.hosts);
+        tasks.push(loadWorkspaceServices());
     }
-    if (!hostChanged && workspaceState.hostDetail) {
-        return;
+    if (loadDetail && (hostChanged || !workspaceState.hostDetail)) {
+        workspaceState.hostDetail = null;
+        tasks.push(loadHostDetail(normalizedHostId));
     }
-
-    workspaceState.hostDetail = null;
     try {
-        await loadHostDetail(normalizedHostId);
+        await Promise.all(tasks);
     } catch (err) {
         setWorkspaceStatus(`Load host detail failed: ${err.message}`, true);
     }
@@ -1393,7 +1573,12 @@ function renderHosts(hosts) {
         const osIcon = getHostOsIcon(host.os || "");
         icon.className = `${osIcon.className} host-os-icon`;
         icon.setAttribute("aria-hidden", "true");
-        icon.title = osIcon.label;
+        const rawOs = String(host.raw_os || "").trim();
+        const resolvedOs = String(host.os || "").trim();
+        const osTitle = rawOs && resolvedOs && rawOs !== resolvedOs
+            ? `${osIcon.label}; imported OS: ${rawOs}`
+            : osIcon.label;
+        icon.title = osTitle;
         ipWrap.className = "host-ip-with-icon";
         ipWrap.appendChild(icon);
         ipWrap.appendChild(document.createTextNode(host.ip || ""));
@@ -1401,7 +1586,11 @@ function renderHosts(hosts) {
         tr.appendChild(ipCell);
         tr.appendChild(makeCell(host.hostname));
         tr.appendChild(makeCell(host.status));
-        tr.appendChild(makeCell(host.os));
+        const osCell = makeCell(host.os);
+        if (rawOs && resolvedOs && rawOs !== resolvedOs) {
+            osCell.title = `Resolved from stronger service evidence. Imported OS: ${rawOs}`;
+        }
+        tr.appendChild(osCell);
         tr.appendChild(makeCategoryCell(host.categories || []));
         tr.appendChild(makeCell(host.open_ports));
         const actionsCell = document.createElement("td");
@@ -1426,16 +1615,18 @@ function renderHosts(hosts) {
     renderHostSelector(workspaceState.hosts);
     renderHostSelectionState();
     syncCategoryFilterOptions();
+    syncHostServiceFilterOptions();
     graphUpdateHostFilterOptions();
 }
 
 function hostMatchesServiceFilter(host, serviceFilter) {
-    const normalized = String(serviceFilter || "").trim().toLowerCase();
-    if (!normalized) {
+    const filters = normalizeServiceFilterList(serviceFilter);
+    if (!filters.length) {
         return true;
     }
+    const filterKeys = new Set(filters.map((item) => item.toLowerCase()));
     return Array.isArray(host?.services)
-        && host.services.some((item) => String(item || "").trim().toLowerCase() === normalized);
+        && host.services.some((item) => filterKeys.has(String(item || "").trim().toLowerCase()));
 }
 
 function renderServices(services) {
@@ -1454,7 +1645,8 @@ function renderServices(services) {
         filterButton.title = `Show hosts for ${service.service || "service"}`;
         filterButton.setAttribute("aria-label", `Show hosts for ${service.service || "service"}`);
         filterButton.innerHTML = '<i class="fa-solid fa-filter" aria-hidden="true"></i>';
-        if (String(workspaceState.hostServiceFilter || "").trim().toLowerCase() === String(service.service || "").trim().toLowerCase()) {
+        const selectedServices = selectedHostServiceFilters().map((item) => item.toLowerCase());
+        if (selectedServices.includes(String(service.service || "").trim().toLowerCase())) {
             filterButton.classList.add("is-active");
         }
         filterButton.addEventListener("click", async () => {
@@ -1484,6 +1676,13 @@ function renderServices(services) {
         body.appendChild(tr);
     });
     setText("service-count", workspaceState.services.length);
+    const scopeLabel = document.getElementById("services-scope-label");
+    if (scopeLabel) {
+        const label = String(workspaceState.servicesHostFilterLabel || "").trim();
+        scopeLabel.textContent = label ? `for ${label}` : "all hosts";
+        scopeLabel.hidden = false;
+    }
+    syncHostServiceFilterOptions();
 }
 
 function setServicesPanelCollapsed(collapsed) {
@@ -3031,6 +3230,7 @@ function setRibbonMenuOpen(menuId, open) {
 
 function closeRibbonMenus() {
     setRibbonMenuOpen("", false);
+    setHostServiceFilterPopoverOpen(false);
 }
 
 function toggleRibbonMenu(menuId) {
@@ -3199,10 +3399,9 @@ function currentHostFilterQuery() {
         ? "show_all"
         : "hide_down";
     params.set("filter", filter);
-    const service = String(workspaceState.hostServiceFilter || "").trim();
-    if (service) {
-        params.set("service", service);
-    }
+    selectedHostServiceFilters().forEach((service) => {
+        params.append("service", service);
+    });
     const category = String(workspaceState.hostCategoryFilter || "").trim();
     if (category) {
         params.set("category", category);
@@ -3238,7 +3437,7 @@ function syncHostFilterControls() {
     const hideDown = document.getElementById("hosts-filter-hide-down-button");
     const resetButton = document.getElementById("hosts-reset-filter-button");
     const filter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase();
-    const service = String(workspaceState.hostServiceFilter || "").trim();
+    const service = hostServiceFilterLabel();
     const category = String(workspaceState.hostCategoryFilter || "").trim();
     const servicesCategory = String(workspaceState.servicesCategoryFilter || "").trim();
     setValue("hosts-category-filter-select", category);
@@ -3296,10 +3495,21 @@ async function setHostCategoryFilterAction(category) {
 }
 
 async function setHostServiceFilterAction(service) {
-    workspaceState.hostServiceFilter = String(service || "").trim();
-    workspaceState.servicesHostFilterId = 0;
-    workspaceState.servicesHostFilterLabel = "";
+    const value = String(service || "").trim();
+    const selected = selectedHostServiceFilters();
+    const selectedKeys = selected.map((item) => item.toLowerCase());
+    if (value && selected.length === 1 && selectedKeys[0] === value.toLowerCase()) {
+        await setHostServiceFiltersAction([]);
+        return;
+    }
+    await setHostServiceFiltersAction(value ? [value] : []);
+}
+
+async function setHostServiceFiltersAction(services) {
+    workspaceState.hostServiceFilters = normalizeServiceFilterList(services);
+    workspaceState.hostServiceFilter = workspaceState.hostServiceFilters.join(",");
     syncHostFilterControls();
+    syncHostServiceFilterOptions();
     renderHosts(workspaceState.hosts);
     renderServices(workspaceState.services);
     await Promise.all([
@@ -3319,20 +3529,17 @@ async function setServicesHostFilterAction(hostId, hostLabel = "") {
     const normalizedHostId = parseInt(hostId, 10);
     const currentHostId = parseInt(workspaceState.servicesHostFilterId, 10);
     if (Number.isFinite(normalizedHostId) && normalizedHostId > 0 && normalizedHostId === currentHostId) {
-        workspaceState.servicesHostFilterId = 0;
-        workspaceState.servicesHostFilterLabel = "";
+        setServicesHostScope(0);
     } else if (Number.isFinite(normalizedHostId) && normalizedHostId > 0) {
-        workspaceState.servicesHostFilterId = normalizedHostId;
-        workspaceState.servicesHostFilterLabel = String(hostLabel || "").trim();
+        workspaceState.selectedHostId = normalizedHostId;
+        setServicesHostScope(normalizedHostId, hostLabel);
     } else {
-        workspaceState.servicesHostFilterId = 0;
-        workspaceState.servicesHostFilterLabel = "";
+        setServicesHostScope(0);
     }
-    workspaceState.hostServiceFilter = "";
     syncHostFilterControls();
     renderHosts(workspaceState.hosts);
     await Promise.all([
-        loadWorkspaceHosts(),
+        workspaceState.selectedHostId ? loadHostDetail(workspaceState.selectedHostId) : Promise.resolve(),
         loadWorkspaceServices(),
     ]);
 }
@@ -3340,6 +3547,7 @@ async function setServicesHostFilterAction(hostId, hostLabel = "") {
 async function resetHostFiltersAction() {
     workspaceState.hostFilter = "hide_down";
     workspaceState.hostServiceFilter = "";
+    workspaceState.hostServiceFilters = [];
     workspaceState.hostCategoryFilter = "";
     workspaceState.servicesHostFilterId = 0;
     workspaceState.servicesHostFilterLabel = "";
@@ -9894,22 +10102,39 @@ async function waitForJobCompletion(jobId, timeoutMs = 120000, pollIntervalMs = 
 }
 
 async function loadWorkspaceHosts() {
-    const body = await fetchJson(`/api/workspace/hosts?${currentHostFilterQuery()}`);
+    const requestQuery = currentHostFilterQuery();
+    const servicesQueryBefore = currentServicesFilterQuery();
+    const body = await fetchJson(`/api/workspace/hosts?${requestQuery}`);
+    if (requestQuery !== currentHostFilterQuery()) {
+        return;
+    }
     if (body && body.filter) {
         workspaceState.hostFilter = String(body.filter || "hide_down").trim().toLowerCase() === "show_all"
             ? "show_all"
             : "hide_down";
     }
-    workspaceState.hostServiceFilter = String(body?.service || "").trim();
-    workspaceState.hostCategoryFilter = String(body?.category || "").trim();
     syncHostFilterControls();
     renderServices(workspaceState.services);
     renderHosts(body.hosts || []);
+    const scopedHostId = parseInt(workspaceState.servicesHostFilterId, 10);
+    const hosts = Array.isArray(body.hosts) ? body.hosts : [];
+    const scopeStillVisible = hosts.some((host) => String(host?.id || "") === String(scopedHostId || ""));
+    if (Number.isFinite(scopedHostId) && scopedHostId > 0 && !scopeStillVisible) {
+        setServicesHostScope(workspaceState.selectedHostId);
+        syncHostFilterControls();
+        renderHosts(workspaceState.hosts);
+    }
+    if (servicesQueryBefore !== currentServicesFilterQuery()) {
+        await loadWorkspaceServices();
+    }
 }
 
 async function loadWorkspaceServices() {
     const query = currentServicesFilterQuery();
     const body = await fetchJson(`/api/workspace/services${query ? `?${query}` : ""}`);
+    if (query !== currentServicesFilterQuery()) {
+        return;
+    }
     const returnedHostId = parseInt(body?.host_id, 10);
     if (!Number.isFinite(returnedHostId) || returnedHostId <= 0) {
         workspaceState.servicesHostFilterId = 0;
@@ -10185,9 +10410,9 @@ function renderSnapshot(snapshot) {
         const hostFilter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
             ? "show_all"
             : "hide_down";
-        const serviceFilter = String(workspaceState.hostServiceFilter || "").trim();
+        const serviceFilter = selectedHostServiceFilters();
         if (hostFilter !== "show_all") {
-            const filteredHosts = serviceFilter
+            const filteredHosts = serviceFilter.length
                 ? snapshot.hosts.filter((host) => hostMatchesServiceFilter(host, serviceFilter))
                 : snapshot.hosts;
             renderHosts(filteredHosts);
@@ -11390,6 +11615,30 @@ function bindActionButtons() {
             await setHostCategoryFilterAction(event.target.value);
         });
     }
+    const hostsServiceFilterButton = document.getElementById("hosts-service-filter-button");
+    if (hostsServiceFilterButton) {
+        hostsServiceFilterButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const popover = document.getElementById("hosts-service-filter-popover");
+            setHostServiceFilterPopoverOpen(Boolean(popover?.hidden));
+        });
+    }
+    const hostsServiceFilterClearButton = document.getElementById("hosts-service-filter-clear-button");
+    if (hostsServiceFilterClearButton) {
+        hostsServiceFilterClearButton.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            await setHostServiceFiltersAction([]);
+        });
+    }
+    const hostsServiceFilterPopover = document.getElementById("hosts-service-filter-popover");
+    if (hostsServiceFilterPopover) {
+        hostsServiceFilterPopover.addEventListener("click", (event) => {
+            event.stopPropagation();
+        });
+    }
+    document.addEventListener("click", () => {
+        setHostServiceFilterPopoverOpen(false);
+    });
     const servicesCategoryFilter = document.getElementById("services-category-filter-select");
     if (servicesCategoryFilter) {
         servicesCategoryFilter.addEventListener("change", async (event) => {
