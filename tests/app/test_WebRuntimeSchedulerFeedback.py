@@ -156,6 +156,7 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             service_rows = runtime.get_workspace_services(category="Windows")
             self.assertEqual(1, len(service_rows))
             self.assertEqual("microsoft-ds", service_rows[0]["service"])
+            self.assertEqual(["445"], service_rows[0]["ports"])
             self.assertIn("Windows", service_rows[0]["categories"])
         finally:
             project_manager.closeProject(project)

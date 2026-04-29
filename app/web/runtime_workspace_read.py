@@ -728,11 +728,15 @@ def get_workspace_services(runtime, limit: int = 300, host_id: int = 0, category
                     "service": service_name,
                     "port_count": 0,
                     "host_ids": set(),
+                    "ports": set(),
                     "protocols": set(),
                     "categories": set(),
                 })
                 row["port_count"] += 1
                 row["host_ids"].add(current_host_id)
+                port_value = str(item.get("port", "") or "").strip()
+                if port_value:
+                    row["ports"].add(port_value)
                 row["protocols"].add(str(item.get("protocol", "") or "").strip().lower())
                 for item in host_categories:
                     row["categories"].add(str(item or "").strip())
@@ -742,6 +746,10 @@ def get_workspace_services(runtime, limit: int = 300, host_id: int = 0, category
                 "service": str(item.get("service", "") or ""),
                 "port_count": int(item.get("port_count", 0) or 0),
                 "host_count": len(item.get("host_ids", set()) or set()),
+                "ports": sorted(
+                    [entry for entry in list(item.get("ports", set()) or set()) if entry],
+                    key=lambda value: (0, int(value)) if str(value).isdigit() else (1, str(value)),
+                ),
                 "protocols": sorted([entry for entry in list(item.get("protocols", set()) or set()) if entry]),
                 "categories": sorted([entry for entry in list(item.get("categories", set()) or set()) if entry]),
             })

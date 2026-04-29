@@ -190,11 +190,11 @@ class DummyRuntime:
             {"id": 13, "ip": "10.0.0.7", "hostname": "web01.local", "status": "up", "os": "linux", "open_ports": 4, "total_ports": 5, "services": ["http", "https", "ssh"], "categories": ["Linux", "Server"]},
         ]
         self.workspace_services = [
-            {"service": "http", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
-            {"service": "https", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
-            {"service": "kerberos", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Windows", "Server"]},
-            {"service": "smb", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Windows", "Server"]},
-            {"service": "ssh", "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
+            {"service": "http", "ports": ["80"], "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
+            {"service": "https", "ports": ["443"], "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
+            {"service": "kerberos", "ports": ["88"], "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Windows", "Server"]},
+            {"service": "smb", "ports": ["445"], "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Windows", "Server"]},
+            {"service": "ssh", "ports": ["22"], "host_count": 1, "port_count": 1, "protocols": ["tcp"], "categories": ["Linux", "Server"]},
         ]
         self.tool_install_requests = []
         self.workspace_tools = [
@@ -1144,6 +1144,7 @@ class DummyRuntime:
             return [
                 {
                     "service": str(service),
+                    "ports": [],
                     "host_count": 1,
                     "port_count": 1,
                     "protocols": ["tcp"],

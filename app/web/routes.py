@@ -69,7 +69,7 @@ def _build_csv_export(snapshot):
     write_table_section(
         "Services",
         snapshot.get("services", []),
-        ["service", "host_count", "port_count", "protocols"],
+        ["service", "ports", "host_count", "port_count", "protocols"],
     )
     write_table_section(
         "Tools",

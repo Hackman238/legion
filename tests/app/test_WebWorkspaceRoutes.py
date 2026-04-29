@@ -43,9 +43,9 @@ class _WorkspaceRouteRuntime:
     def get_workspace_services(self, limit=300, host_id=0, category=""):
         self.calls.append(("get_workspace_services", int(limit), int(host_id), str(category)))
         rows = [
-            {"service": "kerberos", "host_ip": "10.0.0.5"},
-            {"service": "smb", "host_ip": "10.0.0.5"},
-            {"service": "http", "host_ip": "10.0.0.7"},
+            {"service": "kerberos", "ports": ["88"], "host_ip": "10.0.0.5"},
+            {"service": "smb", "ports": ["445"], "host_ip": "10.0.0.5"},
+            {"service": "http", "ports": ["80"], "host_ip": "10.0.0.7"},
         ]
         if host_id == 11:
             rows = [row for row in rows if row["host_ip"] == "10.0.0.5"]
