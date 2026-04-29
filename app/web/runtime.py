@@ -861,6 +861,7 @@ class WebRuntime:
             tool_id: str,
             command_override: str = "",
             timeout: int = 300,
+            parameters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return web_runtime_tools.start_tool_run_job(
             self,
@@ -870,6 +871,7 @@ class WebRuntime:
             tool_id=tool_id,
             command_override=command_override,
             timeout=timeout,
+            parameters=parameters,
         )
 
     @staticmethod
@@ -917,8 +919,8 @@ class WebRuntime:
     def get_workspace_services(self, limit: int = 300, host_id: int = 0, category: str = "") -> List[Dict[str, Any]]:
         return web_runtime_workspace.get_workspace_services(self, limit=limit, host_id=host_id, category=category)
 
-    def _workspace_tools_rows(self, service: str = "") -> List[Dict[str, Any]]:
-        return web_runtime_tools.workspace_tools_rows(self, service=service)
+    def _workspace_tools_rows(self, service: str = "", port: str = "", protocol: str = "tcp") -> List[Dict[str, Any]]:
+        return web_runtime_tools.workspace_tools_rows(self, service=service, port=port, protocol=protocol)
 
     def get_workspace_tool_targets(
             self,
@@ -937,20 +939,33 @@ class WebRuntime:
     def get_workspace_tools_page(
             self,
             service: str = "",
+            port: str = "",
+            protocol: str = "tcp",
             limit: int = 300,
             offset: int = 0,
     ) -> Dict[str, Any]:
         return web_runtime_tools.get_workspace_tools_page(
             self,
             service=service,
+            port=port,
+            protocol=protocol,
             limit=limit,
             offset=offset,
         )
 
-    def get_workspace_tools(self, service: str = "", limit: int = 300, offset: int = 0) -> List[Dict[str, Any]]:
+    def get_workspace_tools(
+            self,
+            service: str = "",
+            port: str = "",
+            protocol: str = "tcp",
+            limit: int = 300,
+            offset: int = 0,
+    ) -> List[Dict[str, Any]]:
         return web_runtime_tools.get_workspace_tools(
             self,
             service=service,
+            port=port,
+            protocol=protocol,
             limit=limit,
             offset=offset,
         )
@@ -1309,6 +1324,7 @@ class WebRuntime:
             tool_id: str,
             command_override: str,
             timeout: int,
+            parameters: Optional[Dict[str, Any]] = None,
             job_id: int = 0,
     ):
         return web_runtime_tools.run_manual_tool(
@@ -1319,6 +1335,7 @@ class WebRuntime:
             tool_id=tool_id,
             command_override=command_override,
             timeout=timeout,
+            parameters=parameters,
             job_id=job_id,
         )
 

@@ -190,6 +190,9 @@ class ToolingEnvTest(unittest.TestCase):
         self.assertIn("github.com/Pennyw0rth/NetExec.git", by_key["netexec"].ubuntu_install)
         self.assertEqual("python3 -m pipx install --force sslyze", by_key["sslyze"].ubuntu_install)
         self.assertEqual("python3 -m pipx install --force wafw00f", by_key["wafw00f"].ubuntu_install)
+        self.assertIn("cisco-smart-install", by_key)
+        self.assertIn("siet", by_key)
+        self.assertEqual("internal", by_key["siet"].category)
 
     def test_build_tool_install_plan_rewrites_kali_apt_commands(self):
         from app.tooling import ToolAuditEntry, build_tool_install_plan

@@ -1,0 +1,32 @@
+{
+  "id": "pipette-cisco-smart-install-check",
+  "label": "Cisco Smart Install exposure check",
+  "description": "Read-only aggregate check for Cisco Smart Install exposure on TCP/4786. It validates reachability, runs Nmap service detection, and uses the local cisco-smi NSE script when available. Active SIET proof/exploit actions are intentionally not invoked by this check pipette.",
+  "entrypoint": "check-smart-install.sh",
+  "service_scope": [
+    "smart-install",
+    "cisco-smart-install",
+    "cisco"
+  ],
+  "protocol_scope": [
+    "tcp"
+  ],
+  "target_ports": [
+    "4786"
+  ],
+  "required_tools": [
+    "bash",
+    "nmap"
+  ],
+  "optional_tools": [
+    "cisco-smart-install",
+    "siet"
+  ],
+  "risk_tags": [
+    "high_detection_likelihood"
+  ],
+  "impact_level": "low",
+  "noise_level": "low",
+  "mode": "check",
+  "default_timeout": 300
+}

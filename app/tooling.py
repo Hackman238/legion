@@ -483,6 +483,22 @@ def _tool_specs() -> List[ToolSpec]:
             optional=False,
         ),
         ToolSpec(
+            "cisco-smart-install",
+            "cisco-smart-install",
+            ("cisco-smart-install",),
+            "internal",
+            "Optional Cisco Smart Install validation helper used by Smart Install pipettes when an approved read-only invocation is configured.",
+            notes="Legion does not currently invoke this automatically because command syntax and safety characteristics vary by implementation.",
+        ),
+        ToolSpec(
+            "siet",
+            "SIET",
+            ("siet", "SmartInstallExploit.py"),
+            "internal",
+            "Optional Cisco Smart Install proof tooling. Active use should remain approval-gated because SIET-style tooling can perform configuration download, upload, reload, or other invasive actions.",
+            notes="Detected for operator awareness only; the bundled read-only Cisco Smart Install pipette does not run SIET.",
+        ),
+        ToolSpec(
             "hydra",
             "Hydra",
             ("hydra",),

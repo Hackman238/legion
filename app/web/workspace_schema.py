@@ -136,6 +136,8 @@ class WorkspaceServicesQuery:
 @dataclass(frozen=True)
 class WorkspaceToolsPageQuery:
     service: str
+    port: str
+    protocol: str
     limit: int
     offset: int
 
@@ -143,6 +145,8 @@ class WorkspaceToolsPageQuery:
     def from_args(cls, args: Any) -> "WorkspaceToolsPageQuery":
         return cls(
             service=str(args.get("service", "") or "").strip(),
+            port=str(args.get("port", "") or "").strip(),
+            protocol=str(args.get("protocol", "") or "tcp").strip().lower() or "tcp",
             limit=clamp_int(args.get("limit", 300), 300, 1, 500),
             offset=clamp_int(args.get("offset", 0), 0, 0, 10**9),
         )
@@ -324,6 +328,7 @@ class ToolRunRequest:
     protocol: str
     tool_id: str
     command_override: str
+    parameters: Dict[str, Any]
     timeout: int
 
     @classmethod
@@ -340,6 +345,7 @@ class ToolRunRequest:
             protocol=str(source.get("protocol", "tcp") or "tcp").strip().lower() or "tcp",
             tool_id=str(source.get("tool_id", "") or "").strip(),
             command_override=str(source.get("command_override", "") or ""),
+            parameters=dict(source.get("parameters", {}) or {}) if isinstance(source.get("parameters", {}), dict) else {},
             timeout=timeout,
         )
 
