@@ -1656,6 +1656,7 @@ function renderServices(services) {
         filterCell.appendChild(filterButton);
         tr.appendChild(filterCell);
         tr.appendChild(makeCell(service.service || ""));
+        tr.appendChild(makeCell(Array.isArray(service.ports) ? service.ports.join(", ") : ""));
         tr.appendChild(makeCell(service.host_count || 0));
         tr.appendChild(makeCell(service.port_count || 0));
         tr.appendChild(makeCell(Array.isArray(service.protocols) ? service.protocols.join(",") : ""));
