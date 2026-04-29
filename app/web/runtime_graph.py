@@ -52,7 +52,29 @@ def get_evidence_graph(runtime, filters: Optional[Dict[str, Any]] = None) -> Dic
         project = runtime._require_active_project()
         ensure_scheduler_graph_tables(project.database)
         resolved = dict(filters or {})
-        return query_evidence_graph(
+        host_filter = str(resolved.get("host_filter", "hide_down") or "").strip().lower()
+        service_filters = [
+            str(item or "").strip()
+            for item in list(resolved.get("service_filters", []) or [])
+            if str(item or "").strip()
+        ]
+        category_filter = str(resolved.get("category_filter", "") or "").strip()
+        scoped_host_ids = None
+        if service_filters or category_filter:
+            scoped_hosts = runtime.get_workspace_hosts(
+                include_down=host_filter == "show_all",
+                service=",".join(service_filters),
+                category=category_filter,
+            )
+            scoped_host_ids = []
+            for row in list(scoped_hosts or []):
+                try:
+                    host_id = int(row.get("id", 0) or 0)
+                except (TypeError, ValueError):
+                    host_id = 0
+                if host_id > 0:
+                    scoped_host_ids.append(host_id)
+        graph = query_evidence_graph(
             project.database,
             node_types=resolved.get("node_types"),
             edge_types=resolved.get("edge_types"),
@@ -61,11 +83,20 @@ def get_evidence_graph(runtime, filters: Optional[Dict[str, Any]] = None) -> Dic
             search=str(resolved.get("search", "") or ""),
             include_ai_suggested=bool(resolved.get("include_ai_suggested", True)),
             hide_nmap_xml_artifacts=bool(resolved.get("hide_nmap_xml_artifacts", False)),
-            hide_down_hosts=str(resolved.get("host_filter", "hide_down") or "").strip().lower() != "show_all",
+            hide_down_hosts=host_filter != "show_all",
             host_id=int(resolved.get("host_id", 0) or 0) or None,
+            host_ids=scoped_host_ids,
             limit_nodes=int(resolved.get("limit_nodes", 600) or 600),
             limit_edges=int(resolved.get("limit_edges", 1200) or 1200),
         )
+        meta = graph.get("meta", {}) if isinstance(graph.get("meta", {}), dict) else {}
+        filters_meta = meta.get("filters", {}) if isinstance(meta.get("filters", {}), dict) else {}
+        filters_meta["service_filters"] = list(service_filters)
+        filters_meta["category_filter"] = category_filter
+        filters_meta["host_scope_ids"] = list(scoped_host_ids or []) if scoped_host_ids is not None else None
+        meta["filters"] = filters_meta
+        graph["meta"] = meta
+        return graph
 
 
 def get_graph_snapshot_locked(runtime) -> Dict[str, Any]:

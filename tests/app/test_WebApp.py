@@ -1117,11 +1117,15 @@ class DummyRuntime:
         rows = list(self.workspace_hosts)
         if not include_down:
             rows = [row for row in rows if str(row.get("status", "")).strip().lower() != "down"]
-        service_filter = str(service or "").strip().lower()
-        if service_filter:
+        service_filters = {
+            token.strip().lower()
+            for token in str(service or "").split(",")
+            if token.strip()
+        }
+        if service_filters:
             rows = [
                 row for row in rows
-                if any(str(item or "").strip().lower() == service_filter for item in list(row.get("services", []) or []))
+                if any(str(item or "").strip().lower() in service_filters for item in list(row.get("services", []) or []))
             ]
         category_filter = str(category or "").strip().lower()
         if category_filter:
@@ -1741,6 +1745,22 @@ class DummyRuntime:
         hide_nmap_xml_artifacts = bool(filters.get("hide_nmap_xml_artifacts", False))
         host_filter = str(filters.get("host_filter", filters.get("filter", "hide_down")) or "").strip().lower()
         host_id = int(filters.get("host_id", 0) or 0)
+        service_filters = [
+            str(item or "").strip()
+            for item in list(filters.get("service_filters", []) or [])
+            if str(item or "").strip()
+        ]
+        category_filter = str(filters.get("category_filter", "") or "").strip()
+        host_scope_ids = None
+        if service_filters or category_filter:
+            host_scope_ids = {
+                int(row.get("id", 0) or 0)
+                for row in self.get_workspace_hosts(
+                    include_down=host_filter == "show_all",
+                    service=",".join(service_filters),
+                    category=category_filter,
+                )
+            }
 
         def _artifact_hidden(item):
             if str(item.get("type", "")).strip().lower() != "artifact":
@@ -1781,6 +1801,11 @@ class DummyRuntime:
             nodes = [
                 item for item in nodes
                 if int(item.get("properties", {}).get("host_id", 0) or 0) == host_id
+            ]
+        if host_scope_ids is not None:
+            nodes = [
+                item for item in nodes
+                if int(item.get("properties", {}).get("host_id", 0) or 0) in host_scope_ids
             ]
         node_ids = {item.get("node_id") for item in nodes}
         filtered_edges = []
@@ -2733,6 +2758,48 @@ class WebAppTest(unittest.TestCase):
         shown_ids = {item["node_id"] for item in shown.json["nodes"]}
         self.assertIn("graph-node-down-host", shown_ids)
         self.assertFalse(shown.json["meta"]["filters"]["hide_down_hosts"])
+
+    def test_graph_api_mirrors_host_service_and_category_filters(self):
+        self.runtime.graph_snapshot["nodes"].append({
+            "node_id": "graph-node-web-host",
+            "type": "host",
+            "label": "10.0.0.7",
+            "confidence": 95.0,
+            "source_kind": "observed",
+            "source_ref": "host:10.0.0.7",
+            "properties": {"host_id": 13, "ip": "10.0.0.7"},
+            "evidence_refs": ["host:10.0.0.7"],
+        })
+        self.runtime.graph_snapshot["nodes"].append({
+            "node_id": "graph-node-web-tech",
+            "type": "technology",
+            "label": "nginx",
+            "confidence": 88.0,
+            "source_kind": "observed",
+            "source_ref": "host:13:technology:nginx",
+            "properties": {"host_id": 13, "name": "nginx"},
+            "evidence_refs": ["service banner"],
+        })
+        self.runtime.graph_snapshot["edges"].append({
+            "edge_id": "graph-edge-web-tech",
+            "type": "fingerprinted_as",
+            "from_node_id": "graph-node-web-host",
+            "to_node_id": "graph-node-web-tech",
+            "confidence": 88.0,
+            "source_kind": "observed",
+            "source_ref": "host:13:technology:nginx",
+            "properties": {},
+            "evidence_refs": ["service banner"],
+        })
+
+        response = self.client.get("/api/graph?service=http&category=Linux&filter=hide_down")
+        self.assertEqual(200, response.status_code)
+        node_ids = {item["node_id"] for item in response.json["nodes"]}
+        self.assertIn("graph-node-web-host", node_ids)
+        self.assertIn("graph-node-web-tech", node_ids)
+        self.assertNotIn("graph-node-host", node_ids)
+        self.assertEqual(["http"], response.json["meta"]["filters"]["service_filters"])
+        self.assertEqual("Linux", response.json["meta"]["filters"]["category_filter"])
 
     def test_graph_api_validation(self):
         missing_layout = self.client.post("/api/graph/layouts", json={"layout": {}})

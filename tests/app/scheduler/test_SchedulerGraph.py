@@ -282,6 +282,33 @@ class SchedulerEvidenceGraphTest(unittest.TestCase):
             }
             self.assertIn(down_host_id, shown_host_ids)
             self.assertFalse(shown["meta"]["filters"]["hide_down_hosts"])
+
+            scoped = query_evidence_graph(
+                project.database,
+                host_ids=[up_host_id],
+                hide_down_hosts=False,
+                limit_nodes=200,
+                limit_edges=200,
+            )
+            scoped_host_ids = {
+                int(item.get("properties", {}).get("host_id", 0) or 0)
+                for item in scoped["nodes"]
+                if isinstance(item.get("properties", {}), dict)
+            }
+            self.assertIn(up_host_id, scoped_host_ids)
+            self.assertNotIn(down_host_id, scoped_host_ids)
+            self.assertEqual([up_host_id], scoped["meta"]["filters"]["host_ids"])
+
+            empty = query_evidence_graph(
+                project.database,
+                host_ids=[],
+                hide_down_hosts=False,
+                limit_nodes=200,
+                limit_edges=200,
+            )
+            self.assertEqual([], empty["nodes"])
+            self.assertEqual([], empty["edges"])
+            self.assertEqual([], empty["meta"]["filters"]["host_ids"])
         finally:
             project_manager.closeProject(project)
 
