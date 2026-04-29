@@ -59,11 +59,12 @@ def _build_hosts_csv_export(rows):
     return output.getvalue()
 
 
-def _build_hosts_json_export(rows, *, host_filter: str, service_filter: str = ""):
+def _build_hosts_json_export(rows, *, host_filter: str, service_filter: str = "", service_filters=None):
     return json.dumps(
         {
             "filter": str(host_filter or "hide_down"),
             "service": str(service_filter or ""),
+            "services": list(service_filters or []),
             "host_count": len(list(rows or [])),
             "hosts": list(rows or []),
         },
@@ -128,6 +129,7 @@ class WorkspaceService:
         return {
             "filter": query.host_filter,
             "service": query.service_filter,
+            "services": list(query.service_filters),
             "category": query.category_filter,
             "hosts": rows,
         }
@@ -149,7 +151,12 @@ class WorkspaceService:
     def export_workspace_hosts_json(self, args) -> Dict[str, Any]:
         query = WorkspaceHostsQuery.from_args(args)
         rows = self._get_workspace_hosts_rows(query)
-        payload = _build_hosts_json_export(rows, host_filter=query.host_filter, service_filter=query.service_filter)
+        payload = _build_hosts_json_export(
+            rows,
+            host_filter=query.host_filter,
+            service_filter=query.service_filter,
+            service_filters=query.service_filters,
+        )
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
         suffix = "all" if query.include_down else "up-only"
         if query.service_filter:

@@ -147,6 +147,12 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
             self.assertEqual("10.0.0.10", host_rows[0]["ip"])
             self.assertIn("Windows", host_rows[0]["categories"])
 
+            multi_service_hosts = runtime.get_workspace_hosts(service="microsoft-ds,ssh")
+            self.assertEqual({"10.0.0.10", "10.0.0.20"}, {row["ip"] for row in multi_service_hosts})
+
+            smb_hosts = runtime.get_workspace_hosts(service="microsoft-ds")
+            self.assertEqual(["10.0.0.10"], [row["ip"] for row in smb_hosts])
+
             service_rows = runtime.get_workspace_services(category="Windows")
             self.assertEqual(1, len(service_rows))
             self.assertEqual("microsoft-ds", service_rows[0]["service"])

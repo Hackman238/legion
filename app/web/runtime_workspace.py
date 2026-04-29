@@ -34,7 +34,7 @@ create_cve_entry = web_runtime_workspace_mutation.create_cve_entry
 delete_cve_entry = web_runtime_workspace_mutation.delete_cve_entry
 
 
-def build_workspace_host_row(runtime, host: Any, port_repo: Any, service_repo: Any, project: Any) -> Dict[str, Any]:
+def build_workspace_host_row(runtime, host: Any, port_repo: Any, service_repo: Any, project: Any, **kwargs) -> Dict[str, Any]:
     return web_runtime_workspace_read.build_workspace_host_row(
         runtime,
         host,
@@ -42,6 +42,7 @@ def build_workspace_host_row(runtime, host: Any, port_repo: Any, service_repo: A
         service_repo,
         project,
         get_target_state_func=get_target_state,
+        **kwargs,
     )
 
 

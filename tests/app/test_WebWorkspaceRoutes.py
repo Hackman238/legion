@@ -18,7 +18,15 @@ class _WorkspaceRouteRuntime:
         if not include_down:
             rows = [row for row in rows if row["status"] != "down"]
         if service:
-            rows = [row for row in rows if str(service) in list(row.get("services", []))]
+            service_filters = {
+                token.strip()
+                for token in str(service).split(",")
+                if token.strip()
+            }
+            rows = [
+                row for row in rows
+                if any(item in service_filters for item in list(row.get("services", [])))
+            ]
         if category:
             rows = [row for row in rows if str(category) == "server"]
         if limit:
@@ -248,6 +256,11 @@ class WebWorkspaceRoutesTest(unittest.TestCase):
         self.assertEqual(200, all_hosts.status_code)
         self.assertEqual("show_all", all_hosts.json["filter"])
         self.assertEqual(3, len(all_hosts.json["hosts"]))
+
+        multi_service_hosts = self.client.get("/api/workspace/hosts?service=smb&service=http")
+        self.assertEqual(200, multi_service_hosts.status_code)
+        self.assertEqual(["smb", "http"], multi_service_hosts.json["services"])
+        self.assertEqual({"10.0.0.5", "10.0.0.7"}, {item["ip"] for item in multi_service_hosts.json["hosts"]})
 
         hosts_csv = self.client.get("/api/export/hosts-csv?service=http")
         self.assertEqual(200, hosts_csv.status_code)

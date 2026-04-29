@@ -76,6 +76,49 @@ DEFAULT_DEVICE_CATEGORY_RULES: List[Dict[str, Any]] = [
         ],
     },
     {
+        "name": "Phone",
+        "ports": [1720, 2000, 2427, 2727, 4569, 5060, 5061],
+        "fingerprint_fragments": [
+            "sip",
+            "sip-tls",
+            "sips",
+            "rtp",
+            "rtcp",
+            "srtp",
+            "voip",
+            "ip phone",
+            "ip-phone",
+            "asterisk",
+            "freepbx",
+            "3cx",
+            "cisco ip phone",
+            "cucm",
+            "skinny",
+            "sccp",
+            "h.323",
+            "h323",
+            "mgcp",
+            "iax2",
+            "polycom",
+            "yealink",
+            "grandstream",
+            "avaya",
+        ],
+        "cpe": [
+            "asterisk",
+            "freepbx",
+            "3cx",
+            "cisco:unified_communications",
+            "cisco:ip_phone",
+            "polycom",
+            "yealink",
+            "grandstream",
+            "avaya",
+        ],
+        "min_score": 1,
+        "suppresses": ["Server"],
+    },
+    {
         "name": "Storage",
         "ports": [111, 139, 445, 2049, 3260, 548],
         "fingerprint_fragments": [
@@ -247,6 +290,14 @@ def normalize_device_category_rule(item: Any, *, built_in: bool = False) -> Opti
             continue
         seen_cpes.add(fragment)
         cpe_fragments.append(fragment)
+    suppresses: List[str] = []
+    seen_suppresses: Set[str] = set()
+    for raw_suppressed in list(item.get("suppresses", []) or []):
+        suppressed = slugify_device_category(raw_suppressed)
+        if not suppressed or suppressed in seen_suppresses:
+            continue
+        seen_suppresses.add(suppressed)
+        suppresses.append(suppressed)
     min_score = 2
     try:
         min_score = int(item.get("min_score", 2) or 2)
@@ -260,6 +311,7 @@ def normalize_device_category_rule(item: Any, *, built_in: bool = False) -> Opti
         "fingerprint_fragments": fingerprint_fragments,
         "cpe": cpe_fragments,
         "min_score": min_score,
+        "suppresses": suppresses,
         "built_in": bool(built_in or item.get("built_in", False)),
     }
 
@@ -435,8 +487,21 @@ def classify_device_categories(context: Optional[Dict[str, Any]], custom_rules: 
             "matched_ports": matched_ports[:8],
             "matched_fingerprint_fragments": matched_fingerprints[:6],
             "matched_cpe_fragments": matched_cpes[:4],
+            "suppresses": list(rule.get("suppresses", []) or []),
             "built_in": bool(rule.get("built_in", False)),
         })
+    suppressed_categories: Set[str] = set()
+    for item in rows:
+        suppressed_categories.update(
+            slugify_device_category(value)
+            for value in list(item.get("suppresses", []) or [])
+            if slugify_device_category(value)
+        )
+    if suppressed_categories:
+        rows = [
+            item for item in rows
+            if slugify_device_category(item.get("name", "") or item.get("id", "")) not in suppressed_categories
+        ]
     rows.sort(key=lambda item: (-float(item.get("confidence", 0.0) or 0.0), str(item.get("name", "")).lower()))
     return rows[:16]
 

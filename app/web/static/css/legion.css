@@ -815,6 +815,98 @@ body.colorful-background .background-glow {
     min-width: 10rem;
 }
 
+.panel-scope-label {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    margin: 0;
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.panel-filter-dropdown {
+    position: relative;
+}
+
+.panel-filter-button {
+    min-height: 1.9rem;
+    padding: 0.34rem 0.72rem;
+}
+
+.panel-filter-button.is-active {
+    border-color: rgba(126, 227, 203, 0.55);
+    box-shadow: 0 0 0 1px rgba(126, 227, 203, 0.18) inset;
+}
+
+.panel-filter-dropdown-menu .panel-filter-button {
+    width: 100%;
+}
+
+.panel-filter-dropdown-menu .panel-filter-popover {
+    top: 0;
+    right: calc(100% + 0.5rem);
+}
+
+.panel-filter-popover {
+    position: absolute;
+    top: calc(100% + 0.45rem);
+    right: 0;
+    z-index: 35;
+    width: min(18rem, 80vw);
+    padding: 0.75rem;
+    border: 1px solid rgba(126, 227, 203, 0.22);
+    border-radius: 0.85rem;
+    background: rgba(13, 8, 23, 0.98);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+}
+
+.panel-filter-popover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.55rem;
+}
+
+.panel-filter-list {
+    display: grid;
+    gap: 0.35rem;
+    max-height: 18rem;
+    overflow: auto;
+    padding-right: 0.65rem;
+}
+
+.panel-filter-option {
+    display: grid;
+    grid-template-columns: 1rem minmax(0, 1fr) 2.25rem;
+    align-items: center;
+    column-gap: 0.6rem;
+    padding: 0.28rem 0.1rem;
+    color: var(--text-main);
+    font-size: 0.84rem;
+}
+
+.panel-filter-option input {
+    justify-self: start;
+}
+
+.panel-filter-option-name {
+    min-width: 0;
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.panel-filter-option-count {
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    font-variant-numeric: tabular-nums;
+    justify-self: end;
+    text-align: right;
+}
+
 .panel-header-actions .icon-btn {
     margin-right: 0;
 }
