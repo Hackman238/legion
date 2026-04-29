@@ -5,7 +5,57 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
+class _MemorySecretStore:
+    _KNOWN_PROVIDER_ENV_VARS = {
+        "lm_studio": "LM_STUDIO_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "claude": "ANTHROPIC_API_KEY",
+    }
+    _KNOWN_INTEGRATION_ENV_VARS = {
+        "grayhatwarfare": "GRAYHATWARFARE_API_KEY",
+        "chaos": "CHAOS_API_KEY",
+        "shodan": "SHODAN_API_KEY",
+    }
+
+    def __init__(self, write_available=True):
+        self.write_enabled = bool(write_available)
+        self.secrets = {}
+
+    @classmethod
+    def provider_env_var(cls, provider_name):
+        return str(cls._KNOWN_PROVIDER_ENV_VARS.get(str(provider_name or "").strip().lower(), "") or "")
+
+    @classmethod
+    def integration_env_var(cls, integration_name):
+        return str(cls._KNOWN_INTEGRATION_ENV_VARS.get(str(integration_name or "").strip().lower(), "") or "")
+
+    def write_available(self):
+        return bool(self.write_enabled)
+
+    def describe(self):
+        return {"backend": "memory", "write_available": bool(self.write_enabled)}
+
+    def get_secret(self, secret_ref, *, env_var=""):
+        return str(self.secrets.get(str(secret_ref or ""), "") or "")
+
+    def set_secret(self, secret_ref, value):
+        self.secrets[str(secret_ref or "")] = str(value or "")
+        return str(secret_ref or "")
+
+    def delete_secret(self, secret_ref):
+        self.secrets.pop(str(secret_ref or ""), None)
+
+
 class SchedulerPlannerTest(unittest.TestCase):
+    def setUp(self):
+        from app.scheduler import config as scheduler_config
+
+        self._secret_store_patch = patch.object(scheduler_config, "SecretStore", _MemorySecretStore)
+        self._secret_store_patch.start()
+
+    def tearDown(self):
+        self._secret_store_patch.stop()
+
     def test_deterministic_mode_follows_scheduler_mapping(self):
         from app.scheduler.config import SchedulerConfigManager
         from app.scheduler.models import ActionSpec, PlanStep

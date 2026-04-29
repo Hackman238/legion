@@ -2822,6 +2822,8 @@ def _extract_json(text: str) -> Dict[str, Any]:
         candidates.append(raw[first_brace:last_brace + 1])
 
     for candidate in candidates:
+        if not _looks_like_complete_json(candidate):
+            continue
         try:
             parsed = json.loads(candidate)
         except Exception:
@@ -2829,6 +2831,35 @@ def _extract_json(text: str) -> Dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     raise ProviderError("Provider returned non-JSON payload.")
+
+
+def _looks_like_complete_json(candidate: str) -> bool:
+    raw = str(candidate or "").strip()
+    if not raw or raw[0] != "{" or raw[-1] != "}":
+        return False
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0 and not in_string and not escaped
 
 
 def _response_is_complete_for_prompt(text: str, prompt_metadata: Optional[Dict[str, Any]] = None) -> bool:

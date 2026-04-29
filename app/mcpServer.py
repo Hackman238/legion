@@ -412,15 +412,19 @@ class MCPServer:
 
     async def query_findings(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        return runtime.get_findings(
-            host_id=_int_arg(arguments, "host_id", 0),
-            limit_findings=_int_arg(arguments, "limit", 1000),
-        )
+        from app.web.services.workspace_service import WorkspaceService
+
+        return WorkspaceService(runtime).list_findings({
+            "host_id": _int_arg(arguments, "host_id", 0),
+            "limit": _int_arg(arguments, "limit", 1000),
+        })
 
     async def query_state(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
-        return runtime.get_target_state_view(
-            host_id=_int_arg(arguments, "host_id", 0),
+        from app.web.services.workspace_service import WorkspaceService
+
+        return WorkspaceService(runtime).get_host_target_state(
+            _int_arg(arguments, "host_id", 0),
             limit=_int_arg(arguments, "limit", 500),
         )
 

@@ -15,6 +15,7 @@ from app.web.scheduler_schema import (
     SchedulerPreferencesPatch,
     SchedulerRejectionRequest,
 )
+from app.web.response_schema import AcceptedJobResponse
 
 
 class SchedulerService:
@@ -138,4 +139,4 @@ class SchedulerService:
 
     def start_run(self) -> Tuple[Dict[str, Any], int]:
         job = self.runtime.start_scheduler_run_job()
-        return {"status": "accepted", "job": job}, 202
+        return AcceptedJobResponse.from_job(job).to_dict(), 202

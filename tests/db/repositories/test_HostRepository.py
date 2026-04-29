@@ -18,9 +18,9 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tests.db.helpers.db_helpers import mockExecuteFetchAll, mockQueryWithFilterBy, mockFirstByReturnValue
+from tests.db.helpers.db_helpers import mockExecuteRows, mockQueryWithFilterBy, mockFirstByReturnValue
 
-existsQuery = 'SELECT host.ip FROM hostObj AS host WHERE host.ip == ? OR host.hostname == ?'
+existsQuery = 'SELECT host.ip FROM hostObj AS host WHERE host.ip == :host OR host.hostname == :host'
 
 
 def expectedGetHostsAndPortsQuery(with_filter: str = "") -> str:
@@ -29,7 +29,7 @@ def expectedGetHostsAndPortsQuery(with_filter: str = "") -> str:
         "services.product,services.version,services.extrainfo,services.fingerprint FROM portObj AS ports "
         "INNER JOIN hostObj AS hosts ON hosts.id = ports.hostId "
         "LEFT OUTER JOIN serviceObj AS services ON services.id=ports.serviceId "
-        "WHERE services.name=?")
+            "WHERE services.name=:service_name")
     query += with_filter
     return query
 
@@ -44,46 +44,56 @@ class HostRepositoryTest(unittest.TestCase):
         self.hostRepository = HostRepository(self.mockDbAdapter)
 
     def getHostsAndPortsTestCase(self, filters, service_name, expectedQuery):
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll(
-            [{'name': 'service_name1'}, {'name': 'service_name2'}])
+        self.mockDbSession.execute.return_value = mockExecuteRows(
+            [('service_name1',), ('service_name2',)],
+            ['name'],
+        )
         service_names = self.hostRepository.getHostsAndPortsByServiceName(service_name, filters)
 
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expectedQuery, service_name)
+        query, params = self.mockDbSession.execute.call_args.args
+        self.assertEqual(expectedQuery, str(query))
+        self.assertEqual({"service_name": service_name}, params)
         self.assertEqual([{'name': 'service_name1'}, {'name': 'service_name2'}], service_names)
 
     def test_exists_WhenProvidedAExistingHosts_ReturnsTrue(self):
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll([['some-ip']])
+        self.mockDbSession.execute.return_value = mockExecuteRows([('some-ip',)], ['ip'])
         self.assertTrue(self.hostRepository.exists("some_host"))
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(existsQuery, "some_host", "some_host")
+        query, params = self.mockDbSession.execute.call_args.args
+        self.assertEqual(existsQuery, str(query))
+        self.assertEqual({"host": "some_host"}, params)
 
     def test_exists_WhenProvidedANonExistingHosts_ReturnsFalse(self):
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll([])
+        self.mockDbSession.execute.return_value = mockExecuteRows([], ['ip'])
 
         self.assertFalse(self.hostRepository.exists("some_host"))
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(existsQuery, "some_host", "some_host")
+        query, params = self.mockDbSession.execute.call_args.args
+        self.assertEqual(existsQuery, str(query))
+        self.assertEqual({"host": "some_host"}, params)
 
     def test_getHosts_InvokedWithNoFilters_ReturnsHosts(self):
         from app.auxiliary import Filters
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll([['host1'], ['host2']])
+        self.mockDbSession.execute.return_value = mockExecuteRows([('host1',), ('host2',)], ['ip'])
         expectedQuery = "SELECT * FROM hostObj AS hosts WHERE 1=1"
         filters: Filters = Filters()
         filters.apply(up=True, down=True, checked=True, portopen=True, portfiltered=True, portclosed=True,
                       tcp=True, udp=True)
         result = self.hostRepository.getHosts(filters)
-        self.assertEqual([['host1'], ['host2']], result)
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expectedQuery)
+        self.assertEqual([{'ip': 'host1'}, {'ip': 'host2'}], result)
+        query = self.mockDbSession.execute.call_args.args[0]
+        self.assertEqual(expectedQuery, str(query))
 
     def test_getHosts_InvokedWithAFewFilters_ReturnsFilteredHosts(self):
         from app.auxiliary import Filters
-        self.mockDbAdapter.metadata.bind.execute.return_value = mockExecuteFetchAll([['host1'], ['host2']])
+        self.mockDbSession.execute.return_value = mockExecuteRows([('host1',), ('host2',)], ['ip'])
         expectedQuery = ("SELECT * FROM hostObj AS hosts WHERE 1=1"
                          " AND hosts.status != 'down' AND hosts.checked != 'True'")
         filters: Filters = Filters()
         filters.apply(up=True, down=False, checked=False, portopen=True, portfiltered=True, portclosed=True,
                       tcp=True, udp=True)
         result = self.hostRepository.getHosts(filters)
-        self.assertEqual([['host1'], ['host2']], result)
-        self.mockDbAdapter.metadata.bind.execute.assert_called_once_with(expectedQuery)
+        self.assertEqual([{'ip': 'host1'}, {'ip': 'host2'}], result)
+        query = self.mockDbSession.execute.call_args.args[0]
+        self.assertEqual(expectedQuery, str(query))
 
     def test_getHostInfo_WhenProvidedHostIpAddress_FetchesHostInformation(self):
         from db.entities.host import hostObj
@@ -128,7 +138,7 @@ class HostRepositoryTest(unittest.TestCase):
         self.hostRepository.toggleHostCheckStatus("some-ip-address")
         self.assertEqual('False', self.mockProcess.checked)
         self.mockDbSession.add.assert_called_once_with(self.mockProcess)
-        self.mockDbAdapter.commit.assert_called_once()
+        self.mockDbSession.commit.assert_called_once()
 
     def test_toggleHostCheckStatus_WhenHostIsSetToFalse_TogglesToTrue(self):
         self.mockProcess.checked = 'False'
@@ -136,4 +146,4 @@ class HostRepositoryTest(unittest.TestCase):
         self.hostRepository.toggleHostCheckStatus("some-ip-address")
         self.assertEqual('True', self.mockProcess.checked)
         self.mockDbSession.add.assert_called_once_with(self.mockProcess)
-        self.mockDbAdapter.commit.assert_called_once()
+        self.mockDbSession.commit.assert_called_once()

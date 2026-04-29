@@ -72,8 +72,8 @@ class _WorkspaceRouteRuntime:
             raise KeyError(f"Unknown host id: {host_id}")
         return {"host": {"id": 11, "ip": "10.0.0.5"}, "ai_analysis": {"provider": "openai"}}
 
-    def get_target_state_view(self, host_id=0):
-        self.calls.append(("get_target_state_view", int(host_id)))
+    def get_target_state_view(self, host_id=0, limit=500):
+        self.calls.append(("get_target_state_view", int(host_id), int(limit)))
         if int(host_id) != 11:
             raise KeyError(f"Unknown host id: {host_id}")
         return {"target_state": {"engagement_preset": "internal_recon"}}

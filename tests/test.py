@@ -1,31 +1,28 @@
-try:
-    from sqlalchemy.orm.scoping import ScopedSession as scoped_session
-    print("SQL Alchemy library OK")
-except ImportError:
-    print("Import failed. SQL Alchemy library not found.")
-    exit(1)
+import importlib
+import importlib.util
+import unittest
 
-try:
-    from PyQt6 import QtWidgets, QtGui, QtCore
-    print("PyQt6 library OK.")
-except ImportError:
-    print("Import failed. PyQt6 library not found.")
-    exit(1)
 
-try:
-    import quamash
-    import asyncio
-    print("Quamash and asyncio libraries OK.")
-except ImportError:
-    print("Import failed. quamash or asyncio not found.")
-    exit(1)
+class LegacyImportSmokeTest(unittest.TestCase):
+    def test_sqlalchemy_imports(self):
+        importlib.import_module("sqlalchemy.orm.scoping")
 
-try:
-    from app.logic import *
-    from ui.gui import *
-    from ui.view import *
-    from controller.controller import *
-    print("Legion class imports OK.")
-except ImportError:
-    print("Import failed. One or more modules failed to import correctly.")
-    exit(1)
+    def test_pyqt6_imports(self):
+        importlib.import_module("PyQt6.QtCore")
+        importlib.import_module("PyQt6.QtGui")
+        importlib.import_module("PyQt6.QtWidgets")
+
+    @unittest.skipUnless(importlib.util.find_spec("quamash"), "quamash is not installed")
+    def test_quamash_imports(self):
+        importlib.import_module("asyncio")
+        importlib.import_module("quamash")
+
+    @unittest.skipUnless(importlib.util.find_spec("quamash"), "legacy Qt GUI imports require quamash")
+    def test_legacy_legion_class_imports(self):
+        for module_name in ("app.logic", "ui.gui", "ui.view", "controller.controller"):
+            with self.subTest(module_name=module_name):
+                importlib.import_module(module_name)
+
+
+if __name__ == "__main__":
+    unittest.main()

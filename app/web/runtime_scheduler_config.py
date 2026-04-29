@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import importlib
+import json
 import shlex
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
+from app.device_categories import built_in_device_category_rules, device_category_options
 from app.hostsfile import registrable_root_domain
 from app.scheduler.approvals import ensure_scheduler_approval_table, list_pending_approvals
 from app.scheduler.audit import ensure_scheduler_audit_table
@@ -22,11 +23,94 @@ from app.scheduler.policy import (
 )
 from app.scheduler.providers import get_provider_logs, test_provider_connection
 from app.scheduler.scan_history import ensure_scan_submission_table, list_scan_submissions
+from app.settings import AppSettings, Settings
 from app.timing import getTimestamp
+from app.tooling import audit_legion_tools
 
 
-def _web_runtime_module():
-    return importlib.import_module("app.web.runtime")
+def job_worker_count(preferences: Optional[Dict[str, Any]] = None) -> int:
+    source = preferences if isinstance(preferences, dict) else {}
+    try:
+        value = int(source.get("max_concurrency", 1))
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(value, 8))
+
+
+def normalize_project_report_headers(headers: Any) -> Dict[str, str]:
+    source = headers
+    if isinstance(source, str):
+        try:
+            source = json.loads(source)
+        except Exception:
+            source = {}
+    if not isinstance(source, dict):
+        return {}
+    normalized = {}
+    for name, value in source.items():
+        key = str(name or "").strip()
+        if not key:
+            continue
+        normalized[key] = str(value or "")
+    return normalized
+
+
+def project_report_delivery_config(preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    source = preferences if isinstance(preferences, dict) else {}
+    raw = source.get("project_report_delivery", {})
+    defaults = {
+        "provider_name": "",
+        "endpoint": "",
+        "method": "POST",
+        "format": "json",
+        "headers": {},
+        "timeout_seconds": 30,
+        "mtls": {
+            "enabled": False,
+            "client_cert_path": "",
+            "client_key_path": "",
+            "ca_cert_path": "",
+        },
+    }
+    if isinstance(raw, dict):
+        defaults.update(raw)
+
+    headers = normalize_project_report_headers(defaults.get("headers", {}))
+
+    method = str(defaults.get("method", "POST") or "POST").strip().upper()
+    if method not in {"POST", "PUT", "PATCH"}:
+        method = "POST"
+
+    report_format = str(defaults.get("format", "json") or "json").strip().lower()
+    if report_format in {"markdown"}:
+        report_format = "md"
+    if report_format not in {"json", "md"}:
+        report_format = "json"
+
+    try:
+        timeout_seconds = int(defaults.get("timeout_seconds", 30))
+    except (TypeError, ValueError):
+        timeout_seconds = 30
+    timeout_seconds = max(5, min(timeout_seconds, 300))
+
+    mtls_raw = defaults.get("mtls", {})
+    if not isinstance(mtls_raw, dict):
+        mtls_raw = {}
+
+    return {
+        "provider_name": str(defaults.get("provider_name", "") or ""),
+        "endpoint": str(defaults.get("endpoint", "") or ""),
+        "method": method,
+        "format": report_format,
+        "headers": headers,
+        "timeout_seconds": int(timeout_seconds),
+        "mtls": {
+            "enabled": bool(mtls_raw.get("enabled", False)),
+            "client_cert_path": str(mtls_raw.get("client_cert_path", "") or ""),
+            "client_key_path": str(mtls_raw.get("client_key_path", "") or ""),
+            "ca_cert_path": str(mtls_raw.get("ca_cert_path", "") or ""),
+        },
+    }
 
 
 def get_scheduler_preferences(runtime) -> Dict[str, Any]:
@@ -135,7 +219,7 @@ def apply_scheduler_preferences(runtime, updates: Optional[Dict[str, Any]] = Non
                     updated_at=getTimestamp(True),
                 )
 
-    requested_workers = runtime._job_worker_count(saved)
+    requested_workers = job_worker_count(saved)
     requested_max_jobs = runtime._scheduler_max_jobs(saved)
     try:
         runtime.jobs.ensure_worker_count(requested_workers)
@@ -350,6 +434,29 @@ def scheduler_integration_api_key(
     return str(integration_cfg.get("api_key", "") or "").strip()
 
 
+def shodan_integration_enabled(runtime, preferences: Optional[Dict[str, Any]] = None) -> bool:
+    config = preferences if isinstance(preferences, dict) else runtime.scheduler_config.load()
+    api_key = scheduler_integration_api_key("shodan", config)
+    return bool(api_key and api_key.lower() not in {"yourkeygoeshere", "changeme"})
+
+
+def grayhatwarfare_integration_enabled(runtime, preferences: Optional[Dict[str, Any]] = None) -> bool:
+    config = preferences if isinstance(preferences, dict) else runtime.scheduler_config.load()
+    api_key = scheduler_integration_api_key("grayhatwarfare", config)
+    return bool(api_key and api_key.lower() not in {"yourkeygoeshere", "changeme"})
+
+
+def device_category_options_for_runtime(runtime) -> List[Dict[str, Any]]:
+    return device_category_options(runtime.scheduler_config.get_device_categories())
+
+
+def built_in_device_category_options() -> List[Dict[str, Any]]:
+    return [
+        {"id": str(item.get("id", "") or ""), "name": str(item.get("name", "") or ""), "built_in": True}
+        for item in built_in_device_category_rules()
+    ]
+
+
 def scheduler_command_placeholders(
         runtime,
         *,
@@ -401,7 +508,7 @@ def scheduler_preferences(runtime) -> Dict[str, Any]:
         "dangerous_categories": config.get("dangerous_categories", []),
         "preapproved_families_count": len(config.get("preapproved_command_families", [])),
         "ai_feedback": scheduler_feedback_config(config),
-        "project_report_delivery": runtime._project_report_delivery_config(config),
+        "project_report_delivery": project_report_delivery_config(config),
         "secret_storage": runtime.scheduler_config.secret_storage_status(),
         "cloud_notice": config.get(
             "cloud_notice",
@@ -428,8 +535,7 @@ def ensure_scheduler_approval_store(runtime):
 
 
 def scheduler_tool_audit_snapshot(runtime) -> Dict[str, List[str]]:
-    runtime_module = _web_runtime_module()
     settings = getattr(runtime, "settings", None)
     if settings is None:
-        settings = runtime_module.Settings(runtime_module.AppSettings())
-    return runtime._tool_audit_availability(runtime_module.audit_legion_tools(settings))
+        settings = Settings(AppSettings())
+    return runtime._tool_audit_availability(audit_legion_tools(settings))

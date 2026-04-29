@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import shutil
+import tempfile
 import unittest
 from unittest.mock import MagicMock
 import zipfile
@@ -31,6 +32,66 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
         logic = Logic(shell, project_manager, MagicMock())
         runtime = WebRuntime(logic)
         return project_manager, logic, runtime
+
+    def test_legacy_single_legion_zip_restores_and_creates_missing_output_folder(self):
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+
+        legacy_zip = ""
+        restore_root = ""
+        try:
+            with tempfile.NamedTemporaryFile(prefix="legacy-legion-", suffix=".zip", delete=False) as temp_zip:
+                legacy_zip = temp_zip.name
+            with zipfile.ZipFile(legacy_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(project.properties.projectName, "AllendalePD.legion")
+
+            restored = runtime.restore_project_bundle_zip(legacy_zip)
+            restore_root = str(restored.get("restored", {}).get("restore_root", "") or "")
+            restored_project = logic.activeProject
+
+            self.assertIsNotNone(restored_project)
+            self.assertEqual("legacy-single-legion-zip", restored["restored"]["manifest_format"])
+            self.assertTrue(str(restored_project.properties.projectName or "").endswith("AllendalePD.legion"))
+            self.assertTrue(os.path.isdir(restored_project.properties.outputFolder))
+            self.assertTrue(os.path.isfile(os.path.join(restored_project.properties.outputFolder, "legion-usernames.txt")))
+            self.assertTrue(os.path.isfile(os.path.join(restored_project.properties.outputFolder, "legion-passwords.txt")))
+            self.assertTrue(os.path.isdir(os.path.join(restored_project.properties.outputFolder, "screenshots")))
+
+            snapshot = runtime.get_snapshot()
+            self.assertEqual(restored_project.properties.projectName, snapshot["project"]["name"])
+        finally:
+            if legacy_zip and os.path.isfile(legacy_zip):
+                os.remove(legacy_zip)
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
+            if restore_root:
+                shutil.rmtree(restore_root, ignore_errors=True)
+
+    def test_open_project_failure_keeps_previous_project_active(self):
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+
+        bad_project_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(prefix="bad-project-", suffix=".legion", delete=False) as handle:
+                bad_project_path = handle.name
+                handle.write(b"not a sqlite database")
+
+            with self.assertRaises(Exception):
+                runtime.open_project(bad_project_path)
+
+            self.assertIs(logic.activeProject, project)
+            self.assertEqual(project.properties.projectName, runtime.get_project_details()["name"])
+            self.assertEqual(project.properties.projectName, runtime.get_snapshot()["project"]["name"])
+        finally:
+            if bad_project_path and os.path.isfile(bad_project_path):
+                os.remove(bad_project_path)
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
 
     def test_restore_bundle_rebases_screenshot_artifact_and_process_paths(self):
         from app.scheduler.execution import ensure_scheduler_execution_table, store_execution_record

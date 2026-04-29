@@ -17,6 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 import unittest
 import os.path
+from unittest.mock import patch
 
 
 class DefaultShellTest(unittest.TestCase):
@@ -25,17 +26,17 @@ class DefaultShellTest(unittest.TestCase):
         self.shell = DefaultShell()
 
     def test_isDirectory_whenProvidedADirectory_ReturnsTrue(self):
-        os.path.isdir = lambda name: True
-        self.assertTrue(self.shell.isDirectory("some-directory"))
+        with patch("os.path.isdir", return_value=True):
+            self.assertTrue(self.shell.isDirectory("some-directory"))
 
     def test_isDirectory_whenProvidedAFile_ReturnsFalse(self):
-        os.path.isdir = lambda name: False
-        self.assertFalse(self.shell.isDirectory("some-file"))
+        with patch("os.path.isdir", return_value=False):
+            self.assertFalse(self.shell.isDirectory("some-file"))
 
     def test_isFile_whenProvidedAFile_ReturnsTrue(self):
-        os.path.isfile = lambda name: True
-        self.assertTrue(self.shell.isFile("some-file"))
+        with patch("os.path.isfile", return_value=True):
+            self.assertTrue(self.shell.isFile("some-file"))
 
     def test_isFile_whenProvidedAFile_ReturnsFalse(self):
-        os.path.isfile = lambda name: False
-        self.assertFalse(self.shell.isFile("some-directory"))
+        with patch("os.path.isfile", return_value=False):
+            self.assertFalse(self.shell.isFile("some-directory"))

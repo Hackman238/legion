@@ -21,62 +21,64 @@ from unittest.mock import MagicMock, patch
 
 
 class ToolCoordinatorTest(unittest.TestCase):
-    @patch("app.tools.nmap.NmapHelpers.nmapFileExists")
-    def setUp(self, nmapFileExists) -> None:
+    def setUp(self) -> None:
         from app.tools.ToolCoordinator import ToolCoordinator
         self.mockShell = MagicMock()
         self.mockNmapExporter = MagicMock()
-        self.nmapFileExists = nmapFileExists
+        self.nmapFileExists_patcher = patch("app.tools.ToolCoordinator.nmapFileExists")
+        self.nmapFileExists = self.nmapFileExists_patcher.start()
+        self.addCleanup(self.nmapFileExists_patcher.stop)
+        self.nmapFileExists.return_value = False
         self.outputFolder = "some-output-folder"
         self.toolCoordinator = ToolCoordinator(self.mockShell, self.mockNmapExporter)
 
-    @patch("ntpath.basename")
-    def test_saveToolOutput_WhenGivenProjectOutputFolderAndNmapFileNameToSaveOutputIn_SavesOutputSuccessfully(self,
-                                                                                                              basename):
-        fileName = "some-output-nmap-file"
+    def _configure_existing_paths(self, *, files=None, directories=None):
+        files = set(files or [])
+        directories = set(directories or [])
 
-        basename.return_value = "nmap"
-        self.mockShell.directoryOrFileExists.side_effect = [True, False, True, True, True]
+        def directory_or_file_exists(path):
+            return path in files or path in directories
+
+        self.mockShell.directoryOrFileExists.side_effect = directory_or_file_exists
+        self.mockShell.isFile.side_effect = lambda path: path in files
+
+    def test_saveToolOutput_WhenGivenProjectOutputFolderAndNmapFileNameToSaveOutputIn_SavesOutputSuccessfully(self):
+        fileName = "running/nmap/some-output-nmap-file"
+
+        self._configure_existing_paths(directories={self.outputFolder})
         self.nmapFileExists.return_value = True
 
         self.toolCoordinator.saveToolOutput(self.outputFolder, fileName)
-        self.mockNmapExporter.exportOutputToHtml.assert_called_once_with("some-output-nmap-file",
-                                                                         "some-output-folder/nmap")
+        self.mockNmapExporter.exportOutputToHtml.assert_called_once_with(
+            "running/nmap/some-output-nmap-file",
+            "some-output-folder/nmap",
+        )
         self.mockShell.move.assert_has_calls([
-            mock.call("some-output-nmap-file.xml", "some-output-folder/nmap"),
-            mock.call("some-output-nmap-file.nmap", "some-output-folder/nmap"),
-            mock.call("some-output-nmap-file.gnmap", "some-output-folder/nmap"),
+            mock.call("running/nmap/some-output-nmap-file.xml", "some-output-folder/nmap"),
+            mock.call("running/nmap/some-output-nmap-file.nmap", "some-output-folder/nmap"),
+            mock.call("running/nmap/some-output-nmap-file.gnmap", "some-output-folder/nmap"),
         ])
 
-    @patch("ntpath.basename")
-    def test_saveToolOutput_WhenGivenProjectOutputDirAndGenericFileNameToSaveOutputIn_SavesOutputSuccessfully(self,
-                                                                                                              basename):
+    def test_saveToolOutput_WhenGivenProjectOutputDirAndGenericFileNameToSaveOutputIn_SavesOutputSuccessfully(self):
         fileName = "some-output-file"
-        basename.return_value = "some-tool"
-        self.mockShell.directoryOrFileExists.side_effect = [False, True]
-        self.mockShell.isFile.return_value = True
+
+        self._configure_existing_paths(files={fileName})
 
         self.toolCoordinator.saveToolOutput(self.outputFolder, fileName)
-        self.mockShell.move.assert_called_once_with("some-output-file", "some-output-folder/some-tool")
+        self.mockShell.move.assert_called_once_with("some-output-file", "some-output-folder")
 
-    @patch("ntpath.basename")
-    def test_saveToolOutput_WhenGivenProjectOutputFolderAndXmlFileNameToSaveOutputIn_SavesOutputSuccessfully(self,
-                                                                                                             basename):
+    def test_saveToolOutput_WhenGivenProjectOutputFolderAndXmlFileNameToSaveOutputIn_SavesOutputSuccessfully(self):
         fileName = "some-output-xml-file"
-        basename.return_value = "some-tool"
-        self.mockShell.directoryOrFileExists.side_effect = [False, False, False, True]
-        self.mockShell.isFile.return_value = True
+
+        self._configure_existing_paths(files={f"{fileName}.xml"})
 
         self.toolCoordinator.saveToolOutput(self.outputFolder, fileName)
-        self.mockShell.move.assert_called_once_with("some-output-xml-file.xml", "some-output-folder/some-tool")
+        self.mockShell.move.assert_called_once_with("some-output-xml-file.xml", "some-output-folder")
 
-    @patch("ntpath.basename")
-    def test_saveToolOutput_WhenGivenProjectOutputFolderAndTxtFileNameToSaveOutputIn_SavesOutputSuccessfully(self,
-                                                                                                             basename):
+    def test_saveToolOutput_WhenGivenProjectOutputFolderAndTxtFileNameToSaveOutputIn_SavesOutputSuccessfully(self):
         fileName = "some-output-txt-file"
-        basename.return_value = "some-tool"
-        self.mockShell.directoryOrFileExists.side_effect = [False, False, False, False, True]
-        self.mockShell.isFile.return_value = True
+
+        self._configure_existing_paths(files={f"{fileName}.txt"})
 
         self.toolCoordinator.saveToolOutput(self.outputFolder, fileName)
-        self.mockShell.move.assert_called_once_with("some-output-txt-file.txt", "some-output-folder/some-tool")
+        self.mockShell.move.assert_called_once_with("some-output-txt-file.txt", "some-output-folder")

@@ -82,6 +82,11 @@ class ProjectManager:
         outputFolder, _ = self.__determineOutputFolder(projectName, projectType)
         runningFolder = self.shell.create_temporary_directory(suffix="-running", prefix=projectType + '-',
                                                               directory=tempDirectory)
+        os.makedirs(outputFolder, exist_ok=True)
+        os.makedirs(f"{outputFolder}/screenshots", exist_ok=True)
+        self.shell.create_directory_recursively(getNmapRunningFolder(runningFolder))
+        self.shell.create_directory_recursively(f"{runningFolder}/hydra")
+        self.shell.create_directory_recursively(f"{runningFolder}/dnsmap")
         (usernameWordList, passwordWordList) = self.__createUsernameAndPasswordWordLists(outputFolder)
         projectProperties = ProjectProperties(
             projectName=projectName, workingDirectory=workingDirectory, projectType=projectType, isTemporary=False,
