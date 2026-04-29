@@ -14,6 +14,7 @@ const workspaceState = {
     selectedHostId: null,
     hostDetail: null,
     manualToolTargets: [],
+    manualToolOptions: [],
     deviceCategoryRules: [],
     builtInDeviceCategories: [],
 };
@@ -827,15 +828,28 @@ function closeGraphActionMenus() {
     });
 }
 
-async function graphGetApplicableTools(serviceName) {
-    const key = String(serviceName || "").trim().toLowerCase() || "__all__";
+async function graphGetApplicableTools(serviceName, {port = "", protocol = "tcp"} = {}) {
+    const normalizedService = String(serviceName || "").trim().toLowerCase();
+    const normalizedPort = String(port || "").trim();
+    const normalizedProtocol = String(protocol || "tcp").trim().toLowerCase() || "tcp";
+    const key = [
+        normalizedService || "__all__",
+        normalizedPort || "__any_port__",
+        normalizedProtocol || "tcp",
+    ].join("|");
     if (Array.isArray(graphWorkspaceState.toolMenuCache[key])) {
         return graphWorkspaceState.toolMenuCache[key];
     }
     const params = new URLSearchParams();
     params.set("limit", "500");
-    if (key !== "__all__") {
-        params.set("service", key);
+    if (normalizedService) {
+        params.set("service", normalizedService);
+    }
+    if (normalizedPort) {
+        params.set("port", normalizedPort);
+    }
+    if (normalizedProtocol) {
+        params.set("protocol", normalizedProtocol);
     }
     const body = await fetchJson(`/api/workspace/tools?${params.toString()}`);
     const tools = Array.isArray(body?.tools) ? body.tools.filter((item) => Boolean(item?.runnable)) : [];
@@ -903,7 +917,10 @@ function buildGraphToolMenu(context) {
         loading.textContent = "Loading actions...";
         submenu.appendChild(loading);
         try {
-            const tools = await graphGetApplicableTools(serviceKey);
+            const tools = await graphGetApplicableTools(serviceKey, {
+                port: context?.port || "",
+                protocol: context?.protocol || "tcp",
+            });
             submenu.innerHTML = "";
             if (!tools.length) {
                 const empty = document.createElement("div");
@@ -2643,9 +2660,10 @@ function populateManualToolSelect(tools, preferredToolId = "") {
     if (!toolSelect) {
         return;
     }
+    workspaceState.manualToolOptions = Array.isArray(tools) ? tools : [];
     const current = String(preferredToolId || toolSelect.value || "").trim();
     toolSelect.innerHTML = "";
-    (Array.isArray(tools) ? tools : [])
+    workspaceState.manualToolOptions
         .filter((tool) => tool?.runnable !== false)
         .forEach((tool) => {
             const option = document.createElement("option");
@@ -2656,26 +2674,100 @@ function populateManualToolSelect(tools, preferredToolId = "") {
     if (current && Array.from(toolSelect.options).some((option) => option.value === current)) {
         toolSelect.value = current;
     }
+    renderManualToolParameters();
 }
 
-async function fetchWorkspaceToolsPage({service = "", limit = 500, offset = 0} = {}) {
+function selectedManualTool() {
+    const toolId = getValue("workspace-tool-select").trim();
+    if (!toolId) {
+        return null;
+    }
+    return (Array.isArray(workspaceState.manualToolOptions) ? workspaceState.manualToolOptions : [])
+        .find((tool) => String(tool?.tool_id || "") === toolId) || null;
+}
+
+function renderManualToolParameters() {
+    const wrapper = document.getElementById("workspace-tool-parameters-wrapper");
+    const container = document.getElementById("workspace-tool-parameters");
+    if (!wrapper || !container) {
+        return;
+    }
+    container.innerHTML = "";
+    const tool = selectedManualTool();
+    const parameters = Array.isArray(tool?.parameters) ? tool.parameters : [];
+    if (!parameters.length) {
+        wrapper.hidden = true;
+        return;
+    }
+    parameters.forEach((parameter) => {
+        const name = String(parameter?.name || "").trim();
+        if (!name) {
+            return;
+        }
+        const label = document.createElement("label");
+        label.textContent = String(parameter?.label || name);
+        const input = document.createElement("input");
+        input.type = "text";
+        input.dataset.parameterName = name;
+        input.placeholder = String(parameter?.placeholder || "");
+        input.required = Boolean(parameter?.required);
+        const description = String(parameter?.description || "").trim();
+        if (description) {
+            input.title = description;
+        }
+        label.appendChild(input);
+        if (description) {
+            const note = document.createElement("span");
+            note.className = "meta-note";
+            note.textContent = description;
+            label.appendChild(note);
+        }
+        container.appendChild(label);
+    });
+    wrapper.hidden = false;
+}
+
+function collectManualToolParameters() {
+    const wrapper = document.getElementById("workspace-tool-parameters-wrapper");
+    const container = document.getElementById("workspace-tool-parameters");
+    if (!wrapper || wrapper.hidden || !container) {
+        return {};
+    }
+    const values = {};
+    container.querySelectorAll("[data-parameter-name]").forEach((input) => {
+        const name = String(input.dataset.parameterName || "").trim();
+        const value = String(input.value || "").trim();
+        if (name && value) {
+            values[name] = value;
+        }
+    });
+    return values;
+}
+
+async function fetchWorkspaceToolsPage({service = "", port = "", protocol = "tcp", limit = 500, offset = 0} = {}) {
     const params = new URLSearchParams();
     params.set("limit", String(limit));
     params.set("offset", String(offset));
     if (service) {
         params.set("service", String(service));
     }
+    if (port) {
+        params.set("port", String(port));
+    }
+    if (protocol) {
+        params.set("protocol", String(protocol));
+    }
     return fetchJson(`/api/workspace/tools?${params.toString()}`);
 }
 
-async function fetchWorkspaceToolsAll({service = ""} = {}) {
+async function fetchWorkspaceToolsAll({service = "", port = "", protocol = "tcp"} = {}) {
     const allTools = [];
     let offset = 0;
     let pageGuard = 0;
     const pageLimit = 500;
 
     while (pageGuard < 200) {
-        const body = await fetchWorkspaceToolsPage({service, limit: pageLimit, offset});
+        const body = await fetchWorkspaceToolsPage({service, port, protocol, limit: pageLimit, offset});
         const tools = Array.isArray(body?.tools) ? body.tools : [];
         allTools.push(...tools);
         if (!body?.has_more) {
@@ -2705,8 +2797,8 @@ async function fetchWorkspaceToolTargets({hostId = 0, service = "", limit = 500}
     return Array.isArray(body?.targets) ? body.targets : [];
 }
 
-async function loadManualToolOptionsForService(service = "", preferredToolId = "") {
-    const tools = await fetchWorkspaceToolsAll({service});
+async function loadManualToolOptionsForService(service = "", preferredToolId = "", {port = "", protocol = "tcp"} = {}) {
+    const tools = await fetchWorkspaceToolsAll({service, port, protocol});
     populateManualToolSelect(tools, preferredToolId);
     return tools;
 }
@@ -2716,7 +2808,10 @@ async function applyManualToolTarget(target, {preferredToolId = ""} = {}) {
     setValue("workspace-tool-host-ip", resolvedTarget.host_ip || "");
     setValue("workspace-tool-port", resolvedTarget.port || "");
     setValue("workspace-tool-protocol", resolvedTarget.protocol || "tcp");
-    await loadManualToolOptionsForService(String(resolvedTarget.service || "").trim(), preferredToolId);
+    await loadManualToolOptionsForService(String(resolvedTarget.service || "").trim(), preferredToolId, {
+        port: String(resolvedTarget.port || "").trim(),
+        protocol: String(resolvedTarget.protocol || "tcp").trim() || "tcp",
+    });
 }
 
 async function renderManualToolTargets(targets, {preferredTargetKey = "", preferredToolId = ""} = {}) {
@@ -2799,6 +2894,24 @@ async function handleManualToolTargetChange() {
         return;
     }
     await applyManualToolTarget(selectedTarget);
+}
+
+async function handleManualToolContextChange() {
+    if (!uiModalState.manualScanOpen) {
+        return;
+    }
+    const select = document.getElementById("workspace-tool-target-select");
+    let service = "";
+    if (select && !select.closest("[hidden]")) {
+        const selectedTarget = workspaceState.manualToolTargets.find((target) => {
+            return manualToolTargetKey(target) === String(select.value || "");
+        });
+        service = String(selectedTarget?.service || "").trim();
+    }
+    await loadManualToolOptionsForService(service, getValue("workspace-tool-select").trim(), {
+        port: getValue("workspace-tool-port").trim(),
+        protocol: getValue("workspace-tool-protocol").trim() || "tcp",
+    });
 }
 
 function openAddScanAction() {
@@ -10255,6 +10368,7 @@ async function runManualTool() {
         setWorkspaceStatus("host ip, port and tool are required", true);
         return;
     }
+    const parameters = collectManualToolParameters();
     dismissManualScanModalAction();
     setWorkspaceStatus("Queueing tool run...");
     try {
@@ -10263,6 +10377,7 @@ async function runManualTool() {
             port,
             protocol,
             tool_id: toolId,
+            parameters,
         });
         setWorkspaceStatus(`Tool run queued (job ${body?.job?.id || "?"})`);
         await pollSnapshot();
@@ -11660,6 +11775,20 @@ function bindActionButtons() {
     if (manualTargetSelect) {
         manualTargetSelect.addEventListener("change", async () => {
             await handleManualToolTargetChange();
+        });
+    }
+    ["workspace-tool-port", "workspace-tool-protocol"].forEach((elementId) => {
+        const element = document.getElementById(elementId);
+        if (element) {
+            element.addEventListener("change", async () => {
+                await handleManualToolContextChange();
+            });
+        }
+    });
+    const manualToolSelect = document.getElementById("workspace-tool-select");
+    if (manualToolSelect) {
+        manualToolSelect.addEventListener("change", () => {
+            renderManualToolParameters();
         });
     }
 

@@ -51,8 +51,8 @@ class _WorkspaceRouteRuntime:
             rows = [row for row in rows if row["host_ip"] == "10.0.0.5"]
         return rows[: int(limit)]
 
-    def get_workspace_tools_page(self, service="", limit=300, offset=0):
-        self.calls.append(("get_workspace_tools_page", str(service), int(limit), int(offset)))
+    def get_workspace_tools_page(self, service="", port="", protocol="tcp", limit=300, offset=0):
+        self.calls.append(("get_workspace_tools_page", str(service), str(port), str(protocol), int(limit), int(offset)))
         rows = [
             {"tool_id": "smbmap", "service": "smb"},
             {"tool_id": "whatweb-http", "service": "http"},
@@ -196,7 +196,7 @@ class _WorkspaceRouteRuntime:
         self.calls.append(("delete_host_workspace", int(host_id)))
         return {"deleted": True, "host_id": int(host_id)}
 
-    def start_tool_run_job(self, host_ip, port, protocol, tool_id, command_override="", timeout=300):
+    def start_tool_run_job(self, host_ip, port, protocol, tool_id, command_override="", timeout=300, parameters=None):
         self.calls.append((
             "start_tool_run_job",
             str(host_ip),
@@ -205,6 +205,7 @@ class _WorkspaceRouteRuntime:
             str(tool_id),
             str(command_override),
             int(timeout),
+            dict(parameters or {}),
         ))
         return {"id": 702, "type": "tool-run"}
 
@@ -424,6 +425,31 @@ class WebWorkspaceRoutesTest(unittest.TestCase):
         )
         self.assertEqual(202, tool_run.status_code)
         self.assertEqual("tool-run", tool_run.json["job"]["type"])
+
+        parameterized_tool_run = self.client.post(
+            "/api/workspace/tools/run",
+            json={
+                "host_ip": "10.0.0.7",
+                "port": "25",
+                "protocol": "tcp",
+                "tool_id": "pipette-smtp-internal-discovery",
+                "parameters": {"spf_domain": "example.org"},
+            },
+        )
+        self.assertEqual(202, parameterized_tool_run.status_code)
+        self.assertIn(
+            (
+                "start_tool_run_job",
+                "10.0.0.7",
+                "25",
+                "tcp",
+                "pipette-smtp-internal-discovery",
+                "",
+                300,
+                {"spf_domain": "example.org"},
+            ),
+            self.runtime.calls,
+        )
 
         process_output = self.client.get("/api/processes/1/output?offset=7")
         self.assertEqual(200, process_output.status_code)

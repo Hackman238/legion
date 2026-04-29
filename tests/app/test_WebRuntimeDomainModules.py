@@ -196,6 +196,10 @@ class _ToolRuntime:
         for action in settings.portActions:
             if str(action[1]) == str(tool_id):
                 return action
+        from app.pipettes import find_pipette
+        pipette = find_pipette(str(tool_id))
+        if pipette is not None:
+            return pipette.as_port_action()
         return None
 
     def _build_command(self, template, host_ip, port, protocol, tool_id):
@@ -793,6 +797,43 @@ class WebRuntimeDomainModulesTest(unittest.TestCase):
         self.assertEqual(9, runtime.run_call["job_id"])
         self.assertTrue(job["result"]["executed"])
         self.assertEqual(42, job["result"]["process_id"])
+
+    def test_runtime_tools_module_passes_validated_pipette_parameters(self):
+        from app.web import runtime_tools
+
+        runtime = _ToolRuntime()
+
+        job = runtime_tools.start_tool_run_job(
+            runtime,
+            host_ip="10.0.0.7",
+            port="25",
+            protocol="tcp",
+            tool_id="pipette-smtp-internal-discovery",
+            parameters={"spf_domain": "example.org", "ignored": "value"},
+            timeout=120,
+        )
+
+        self.assertEqual({"spf_domain": "example.org"}, runtime.started_job["payload"]["parameters"])
+        self.assertIn("--domain example.org", runtime.command_call["template"])
+        self.assertEqual("pipette-smtp-internal-discovery", runtime.run_call["tool_name"])
+        self.assertTrue(job["result"]["executed"])
+
+    def test_runtime_tools_module_rejects_invalid_pipette_parameters_before_queueing(self):
+        from app.web import runtime_tools
+
+        runtime = _ToolRuntime()
+
+        with self.assertRaises(ValueError):
+            runtime_tools.start_tool_run_job(
+                runtime,
+                host_ip="10.0.0.7",
+                port="25",
+                protocol="tcp",
+                tool_id="pipette-smtp-internal-discovery",
+                parameters={"spf_domain": "example.org;id"},
+                timeout=120,
+            )
+        self.assertIsNone(runtime.started_job)
 
     def test_runtime_tools_module_classifies_runner_types(self):
         from app.web import runtime_tools

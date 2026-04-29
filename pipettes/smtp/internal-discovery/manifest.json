@@ -1,0 +1,48 @@
+{
+  "id": "pipette-smtp-internal-discovery",
+  "label": "Internal SMTP discovery and relay check",
+  "description": "Aggregate SMTP check for internal mail exposure. It runs Nmap service detection and available SMTP NSE scripts for command discovery, user enumeration behavior, open relay checks, and known Exim/Sendmail SMTP vulnerabilities. SPF policy review runs only when an explicit domain is provided.",
+  "entrypoint": "check-internal-smtp.sh",
+  "service_scope": [
+    "smtp",
+    "smtps",
+    "submission"
+  ],
+  "protocol_scope": [
+    "tcp"
+  ],
+  "target_ports": [
+    "25",
+    "465",
+    "587",
+    "2525"
+  ],
+  "required_tools": [
+    "bash",
+    "nmap"
+  ],
+  "optional_tools": [
+    "dig",
+    "nslookup"
+  ],
+  "risk_tags": [
+    "smtp_open_relay_check",
+    "smtp_user_enumeration_check",
+    "spf_policy_review"
+  ],
+  "impact_level": "medium",
+  "noise_level": "medium",
+  "mode": "check",
+  "default_timeout": 600,
+  "parameters": [
+    {
+      "name": "spf_domain",
+      "label": "SPF domain",
+      "description": "Optional mail domain to use for SPF TXT-policy review. Leave blank to run SMTP discovery without SPF analysis.",
+      "placeholder": "example.org",
+      "flag": "--domain",
+      "required": false,
+      "value_pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,252}[A-Za-z0-9]$"
+    }
+  ]
+}

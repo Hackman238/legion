@@ -1,0 +1,42 @@
+{
+  "id": "pipette-windows-systems-discovery",
+  "label": "Windows systems discovery",
+  "description": "Aggregate Windows host discovery check for SMB/RDP exposure, SMB signing posture, anonymous/null-session share visibility, IPC$ null-session behavior, RDP encryption and MS12-020 indicators, and conservative AD CS web-enrollment exposure hints.",
+  "entrypoint": "check-windows-systems.sh",
+  "service_scope": [
+    "microsoft-ds",
+    "netbios-ssn",
+    "msrpc",
+    "ms-wbt-server",
+    "rdp"
+  ],
+  "protocol_scope": [
+    "tcp"
+  ],
+  "target_ports": [
+    "135",
+    "139",
+    "445",
+    "3389"
+  ],
+  "required_tools": [
+    "bash",
+    "nmap"
+  ],
+  "optional_tools": [
+    "smbclient",
+    "rpcclient",
+    "curl"
+  ],
+  "risk_tags": [
+    "windows_discovery",
+    "smb_signing_check",
+    "anonymous_smb_check",
+    "rdp_vulnerability_check",
+    "adcs_web_enrollment_check"
+  ],
+  "impact_level": "medium",
+  "noise_level": "medium",
+  "mode": "check",
+  "default_timeout": 600
+}

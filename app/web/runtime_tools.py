@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
+from app.pipettes import find_pipette, list_pipettes
 from app.scheduler.planner import SchedulerPlanner
 from app.scheduler.risk import classify_command_danger
 from app.screenshot_targets import apply_preferred_target_placeholders
@@ -62,10 +63,42 @@ def _service_matches_scope(normalized_service: str, service_scope: List[str]) ->
     return "*" in lowered or normalized_service in lowered
 
 
+def _normalize_port_value(value: Any) -> str:
+    text_value = str(value or "").strip()
+    try:
+        parsed = int(text_value)
+    except (TypeError, ValueError):
+        return text_value
+    return str(parsed) if 1 <= parsed <= 65535 else text_value
+
+
+def _port_matches_scope(normalized_port: str, target_ports: List[str]) -> bool:
+    if not normalized_port or not target_ports:
+        return False
+    normalized_targets = {_normalize_port_value(item) for item in target_ports}
+    return "*" in normalized_targets or normalized_port in normalized_targets
+
+
+def _pipette_matches_context(
+        *,
+        normalized_service: str,
+        service_scope: List[str],
+        normalized_port: str,
+        target_ports: List[str],
+) -> bool:
+    if not normalized_service and not normalized_port:
+        return True
+    if normalized_service and _service_matches_scope(normalized_service, service_scope):
+        return True
+    return _port_matches_scope(normalized_port, target_ports)
+
+
 def _is_supported_tool(tool_id: str) -> bool:
     normalized_tool = str(tool_id or "").strip().lower()
     if not normalized_tool:
         return False
+    if find_pipette(normalized_tool) is not None:
+        return True
     if normalized_tool in _SUPPORTED_WORKSPACE_TOOL_IDS:
         return True
     return any(normalized_tool.startswith(prefix) for prefix in _SUPPORTED_WORKSPACE_TOOL_PREFIXES)
@@ -79,6 +112,9 @@ def find_port_action(settings: Settings, tool_id: str):
     for action in settings.portActions:
         if str(action[1]) == str(tool_id):
             return action
+    pipette = find_pipette(tool_id)
+    if pipette is not None:
+        return pipette.as_port_action()
     return None
 
 
@@ -224,6 +260,7 @@ def start_tool_run_job(
         tool_id: str,
         command_override: str = "",
         timeout: int = 300,
+        parameters: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     resolved_host_ip = str(host_ip or "").strip()
     resolved_port = str(port or "").strip()
@@ -231,6 +268,12 @@ def start_tool_run_job(
     resolved_tool_id = str(tool_id or "").strip()
     if not resolved_host_ip or not resolved_port or not resolved_tool_id:
         raise ValueError("host_ip, port and tool_id are required.")
+    pipette = find_pipette(resolved_tool_id)
+    resolved_parameters = (
+        pipette.validate_parameter_values(parameters)
+        if pipette is not None
+        else {}
+    )
 
     payload = {
         "host_ip": resolved_host_ip,
@@ -241,6 +284,8 @@ def start_tool_run_job(
     }
     if command_override:
         payload["command_override"] = str(command_override)
+    if resolved_parameters:
+        payload["parameters"] = dict(resolved_parameters)
 
     return runtime._start_job(
         "tool-run",
@@ -252,13 +297,14 @@ def start_tool_run_job(
             tool_id=resolved_tool_id,
             command_override=str(command_override or ""),
             timeout=int(timeout),
+            parameters=resolved_parameters,
             job_id=int(job_id or 0),
         ),
         payload=payload,
     )
 
 
-def workspace_tools_rows(runtime, service: str = "") -> List[Dict[str, Any]]:
+def workspace_tools_rows(runtime, service: str = "", port: str = "", protocol: str = "tcp") -> List[Dict[str, Any]]:
     with runtime._lock:
         settings = runtime._get_settings()
         project = getattr(runtime.logic, "activeProject", None)
@@ -266,6 +312,8 @@ def workspace_tools_rows(runtime, service: str = "") -> List[Dict[str, Any]]:
             return []
 
         normalized_service = str(service or "").strip().rstrip("?").lower()
+        normalized_port = _normalize_port_value(port)
+        normalized_protocol = str(protocol or "tcp").strip().lower() or "tcp"
         run_stats = runtime._tool_run_stats(project)
         dangerous_categories = runtime.scheduler_config.get_dangerous_categories()
         rows = []
@@ -319,6 +367,48 @@ def workspace_tools_rows(runtime, service: str = "") -> List[Dict[str, Any]]:
                 "last_status": str(stats.get("last_status", "") or ""),
                 "last_start": str(stats.get("last_start", "") or ""),
                 "runnable": False,
+            })
+            seen_tool_ids.add(tool_id)
+
+        for pipette in list_pipettes():
+            tool_id = pipette.tool_id
+            if tool_id in seen_tool_ids:
+                continue
+            service_scope = list(pipette.service_scope)
+            target_ports = list(pipette.target_ports)
+            protocol_scope = [str(item or "").strip().lower() for item in pipette.protocol_scope]
+            if normalized_protocol and protocol_scope and "*" not in protocol_scope and normalized_protocol not in protocol_scope:
+                continue
+            if not _pipette_matches_context(
+                    normalized_service=normalized_service,
+                    service_scope=service_scope,
+                    normalized_port=normalized_port,
+                    target_ports=target_ports,
+            ):
+                continue
+
+            stats = run_stats.get(tool_id, {})
+            rows.append({
+                "label": pipette.label,
+                "tool_id": tool_id,
+                "command_template": pipette.command_template,
+                "service_scope": service_scope,
+                "danger_categories": classify_command_danger(pipette.command_template, dangerous_categories),
+                "run_count": int(stats.get("run_count", 0) or 0),
+                "last_status": str(stats.get("last_status", "") or ""),
+                "last_start": str(stats.get("last_start", "") or ""),
+                "runnable": True,
+                "pipette": True,
+                "description": pipette.description,
+                "required_tools": list(pipette.required_tools),
+                "optional_tools": list(pipette.optional_tools),
+                "risk_tags": list(pipette.risk_tags),
+                "impact_level": pipette.impact_level,
+                "noise_level": pipette.noise_level,
+                "mode": pipette.mode,
+                "default_timeout": int(pipette.default_timeout),
+                "target_ports": target_ports,
+                "parameters": [dict(item) for item in pipette.parameters],
             })
             seen_tool_ids.add(tool_id)
 
@@ -405,10 +495,12 @@ def get_workspace_tool_targets(
 def get_workspace_tools_page(
         runtime,
         service: str = "",
+        port: str = "",
+        protocol: str = "tcp",
         limit: int = 300,
         offset: int = 0,
 ) -> Dict[str, Any]:
-    rows = workspace_tools_rows(runtime, service=service)
+    rows = workspace_tools_rows(runtime, service=service, port=port, protocol=protocol)
     total = len(rows)
     try:
         resolved_limit = int(limit)
@@ -434,8 +526,22 @@ def get_workspace_tools_page(
     }
 
 
-def get_workspace_tools(runtime, service: str = "", limit: int = 300, offset: int = 0) -> List[Dict[str, Any]]:
-    return get_workspace_tools_page(runtime, service=service, limit=limit, offset=offset).get("tools", [])
+def get_workspace_tools(
+        runtime,
+        service: str = "",
+        port: str = "",
+        protocol: str = "tcp",
+        limit: int = 300,
+        offset: int = 0,
+) -> List[Dict[str, Any]]:
+    return get_workspace_tools_page(
+        runtime,
+        service=service,
+        port=port,
+        protocol=protocol,
+        limit=limit,
+        offset=offset,
+    ).get("tools", [])
 
 
 def run_manual_tool(
@@ -446,6 +552,7 @@ def run_manual_tool(
         tool_id: str,
         command_override: str,
         timeout: int,
+        parameters: Optional[Dict[str, Any]] = None,
         job_id: int = 0,
 ):
     with runtime._lock:
@@ -457,6 +564,9 @@ def run_manual_tool(
 
         label = str(action[0])
         template = str(command_override or action[2])
+        pipette = find_pipette(tool_id)
+        if pipette is not None and not command_override:
+            template = pipette.command_template_for_values(parameters)
         command, outputfile = runtime._build_command(template, host_ip, port, protocol, tool_id)
 
     executed, reason, process_id = runtime._run_command_with_tracking(

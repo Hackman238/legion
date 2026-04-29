@@ -11,6 +11,109 @@ for legacy_name in ("Mapping", "MutableMapping", "Sequence", "Callable"):
 
 
 class WebRuntimeRunnerRoutingTest(unittest.TestCase):
+    def test_workspace_tools_exposes_bundled_pipettes(self):
+        from app.web import runtime_tools
+
+        runtime = SimpleNamespace(
+            _lock=threading.RLock(),
+            logic=SimpleNamespace(activeProject=SimpleNamespace(database=None)),
+            _get_settings=lambda: SimpleNamespace(portActions=[], automatedAttacks=[]),
+            _tool_run_stats=lambda _project: {},
+            scheduler_config=SimpleNamespace(get_dangerous_categories=lambda: []),
+            _split_csv=lambda value: [item.strip() for item in str(value or "").split(",") if item.strip()],
+        )
+
+        rows = runtime_tools.workspace_tools_rows(runtime, service="smart-install")
+        by_tool = {item["tool_id"]: item for item in rows}
+
+        self.assertIn("pipette-cisco-smart-install-check", by_tool)
+        self.assertTrue(by_tool["pipette-cisco-smart-install-check"]["pipette"])
+        self.assertIn("nmap", by_tool["pipette-cisco-smart-install-check"]["required_tools"])
+
+    def test_workspace_tools_matches_pipette_by_target_port(self):
+        from app.web import runtime_tools
+
+        runtime = SimpleNamespace(
+            _lock=threading.RLock(),
+            logic=SimpleNamespace(activeProject=SimpleNamespace(database=None)),
+            _get_settings=lambda: SimpleNamespace(portActions=[], automatedAttacks=[]),
+            _tool_run_stats=lambda _project: {},
+            scheduler_config=SimpleNamespace(get_dangerous_categories=lambda: []),
+            _split_csv=lambda value: [item.strip() for item in str(value or "").split(",") if item.strip()],
+        )
+
+        matching_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="4786", protocol="tcp")
+        non_matching_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="22", protocol="tcp")
+
+        self.assertIn("pipette-cisco-smart-install-check", {item["tool_id"] for item in matching_rows})
+        self.assertNotIn("pipette-cisco-smart-install-check", {item["tool_id"] for item in non_matching_rows})
+
+    def test_workspace_tools_matches_smtp_pipette_by_target_port(self):
+        from app.web import runtime_tools
+
+        runtime = SimpleNamespace(
+            _lock=threading.RLock(),
+            logic=SimpleNamespace(activeProject=SimpleNamespace(database=None)),
+            _get_settings=lambda: SimpleNamespace(portActions=[], automatedAttacks=[]),
+            _tool_run_stats=lambda _project: {},
+            scheduler_config=SimpleNamespace(get_dangerous_categories=lambda: []),
+            _split_csv=lambda value: [item.strip() for item in str(value or "").split(",") if item.strip()],
+        )
+
+        matching_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="25", protocol="tcp")
+        non_matching_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="22", protocol="tcp")
+        by_tool = {item["tool_id"]: item for item in matching_rows}
+
+        self.assertIn("pipette-smtp-internal-discovery", by_tool)
+        self.assertIn("smtp_open_relay_check", by_tool["pipette-smtp-internal-discovery"]["risk_tags"])
+        self.assertEqual(
+            ["spf_domain"],
+            [item["name"] for item in by_tool["pipette-smtp-internal-discovery"]["parameters"]],
+        )
+        self.assertNotIn("pipette-smtp-internal-discovery", {item["tool_id"] for item in non_matching_rows})
+
+    def test_workspace_tools_matches_windows_pipette_by_target_port(self):
+        from app.web import runtime_tools
+
+        runtime = SimpleNamespace(
+            _lock=threading.RLock(),
+            logic=SimpleNamespace(activeProject=SimpleNamespace(database=None)),
+            _get_settings=lambda: SimpleNamespace(portActions=[], automatedAttacks=[]),
+            _tool_run_stats=lambda _project: {},
+            scheduler_config=SimpleNamespace(get_dangerous_categories=lambda: []),
+            _split_csv=lambda value: [item.strip() for item in str(value or "").split(",") if item.strip()],
+        )
+
+        matching_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="445", protocol="tcp")
+        non_matching_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="25", protocol="tcp")
+        by_tool = {item["tool_id"]: item for item in matching_rows}
+
+        self.assertIn("pipette-windows-systems-discovery", by_tool)
+        self.assertIn("smb_signing_check", by_tool["pipette-windows-systems-discovery"]["risk_tags"])
+        self.assertNotIn("pipette-windows-systems-discovery", {item["tool_id"] for item in non_matching_rows})
+
+    def test_workspace_tools_matches_ipmi_pipette_by_target_port_and_protocol(self):
+        from app.web import runtime_tools
+
+        runtime = SimpleNamespace(
+            _lock=threading.RLock(),
+            logic=SimpleNamespace(activeProject=SimpleNamespace(database=None)),
+            _get_settings=lambda: SimpleNamespace(portActions=[], automatedAttacks=[]),
+            _tool_run_stats=lambda _project: {},
+            scheduler_config=SimpleNamespace(get_dangerous_categories=lambda: []),
+            _split_csv=lambda value: [item.strip() for item in str(value or "").split(",") if item.strip()],
+        )
+
+        udp_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="623", protocol="udp")
+        tcp_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="5900", protocol="tcp")
+        non_matching_rows = runtime_tools.workspace_tools_rows(runtime, service="unknown", port="25", protocol="tcp")
+        by_tool = {item["tool_id"]: item for item in udp_rows}
+
+        self.assertIn("pipette-ipmi-oob-discovery", by_tool)
+        self.assertIn("ipmi_cipher_zero_check", by_tool["pipette-ipmi-oob-discovery"]["risk_tags"])
+        self.assertIn("pipette-ipmi-oob-discovery", {item["tool_id"] for item in tcp_rows})
+        self.assertNotIn("pipette-ipmi-oob-discovery", {item["tool_id"] for item in non_matching_rows})
+
     @patch("app.scheduler.runners.shutil.which", return_value="/usr/bin/docker")
     def test_execute_scheduler_decision_wraps_local_command_for_container_runner(self, _mock_which):
         from app.scheduler.models import PlanStep

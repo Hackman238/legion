@@ -1,0 +1,56 @@
+{
+  "id": "pipette-ipmi-oob-discovery",
+  "label": "IPMI, iDRAC, and iLO discovery",
+  "description": "Aggregate out-of-band management discovery check for IPMI, Dell iDRAC, HP/HPE iLO, virtual console, and virtual-media exposures. It runs IPMI version and Cipher Zero NSE checks, TCP service/CPE discovery on common management ports, VNC console metadata checks, and flags Supermicro BMC configuration disclosure proof opportunities without downloading credentials.",
+  "entrypoint": "check-ipmi-oob.sh",
+  "service_scope": [
+    "asf-rmcp",
+    "ipmi",
+    "ipmi-rmcp",
+    "rmcp",
+    "vnc",
+    "idrac",
+    "ilo",
+    "hp-ilo",
+    "hpe-ilo",
+    "dell-rac"
+  ],
+  "protocol_scope": [
+    "tcp",
+    "udp"
+  ],
+  "target_ports": [
+    "623",
+    "5900",
+    "3668",
+    "3669",
+    "17988",
+    "17990",
+    "3002",
+    "49152"
+  ],
+  "required_tools": [
+    "bash",
+    "nmap"
+  ],
+  "optional_tools": [
+    "ipmi-version",
+    "ipmi-cipher-zero",
+    "supermicro-ipmi-conf",
+    "vnc-info"
+  ],
+  "risk_tags": [
+    "oob_management_discovery",
+    "ipmi_version_check",
+    "ipmi_cipher_zero_check",
+    "ipmi_2_0_hash_exposure_review",
+    "idrac_discovery",
+    "ilo_discovery",
+    "vnc_console_discovery",
+    "supermicro_bmc_config_disclosure_review"
+  ],
+  "impact_level": "medium",
+  "noise_level": "medium",
+  "mode": "check",
+  "default_timeout": 600
+}

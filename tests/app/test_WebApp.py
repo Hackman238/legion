@@ -895,12 +895,18 @@ class DummyRuntime:
             "counts": {"hosts": 1, "ports": 2},
         }
 
-    def start_tool_run_job(self, host_ip, port, protocol, tool_id, command_override="", timeout=300):
+    def start_tool_run_job(self, host_ip, port, protocol, tool_id, command_override="", timeout=300, parameters=None):
         return {
             "id": 6,
             "type": "tool-run",
             "status": "queued",
-            "payload": {"host_ip": host_ip, "port": port, "protocol": protocol, "tool_id": tool_id},
+            "payload": {
+                "host_ip": host_ip,
+                "port": port,
+                "protocol": protocol,
+                "tool_id": tool_id,
+                "parameters": parameters or {},
+            },
         }
 
     def start_process_retry_job(self, process_id, timeout=300):
@@ -1164,11 +1170,12 @@ class DummyRuntime:
             if any(str(item or "").strip().lower() == category_filter for item in list(row.get("categories", []) or []))
         ]
 
-    def get_workspace_tools(self, service="", limit=300):
+    def get_workspace_tools(self, service="", port="", protocol="tcp", limit=300):
         return self.workspace_tools[:limit]
 
-    def get_workspace_tools_page(self, service="", limit=300, offset=0):
+    def get_workspace_tools_page(self, service="", port="", protocol="tcp", limit=300, offset=0):
         normalized_service = str(service or "").strip().lower()
+        normalized_port = str(port or "").strip()
         rows = list(self.workspace_tools)
         if normalized_service:
             rows = [
@@ -1177,6 +1184,12 @@ class DummyRuntime:
                     str(item or "").strip().lower()
                     for item in list(row.get("service_scope", []) or [])
                 }
+            ]
+        if normalized_port:
+            rows = [
+                row for row in rows
+                if not row.get("target_ports")
+                or normalized_port in {str(item or "").strip() for item in list(row.get("target_ports", []) or [])}
             ]
         safe_limit = max(1, min(int(limit or 300), 500))
         safe_offset = max(0, int(offset or 0))

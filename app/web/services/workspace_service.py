@@ -186,6 +186,8 @@ class WorkspaceService:
         query = WorkspaceToolsPageQuery.from_args(args)
         return self.runtime.get_workspace_tools_page(
             service=query.service,
+            port=query.port,
+            protocol=query.protocol,
             limit=query.limit,
             offset=query.offset,
         )
@@ -345,6 +347,7 @@ class WorkspaceService:
             tool_id=request.tool_id,
             command_override=request.command_override,
             timeout=request.timeout,
+            parameters=request.parameters,
         )
         return {"status": "accepted", "job": job}
 
