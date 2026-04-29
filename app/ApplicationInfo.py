@@ -18,13 +18,13 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 
 applicationInfo = {
     "name": "LEGION",
-    "version": "0.6.0",
-    "build": '1773752754',
+    "version": "0.7.0",
+    "build": '1777505257',
     "author": "Shane Scott",
     "copyright": "2026",
     "links": ["http://github.com/Hackman238/legion/issues"],
     "emails": [],
-    "update": '03/17/2026',
+    "update": '04/29/2026',
     "license": "GPL v3",
     "desc": "Legion is a local-first, operator-guided reconnaissance and penetration testing platform with \n" +
             "governed deterministic and AI-assisted orchestration, evidence graphing, and MCP-enabled \n" +
