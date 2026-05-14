@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-import json
-import shlex
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
-from app.device_categories import built_in_device_category_rules, device_category_options
-from app.hostsfile import registrable_root_domain
 from app.scheduler.approvals import ensure_scheduler_approval_table, list_pending_approvals
 from app.scheduler.audit import ensure_scheduler_audit_table
 from app.scheduler.config import normalize_device_categories
 from app.scheduler.insights import ensure_scheduler_ai_state_table
-from app.scheduler.orchestrator import DEFAULT_AI_FEEDBACK_CONFIG
 from app.scheduler.policy import (
     ensure_scheduler_engagement_policy_table,
-    get_project_engagement_policy,
     list_engagement_presets,
     normalize_engagement_policy,
     preset_from_legacy_goal_profile,
@@ -26,167 +20,35 @@ from app.scheduler.scan_history import ensure_scan_submission_table, list_scan_s
 from app.settings import AppSettings, Settings
 from app.timing import getTimestamp
 from app.tooling import audit_legion_tools
+from app.web import runtime_scheduler_config_values as web_runtime_scheduler_config_values
+from app.web import runtime_scheduler_policy_config as web_runtime_scheduler_policy_config
 
 
-def job_worker_count(preferences: Optional[Dict[str, Any]] = None) -> int:
-    source = preferences if isinstance(preferences, dict) else {}
-    try:
-        value = int(source.get("max_concurrency", 1))
-    except (TypeError, ValueError):
-        value = 1
-    return max(1, min(value, 8))
-
-
-def normalize_project_report_headers(headers: Any) -> Dict[str, str]:
-    source = headers
-    if isinstance(source, str):
-        try:
-            source = json.loads(source)
-        except Exception:
-            source = {}
-    if not isinstance(source, dict):
-        return {}
-    normalized = {}
-    for name, value in source.items():
-        key = str(name or "").strip()
-        if not key:
-            continue
-        normalized[key] = str(value or "")
-    return normalized
-
-
-def project_report_delivery_config(preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    source = preferences if isinstance(preferences, dict) else {}
-    raw = source.get("project_report_delivery", {})
-    defaults = {
-        "provider_name": "",
-        "endpoint": "",
-        "method": "POST",
-        "format": "json",
-        "headers": {},
-        "timeout_seconds": 30,
-        "mtls": {
-            "enabled": False,
-            "client_cert_path": "",
-            "client_key_path": "",
-            "ca_cert_path": "",
-        },
-    }
-    if isinstance(raw, dict):
-        defaults.update(raw)
-
-    headers = normalize_project_report_headers(defaults.get("headers", {}))
-
-    method = str(defaults.get("method", "POST") or "POST").strip().upper()
-    if method not in {"POST", "PUT", "PATCH"}:
-        method = "POST"
-
-    report_format = str(defaults.get("format", "json") or "json").strip().lower()
-    if report_format in {"markdown"}:
-        report_format = "md"
-    if report_format not in {"json", "md"}:
-        report_format = "json"
-
-    try:
-        timeout_seconds = int(defaults.get("timeout_seconds", 30))
-    except (TypeError, ValueError):
-        timeout_seconds = 30
-    timeout_seconds = max(5, min(timeout_seconds, 300))
-
-    mtls_raw = defaults.get("mtls", {})
-    if not isinstance(mtls_raw, dict):
-        mtls_raw = {}
-
-    return {
-        "provider_name": str(defaults.get("provider_name", "") or ""),
-        "endpoint": str(defaults.get("endpoint", "") or ""),
-        "method": method,
-        "format": report_format,
-        "headers": headers,
-        "timeout_seconds": int(timeout_seconds),
-        "mtls": {
-            "enabled": bool(mtls_raw.get("enabled", False)),
-            "client_cert_path": str(mtls_raw.get("client_cert_path", "") or ""),
-            "client_key_path": str(mtls_raw.get("client_key_path", "") or ""),
-            "ca_cert_path": str(mtls_raw.get("ca_cert_path", "") or ""),
-        },
-    }
+job_worker_count = web_runtime_scheduler_config_values.job_worker_count
+normalize_project_report_headers = web_runtime_scheduler_config_values.normalize_project_report_headers
+project_report_delivery_config = web_runtime_scheduler_config_values.project_report_delivery_config
+scheduler_max_concurrency = web_runtime_scheduler_config_values.scheduler_max_concurrency
+scheduler_max_host_concurrency = web_runtime_scheduler_config_values.scheduler_max_host_concurrency
+scheduler_max_jobs = web_runtime_scheduler_config_values.scheduler_max_jobs
+scheduler_feedback_config = web_runtime_scheduler_config_values.scheduler_feedback_config
+is_host_scoped_scheduler_tool = web_runtime_scheduler_config_values.is_host_scoped_scheduler_tool
+sanitize_provider_config = web_runtime_scheduler_config_values.sanitize_provider_config
+sanitize_integration_config = web_runtime_scheduler_config_values.sanitize_integration_config
+scheduler_integration_api_key = web_runtime_scheduler_config_values.scheduler_integration_api_key
+shodan_integration_enabled = web_runtime_scheduler_config_values.shodan_integration_enabled
+grayhatwarfare_integration_enabled = web_runtime_scheduler_config_values.grayhatwarfare_integration_enabled
+device_category_options_for_runtime = web_runtime_scheduler_config_values.device_category_options_for_runtime
+built_in_device_category_options = web_runtime_scheduler_config_values.built_in_device_category_options
+scheduler_command_placeholders = web_runtime_scheduler_config_values.scheduler_command_placeholders
+merge_engagement_policy_payload = web_runtime_scheduler_policy_config.merge_engagement_policy_payload
+load_engagement_policy_locked = web_runtime_scheduler_policy_config.load_engagement_policy_locked
+get_engagement_policy = web_runtime_scheduler_policy_config.get_engagement_policy
+set_engagement_policy = web_runtime_scheduler_policy_config.set_engagement_policy
 
 
 def get_scheduler_preferences(runtime) -> Dict[str, Any]:
     with runtime._lock:
         return scheduler_preferences(runtime)
-
-
-def merge_engagement_policy_payload(
-        current_policy: Optional[Dict[str, Any]],
-        updates: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    merged = dict(current_policy or {})
-    incoming = dict(updates or {}) if isinstance(updates, dict) else {}
-    if isinstance(merged.get("custom_overrides"), dict) and isinstance(incoming.get("custom_overrides"), dict):
-        custom_overrides = dict(merged.get("custom_overrides", {}))
-        custom_overrides.update(incoming.get("custom_overrides", {}))
-        incoming["custom_overrides"] = custom_overrides
-    merged.update(incoming)
-    return merged
-
-
-def load_engagement_policy_locked(runtime, *, persist_if_missing: bool = True) -> Dict[str, Any]:
-    config = runtime.scheduler_config.load()
-    fallback_policy = normalize_engagement_policy(
-        config.get("engagement_policy", {}),
-        fallback_goal_profile=str(config.get("goal_profile", "internal_asset_discovery") or "internal_asset_discovery"),
-    )
-    project = getattr(runtime.logic, "activeProject", None)
-    if not project:
-        return fallback_policy.to_dict()
-
-    ensure_scheduler_engagement_policy_table(project.database)
-    stored = get_project_engagement_policy(project.database)
-    if stored is None:
-        payload = fallback_policy.to_dict()
-        if persist_if_missing:
-            upsert_project_engagement_policy(
-                project.database,
-                payload,
-                updated_at=getTimestamp(True),
-            )
-        return payload
-
-    normalized = normalize_engagement_policy(
-        stored,
-        fallback_goal_profile=fallback_policy.legacy_goal_profile,
-    )
-    return normalized.to_dict()
-
-
-def get_engagement_policy(runtime) -> Dict[str, Any]:
-    with runtime._lock:
-        return load_engagement_policy_locked(runtime, persist_if_missing=True)
-
-
-def set_engagement_policy(runtime, updates: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    with runtime._lock:
-        current = load_engagement_policy_locked(runtime, persist_if_missing=True)
-        merged = merge_engagement_policy_payload(current, updates)
-        normalized_policy = normalize_engagement_policy(
-            merged,
-            fallback_goal_profile=str(current.get("legacy_goal_profile", current.get("goal_profile", "internal_asset_discovery")) or "internal_asset_discovery"),
-        )
-        runtime.scheduler_config.update_preferences({
-            "engagement_policy": normalized_policy.to_dict(),
-            "goal_profile": normalized_policy.legacy_goal_profile,
-        })
-        project = getattr(runtime.logic, "activeProject", None)
-        if project:
-            ensure_scheduler_engagement_policy_table(project.database)
-            upsert_project_engagement_policy(
-                project.database,
-                normalized_policy.to_dict(),
-                updated_at=getTimestamp(True),
-            )
-        return normalized_policy.to_dict()
 
 
 def apply_scheduler_preferences(runtime, updates: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -335,142 +197,6 @@ def get_scan_history(runtime, limit: int = 200) -> List[Dict[str, Any]]:
         project = runtime._require_active_project()
         ensure_scan_submission_table(project.database)
         return list_scan_submissions(project.database, limit=limit)
-
-
-def scheduler_max_concurrency(preferences: Optional[Dict[str, Any]] = None) -> int:
-    source = preferences if isinstance(preferences, dict) else {}
-    try:
-        value = int(source.get("max_concurrency", 1))
-    except (TypeError, ValueError):
-        value = 1
-    return max(1, min(value, 16))
-
-
-def scheduler_max_host_concurrency(preferences: Optional[Dict[str, Any]] = None) -> int:
-    source = preferences if isinstance(preferences, dict) else {}
-    try:
-        value = int(source.get("max_host_concurrency", 1))
-    except (TypeError, ValueError):
-        value = 1
-    return max(1, min(value, 8))
-
-
-def scheduler_max_jobs(preferences: Optional[Dict[str, Any]] = None) -> int:
-    source = preferences if isinstance(preferences, dict) else {}
-    try:
-        value = int(source.get("max_jobs", 200))
-    except (TypeError, ValueError):
-        value = 200
-    return max(20, min(value, 2000))
-
-
-def scheduler_feedback_config(preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    merged = dict(DEFAULT_AI_FEEDBACK_CONFIG)
-    source = preferences.get("ai_feedback", {}) if isinstance(preferences, dict) else {}
-    if not isinstance(source, dict):
-        source = {}
-
-    if "enabled" in source:
-        merged["enabled"] = bool(source.get("enabled"))
-
-    for key in (
-            "max_rounds_per_target",
-            "max_actions_per_round",
-            "recent_output_chars",
-            "stall_rounds_without_progress",
-            "stall_repeat_selection_threshold",
-            "max_reflections_per_target",
-    ):
-        try:
-            merged[key] = int(source.get(key, merged[key]))
-        except (TypeError, ValueError):
-            continue
-
-    merged["reflection_enabled"] = bool(source.get("reflection_enabled", merged.get("reflection_enabled", True)))
-    merged["max_rounds_per_target"] = max(1, min(int(merged["max_rounds_per_target"]), 12))
-    merged["max_actions_per_round"] = max(1, min(int(merged["max_actions_per_round"]), 8))
-    merged["recent_output_chars"] = max(320, min(int(merged["recent_output_chars"]), 4000))
-    merged["stall_rounds_without_progress"] = max(1, min(int(merged["stall_rounds_without_progress"]), 6))
-    merged["stall_repeat_selection_threshold"] = max(1, min(int(merged["stall_repeat_selection_threshold"]), 8))
-    merged["max_reflections_per_target"] = max(0, min(int(merged["max_reflections_per_target"]), 4))
-    return merged
-
-
-def is_host_scoped_scheduler_tool(tool_id: str) -> bool:
-    return str(tool_id or "").strip().lower() in {
-        "subfinder",
-        "grayhatwarfare",
-        "shodan-enrichment",
-        "responder",
-        "ntlmrelayx",
-    }
-
-
-def sanitize_provider_config(provider_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    value = dict(provider_cfg)
-    api_key = str(value.get("api_key", "") or "")
-    value["api_key"] = ""
-    value["api_key_configured"] = bool(api_key)
-    return value
-
-
-def sanitize_integration_config(integration_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    value = dict(integration_cfg)
-    api_key = str(value.get("api_key", "") or "")
-    value["api_key"] = ""
-    value["api_key_configured"] = bool(api_key)
-    return value
-
-
-def scheduler_integration_api_key(
-        integration_name: str,
-        preferences: Optional[Dict[str, Any]] = None,
-) -> str:
-    config = preferences if isinstance(preferences, dict) else {}
-    integrations = config.get("integrations", {}) if isinstance(config.get("integrations", {}), dict) else {}
-    integration_cfg = integrations.get(str(integration_name or "").strip().lower(), {})
-    if not isinstance(integration_cfg, dict):
-        return ""
-    return str(integration_cfg.get("api_key", "") or "").strip()
-
-
-def shodan_integration_enabled(runtime, preferences: Optional[Dict[str, Any]] = None) -> bool:
-    config = preferences if isinstance(preferences, dict) else runtime.scheduler_config.load()
-    api_key = scheduler_integration_api_key("shodan", config)
-    return bool(api_key and api_key.lower() not in {"yourkeygoeshere", "changeme"})
-
-
-def grayhatwarfare_integration_enabled(runtime, preferences: Optional[Dict[str, Any]] = None) -> bool:
-    config = preferences if isinstance(preferences, dict) else runtime.scheduler_config.load()
-    api_key = scheduler_integration_api_key("grayhatwarfare", config)
-    return bool(api_key and api_key.lower() not in {"yourkeygoeshere", "changeme"})
-
-
-def device_category_options_for_runtime(runtime) -> List[Dict[str, Any]]:
-    return device_category_options(runtime.scheduler_config.get_device_categories())
-
-
-def built_in_device_category_options() -> List[Dict[str, Any]]:
-    return [
-        {"id": str(item.get("id", "") or ""), "name": str(item.get("name", "") or ""), "built_in": True}
-        for item in built_in_device_category_rules()
-    ]
-
-
-def scheduler_command_placeholders(
-        runtime,
-        *,
-        host_ip: str,
-        hostname: str,
-        preferences: Optional[Dict[str, Any]] = None,
-) -> Dict[str, str]:
-    config = preferences if isinstance(preferences, dict) else runtime.scheduler_config.load()
-    root_domain = registrable_root_domain(str(hostname or "").strip()) or registrable_root_domain(str(host_ip or "").strip())
-    return {
-        "ROOT_DOMAIN": shlex.quote(root_domain) if root_domain else "",
-        "GRAYHAT_API_KEY": shlex.quote(scheduler_integration_api_key("grayhatwarfare", config)),
-        "SHODAN_API_KEY": shlex.quote(scheduler_integration_api_key("shodan", config)),
-    }
 
 
 def scheduler_preferences(runtime) -> Dict[str, Any]:

@@ -6,6 +6,7 @@ from app.scheduler.insights import delete_host_ai_state
 from app.scheduler.state import get_target_state, upsert_target_state
 from app.scheduler.state import load_observed_service_inventory
 from app.web import runtime_workspace_mutation as web_runtime_workspace_mutation
+from app.web import runtime_workspace_host_detail as web_runtime_workspace_host_detail
 from app.web import runtime_workspace_read as web_runtime_workspace_read
 
 
@@ -97,10 +98,11 @@ def get_findings(
 
 
 def get_host_workspace(runtime, host_id: int) -> Dict[str, Any]:
-    return web_runtime_workspace_read.get_host_workspace(
+    return web_runtime_workspace_host_detail.get_host_workspace(
         runtime,
         host_id,
         get_target_state_func=get_target_state,
+        host_detail_script_preview_func=web_runtime_workspace_read.host_detail_script_preview,
     )
 
 

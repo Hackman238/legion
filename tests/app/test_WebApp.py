@@ -895,7 +895,7 @@ class DummyRuntime:
             "counts": {"hosts": 1, "ports": 2},
         }
 
-    def start_tool_run_job(self, host_ip, port, protocol, tool_id, command_override="", timeout=300, parameters=None):
+    def start_tool_run_job(self, host_ip, port, protocol, tool_id, timeout=300, parameters=None):
         return {
             "id": 6,
             "type": "tool-run",
@@ -2040,7 +2040,7 @@ class WebAppTest(unittest.TestCase):
         body = response.get_data(as_text=True)
         self.assertIn('<body class="opaque-ui">', body)
         self.assertIn("<h1>LEGION</h1>", body)
-        self.assertIn("v0.6.0", body)
+        self.assertIn("v0.7.0", body)
         self.assertIn("Localhost only", body)
         self.assertNotIn("Web Console", body)
         self.assertIn("Graph Workspace", body)

@@ -785,13 +785,12 @@ class WebRuntimeDomainModulesTest(unittest.TestCase):
             port="445",
             protocol="tcp",
             tool_id="smbmap",
-            command_override="override smbmap",
             timeout=120,
         )
 
         self.assertEqual("tool-run", runtime.started_job["job_type"])
-        self.assertEqual("override smbmap", runtime.started_job["payload"]["command_override"])
-        self.assertEqual("override smbmap", runtime.command_call["template"])
+        self.assertNotIn("command_override", runtime.started_job["payload"])
+        self.assertEqual("smbmap -H [TARGET_HOST] -P [PORT]", runtime.command_call["template"])
         self.assertEqual("smbmap", runtime.run_call["tool_name"])
         self.assertEqual(120, runtime.run_call["timeout"])
         self.assertEqual(9, runtime.run_call["job_id"])

@@ -1,230 +1,32 @@
 from __future__ import annotations
 
 import os
-import re
 import signal
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy import text
 
+from app.web.runtime_process_jobs import (
+    get_job,
+    job_active_process_ids,
+    list_jobs,
+    register_job_process,
+    stop_job,
+    unregister_job_process,
+)
+from app.web.runtime_process_retry import (
+    build_process_retry_plan,
+    retry_process,
+    split_process_retry_targets,
+    start_process_retry_job,
+)
 from app.scheduler.config import (
     DEFAULT_TOOL_EXECUTION_PROFILES,
     normalize_tool_execution_profiles,
 )
-from app.settings import AppSettings
-from app.timing import getTimestamp
+from app.web import runtime_process_parsing as web_runtime_process_parsing
 from app.web import runtime_process_progress as web_runtime_process_progress
-
-
-def register_job_process(runtime, job_id: int, process_id: int):
-    resolved_job_id = int(job_id or 0)
-    resolved_process_id = int(process_id or 0)
-    if resolved_job_id <= 0 or resolved_process_id <= 0:
-        return
-    if not hasattr(runtime, "_job_process_ids"):
-        runtime._job_process_ids = {}
-    if not hasattr(runtime, "_process_job_id"):
-        runtime._process_job_id = {}
-    with runtime._process_runtime_lock:
-        process_ids = runtime._job_process_ids.setdefault(resolved_job_id, set())
-        process_ids.add(resolved_process_id)
-        runtime._process_job_id[resolved_process_id] = resolved_job_id
-
-
-def unregister_job_process(runtime, process_id: int):
-    resolved_process_id = int(process_id or 0)
-    if resolved_process_id <= 0:
-        return
-    if not hasattr(runtime, "_job_process_ids") or not hasattr(runtime, "_process_job_id"):
-        return
-    with runtime._process_runtime_lock:
-        owner_job_id = runtime._process_job_id.pop(resolved_process_id, None)
-        if owner_job_id is None:
-            return
-        process_ids = runtime._job_process_ids.get(int(owner_job_id))
-        if not process_ids:
-            return
-        process_ids.discard(resolved_process_id)
-        if not process_ids:
-            runtime._job_process_ids.pop(int(owner_job_id), None)
-
-
-def job_active_process_ids(runtime, job_id: int) -> List[int]:
-    resolved_job_id = int(job_id or 0)
-    if resolved_job_id <= 0:
-        return []
-    if not hasattr(runtime, "_job_process_ids"):
-        return []
-    with runtime._process_runtime_lock:
-        process_ids = list(runtime._job_process_ids.get(resolved_job_id, set()))
-    return sorted({int(item) for item in process_ids if int(item) > 0})
-
-
-def start_process_retry_job(runtime, process_id: int, timeout: int = 300) -> Dict[str, Any]:
-    target_id = int(process_id)
-    timeout_value = max(1, int(timeout or 300))
-    return runtime._start_job(
-        "process-retry",
-        lambda job_id: retry_process(runtime, target_id, timeout=timeout_value, job_id=int(job_id or 0)),
-        payload={"process_id": target_id, "timeout": timeout_value},
-    )
-
-
-def retry_process(runtime, process_id: int, timeout: int = 300, job_id: int = 0) -> Dict[str, Any]:
-    with runtime._lock:
-        project = runtime._require_active_project()
-        runtime._ensure_process_tables()
-        process_repo = project.repositoryContainer.processRepository
-        details = process_repo.getProcessById(int(process_id))
-        if not details:
-            raise KeyError(f"Unknown process id: {process_id}")
-
-        command = str(details.get("command", "") or "")
-        if not command:
-            raise ValueError(f"Process {process_id} has no command to retry.")
-
-        host_ip = str(details.get("hostIp", "") or "")
-        port = str(details.get("port", "") or "")
-        protocol = str(details.get("protocol", "") or "tcp")
-        tool_name = str(details.get("name", "") or "process")
-        tab_title = str(details.get("tabTitle", "") or tool_name)
-        outputfile = str(details.get("outputfile", "") or "")
-        if not outputfile:
-            outputfile = os.path.join(
-                project.properties.runningFolder,
-                f"{getTimestamp()}-{tool_name}-{host_ip}-{port}",
-            )
-            outputfile = os.path.normpath(outputfile).replace("\\", "/")
-        retry_plan = build_process_retry_plan(
-            runtime,
-            tool_name=tool_name,
-            host_ip=host_ip,
-            port=port,
-            protocol=protocol,
-        )
-        if runtime._is_nmap_command(tool_name, command):
-            command = AppSettings._ensure_nmap_stats_every(command)
-
-    if retry_plan.get("mode") == "tool":
-        tool_result = runtime._run_manual_tool(
-            host_ip=str(retry_plan.get("host_ip", "") or ""),
-            port=str(retry_plan.get("port", "") or ""),
-            protocol=str(retry_plan.get("protocol", "tcp") or "tcp"),
-            tool_id=str(retry_plan.get("tool_id", "") or ""),
-            command_override="",
-            timeout=int(timeout),
-            job_id=int(job_id or 0),
-        )
-        executed = bool(tool_result.get("executed", False))
-        reason = str(tool_result.get("reason", "") or "")
-        new_process_id = int(tool_result.get("process_id", 0) or 0)
-        command = str(tool_result.get("command", "") or "")
-        retry_mode = "intent"
-        retry_intent = "tool-run"
-    elif retry_plan.get("mode") == "nmap_scan":
-        scan_result = runtime._run_nmap_scan_and_import(
-            targets=list(retry_plan.get("targets", []) or []),
-            discovery=bool(retry_plan.get("discovery", True)),
-            staged=bool(retry_plan.get("staged", False)),
-            run_actions=bool(retry_plan.get("run_actions", False)),
-            nmap_path=str(retry_plan.get("nmap_path", "nmap") or "nmap"),
-            nmap_args=str(retry_plan.get("nmap_args", "") or ""),
-            scan_mode=str(retry_plan.get("scan_mode", "legacy") or "legacy"),
-            scan_options=dict(retry_plan.get("scan_options", {}) or {}),
-            job_id=int(job_id or 0),
-        )
-        stages = list(scan_result.get("stages", []) or [])
-        last_stage = stages[-1] if stages else {}
-        executed = True
-        reason = "completed"
-        new_process_id = int(last_stage.get("process_id", 0) or 0)
-        command = str(last_stage.get("command", "") or "")
-        retry_mode = "intent"
-        retry_intent = "nmap_scan"
-    else:
-        executed, reason, new_process_id = runtime._run_command_with_tracking(
-            tool_name=tool_name,
-            tab_title=tab_title,
-            host_ip=host_ip,
-            port=port,
-            protocol=protocol,
-            command=command,
-            outputfile=outputfile,
-            timeout=int(timeout),
-            job_id=int(job_id or 0),
-        )
-        retry_mode = "command"
-        retry_intent = "command-replay"
-    return {
-        "source_process_id": int(process_id),
-        "process_id": int(new_process_id),
-        "executed": bool(executed),
-        "reason": str(reason),
-        "command": command,
-        "retry_mode": retry_mode,
-        "retry_intent": retry_intent,
-    }
-
-
-def build_process_retry_plan(
-        runtime,
-        *,
-        tool_name: str,
-        host_ip: str,
-        port: str,
-        protocol: str,
-) -> Dict[str, Any]:
-    normalized_tool = str(tool_name or "").strip()
-    normalized_host = str(host_ip or "").strip()
-    normalized_port = str(port or "").strip()
-    normalized_protocol = str(protocol or "tcp").strip().lower() or "tcp"
-
-    settings = runtime._get_settings()
-    if normalized_tool and normalized_host and normalized_port:
-        action = runtime._find_port_action(settings, normalized_tool)
-        if action is not None:
-            return {
-                "mode": "tool",
-                "tool_id": normalized_tool,
-                "host_ip": normalized_host,
-                "port": normalized_port,
-                "protocol": normalized_protocol,
-            }
-
-    normalized_targets = split_process_retry_targets(normalized_host)
-    tool_token = normalized_tool.lower()
-    if normalized_targets and tool_token in {"nmap-easy", "nmap-hard", "nmap-rfc1918_discovery"}:
-        scan_mode = tool_token.split("nmap-", 1)[1]
-        return {
-            "mode": "nmap_scan",
-            "targets": normalized_targets,
-            "discovery": scan_mode != "hard",
-            "staged": False,
-            "run_actions": False,
-            "nmap_path": "nmap",
-            "nmap_args": "",
-            "scan_mode": scan_mode,
-            "scan_options": {},
-        }
-
-    return {"mode": "command"}
-
-
-def split_process_retry_targets(value: str) -> List[str]:
-    raw = str(value or "").strip()
-    if not raw:
-        return []
-    tokens = [
-        item.strip()
-        for item in re.split(r"[\s,]+", raw)
-        if item.strip()
-    ]
-    deduped: List[str] = []
-    for item in tokens:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped
 
 
 def signal_process_tree(proc: Optional[subprocess.Popen], *, force: bool = False):
@@ -364,7 +166,7 @@ def get_process_output(runtime, process_id: int, offset: int = 0, max_chars: int
     next_offset = offset_value + len(chunk)
     status = str(data.get("status", "") or "")
     completed = status not in {"Running", "Waiting"}
-    data["command"] = web_runtime_process_progress.redact_command_secrets(data.get("command", ""))
+    data["command"] = web_runtime_process_parsing.redact_command_secrets(data.get("command", ""))
     data["output_chunk"] = chunk
     data["output_length"] = output_length
     data["offset"] = offset_value
@@ -380,52 +182,6 @@ def get_process_output(runtime, process_id: int, offset: int = 0, max_chars: int
         progress_updated_at=data.get("progressUpdatedAt", ""),
     )
     return data
-
-
-def list_jobs(runtime, limit: int = 80) -> List[Dict[str, Any]]:
-    return runtime.jobs.list_jobs(limit=limit)
-
-
-def get_job(runtime, job_id: int) -> Dict[str, Any]:
-    job = runtime.jobs.get_job(job_id)
-    if job is None:
-        raise KeyError(f"Unknown job id: {job_id}")
-    return job
-
-
-def stop_job(runtime, job_id: int) -> Dict[str, Any]:
-    target_job_id = int(job_id)
-    job = runtime.jobs.get_job(target_job_id)
-    if job is None:
-        raise KeyError(f"Unknown job id: {job_id}")
-
-    status = str(job.get("status", "") or "").strip().lower()
-    if status not in {"queued", "running"}:
-        return {
-            "stopped": False,
-            "job": job,
-            "killed_process_ids": [],
-            "message": "Job is not running or queued.",
-        }
-
-    updated = runtime.jobs.cancel_job(target_job_id, reason="stopped by user")
-    if updated is None:
-        raise KeyError(f"Unknown job id: {job_id}")
-
-    killed_process_ids = []
-    for process_id in job_active_process_ids(runtime, target_job_id):
-        try:
-            runtime.kill_process(int(process_id))
-            killed_process_ids.append(int(process_id))
-        except Exception:
-            continue
-
-    final_job = runtime.jobs.get_job(target_job_id) or updated
-    return {
-        "stopped": True,
-        "job": final_job,
-        "killed_process_ids": killed_process_ids,
-    }
 
 
 def tool_execution_profile(runtime, tool_name: Any) -> Dict[str, Any]:

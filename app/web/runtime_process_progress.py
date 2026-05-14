@@ -1,32 +1,436 @@
 from __future__ import annotations
 
-from app.web import runtime_process_history as web_runtime_process_history
-from app.web import runtime_process_parsing as web_runtime_process_parsing
+import re
+import time
+from typing import Any, Dict, Optional, Tuple
+
+from app.timing import getTimestamp
+
+_NMAP_PROGRESS_PERCENT_RE = re.compile(r"About\s+([0-9]+(?:\.[0-9]+)?)%\s+done", flags=re.IGNORECASE)
+_NMAP_PROGRESS_REMAINING_PAREN_RE = re.compile(r"\(([^)]*?)\s+remaining\)", flags=re.IGNORECASE)
+_NMAP_PROGRESS_PERCENT_ATTR_RE = re.compile(r'percent=["\']([0-9]+(?:\.[0-9]+)?)["\']', flags=re.IGNORECASE)
+_NMAP_PROGRESS_REMAINING_ATTR_RE = re.compile(r'remaining=["\']([0-9]+(?:\.[0-9]+)?)["\']', flags=re.IGNORECASE)
+_NUCLEI_PROGRESS_ELAPSED_RE = re.compile(r"^\[([0-9:]+)\]", flags=re.IGNORECASE)
+_TSHARK_DURATION_RE = re.compile(r"\bduration:(\d+)\b", flags=re.IGNORECASE)
+_NUCLEI_PROGRESS_REQUESTS_RE = re.compile(
+    r"Requests:\s*([0-9]+)\s*/\s*([0-9]+)(?:\s*\(([0-9]+(?:\.[0-9]+)?)%\))?",
+    flags=re.IGNORECASE,
+)
+_NUCLEI_PROGRESS_RPS_RE = re.compile(r"RPS:\s*([0-9]+(?:\.[0-9]+)?)", flags=re.IGNORECASE)
+_NUCLEI_PROGRESS_MATCHED_RE = re.compile(r"Matched:\s*([0-9]+)", flags=re.IGNORECASE)
+_NUCLEI_PROGRESS_ERRORS_RE = re.compile(r"Errors:\s*([0-9]+)", flags=re.IGNORECASE)
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
-redact_command_secrets = web_runtime_process_parsing.redact_command_secrets
-is_nmap_command = web_runtime_process_parsing.is_nmap_command
-is_nuclei_command = web_runtime_process_parsing.is_nuclei_command
-is_tshark_passive_capture_command = web_runtime_process_parsing.is_tshark_passive_capture_command
-sample_process_tree_activity = web_runtime_process_parsing.sample_process_tree_activity
-process_tree_activity_changed = web_runtime_process_parsing.process_tree_activity_changed
-coerce_float = web_runtime_process_parsing.coerce_float
-format_duration_label = web_runtime_process_parsing.format_duration_label
-normalize_progress_source_label = web_runtime_process_parsing.normalize_progress_source_label
-build_process_progress_payload = web_runtime_process_parsing.build_process_progress_payload
-process_progress_adapter_for_command = web_runtime_process_parsing.process_progress_adapter_for_command
-estimate_remaining_from_percent = web_runtime_process_parsing.estimate_remaining_from_percent
-extract_progress_line = web_runtime_process_parsing.extract_progress_line
-extract_nmap_progress_message = web_runtime_process_parsing.extract_nmap_progress_message
-extract_nuclei_progress_from_text = web_runtime_process_parsing.extract_nuclei_progress_from_text
-extract_tshark_passive_progress = web_runtime_process_parsing.extract_tshark_passive_progress
-update_process_progress = web_runtime_process_parsing.update_process_progress
-update_nmap_process_progress = web_runtime_process_parsing.update_nmap_process_progress
-extract_nmap_progress_from_text = web_runtime_process_parsing.extract_nmap_progress_from_text
-parse_duration_seconds = web_runtime_process_parsing.parse_duration_seconds
+def coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
 
-list_processes = web_runtime_process_history.list_processes
-process_history_records = web_runtime_process_history.process_history_records
-normalize_process_timestamp_to_utc = web_runtime_process_history.normalize_process_timestamp_to_utc
-process_timestamp_utc_candidates = web_runtime_process_history.process_timestamp_utc_candidates
-normalize_process_time_range_to_utc = web_runtime_process_history.normalize_process_time_range_to_utc
+
+def format_duration_label(total_seconds: Any) -> str:
+    try:
+        parsed = int(float(total_seconds))
+    except (TypeError, ValueError):
+        return ""
+    if parsed <= 0:
+        return ""
+    hours = parsed // 3600
+    minutes = (parsed % 3600) // 60
+    seconds = parsed % 60
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    return f"{minutes}m {seconds:02d}s"
+
+
+def normalize_progress_source_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if lowered == "nmap":
+        return "Nmap"
+    if lowered == "nuclei":
+        return "Nuclei"
+    if lowered == "tshark":
+        return "TShark"
+    return raw
+
+
+def build_process_progress_payload(
+        *,
+        status: Any = "",
+        percent: Any = "",
+        estimated_remaining: Any = None,
+        elapsed: Any = 0,
+        progress_message: Any = "",
+        progress_source: Any = "",
+        progress_updated_at: Any = "",
+) -> Dict[str, Any]:
+    percent_numeric = coerce_float(percent)
+    percent_display = f"{percent_numeric:.1f}%" if percent_numeric is not None else ""
+    eta_seconds = None
+    try:
+        if estimated_remaining not in ("", None):
+            eta_seconds = max(0, int(float(estimated_remaining)))
+    except (TypeError, ValueError):
+        eta_seconds = None
+    elapsed_seconds = None
+    try:
+        if elapsed not in ("", None):
+            elapsed_seconds = max(0, int(float(elapsed)))
+    except (TypeError, ValueError):
+        elapsed_seconds = None
+    message_text = str(progress_message or "").strip()
+    source_text = normalize_progress_source_label(progress_source)
+    updated_at_text = str(progress_updated_at or "").strip()
+    summary_parts = []
+    if percent_display:
+        summary_parts.append(percent_display)
+    eta_label = format_duration_label(eta_seconds)
+    if eta_label:
+        summary_parts.append(f"ETA {eta_label}")
+    if message_text:
+        summary_parts.append(message_text)
+    elif elapsed_seconds and str(status or "").strip().lower() == "running":
+        elapsed_label = format_duration_label(elapsed_seconds)
+        if elapsed_label:
+            summary_parts.append(f"Elapsed {elapsed_label}")
+    return {
+        "active": bool(summary_parts or source_text or updated_at_text),
+        "summary": " | ".join(summary_parts),
+        "percent": f"{percent_numeric:.1f}" if percent_numeric is not None else "",
+        "percent_display": percent_display,
+        "estimated_remaining": eta_seconds,
+        "estimated_remaining_display": eta_label,
+        "elapsed": elapsed_seconds,
+        "elapsed_display": format_duration_label(elapsed_seconds),
+        "message": message_text,
+        "source": source_text,
+        "updated_at": updated_at_text,
+    }
+
+
+def process_progress_adapter_for_command(runtime_or_cls, tool_name: str, command: str) -> str:
+    if runtime_or_cls._is_nmap_command(tool_name, command):
+        return "nmap"
+    if runtime_or_cls._is_nuclei_command(tool_name, command):
+        return "nuclei"
+    if runtime_or_cls._is_tshark_passive_capture_command(tool_name, command):
+        return "tshark"
+    return ""
+
+
+def estimate_remaining_from_percent(runtime_seconds: float, percent: Optional[float]) -> Optional[int]:
+    try:
+        elapsed = max(0.0, float(runtime_seconds or 0.0))
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    if elapsed <= 0.0 or percent is None:
+        return None
+    bounded = max(0.0, min(float(percent), 100.0))
+    if bounded <= 0.0 or bounded >= 100.0:
+        return None
+    fraction = bounded / 100.0
+    total = elapsed / fraction
+    return max(0, int(total - elapsed))
+
+
+def extract_progress_line(text: str, predicate) -> str:
+    cleaned = _ANSI_ESCAPE_RE.sub("", str(text or ""))
+    for raw_line in reversed(cleaned.splitlines()):
+        line = str(raw_line or "").strip()
+        if line and predicate(line):
+            return line[:240]
+    return ""
+
+
+def extract_nmap_progress_message(text: str) -> str:
+    return extract_progress_line(
+        text,
+        lambda line: bool(
+            _NMAP_PROGRESS_PERCENT_RE.search(line)
+            or _NMAP_PROGRESS_PERCENT_ATTR_RE.search(line)
+            or _NMAP_PROGRESS_REMAINING_PAREN_RE.search(line)
+            or _NMAP_PROGRESS_REMAINING_ATTR_RE.search(line)
+        ),
+    )
+
+
+def extract_nuclei_progress_from_text(
+        text: str,
+        runtime_seconds: float,
+) -> Tuple[Optional[float], Optional[int], str]:
+    cleaned = _ANSI_ESCAPE_RE.sub("", str(text or ""))
+    if not cleaned:
+        return None, None, ""
+
+    for raw_line in reversed(cleaned.splitlines()):
+        line = str(raw_line or "").strip()
+        if not line or "requests:" not in line.lower():
+            continue
+        requests_match = _NUCLEI_PROGRESS_REQUESTS_RE.search(line)
+        if not requests_match:
+            continue
+        try:
+            completed = int(requests_match.group(1))
+            total = int(requests_match.group(2))
+        except Exception:
+            continue
+        percent = None
+        percent_group = requests_match.group(3)
+        if percent_group not in (None, ""):
+            try:
+                percent = float(percent_group)
+            except Exception:
+                percent = None
+        if percent is None and total > 0:
+            percent = max(0.0, min((float(completed) / float(total)) * 100.0, 100.0))
+
+        elapsed_seconds = runtime_seconds
+        elapsed_match = _NUCLEI_PROGRESS_ELAPSED_RE.search(line)
+        if elapsed_match:
+            parsed_elapsed = parse_duration_seconds(elapsed_match.group(1))
+            if parsed_elapsed is not None:
+                elapsed_seconds = float(parsed_elapsed)
+        remaining = estimate_remaining_from_percent(elapsed_seconds, percent)
+
+        parts = [f"Requests {completed}/{total}"]
+        rps_match = _NUCLEI_PROGRESS_RPS_RE.search(line)
+        if rps_match:
+            parts.append(f"RPS {rps_match.group(1)}")
+        matched_match = _NUCLEI_PROGRESS_MATCHED_RE.search(line)
+        if matched_match:
+            parts.append(f"Matches {matched_match.group(1)}")
+        errors_match = _NUCLEI_PROGRESS_ERRORS_RE.search(line)
+        if errors_match:
+            parts.append(f"Errors {errors_match.group(1)}")
+        return percent, remaining, " | ".join(parts)[:240]
+    return None, None, ""
+
+
+def extract_tshark_passive_progress(
+        command: str,
+        runtime_seconds: float,
+) -> Tuple[Optional[float], Optional[int], str]:
+    duration_match = _TSHARK_DURATION_RE.search(str(command or ""))
+    if not duration_match:
+        return None, None, ""
+    try:
+        total_seconds = max(1, int(duration_match.group(1)))
+    except (TypeError, ValueError):
+        return None, None, ""
+    try:
+        elapsed_seconds = max(0.0, float(runtime_seconds or 0.0))
+    except (TypeError, ValueError):
+        elapsed_seconds = 0.0
+    bounded_elapsed = min(elapsed_seconds, float(total_seconds))
+    percent = max(0.0, min((bounded_elapsed / float(total_seconds)) * 100.0, 100.0))
+    remaining = max(0, int(round(float(total_seconds) - bounded_elapsed)))
+    elapsed_label = format_duration_label(int(bounded_elapsed))
+    message = f"Elapsed {elapsed_label}" if elapsed_label else ""
+    return percent, remaining, message[:240]
+
+
+def update_process_progress(
+        runtime,
+        process_repo,
+        *,
+        process_id: int,
+        tool_name: str,
+        command: str,
+        text_chunk: str,
+        runtime_seconds: float,
+        state: Dict[str, Any],
+):
+    adapter = str(state.get("adapter", "") or "").strip().lower()
+    if not adapter:
+        return
+
+    raw_chunk = str(text_chunk or "")
+    percent = None
+    remaining = None
+    message = ""
+    source = adapter
+    clear_remaining_on_partial = False
+
+    if adapter == "nmap":
+        percent, remaining = extract_nmap_progress_from_text(raw_chunk)
+        message = extract_nmap_progress_message(raw_chunk)
+        clear_remaining_on_partial = bool(
+            (_NMAP_PROGRESS_PERCENT_RE.search(raw_chunk) or _NMAP_PROGRESS_PERCENT_ATTR_RE.search(raw_chunk))
+            and not (_NMAP_PROGRESS_REMAINING_PAREN_RE.search(raw_chunk) or _NMAP_PROGRESS_REMAINING_ATTR_RE.search(raw_chunk))
+        )
+    elif adapter == "nuclei":
+        percent, remaining, message = extract_nuclei_progress_from_text(
+            raw_chunk,
+            runtime_seconds=runtime_seconds,
+        )
+    elif adapter == "tshark":
+        percent, remaining, message = extract_tshark_passive_progress(
+            command,
+            runtime_seconds=runtime_seconds,
+        )
+    else:
+        return
+
+    if percent is None and remaining is None and not message:
+        return
+
+    changed = False
+    percent_value = state.get("percent")
+    remaining_value = state.get("remaining")
+    message_value = str(state.get("message", "") or "")
+    source_value = str(state.get("source", "") or "")
+
+    if percent is not None:
+        bounded = max(0.0, min(float(percent), 100.0))
+        if percent_value is None or abs(float(percent_value) - bounded) >= 0.1:
+            percent_value = bounded
+            state["percent"] = bounded
+            changed = True
+
+    if remaining is not None:
+        bounded_remaining = max(0, int(remaining))
+        if remaining_value is None or abs(int(remaining_value) - bounded_remaining) >= 5:
+            remaining_value = bounded_remaining
+            state["remaining"] = bounded_remaining
+            changed = True
+    elif clear_remaining_on_partial and remaining_value is not None:
+        remaining_value = None
+        state["remaining"] = None
+        changed = True
+
+    if message and message != message_value:
+        message_value = message
+        state["message"] = message
+        changed = True
+
+    if source != source_value:
+        source_value = source
+        state["source"] = source
+        changed = True
+
+    now = time.monotonic()
+    last_update = float(state.get("updated_at", 0.0) or 0.0)
+    if not changed and (now - last_update) < 10.0:
+        return
+
+    try:
+        process_repo.storeProcessProgress(
+            str(int(process_id)),
+            percent=f"{percent_value:.1f}" if percent_value is not None else None,
+            estimated_remaining=remaining_value,
+            progress_message=message_value,
+            progress_source=source_value,
+            progress_updated_at=getTimestamp(True),
+        )
+        state["updated_at"] = now
+        runtime._emit_ui_invalidation("processes", throttle_seconds=5.0)
+    except Exception:
+        pass
+
+
+def update_nmap_process_progress(
+        runtime,
+        process_repo,
+        *,
+        process_id: int,
+        text_chunk: str,
+        state: Dict[str, Any],
+):
+    percent, remaining = extract_nmap_progress_from_text(text_chunk)
+    if percent is None and remaining is None:
+        return
+
+    changed = False
+    percent_value = state.get("percent")
+    remaining_value = state.get("remaining")
+    if percent is not None:
+        bounded = max(0.0, min(float(percent), 100.0))
+        if percent_value is None or abs(float(percent_value) - bounded) >= 0.1:
+            percent_value = bounded
+            state["percent"] = bounded
+            changed = True
+    if remaining is not None:
+        bounded_remaining = max(0, int(remaining))
+        if remaining_value is None or int(remaining_value) != bounded_remaining:
+            remaining_value = bounded_remaining
+            state["remaining"] = bounded_remaining
+            changed = True
+    elif remaining_value is not None:
+        remaining_value = None
+        state["remaining"] = None
+        changed = True
+
+    now = time.monotonic()
+    last_update = float(state.get("updated_at", 0.0) or 0.0)
+    if not changed and (now - last_update) < 10.0:
+        return
+
+    process_repo.storeProcessProgress(
+        str(int(process_id)),
+        percent=f"{percent_value:.1f}" if percent_value is not None else None,
+        estimated_remaining=remaining_value,
+    )
+    state["updated_at"] = now
+    runtime._emit_ui_invalidation("processes", throttle_seconds=5.0)
+
+
+def extract_nmap_progress_from_text(text: str) -> Tuple[Optional[float], Optional[int]]:
+    raw = str(text or "")
+    if not raw:
+        return None, None
+
+    percent = None
+    remaining_seconds = None
+
+    percent_match = _NMAP_PROGRESS_PERCENT_RE.search(raw)
+    if percent_match:
+        try:
+            percent = float(percent_match.group(1))
+        except Exception:
+            percent = None
+
+    if percent is None:
+        percent_attr_match = _NMAP_PROGRESS_PERCENT_ATTR_RE.search(raw)
+        if percent_attr_match:
+            try:
+                percent = float(percent_attr_match.group(1))
+            except Exception:
+                percent = None
+
+    remaining_match = _NMAP_PROGRESS_REMAINING_PAREN_RE.search(raw)
+    if remaining_match:
+        remaining_seconds = parse_duration_seconds(remaining_match.group(1))
+
+    if remaining_seconds is None:
+        remaining_attr_match = _NMAP_PROGRESS_REMAINING_ATTR_RE.search(raw)
+        if remaining_attr_match:
+            try:
+                remaining_seconds = int(float(remaining_attr_match.group(1)))
+            except Exception:
+                remaining_seconds = None
+
+    return percent, remaining_seconds
+
+
+def parse_duration_seconds(raw: str) -> Optional[int]:
+    text_value = str(raw or "").strip()
+    if not text_value:
+        return None
+
+    if text_value.isdigit():
+        return int(text_value)
+
+    parts = text_value.split(":")
+    if not all(part.isdigit() for part in parts):
+        return None
+    if len(parts) == 2:
+        minutes, seconds = [int(part) for part in parts]
+        return (minutes * 60) + seconds
+    if len(parts) == 3:
+        hours, minutes, seconds = [int(part) for part in parts]
+        return (hours * 3600) + (minutes * 60) + seconds
+    return None

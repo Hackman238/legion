@@ -114,7 +114,6 @@ class WebRuntimeRetryProcessTest(unittest.TestCase):
         self.assertEqual("203.0.113.55", captured["host_ip"])
         self.assertEqual("443", captured["port"])
         self.assertEqual("tcp", captured["protocol"])
-        self.assertEqual("", captured["command_override"])
         self.assertEqual(180, captured["timeout"])
         self.assertEqual(6, captured["job_id"])
 

@@ -1,13 +1,10 @@
-import ipaddress
-import re
-import sqlite3
-import subprocess
+from __future__ import annotations
+
 import sys
+import subprocess
 import threading
-import zipfile
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
-from sqlalchemy import text
 
 from app.scheduler.approvals import (
     ensure_scheduler_approval_table,
@@ -41,23 +38,6 @@ from app.web import runtime_workspace as web_runtime_workspace
 from app.web.jobs import WebJobManager
 
 
-_NMAP_PROGRESS_PERCENT_RE = re.compile(r"About\s+([0-9]+(?:\.[0-9]+)?)%\s+done", flags=re.IGNORECASE)
-_NMAP_PROGRESS_REMAINING_PAREN_RE = re.compile(r"\(([^)]*?)\s+remaining\)", flags=re.IGNORECASE)
-_NMAP_PROGRESS_PERCENT_ATTR_RE = re.compile(r'percent=["\']([0-9]+(?:\.[0-9]+)?)["\']', flags=re.IGNORECASE)
-_NMAP_PROGRESS_REMAINING_ATTR_RE = re.compile(r'remaining=["\']([0-9]+(?:\.[0-9]+)?)["\']', flags=re.IGNORECASE)
-_NUCLEI_PROGRESS_ELAPSED_RE = re.compile(r"^\[([0-9:]+)\]", flags=re.IGNORECASE)
-_TSHARK_DURATION_RE = re.compile(r"\bduration:(\d+)\b", flags=re.IGNORECASE)
-_NUCLEI_PROGRESS_REQUESTS_RE = re.compile(
-    r"Requests:\s*([0-9]+)\s*/\s*([0-9]+)(?:\s*\(([0-9]+(?:\.[0-9]+)?)%\))?",
-    flags=re.IGNORECASE,
-)
-_NUCLEI_PROGRESS_RPS_RE = re.compile(r"RPS:\s*([0-9]+(?:\.[0-9]+)?)", flags=re.IGNORECASE)
-_NUCLEI_PROGRESS_MATCHED_RE = re.compile(r"Matched:\s*([0-9]+)", flags=re.IGNORECASE)
-_NUCLEI_PROGRESS_ERRORS_RE = re.compile(r"Errors:\s*([0-9]+)", flags=re.IGNORECASE)
-_PROCESS_READER_EXIT_GRACE_SECONDS = 2.0
-_PROCESS_CRASH_MIN_RUNTIME_SECONDS = 5.0
-
-
 def _get_requests_module():
     try:
         import requests as requests_module
@@ -74,25 +54,6 @@ class WebRuntime:
     RFC1918_SWEEP_CHUNK_PREFIX = 24
     RFC1918_SWEEP_BATCH_SIZE = 2
     RFC1918_SWEEP_MAX_CONCURRENCY = 4
-    _COMMAND_SECRET_PATTERNS = (
-        re.compile(
-            r"(?P<prefix>\b(?:[A-Z][A-Z0-9_]*API_KEY|[A-Z][A-Z0-9_]*TOKEN|AUTHORIZATION)=)"
-            r"(?P<value>(?:'[^']*'|\"[^\"]*\"|[^\s;&|)]+))"
-        ),
-        re.compile(
-            r"(?P<prefix>\B--api-key\s+)(?P<value>(?:'[^']*'|\"[^\"]*\"|[^\s;&|)]+))",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"(?P<prefix>\B--?(?:access-)?token\s+)(?P<value>(?:'[^']*'|\"[^\"]*\"|[^\s;&|)]+))",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"(?P<prefix>\bBearer\s+)(?P<value>[A-Za-z0-9._~+\\/-]+)",
-            re.IGNORECASE,
-        ),
-    )
-
     def __init__(self, logic):
         self.logic = logic
         self.scheduler_config = SchedulerConfigManager()
@@ -859,7 +820,6 @@ class WebRuntime:
             port: str,
             protocol: str,
             tool_id: str,
-            command_override: str = "",
             timeout: int = 300,
             parameters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -869,7 +829,6 @@ class WebRuntime:
             port=port,
             protocol=protocol,
             tool_id=tool_id,
-            command_override=command_override,
             timeout=timeout,
             parameters=parameters,
         )
@@ -1322,7 +1281,6 @@ class WebRuntime:
             port: str,
             protocol: str,
             tool_id: str,
-            command_override: str,
             timeout: int,
             parameters: Optional[Dict[str, Any]] = None,
             job_id: int = 0,
@@ -1333,7 +1291,6 @@ class WebRuntime:
             port=port,
             protocol=protocol,
             tool_id=tool_id,
-            command_override=command_override,
             timeout=timeout,
             parameters=parameters,
             job_id=job_id,

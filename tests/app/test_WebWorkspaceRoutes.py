@@ -196,14 +196,13 @@ class _WorkspaceRouteRuntime:
         self.calls.append(("delete_host_workspace", int(host_id)))
         return {"deleted": True, "host_id": int(host_id)}
 
-    def start_tool_run_job(self, host_ip, port, protocol, tool_id, command_override="", timeout=300, parameters=None):
+    def start_tool_run_job(self, host_ip, port, protocol, tool_id, timeout=300, parameters=None):
         self.calls.append((
             "start_tool_run_job",
             str(host_ip),
             str(port),
             str(protocol),
             str(tool_id),
-            str(command_override),
             int(timeout),
             dict(parameters or {}),
         ))
@@ -421,10 +420,28 @@ class WebWorkspaceRoutesTest(unittest.TestCase):
 
         tool_run = self.client.post(
             "/api/workspace/tools/run",
-            json={"host_ip": "10.0.0.5", "port": "445", "protocol": "tcp", "tool_id": "smbmap"},
+            json={
+                "host_ip": "10.0.0.5",
+                "port": "445",
+                "protocol": "tcp",
+                "tool_id": "smbmap",
+                "command_override": "id",
+            },
         )
         self.assertEqual(202, tool_run.status_code)
         self.assertEqual("tool-run", tool_run.json["job"]["type"])
+        self.assertIn(
+            (
+                "start_tool_run_job",
+                "10.0.0.5",
+                "445",
+                "tcp",
+                "smbmap",
+                300,
+                {},
+            ),
+            self.runtime.calls,
+        )
 
         parameterized_tool_run = self.client.post(
             "/api/workspace/tools/run",
@@ -444,7 +461,6 @@ class WebWorkspaceRoutesTest(unittest.TestCase):
                 "25",
                 "tcp",
                 "pipette-smtp-internal-discovery",
-                "",
                 300,
                 {"spf_domain": "example.org"},
             ),
