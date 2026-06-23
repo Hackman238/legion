@@ -18,7 +18,6 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 from sqlalchemy import Column, String, Integer, ForeignKey
 
 from db.database import Base
-from six import u as unicode
 
 
 class l1ScriptObj(Base):
@@ -31,6 +30,6 @@ class l1ScriptObj(Base):
 
     def __init__(self, scriptId, output, portId, hostId):
         self.scriptId = scriptId
-        self.output = unicode(output)
+        self.output = str(output)
         self.portId = portId
         self.hostId = hostId

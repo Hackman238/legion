@@ -1,5 +1,4 @@
 asyncio
-six
 qasync
 SQLAlchemy==1.4.51
 PyQt6

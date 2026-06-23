@@ -43,7 +43,6 @@ from ui.models.processmodels import *
 from ui.models.ostables import OsSummaryTableModel, OsHostsTableModel
 from ui.models.credentialmodels import CredentialCaptureModel
 from app.auxiliary import *
-from six import u as unicode
 import pandas as pd
 from PyQt6.QtWidgets import QAbstractItemView
 from PyQt6.QtCore import Qt
@@ -1071,7 +1070,7 @@ class View(QtCore.QObject):
         self.updateInterface()
 
     def updateFilterKeywords(self):
-        self.viewState.filters.setKeywords(unicode(self.ui.keywordTextInput.text()).split())
+        self.viewState.filters.setKeywords(str(self.ui.keywordTextInput.text()).split())
         self.updateInterface()
 
     ###
@@ -2554,7 +2553,7 @@ class View(QtCore.QObject):
             self.viewState.hostTabs.update({str(bWidget.ip):hosttabs})
             
             bWidget.pid = self.controller.runCommand("hydra", bWidget.objectName(), bWidget.ip, bWidget.getPort(),
-                                                     'tcp', unicode(hydraCommand), getTimestamp(human=True),
+                                                     'tcp', str(hydraCommand), getTimestamp(human=True),
                                                      bWidget.outputfile, bWidget.display)
             bWidget.runButton.clicked.disconnect()
             bWidget.runButton.clicked.connect(lambda: self.killBruteProcess(bWidget))
@@ -2579,7 +2578,7 @@ class View(QtCore.QObject):
         # disassociate textview from bWidget (create new textview for bWidget) and replace it with a new host tab
         self.createNewTabForHost(
             str(bWidget.ip), str(bWidget.objectName()), restoring=True,
-            content=unicode(bWidget.display.toPlainText())).setProperty('dbId', str(bWidget.display.property('dbId')))
+            content=str(bWidget.display.toPlainText())).setProperty('dbId', str(bWidget.display.property('dbId')))
         
         hosttabs = []  # go through host tabs and find the correct bWidget
         if str(bWidget.ip) in self.viewState.hostTabs:

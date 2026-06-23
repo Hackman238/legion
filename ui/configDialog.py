@@ -22,7 +22,6 @@ from PyQt6.QtGui import *                                               # for fi
 from PyQt6.QtWidgets import *
 from PyQt6 import QtWidgets, QtGui, QtCore
 from app.auxiliary import *                                             # for timestamps
-from six import u as unicode
 from ui.ancillaryDialog import flipState
 from app.settings import AppSettings
 

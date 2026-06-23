@@ -17,7 +17,6 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 from db.SqliteDbAdapter import Database
-from six import u as unicode
 
 from db.entities.note import note
 
@@ -43,15 +42,15 @@ class NoteRepository:
         session = self.dbAdapter.session()
         try:
             if len(notes) == 0:
-                notes = unicode("".format(hostId=hostId))
+                notes = "".format(hostId=hostId)
             self.log.debug("Storing notes for {hostId}, Notes {notes}".format(hostId=hostId, notes=notes))
 
             # Use the same session for lookup + write to avoid scoped_session re-entrancy issues.
             t_note = session.query(note).filter_by(hostId=str(hostId)).first()
             if t_note:
-                t_note.text = unicode(notes)
+                t_note.text = str(notes)
             else:
-                t_note = note(hostId, unicode(notes))
+                t_note = note(hostId, str(notes))
             session.add(t_note)
             session.commit()
             return True

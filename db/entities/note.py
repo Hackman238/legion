@@ -18,7 +18,6 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 from sqlalchemy import Column, Integer, ForeignKey, String
 
 from db.database import Base
-from six import u as unicode
 
 
 class note(Base):
@@ -28,5 +27,5 @@ class note(Base):
     text = Column(String)
 
     def __init__(self, hostId, text):
-        self.text = unicode(text)
+        self.text = str(text)
         self.hostId = hostId
