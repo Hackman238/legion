@@ -1124,6 +1124,12 @@ class AppSettings():
         tool = str(binary or "").strip()
         if not raw.strip() or not tool:
             return raw
+        canonical_wrapper = re.compile(
+            rf"(?is)^\s*if\s+command\s+-v\s+{re.escape(tool)}\s*>/dev/null\s+2>&1\s*;\s*"
+            rf"then\b.+;\s*else\s+echo\s+{re.escape(tool)}\s+not\s+found\s*;\s*fi\s*$"
+        )
+        if canonical_wrapper.match(raw):
+            return raw.strip()
         probe_marker = f"__LEGION_{re.sub(r'[^A-Za-z0-9]+', '_', tool).upper()}_PROBE__"
         normalized = re.sub(
             rf"(?i)command\s+-v\s+{re.escape(tool)}",
@@ -1346,18 +1352,29 @@ class AppSettings():
         if "whatweb" not in raw.lower():
             return raw
         normalized = cls._canonicalize_web_target_placeholders(raw)
-        normalized = re.sub(r"(?i)\s+--color(?:=|\s+)always\b", " --color=never", normalized)
-        if "--color=never" not in normalized.lower():
-            normalized = re.sub(r"(?i)\bwhatweb\b", "whatweb --color=never", normalized, count=1)
-        if not re.search(r"(?i)--log-brief(?:=|\s)", normalized):
-            normalized = re.sub(r"(?i)\bwhatweb\b", "whatweb --log-brief=[OUTPUT].txt", normalized, count=1)
-            normalized = re.sub(
-                r"(?i)\bwhatweb\s+--log-brief=\[OUTPUT\]\.txt\b",
-                "whatweb --color=never --log-brief=[OUTPUT].txt",
-                normalized,
-                count=1,
-            )
-        return re.sub(r"\s{2,}", " ", normalized).strip()
+        probe_marker = "__LEGION_WHATWEB_PROBE__"
+        fallback_marker = "__LEGION_WHATWEB_FALLBACK__"
+        normalized = re.sub(r"(?i)command\s+-v\s+whatweb", f"command -v {probe_marker}", normalized)
+        normalized = re.sub(r"(?i)echo\s+whatweb\s+not\s+found", fallback_marker, normalized)
+        normalized = re.sub(
+            r"(?i)(?:^|\s)--color(?:=|\s+)[^\s);&|]+",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)(?:^|\s)--log-brief(?:=|\s+)[^\s);&|]+",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)\bwhatweb\b",
+            "whatweb --color=never --log-brief=[OUTPUT].txt",
+            normalized,
+        )
+        normalized = normalized.replace(probe_marker, "whatweb")
+        normalized = normalized.replace(fallback_marker, "echo whatweb not found")
+        normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+        return re.sub(r"\s+\)", ")", normalized)
 
     @classmethod
     def _ensure_nikto_command(cls, command: str) -> str:
@@ -1366,10 +1383,28 @@ class AppSettings():
             return raw
         probe_marker = "__LEGION_NIKTO_PROBE__"
         normalized = re.sub(r"(?i)command\s+-v\s+nikto", f"command -v {probe_marker}", raw)
-        normalized = re.sub(r"(?i)(?:^|\s)-p(?:ort)?\s+\[PORT\](?=\s|$)", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-(?:h|host)\s+\S+", " -h [WEB_URL]", normalized, count=1)
-        normalized = re.sub(r"(?i)(?:^|\s)-(?:o|output)\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-format\s+\S+", " ", normalized)
+        normalized = re.sub(
+            r"(?i)(?:^|\s)-p(?:ort)?\s+\[PORT\](?=\s|[);&|]|$)",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)(?:^|\s)-(?:h|host)\s+[^\s);&|]+",
+            " -h [WEB_URL]",
+            normalized,
+            count=1,
+        )
+        normalized = re.sub(
+            r"(?i)(?:^|\s)-(?:o|output)\s+[^\s);&|]+",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)(?:^|\s)-format\s+[^\s);&|]+",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(r"(?i)(?:^|\s)-nointeractive(?=\s|[);&|]|$)", " ", normalized)
         if "-h [WEB_URL]" not in normalized:
             normalized = re.sub(r"(?i)\bnikto\b", "nikto -h [WEB_URL]", normalized, count=1)
         normalized = re.sub(r"(?i)\bnikto\b", "nikto -nointeractive -Format txt -output [OUTPUT].txt", normalized, count=1)
@@ -1380,21 +1415,62 @@ class AppSettings():
         raw = cls._canonicalize_web_target_placeholders(str(command or ""))
         if "wpscan" not in raw.lower():
             return raw
+        if re.match(r"(?i)^\s*echo\s+wpscan\b", raw):
+            return raw.strip()
+        # Older normalization passes could consume the wrapper's closing
+        # parenthesis and then expand the fallback itself into a WPScan
+        # invocation. Recover only that exact nested, unbalanced legacy shape;
+        # a custom command or diagnostic echo must never become executable.
+        polluted_fallback = re.search(
+            r"(?i)\s*\|\|\s*echo\s+wpscan"
+            r"(?:"
+            r"\s+--disable-tls-checks"
+            r"|\s+--(?:no-)?update"
+            r"|\s+--format(?:=|\s+)[^\s);&|]+"
+            r"|\s+(?:-o|--output)(?:=|\s+)[^\s);&|]+"
+            r"|\s+--url(?:=|\s+)[^\s);&|]+"
+            r")+"
+            r"\s+not\s+found\s*$",
+            raw,
+        )
+        legacy_nested_wrapper = re.match(
+            r"(?i)^\s*\(\s*command\s+-v\s+wpscan\s*>/dev/null\s+2>&1\s*&&\s*\(",
+            raw,
+        )
+        if polluted_fallback and legacy_nested_wrapper:
+            command_body = raw[:polluted_fallback.start()].rstrip()
+            if command_body.count("(") - command_body.count(")") == 2:
+                raw = cls.WPSCAN_COMMAND
         probe_marker = "__LEGION_WPSCAN_PROBE__"
+        fallback_marker = "__LEGION_WPSCAN_FALLBACK__"
         normalized = re.sub(r"(?i)command\s+-v\s+wpscan", f"command -v {probe_marker}", raw)
-        normalized = re.sub(r"(?i)(?:^|\s)--url\s+\S+", " --url [WEB_URL]", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)--(?:no-)?update(?=\s|$)", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)--disable-tls-checks(?=\s|$)", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)--format\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)(?:-o|--output)\s+\S+", " ", normalized)
-        if "--url [WEB_URL]" not in normalized:
-            normalized = re.sub(r"(?i)\bwpscan\b", "wpscan --url [WEB_URL]", normalized)
+        normalized = re.sub(r"(?i)echo\s+wpscan\s+not\s+found", fallback_marker, normalized)
         normalized = re.sub(
-            r"(?i)\bwpscan\b",
-            "wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json",
+            r"(?i)(?:^|\s)--url(?:=|\s+)[^\s);&|]+",
+            " ",
             normalized,
         )
-        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "wpscan")
+        normalized = re.sub(r"(?i)(?:^|\s)--(?:no-)?update(?=\s|[);&|]|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)--disable-tls-checks(?=\s|[);&|]|$)", " ", normalized)
+        normalized = re.sub(
+            r"(?i)(?:^|\s)--format(?:=|\s+)[^\s);&|]+",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)(?:^|\s)(?:-o|--output)(?:=|\s+)[^\s);&|]+",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)\bwpscan\b",
+            "wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json --url [WEB_URL]",
+            normalized,
+        )
+        normalized = normalized.replace(probe_marker, "wpscan")
+        normalized = normalized.replace(fallback_marker, "echo wpscan not found")
+        normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+        return re.sub(r"\s+\)", ")", normalized)
 
     @classmethod
     def _ensure_dirsearch_command(cls, command: str) -> str:
@@ -1402,15 +1478,30 @@ class AppSettings():
         if "dirsearch" not in raw.lower():
             return raw
         probe_marker = "__LEGION_DIRSEARCH_PROBE__"
+        fallback_marker = "__LEGION_DIRSEARCH_FALLBACK__"
         normalized = re.sub(r"(?i)command\s+-v\s+dirsearch", f"command -v {probe_marker}", raw)
+        normalized = re.sub(r"(?i)echo\s+dirsearch\s+not\s+found", fallback_marker, normalized)
         normalized = re.sub(r"\[WEB_URL\](?!/)", "[WEB_URL]/", normalized)
-        if "--quiet-mode" not in normalized.lower():
-            normalized = re.sub(r"(?i)\bdirsearch\b", "dirsearch --quiet-mode", normalized, count=1)
-        if "--format=json" not in normalized.lower():
-            normalized += " --format=json"
-        if not re.search(r"(?i)--output(?:=|\s)", normalized):
-            normalized += " --output=[OUTPUT].json"
-        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "dirsearch")
+        normalized = re.sub(r"(?i)(?:^|\s)(?:-q|--quiet-mode)(?=\s|[);&|]|$)", " ", normalized)
+        normalized = re.sub(
+            r"(?i)(?:^|\s)--format(?:=|\s+)[^\s);&|]+",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)(?:^|\s)(?:-o|--output)(?:=|\s+)[^\s);&|]+",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"(?i)\bdirsearch\b",
+            "dirsearch --quiet-mode --format=json --output=[OUTPUT].json",
+            normalized,
+        )
+        normalized = normalized.replace(probe_marker, "dirsearch")
+        normalized = normalized.replace(fallback_marker, "echo dirsearch not found")
+        normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+        return re.sub(r"\s+\)", ")", normalized)
 
     @classmethod
     def _ensure_ffuf_command(cls, command: str) -> str:
@@ -1420,14 +1511,15 @@ class AppSettings():
         probe_marker = "__LEGION_FFUF_PROBE__"
         normalized = re.sub(r"(?i)command\s+-v\s+ffuf", f"command -v {probe_marker}", raw)
         normalized = re.sub(r"\[WEB_URL\](?:/FUZZ|/)?", "[WEB_URL]/FUZZ", normalized, count=1)
-        normalized = re.sub(r"(?i)(?:^|\s)-json(?=\s|$)", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-noninteractive(?=\s|$)", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-s(?=\s|$)", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-of\s+\S+", " ", normalized)
-        normalized = re.sub(r"(?i)(?:^|\s)-o\s+\S+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-json(?=\s|[);&|]|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-noninteractive(?=\s|[);&|]|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-s(?=\s|[);&|]|$)", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-of\s+[^\s);&|]+", " ", normalized)
+        normalized = re.sub(r"(?i)(?:^|\s)-o\s+[^\s);&|]+", " ", normalized)
         normalized = re.sub(r"\s*>\s*\[OUTPUT\][^\s\)]*", " ", normalized)
         normalized = re.sub(r"(?i)\bffuf\b", "ffuf -s -of json -o [OUTPUT].json", normalized, count=1)
-        return re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "ffuf")
+        normalized = re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "ffuf")
+        return re.sub(r"\s+\)", ")", normalized)
 
     @staticmethod
     def _ensure_hydra_command(command: str) -> str:

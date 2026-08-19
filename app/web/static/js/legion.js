@@ -5690,15 +5690,33 @@ function applySchedulerPreferences(prefs) {
     setValue("provider-lmstudio-baseurl", lmStudio.base_url || "");
     setValue("provider-lmstudio-model", lmStudio.model || "");
     setValue("provider-lmstudio-apikey", "");
+    const lmStudioApiKeyInput = document.getElementById("provider-lmstudio-apikey");
+    if (lmStudioApiKeyInput) {
+        lmStudioApiKeyInput.placeholder = lmStudio.api_key_configured
+            ? "Configured. Enter a new LM Studio API key to replace it"
+            : "Enter a new LM Studio API key";
+    }
 
     setValue("provider-openai-baseurl", openai.base_url || "");
     setValue("provider-openai-model", openai.model || "");
     setValue("provider-openai-apikey", "");
+    const openaiApiKeyInput = document.getElementById("provider-openai-apikey");
+    if (openaiApiKeyInput) {
+        openaiApiKeyInput.placeholder = openai.api_key_configured
+            ? "Configured. Enter a new OpenAI API key to replace it"
+            : "Enter a new OpenAI API key";
+    }
     setChecked("provider-openai-structured-outputs", Boolean(openai.structured_outputs));
 
     setValue("provider-claude-baseurl", claude.base_url || "");
     setValue("provider-claude-model", claude.model || "");
     setValue("provider-claude-apikey", "");
+    const claudeApiKeyInput = document.getElementById("provider-claude-apikey");
+    if (claudeApiKeyInput) {
+        claudeApiKeyInput.placeholder = claude.api_key_configured
+            ? "Configured. Enter a new Claude API key to replace it"
+            : "Enter a new Claude API key";
+    }
     setValue("scheduler-integration-grayhatwarfare-apikey", "");
     const grayhatwarfareApiKeyInput = document.getElementById("scheduler-integration-grayhatwarfare-apikey");
     if (grayhatwarfareApiKeyInput) {
@@ -10807,8 +10825,16 @@ async function saveSchedulerPreferences(event) {
             body: JSON.stringify(payload),
         });
         if (!response.ok) {
+            let message = "Save failed";
+            try {
+                const errorPayload = await response.json();
+                if (errorPayload && errorPayload.error) {
+                    message = `Save failed: ${errorPayload.error}`;
+                }
+            } catch (_err) {
+            }
             if (statusNode) {
-                statusNode.textContent = "Save failed";
+                statusNode.textContent = message;
             }
             return;
         }

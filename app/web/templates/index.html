@@ -1595,7 +1595,7 @@
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
         </div>
-        <form id="scheduler-form" class="scheduler-form">
+        <form id="scheduler-form" class="scheduler-form" autocomplete="off">
             <fieldset class="danger-group scheduler-settings-group">
                 <legend>Engagement Profile</legend>
                 <label>
@@ -1727,15 +1727,15 @@
                 <legend>Integrations</legend>
                 <label class="scheduler-field-span-2">
                     Grayhat Warfare API Key
-                    <input id="scheduler-integration-grayhatwarfare-apikey" type="password" name="grayhatwarfare_api_key" placeholder="Enter a new Grayhat Warfare API key">
+                    <input id="scheduler-integration-grayhatwarfare-apikey" type="password" name="grayhatwarfare_api_key" autocomplete="new-password" placeholder="Enter a new Grayhat Warfare API key">
                 </label>
                 <label class="scheduler-field-span-2">
                     Chaos API Key
-                    <input id="scheduler-integration-chaos-apikey" type="password" name="chaos_api_key" placeholder="Enter a new Chaos API key">
+                    <input id="scheduler-integration-chaos-apikey" type="password" name="chaos_api_key" autocomplete="new-password" placeholder="Enter a new Chaos API key">
                 </label>
                 <label class="scheduler-field-span-2">
                     Shodan API Key
-                    <input id="scheduler-integration-shodan-apikey" type="password" name="shodan_api_key" placeholder="Enter a new Shodan API key">
+                    <input id="scheduler-integration-shodan-apikey" type="password" name="shodan_api_key" autocomplete="new-password" placeholder="Enter a new Shodan API key">
                 </label>
                 <p class="meta-note scheduler-group-note">Scheduler-owned integrations are used for governed enrichment and discovery. Leave a key blank to preserve the currently stored value.</p>
             </fieldset>
@@ -1761,7 +1761,7 @@
                 </label>
                 <label class="scheduler-provider-field" data-scheduler-provider="lm_studio">
                     LM Studio API Key
-                    <input id="provider-lmstudio-apikey" type="password" name="lm_studio_api_key">
+                    <input id="provider-lmstudio-apikey" type="password" name="lm_studio_api_key" autocomplete="new-password">
                 </label>
                 <label class="scheduler-provider-field" data-scheduler-provider="openai">
                     OpenAI Base URL
@@ -1773,7 +1773,7 @@
                 </label>
                 <label class="scheduler-provider-field" data-scheduler-provider="openai">
                     OpenAI API Key
-                    <input id="provider-openai-apikey" type="password" name="openai_api_key">
+                    <input id="provider-openai-apikey" type="password" name="openai_api_key" autocomplete="new-password">
                 </label>
                 <label class="checkbox scheduler-provider-field scheduler-field-span-2" data-scheduler-provider="openai">
                     <input id="provider-openai-structured-outputs" type="checkbox" name="openai_structured_outputs">
@@ -1789,7 +1789,7 @@
                 </label>
                 <label class="scheduler-provider-field" data-scheduler-provider="claude">
                     Claude API Key
-                    <input id="provider-claude-apikey" type="password" name="claude_api_key">
+                    <input id="provider-claude-apikey" type="password" name="claude_api_key" autocomplete="new-password">
                 </label>
             </fieldset>
             <fieldset class="danger-group scheduler-settings-group">

@@ -2148,6 +2148,14 @@ class WebAppTest(unittest.TestCase):
         self.assertLess(body.index('<h2>Hosts</h2>'), body.index('<h2>Services</h2>'))
         self.assertLess(body.index('<h2>Services</h2>'), body.index('<h2>Host Detail</h2>'))
 
+    def test_scheduler_secret_fields_disable_password_manager_autofill(self):
+        response = self.client.get("/")
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn('id="scheduler-form" class="scheduler-form" autocomplete="off"', body)
+        self.assertIn('id="provider-openai-apikey" type="password" name="openai_api_key" autocomplete="new-password"', body)
+        self.assertIn('id="scheduler-integration-shodan-apikey" type="password" name="shodan_api_key" autocomplete="new-password"', body)
+
     def test_index_renders_all_interfaces_chip_when_configured(self):
         self.app.config["LEGION_WEB_BIND_HOST"] = "0.0.0.0"
         self.app.config["LEGION_WEB_BIND_LABEL"] = "All interfaces"
