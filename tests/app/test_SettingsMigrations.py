@@ -1,4 +1,6 @@
+import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -85,6 +87,112 @@ hydra_path=/opt/legacy/hydra
 
 
 class SettingsMigrationTest(unittest.TestCase):
+    def test_command_normalizer_fixtures_are_canonical_and_idempotent(self):
+        from app.settings import AppSettings
+
+        fixture_path = os.path.join(
+            os.path.dirname(__file__),
+            os.pardir,
+            "fixtures",
+            "settings-command-normalizers.json",
+        )
+        with open(fixture_path, "r", encoding="utf-8") as handle:
+            cases = json.load(handle)["cases"]
+
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                normalizer = getattr(AppSettings, case["normalizer"])
+                args = list(case.get("args", []))
+                kwargs = dict(case.get("kwargs", {}))
+                normalized = normalizer(case["input"], *args, **kwargs)
+                self.assertEqual(case["expected"], normalized)
+                for _pass_number in range(5):
+                    normalized = normalizer(normalized, *args, **kwargs)
+                    self.assertEqual(case["expected"], normalized)
+
+    def test_default_port_action_normalizers_are_idempotent(self):
+        from app.settings import AppSettings
+
+        actions = {
+            **AppSettings.BASELINE_WEB_PORT_ACTIONS,
+            **AppSettings.EXTERNAL_RECON_PORT_ACTIONS,
+            **AppSettings.BASELINE_INTERNAL_PORT_ACTIONS,
+        }
+        for tool_id, (_label, command, _scope) in actions.items():
+            with self.subTest(tool_id=tool_id):
+                normalized = AppSettings._normalize_action_command(tool_id, command)
+                self.assertEqual(
+                    normalized,
+                    AppSettings._normalize_action_command(tool_id, normalized),
+                )
+                parsed = subprocess.run(
+                    ["bash", "-n", "-c", normalized],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, parsed.returncode, parsed.stderr)
+
+    def test_repeated_nikto_config_fixture_migrates_once_and_stays_stable(self):
+        fixture_path = os.path.join(
+            os.path.dirname(__file__),
+            os.pardir,
+            "fixtures",
+            "repeated-command-settings.conf",
+        )
+        with open(fixture_path, "r", encoding="utf-8") as handle:
+            fixture_content = handle.read()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, ".local", "share", "legion")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "legion.conf")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write(fixture_content)
+
+            with patch.dict(os.environ, {"HOME": tmpdir}, clear=False):
+                from app.settings import AppSettings
+
+                first_settings = AppSettings()
+                first_actions = {row[1]: row for row in first_settings.getPortActions()}
+                first_command = str(first_actions["nikto"][2])
+                first_wpscan_command = str(first_actions["wpscan"][2])
+                self.assertEqual(
+                    "(command -v nikto >/dev/null 2>&1 && "
+                    "nikto -nointeractive -Format txt -output [OUTPUT].txt "
+                    "-h [WEB_URL] -C all) || echo nikto not found",
+                    first_command,
+                )
+                self.assertEqual(1, first_command.lower().split().count("-nointeractive"))
+                self.assertEqual(
+                    "(command -v wpscan >/dev/null 2>&1 && "
+                    "wpscan --disable-tls-checks --no-update --format json "
+                    "--output [OUTPUT].json --url [WEB_URL]) || echo wpscan not found",
+                    first_wpscan_command,
+                )
+                self.assertEqual(
+                    0,
+                    subprocess.run(
+                        ["bash", "-n", "-c", first_wpscan_command],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    ).returncode,
+                )
+                with open(config_path, "r", encoding="utf-8") as handle:
+                    first_persisted_content = handle.read()
+
+                second_settings = AppSettings()
+                second_actions = {row[1]: row for row in second_settings.getPortActions()}
+                second_command = str(second_actions["nikto"][2])
+                second_wpscan_command = str(second_actions["wpscan"][2])
+                with open(config_path, "r", encoding="utf-8") as handle:
+                    second_persisted_content = handle.read()
+
+                self.assertEqual(first_command, second_command)
+                self.assertEqual(first_wpscan_command, second_wpscan_command)
+                self.assertEqual(first_persisted_content, second_persisted_content)
+
     def test_legacy_dirbuster_is_replaced_with_headless_tools(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_dir = os.path.join(tmpdir, ".local", "share", "legion")

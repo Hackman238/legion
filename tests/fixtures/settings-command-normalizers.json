@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "name": "legacy nikto command",
+      "normalizer": "_ensure_nikto_command",
+      "input": "nikto -h [IP] -p [PORT] -C all",
+      "expected": "nikto -nointeractive -Format txt -output [OUTPUT].txt -h [WEB_URL] -C all"
+    },
+    {
+      "name": "persisted nikto command with repeated options",
+      "normalizer": "_ensure_nikto_command",
+      "input": "(command -v nikto >/dev/null 2>&1 && nikto -nointeractive -Format xml -output old.xml -nointeractive -host https://example.test:8443 -NoInteractive -C all) || echo nikto not found",
+      "expected": "(command -v nikto >/dev/null 2>&1 && nikto -nointeractive -Format txt -output [OUTPUT].txt -h [WEB_URL] -C all) || echo nikto not found"
+    },
+    {
+      "name": "minimal wrapped nikto command",
+      "normalizer": "_ensure_nikto_command",
+      "input": "(command -v nikto >/dev/null 2>&1 && nikto -h [WEB_URL]) || echo nikto not found",
+      "expected": "(command -v nikto >/dev/null 2>&1 && nikto -nointeractive -Format txt -output [OUTPUT].txt -h [WEB_URL]) || echo nikto not found"
+    },
+    {
+      "name": "bare whatweb command",
+      "normalizer": "_ensure_whatweb_command",
+      "input": "whatweb [WEB_URL]",
+      "expected": "whatweb --color=never --log-brief=[OUTPUT].txt [WEB_URL]"
+    },
+    {
+      "name": "wrapped whatweb command with repeated options",
+      "normalizer": "_ensure_whatweb_command",
+      "input": "(command -v whatweb >/dev/null 2>&1 && whatweb --color always --log-brief old.txt [WEB_URL] --color=never --log-brief=older.txt) || echo whatweb not found",
+      "expected": "(command -v whatweb >/dev/null 2>&1 && whatweb --color=never --log-brief=[OUTPUT].txt [WEB_URL]) || echo whatweb not found"
+    },
+    {
+      "name": "wrapped dirsearch command with repeated options",
+      "normalizer": "_ensure_dirsearch_command",
+      "input": "(command -v dirsearch >/dev/null 2>&1 && dirsearch -u [WEB_URL] -q --quiet-mode --format plain --format=json -o old.txt --output=older.txt) || echo dirsearch not found",
+      "expected": "(command -v dirsearch >/dev/null 2>&1 && dirsearch --quiet-mode --format=json --output=[OUTPUT].json -u [WEB_URL]/) || echo dirsearch not found"
+    },
+    {
+      "name": "built-in wpscan command",
+      "normalizer": "_ensure_wpscan_command",
+      "input": "(command -v wpscan >/dev/null 2>&1 && wpscan --url [WEB_URL] --disable-tls-checks --no-update --format json --output [OUTPUT].json) || echo wpscan not found",
+      "expected": "(command -v wpscan >/dev/null 2>&1 && wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json --url [WEB_URL]) || echo wpscan not found"
+    },
+    {
+      "name": "legacy two-scheme wpscan command",
+      "normalizer": "_ensure_wpscan_command",
+      "input": "(command -v wpscan >/dev/null 2>&1 && (wpscan --url https://[IP]:[PORT] --disable-tls-checks || wpscan --url http://[IP]:[PORT])) || echo wpscan not found",
+      "expected": "(command -v wpscan >/dev/null 2>&1 && (wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json --url [WEB_URL] || wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json --url [WEB_URL])) || echo wpscan not found"
+    },
+    {
+      "name": "persisted malformed wpscan wrapper and fallback",
+      "normalizer": "_ensure_wpscan_command",
+      "input": "(command -v wpscan >/dev/null 2>&1 && (wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json --url [WEB_URL] || wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json --url [WEB_URL] || echo wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json --url [WEB_URL] not found",
+      "expected": "(command -v wpscan >/dev/null 2>&1 && wpscan --disable-tls-checks --no-update --format json --output [OUTPUT].json --url [WEB_URL]) || echo wpscan not found"
+    },
+    {
+      "name": "wpscan diagnostic echo remains non-executable",
+      "normalizer": "_ensure_wpscan_command",
+      "input": "echo wpscan --url [WEB_URL] not found",
+      "expected": "echo wpscan --url [WEB_URL] not found"
+    },
+    {
+      "name": "built-in ffuf command",
+      "normalizer": "_ensure_ffuf_command",
+      "input": "(command -v ffuf >/dev/null 2>&1 && ffuf -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt -s -of json -o [OUTPUT].json) || echo ffuf not found",
+      "expected": "(command -v ffuf >/dev/null 2>&1 && ffuf -s -of json -o [OUTPUT].json -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt) || echo ffuf not found"
+    },
+    {
+      "name": "generic command presence wrapper",
+      "normalizer": "_wrap_command_presence_probe",
+      "args": ["demo-tool"],
+      "input": "demo-tool --version",
+      "expected": "if command -v demo-tool >/dev/null 2>&1; then demo-tool --version; else echo demo-tool not found; fi"
+    }
+  ]
+}

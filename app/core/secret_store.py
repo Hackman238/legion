@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Dict, Optional
 
+from app.core.windows_dpapi_secret_store import WindowsDpapiSecretBackend
+
 
 class SecretStoreError(RuntimeError):
     pass
@@ -29,6 +31,7 @@ class SecretStore:
     def __init__(self, service_name: str = _SERVICE_NAME):
         self.service_name = str(service_name or self._SERVICE_NAME)
         self._keyring = None
+        self._windows_dpapi = None
         self._backend_name = "unavailable"
         self._write_available = False
         try:
@@ -44,6 +47,11 @@ class SecretStore:
             self._keyring = None
             self._backend_name = "unavailable"
             self._write_available = False
+        if not self._write_available:
+            self._windows_dpapi = WindowsDpapiSecretBackend.create_if_available()
+            if self._windows_dpapi is not None:
+                self._backend_name = "windows-dpapi"
+                self._write_available = True
 
     @classmethod
     def provider_env_var(cls, provider_name: str) -> str:
@@ -54,7 +62,7 @@ class SecretStore:
         return str(cls._KNOWN_INTEGRATION_ENV_VARS.get(str(integration_name or "").strip().lower(), "") or "")
 
     def write_available(self) -> bool:
-        return bool(self._write_available and self._keyring is not None)
+        return bool(self._write_available and (self._keyring is not None or self._windows_dpapi is not None))
 
     def backend_name(self) -> str:
         return str(self._backend_name or "unavailable")
@@ -72,7 +80,14 @@ class SecretStore:
             if env_value:
                 return env_value
         secret_key = str(secret_ref or "").strip()
-        if not secret_key or self._keyring is None:
+        if not secret_key:
+            return ""
+        if self._windows_dpapi is not None:
+            try:
+                return self._windows_dpapi.get_secret(secret_key)
+            except Exception:
+                return ""
+        if self._keyring is None:
             return ""
         try:
             return str(self._keyring.get_password(self.service_name, secret_key) or "")
@@ -89,10 +104,14 @@ class SecretStore:
             return secret_key
         if not self.write_available():
             raise SecretStoreError(
-                "Secure secret storage is unavailable. Configure a supported keyring backend or use environment variables."
+                "Secure secret storage is unavailable. Configure a supported "
+                "keyring backend or use environment variables."
             )
         try:
-            self._keyring.set_password(self.service_name, secret_key, secret_value)
+            if self._windows_dpapi is not None:
+                self._windows_dpapi.set_secret(secret_key, secret_value)
+            else:
+                self._keyring.set_password(self.service_name, secret_key, secret_value)
         except Exception as exc:
             raise SecretStoreError(str(exc)) from exc
         return secret_key
@@ -102,6 +121,9 @@ class SecretStore:
         if not secret_key or not self.write_available():
             return
         try:
-            self._keyring.delete_password(self.service_name, secret_key)
+            if self._windows_dpapi is not None:
+                self._windows_dpapi.delete_secret(secret_key)
+            else:
+                self._keyring.delete_password(self.service_name, secret_key)
         except Exception:
             return

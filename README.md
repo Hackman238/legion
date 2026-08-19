@@ -95,6 +95,44 @@ Additional runtime integrations outside static `legion.conf` include:
 - Responder workspace integration
 - NTLMRelay workspace integration
 
+## 🧪 Pipette Flow
+
+Pipettes are bundled aggregate checks that appear in host, service, graph, and manual action menus when their manifest matches the selected target. They are not part of the default automated scheduler path unless explicitly promoted into a governed scheduler action. Solid green edges show the normal automated path; dashed amber edges show optional/manual pipette paths that require an operator action.
+
+```mermaid
+flowchart TD
+    classDef auto fill:#e8f5e9,stroke:#2e7d32,color:#102a13
+    classDef decision fill:#e3f2fd,stroke:#1565c0,color:#0d2f4f
+    classDef manual fill:#fff8e1,stroke:#f9a825,color:#3b2f00,stroke-dasharray:5 5
+    classDef approval fill:#ffebee,stroke:#c62828,color:#4a1111
+
+    A["Targets imported, restored, or scanned"] --> B["Nmap import and service inventory"]
+    B --> C["Shared target state and evidence graph"]
+    C --> D{"Scheduler enabled?"}
+    D -->|"yes"| E["Build target context"]
+    E --> F{"Policy and risk check"}
+    F -->|"safe automatic action"| G["Run governed scheduler action"]
+    F -->|"approval required"| H["Approval queue"]
+    H -->|"operator approves"| G
+    G --> I["Process tracking, artifacts, observations"]
+    I --> C
+    C --> J["Workspace views, graph, and reports"]
+
+    B -.->|"matching port or service"| P["Pipette appears in action menus"]
+    C -.->|"host, service, or graph selection"| P
+    P -.->|"operator runs pipette"| Q["Run through workspace tool runner"]
+    Q -.-> R{"Pipette risk boundary"}
+    R -.->|"read-only check"| I
+    R -.->|"proof or invasive step"| H
+
+    linkStyle default stroke:#2e7d32,stroke-width:2px
+    linkStyle 11,12,13,14,15,16 stroke:#f9a825,stroke-width:2px,stroke-dasharray:5 5
+    class A,B,C,E,G,I,J auto
+    class D,F,R decision
+    class H approval
+    class P,Q manual
+```
+
 ## 🔌 Other Interfaces
 
 ### Headless CLI
