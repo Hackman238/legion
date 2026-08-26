@@ -18,7 +18,6 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 from sqlalchemy import Column, Integer, ForeignKey, String
 
 from db.database import Base
-from six import u as unicode
 
 
 class process_output(Base):
@@ -28,4 +27,4 @@ class process_output(Base):
     output = Column(String)
 
     def __init__(self):
-        self.output = unicode('')
+        self.output = ''

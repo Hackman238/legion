@@ -22,7 +22,6 @@ from PyQt6.QtGui import *
 from PyQt6.QtWidgets import *
 from PyQt6 import QtWidgets, QtGui
 from app.auxiliary import *
-from six import u as unicode
 from ui.ancillaryDialog import flipState
 
 class License(QtWidgets.QPlainTextEdit):

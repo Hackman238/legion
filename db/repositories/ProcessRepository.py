@@ -20,8 +20,6 @@ from typing import Union
 
 import time
 
-from six import u as unicode
-
 from app.timing import getTimestamp
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
@@ -224,7 +222,7 @@ class ProcessRepository:
         #p = process(str(proc.processId()), str(proc.name), str(proc.tabTitle),
         p = process(str(proc.processId()), str(proc.name), str(proc.tabTitle),
                     str(proc.hostIp), str(proc.port), str(proc.protocol),
-                    unicode(proc.command), proc.startTime, "", str(proc.outputfile),
+                    str(proc.command), proc.startTime, "", str(proc.outputfile),
                     'Waiting', [p_output], None, 0)
 
         self.log.info(f"Adding process: {p}")
@@ -252,7 +250,7 @@ class ProcessRepository:
                     proc_output.processId = process_id
 
             self.log.info("Storing process output into db: {0}".format(str(proc_output)))
-            proc_output.output = unicode(output)
+            proc_output.output = str(output)
             session.add(proc_output)
 
             proc.endTime = getTimestamp(True)

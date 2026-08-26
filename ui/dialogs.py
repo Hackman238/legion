@@ -22,7 +22,6 @@ from PyQt6.QtWidgets import *
 from PyQt6 import QtWidgets, QtGui
 from app.auxiliary import *                                             # for timestamps
 from app.timing import getTimestamp
-from six import u as unicode
 import shlex
 import os
 
@@ -625,7 +624,7 @@ class FiltersDialog(QtWidgets.QDialog):
     def getFilters(self):
         return [self.hostsUp.isChecked(), self.hostsDown.isChecked(), self.hostsChecked.isChecked(),
             self.portsOpen.isChecked(), self.portsFiltered.isChecked(), self.portsClosed.isChecked(),
-            self.portsTcp.isChecked(), self.portsUdp.isChecked(), unicode(self.hostKeywordText.text()).split()]
+            self.portsTcp.isChecked(), self.portsUdp.isChecked(), str(self.hostKeywordText.text()).split()]
 
     def setCurrentFilters(self, filters):
         if not self.hostsUp.isChecked() == filters[0]:

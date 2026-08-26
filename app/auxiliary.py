@@ -24,7 +24,6 @@ import tempfile
 import shlex
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import QProcess, QObject, pyqtSignal, pyqtSlot, QThread, Qt
-from six import u as unicode
 import ipaddress
 
 from app.httputil.isHttps import isHttps
@@ -229,7 +228,7 @@ class MyQProcess(QProcess):
     @pyqtSlot()  # this slot allows the process to append its output to the display widget
     def readStdOutput(self):
         output = str(self.readAllStandardOutput())
-        self.display.appendPlainText(unicode(output).strip())
+        self.display.appendPlainText(output.strip())
 
         # check if any usernames/passwords were found (if so emit a signal so that the gui can tell the user about it)
         if self.name == 'hydra':
@@ -240,7 +239,7 @@ class MyQProcess(QProcess):
         stderror = str(self.readAllStandardError())
 
         if len(stderror) > 0:
-            self.display.appendPlainText(unicode(stderror).strip())  # append standard error too
+            self.display.appendPlainText(stderror.strip())  # append standard error too
 
 
 # browser opener class with queue and semaphores
