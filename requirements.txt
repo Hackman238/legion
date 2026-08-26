@@ -25,3 +25,4 @@ markupsafe
 pipx
 jinja2
 chardet
+zipp>=3.19.1 # not directly required, pinned by Snyk to avoid a vulnerability
