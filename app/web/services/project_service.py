@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Tuple
 
-from app.web.project_schema import ProjectListQuery, ProjectPathRequest, ProjectSaveRequest
+from app.web.project_schema import ProjectListQuery, ProjectPathRequest, ProjectRenameRequest, ProjectSaveRequest
 from app.web.response_schema import AcceptedJobResponse, ProjectListResponse, ProjectOkResponse
 
 
@@ -26,6 +26,18 @@ class ProjectService:
         if not request.path:
             raise ValueError("Project path is required.")
         return ProjectOkResponse.from_project(self.runtime.open_project(request.path)).to_dict()
+
+    def rename_project(self, payload: Any) -> Dict[str, Any]:
+        request = ProjectRenameRequest.from_payload(payload)
+        if not request.path or not request.new_name:
+            raise ValueError("path and new_name are required.")
+        return {"status": "ok", "project": self.runtime.rename_project(request.path, request.new_name)}
+
+    def delete_project(self, payload: Any) -> Dict[str, Any]:
+        request = ProjectPathRequest.from_payload(payload)
+        if not request.path:
+            raise ValueError("Project path is required.")
+        return {"status": "ok", **self.runtime.delete_project(request.path)}
 
     def save_project_as(self, payload: Any, *, prefer_async: bool = True) -> Tuple[Dict[str, Any], int]:
         request = ProjectSaveRequest.from_payload(payload)

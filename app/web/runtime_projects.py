@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
+import shutil
 from typing import Any, Dict, List
 
 from app.core.common import getTempFolder
@@ -338,6 +340,66 @@ def close_project_instance(runtime, project) -> None:
         runtime.logic.projectManager.closeProject(project)
     except Exception:
         pass
+
+
+def _current_project_path(runtime) -> str:
+    name = str(project_metadata(runtime).get("name", "") or "").strip()
+    return os.path.abspath(os.path.expanduser(name)) if name else ""
+
+
+def _project_tool_output_dir(project_path: str) -> str:
+    stem = project_path[:-len(".legion")] if project_path.lower().endswith(".legion") else project_path
+    return f"{stem}-tool-output"
+
+
+def _require_managed_project_file(runtime, path: str) -> str:
+    """A saved .legion file that exists and is not the open project (which is busy and renamed through Save As)."""
+    project_path = normalize_project_path(path)
+    if not os.path.isfile(project_path):
+        raise FileNotFoundError(f"Project file not found: {project_path}")
+    with runtime._lock:
+        current = _current_project_path(runtime)
+    if current and os.path.realpath(current) == os.path.realpath(project_path):
+        raise RuntimeError("That project is open right now. Use Save As to rename it, or open another project first.")
+    return project_path
+
+
+def rename_project(runtime, path: str, new_name: str) -> Dict[str, Any]:
+    """Rename a saved project file (and its tool-output folder) in place; the folder it lives in does not change."""
+    project_path = _require_managed_project_file(runtime, path)
+    candidate = os.path.basename(str(new_name or "").strip())
+    if not candidate or candidate != str(new_name or "").strip():
+        raise ValueError("new_name must be a file name without directories.")
+    if not re.fullmatch(r"[A-Za-z0-9._ -]+", candidate):
+        raise ValueError("new_name may only contain letters, digits, spaces, dots, dashes and underscores.")
+    if not candidate.lower().endswith(".legion"):
+        candidate = f"{candidate}.legion"
+    target_path = os.path.join(os.path.dirname(project_path), candidate)
+    if os.path.realpath(target_path) == os.path.realpath(project_path):
+        return project_listing_row(project_path, source="renamed")
+    if os.path.exists(target_path):
+        raise FileExistsError(f"A project named {candidate} already exists in that folder.")
+    os.replace(project_path, target_path)
+    old_output = _project_tool_output_dir(project_path)
+    new_output = _project_tool_output_dir(target_path)
+    if os.path.isdir(old_output) and not os.path.exists(new_output):
+        try:
+            os.replace(old_output, new_output)
+        except OSError:
+            shutil.move(old_output, new_output)
+    return {**project_listing_row(target_path, source="renamed"), "previous_path": project_path}
+
+
+def delete_project(runtime, path: str) -> Dict[str, Any]:
+    """Delete a saved project file and its tool-output folder (screenshots, wordlists, tool logs)."""
+    project_path = _require_managed_project_file(runtime, path)
+    removed = [project_path]
+    os.remove(project_path)
+    output_dir = _project_tool_output_dir(project_path)
+    if os.path.isdir(output_dir):
+        shutil.rmtree(output_dir, ignore_errors=True)
+        removed.append(output_dir)
+    return {"deleted": True, "path": project_path, "removed": removed}
 
 
 def normalize_project_path(path: str) -> str:

@@ -55,6 +55,38 @@ def project_open():
         return json_error(str(exc), 500)
 
 
+@projects_bp.post("/api/project/rename")
+def project_rename():
+    service = _project_service()
+    try:
+        return jsonify(service.rename_project(request.get_json(silent=True) or {}))
+    except FileNotFoundError as exc:
+        return json_error(str(exc), 404)
+    except FileExistsError as exc:
+        return json_error(str(exc), 409)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    except RuntimeError as exc:
+        return json_error(str(exc), 409)
+    except Exception as exc:
+        return json_error(str(exc), 500)
+
+
+@projects_bp.post("/api/project/delete")
+def project_delete():
+    service = _project_service()
+    try:
+        return jsonify(service.delete_project(request.get_json(silent=True) or {}))
+    except FileNotFoundError as exc:
+        return json_error(str(exc), 404)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    except RuntimeError as exc:
+        return json_error(str(exc), 409)
+    except Exception as exc:
+        return json_error(str(exc), 500)
+
+
 @projects_bp.post("/api/project/save-as")
 def project_save_as():
     service = _project_service()

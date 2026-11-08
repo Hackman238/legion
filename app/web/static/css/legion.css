@@ -3213,6 +3213,22 @@ td button {
     font-size: 0.78rem;
     word-break: break-all;
 }
+.inline-rename {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.inline-rename input {
+    min-width: 10rem;
+    padding: 0.2rem 0.4rem;
+}
+
+.inline-rename button {
+    padding: 0.2rem 0.55rem;
+    font-size: 0.8rem;
+}
+
 .is-current-project td {
     font-weight: 600;
 }
