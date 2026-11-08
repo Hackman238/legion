@@ -3280,3 +3280,40 @@ select {
 .danger-button {
     background: linear-gradient(135deg, #8b1a3a, #c0392b) !important;
 }
+
+
+/* Sortable / filterable tables */
+.enhanced-table thead th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+.enhanced-table thead th.sortable:hover {
+    color: var(--text-main);
+}
+.enhanced-table thead th.is-sorted-asc::after {
+    content: " \25B2";
+    font-size: 0.65em;
+}
+.enhanced-table thead th.is-sorted-desc::after {
+    content: " \25BC";
+    font-size: 0.65em;
+}
+.table-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.table-filter input[type="search"] {
+    width: 9.5rem;
+    padding: 0.3rem 0.55rem;
+    font-size: 0.8rem;
+}
+.table-match-count {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+.table-empty-row td {
+    color: var(--text-muted);
+    font-style: italic;
+}

@@ -5614,7 +5614,23 @@ function renderApprovals(approvals) {
     if (!body) {
         return;
     }
+    workspaceState.approvals = Array.isArray(approvals) ? approvals : [];
     body.innerHTML = "";
+    if (!workspaceState.approvals.length) {
+        const tr = document.createElement("tr");
+        tr.className = "table-empty-row";
+        const td = makeCell("No actions are waiting for approval.");
+        td.colSpan = 6;
+        tr.appendChild(td);
+        body.appendChild(tr);
+    }
+    const bulkButtons = ["approvals-approve-all-button", "approvals-reject-all-button"];
+    bulkButtons.forEach((id) => {
+        const button = document.getElementById(id);
+        if (button) {
+            button.disabled = !workspaceState.approvals.length;
+        }
+    });
     (approvals || []).forEach((item) => {
         const tr = document.createElement("tr");
         tr.dataset.approvalId = String(item.id || "");
@@ -11228,6 +11244,42 @@ async function approveApproval(approvalId, familyAction = "") {
     }
 }
 
+async function bulkApprovalAction(mode) {
+    const pending = (workspaceState.approvals || []).filter((item) => String(item.status || "pending").toLowerCase() === "pending");
+    if (!pending.length) {
+        setWorkspaceStatus("No pending approvals.");
+        return;
+    }
+    const approve = mode === "approve";
+    const ok = await confirmAction({
+        title: approve ? "Approve All Pending Actions" : "Reject All Pending Actions",
+        message: `${approve ? "Approve and run" : "Reject"} ${pending.length} pending action${pending.length === 1 ? "" : "s"}?`,
+        detail: approve ? "Each action starts as its own job and follows the engagement policy." : "",
+        confirmLabel: approve ? "Approve All" : "Reject All",
+        danger: approve,
+    });
+    if (!ok) {
+        return;
+    }
+    let failures = 0;
+    for (const item of pending) {
+        try {
+            if (approve) {
+                await postJson(`/api/scheduler/approvals/${item.id}/approve`, {approve_family: false, run_now: true, family_action: ""});
+            } else {
+                await postJson(`/api/scheduler/approvals/${item.id}/reject`, {reason: "rejected in bulk via web", family_action: ""});
+            }
+        } catch (_err) {
+            failures += 1;
+        }
+    }
+    setWorkspaceStatus(
+        `${approve ? "Approved" : "Rejected"} ${pending.length - failures} of ${pending.length} pending action${pending.length === 1 ? "" : "s"}${failures ? ` (${failures} failed)` : ""}`,
+        failures > 0,
+    );
+    await Promise.all([loadApprovals(), pollSnapshot()]);
+}
+
 async function rejectApproval(approvalId, familyAction = "") {
     const resolvedFamilyAction = String(familyAction || "");
     try {
@@ -12828,6 +12880,9 @@ function bindActionButtons() {
     bind("scan-history-export-csv-button", () => exportTableAction("scan_history"));
     bind("decisions-export-csv-button", () => exportTableAction("scheduler_decisions"));
     bind("approvals-export-csv-button", () => exportTableAction("scheduler_approvals"));
+    bind("approvals-approve-all-button", () => bulkApprovalAction("approve"));
+    bind("approvals-reject-all-button", () => bulkApprovalAction("reject"));
+    initTableEnhancements();
     bind("ribbon-export-services-csv-action-button", () => exportTableAction("services"));
     bind("ribbon-export-ports-csv-action-button", () => exportTableAction("ports"));
     bind("ribbon-export-cves-csv-action-button", () => exportTableAction("cves"));
@@ -13368,3 +13423,173 @@ window.addEventListener("DOMContentLoaded", () => {
     initializeStartupWizard();
     refreshWorkspace();
 });
+
+
+// ---- Sortable, filterable tables ----
+// Every data table gets click-to-sort headers and a text filter; renderers keep rebuilding <tbody> rows, so the
+// enhancement re-applies itself from a MutationObserver instead of touching each renderer.
+const TABLE_ENHANCEMENT_BODIES = [
+    "processes-body", "hosts-body", "services-body", "approvals-body", "jobs-body", "scan-history-body",
+    "decisions-body", "executions-body", "findings-body", "credential-captures-body", "host-detail-cves",
+    "host-detail-ports", "settings-tool-audit-body",
+];
+const tableEnhancementState = new Map(); // tbody id -> {sortIndex, sortDir, filter, applying}
+
+function tableRowKey(row, index) {
+    const cell = row.children[index];
+    if (!cell) {
+        return "";
+    }
+    const text = (cell.dataset.sortValue || cell.textContent || "").trim();
+    return text;
+}
+
+function compareTableValues(a, b) {
+    const ipA = a.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    const ipB = b.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipA && ipB) {
+        for (let i = 1; i <= 4; i += 1) {
+            const diff = Number(ipA[i]) - Number(ipB[i]);
+            if (diff !== 0) {
+                return diff;
+            }
+        }
+        return 0;
+    }
+    const numA = Number(a.replace(/[%,]/g, ""));
+    const numB = Number(b.replace(/[%,]/g, ""));
+    if (a !== "" && b !== "" && Number.isFinite(numA) && Number.isFinite(numB)) {
+        return numA - numB;
+    }
+    if (a === "" && b !== "") {
+        return 1;
+    }
+    if (b === "" && a !== "") {
+        return -1;
+    }
+    return a.localeCompare(b, undefined, {numeric: true, sensitivity: "base"});
+}
+
+function applyTableEnhancement(bodyId) {
+    const state = tableEnhancementState.get(bodyId);
+    const body = document.getElementById(bodyId);
+    if (!state || !body || state.applying) {
+        return;
+    }
+    state.applying = true;
+    try {
+        const rows = Array.from(body.querySelectorAll(":scope > tr")).filter((row) => !row.querySelector("td[colspan]"));
+        if (state.sortIndex !== null && state.sortIndex >= 0) {
+            const direction = state.sortDir === "desc" ? -1 : 1;
+            const ordered = rows
+                .map((row, position) => ({row, position}))
+                .sort((left, right) => {
+                    const result = compareTableValues(tableRowKey(left.row, state.sortIndex), tableRowKey(right.row, state.sortIndex));
+                    return (result || (left.position - right.position)) * (result ? direction : 1);
+                })
+                .map((entry) => entry.row);
+            const alreadyOrdered = ordered.every((row, index) => row === rows[index]);
+            if (!alreadyOrdered) {
+                ordered.forEach((row) => body.appendChild(row));
+            }
+        }
+        const needle = String(state.filter || "").trim().toLowerCase();
+        let visible = 0;
+        rows.forEach((row) => {
+            const match = !needle || row.textContent.toLowerCase().includes(needle);
+            row.hidden = !match;
+            if (match) {
+                visible += 1;
+            }
+        });
+        if (state.countNode) {
+            state.countNode.textContent = needle ? `${visible} of ${rows.length}` : "";
+        }
+        const table = body.closest("table");
+        if (table) {
+            Array.from(table.querySelectorAll("thead th")).forEach((th, index) => {
+                th.classList.toggle("is-sorted-asc", state.sortIndex === index && state.sortDir === "asc");
+                th.classList.toggle("is-sorted-desc", state.sortIndex === index && state.sortDir === "desc");
+            });
+        }
+    } finally {
+        if (state.observer) {
+            state.observer.takeRecords(); // our own reordering is not a re-render
+        }
+        state.applying = false;
+    }
+}
+
+function initTableEnhancements() {
+    TABLE_ENHANCEMENT_BODIES.forEach((bodyId) => {
+        const body = document.getElementById(bodyId);
+        if (!body || tableEnhancementState.has(bodyId)) {
+            return;
+        }
+        const table = body.closest("table");
+        if (!table) {
+            return;
+        }
+        const state = {sortIndex: null, sortDir: "asc", filter: "", applying: false, countNode: null};
+        tableEnhancementState.set(bodyId, state);
+        table.classList.add("enhanced-table");
+        Array.from(table.querySelectorAll("thead th")).forEach((th, index) => {
+            if (!th.textContent.trim() || /actions?$/i.test(th.textContent.trim())) {
+                return;
+            }
+            th.classList.add("sortable");
+            th.tabIndex = 0;
+            th.title = `Sort by ${th.textContent.trim()}`;
+            const toggle = () => {
+                if (state.sortIndex === index) {
+                    state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+                } else {
+                    state.sortIndex = index;
+                    state.sortDir = "asc";
+                }
+                applyTableEnhancement(bodyId);
+            };
+            th.addEventListener("click", toggle);
+            th.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    toggle();
+                }
+            });
+        });
+        // Filter box in the owning panel or modal header.
+        const container = body.closest(".legion-modal, .panel, section");
+        const header = container ? container.querySelector(".panel-header, .modal-header") : null;
+        if (header && !header.querySelector(`[data-table-filter-for="${bodyId}"]`)) {
+            const wrapper = document.createElement("span");
+            wrapper.className = "table-filter";
+            const input = document.createElement("input");
+            input.type = "search";
+            input.placeholder = "Filter rows";
+            input.setAttribute("aria-label", "Filter table rows");
+            input.dataset.tableFilterFor = bodyId;
+            input.addEventListener("input", () => {
+                state.filter = input.value;
+                applyTableEnhancement(bodyId);
+            });
+            const count = document.createElement("small");
+            count.className = "table-match-count";
+            state.countNode = count;
+            wrapper.appendChild(input);
+            wrapper.appendChild(count);
+            const closeButton = header.querySelector(".modal-close-btn");
+            if (closeButton) {
+                header.insertBefore(wrapper, closeButton);
+            } else {
+                header.appendChild(wrapper);
+            }
+        }
+        const observer = new MutationObserver(() => {
+            if (!state.applying && (state.sortIndex !== null || state.filter)) {
+                applyTableEnhancement(bodyId);
+            }
+        });
+        state.observer = observer;
+        observer.observe(body, {childList: true});
+    });
+}
