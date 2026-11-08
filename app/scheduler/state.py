@@ -1120,6 +1120,8 @@ def modify_target_state(
 _target_state_graph_digests: Dict[Any, str] = {}
 _target_state_graph_digests_guard = threading.Lock()
 _TARGET_STATE_GRAPH_DIGEST_LIMIT = 4096
+# Stamped on every write; they say nothing about what the graph should contain.
+_GRAPH_DIGEST_VOLATILE_KEYS = {"updated_at", "state_version"}
 
 
 def _graph_digest_key(database, host_id: int):
@@ -1144,7 +1146,13 @@ def _sync_target_state_graph(database, host_id: int, merged: Dict[str, Any]):
     # The graph sync replays every port/service/finding/credential node of the host (hundreds of statements);
     # the orchestrator upserts the state several times per round, mostly without changing it.
     try:
-        digest = hashlib.sha1(json.dumps(merged, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        # *_json keys are serialised copies of the list fields (absent on the first write, present after): the
+        # list fields themselves carry the content.
+        comparable = {
+            k: v for k, v in dict(merged or {}).items()
+            if k not in _GRAPH_DIGEST_VOLATILE_KEYS and not str(k).endswith("_json")
+        }
+        digest = hashlib.sha1(json.dumps(comparable, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     except Exception:
         digest = ""
     key = _graph_digest_key(database, host_id)

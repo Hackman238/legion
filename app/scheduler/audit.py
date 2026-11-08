@@ -77,8 +77,6 @@ def _ensure_table_uncached(session):
         "approval_id TEXT"
         ")"
     ))
-    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_decision_log_host_ip ON scheduler_decision_log (host_ip)"))
-    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_decision_log_approval_id ON scheduler_decision_log (approval_id)"))
     _ensure_column(session, "scheduler_decision_log", "approval_id", "TEXT")
     _ensure_column(session, "scheduler_decision_log", "engagement_preset", "TEXT")
     _ensure_column(session, "scheduler_decision_log", "risk_tags", "TEXT")
@@ -87,6 +85,9 @@ def _ensure_table_uncached(session):
     _ensure_column(session, "scheduler_decision_log", "risk_summary", "TEXT")
     _ensure_column(session, "scheduler_decision_log", "safer_alternative", "TEXT")
     _ensure_column(session, "scheduler_decision_log", "family_policy_state", "TEXT")
+    # Indexes last: an indexed column may have been added by a migration just above (legacy projects).
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_decision_log_host_ip ON scheduler_decision_log (host_ip)"))
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_decision_log_approval_id ON scheduler_decision_log (approval_id)"))
 
 
 def _select_columns() -> str:

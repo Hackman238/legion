@@ -334,6 +334,7 @@ const ribbonMenuState = {
 const STARTUP_WIZARD_SESSION_KEY = "legion_startup_wizard_done";
 
 const modalFocusReturnTargets = {};
+const openModalIdStack = []; // ids in open order; the last entry is the dialog that owns keyboard focus
 const MODAL_FOCUSABLE_SELECTOR = [
     "button:not([disabled])", "[href]", "input:not([disabled]):not([type=hidden])", "select:not([disabled])",
     "textarea:not([disabled])", "[tabindex]:not([tabindex='-1'])",
@@ -349,6 +350,11 @@ function applyModalFocus(modal, open) {
         return;
     }
     if (open) {
+        const stackIndex = openModalIdStack.indexOf(modal.id);
+        if (stackIndex !== -1) {
+            openModalIdStack.splice(stackIndex, 1);
+        }
+        openModalIdStack.push(modal.id);
         if (!modal.contains(document.activeElement)) {
             modalFocusReturnTargets[modal.id] = document.activeElement;
         }
@@ -363,6 +369,10 @@ function applyModalFocus(modal, open) {
         }, 0);
         return;
     }
+    const closingIndex = openModalIdStack.indexOf(modal.id);
+    if (closingIndex !== -1) {
+        openModalIdStack.splice(closingIndex, 1);
+    }
     const returnTarget = modalFocusReturnTargets[modal.id];
     delete modalFocusReturnTargets[modal.id];
     if (returnTarget && typeof returnTarget.focus === "function" && document.contains(returnTarget)) {
@@ -374,8 +384,18 @@ document.addEventListener("keydown", (event) => {
     if (event.key !== "Tab") {
         return;
     }
-    const openModals = Array.from(document.querySelectorAll(".legion-modal-overlay.is-open, .startup-wizard-overlay.is-open"));
-    const modal = openModals[openModals.length - 1];
+    // Most recently opened dialog first; fall back to DOM order for overlays opened outside applyModalFocus.
+    let modal = null;
+    for (let index = openModalIdStack.length - 1; index >= 0 && !modal; index -= 1) {
+        const candidate = document.getElementById(openModalIdStack[index]);
+        if (candidate && candidate.classList.contains("is-open")) {
+            modal = candidate;
+        }
+    }
+    if (!modal) {
+        const openModals = Array.from(document.querySelectorAll(".legion-modal-overlay.is-open, .startup-wizard-overlay.is-open"));
+        modal = openModals[openModals.length - 1] || null;
+    }
     if (!modal) {
         return;
     }
@@ -4579,7 +4599,7 @@ function downloadProviderLogsAction() {
 }
 
 async function rescanHostAction(hostId) {
-    return runExclusiveAction("rescanHostAction", () => rescanHostActionImpl(hostId));
+    return runExclusiveAction(`rescanHostAction:${hostId}`, () => rescanHostActionImpl(hostId));
 }
 
 async function rescanHostActionImpl(hostId) {
@@ -4823,7 +4843,7 @@ async function killProcessAction(processId) {
 }
 
 async function retryProcessAction(processId) {
-    return runExclusiveAction("retryProcessAction", () => retryProcessActionImpl(processId));
+    return runExclusiveAction(`retryProcessAction:${processId}`, () => retryProcessActionImpl(processId));
 }
 
 async function retryProcessActionImpl(processId) {
@@ -10862,7 +10882,7 @@ async function handleWorkspaceInvalidation(channels) {
     if (requested.has("scan_history")) {
         tasks.push(loadScanHistory());
     }
-    if ((requested.has("tools") || requested.has("processes")) && workspaceState.toolsHydrated) {
+    if (requested.has("tools") && workspaceState.toolsHydrated) {
         tasks.push(loadWorkspaceTools({force: true}));
     }
     if (requested.has("credential_capture")) {
