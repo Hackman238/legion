@@ -3,45 +3,70 @@ Section: misc
 Priority: optional
 Maintainer: Hackman238 <sscott@shanewilliamscott.com>
 Uploaders: Shane Scott <sscott@shanewilliamscott.com>
-Build-Depends: debhelper, python3, python3-requests
-Standards-Version: 0.4.7
+Build-Depends: debhelper-compat (= 13), python3
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
 Homepage: https://github.com/Hackman238/Legion
 
 Package: legion
 Architecture: all
+# Python libraries without a Debian package (flask-sock, webdriver-manager, pyExploitDb, pyShodan)
+# are installed with pip on first run, hence python3-pip.
 Depends: ${misc:Depends},
          python3,
+         python3-pip,
+         python3-pyqt6,
+         python3-pyqt6.qtsvg,
+         python3-qasync,
+         python3-flask,
+         python3-sqlalchemy,
+         python3-psutil,
+         python3-six,
+         python3-requests,
+         python3-keyring,
+         python3-selenium,
+         python3-pandas,
+         python3-termcolor,
+         python3-colorama,
+         python3-pyfiglet,
+         python3-markupsafe,
+         python3-jinja2,
+         python3-chardet,
+         python3-git,
+         python3-urllib3,
+         python3-impacket,
          nmap,
-         finger,
          hydra,
          nikto,
          nbtscan,
-         nfs-common,
-         rpcbind,
          smbclient,
-         sra-toolkit
          ldap-utils,
          sslscan,
-         rwho,
-         rsh-client,
-         x11-apps,
-         featherpad,
-         xvfb,
-         imagemagick,
-         eog,
-         hping3,
-         sqlmap,
-         wapiti,
-         libqt5core5a,
-         python3-pip,
-         ruby,
-         perl,
-         urlscan,
-         git,
          xsltproc,
-         python3-impacket,
          whatweb,
          medusa,
-         eyewitness,
+         sqlmap,
+         wapiti,
+         hping3,
+         finger,
+         rwho,
+         rsh-client,
+         nfs-common,
+         rpcbind,
+         urlscan,
+         git,
+         ruby,
+         perl,
          xvfb,
-         firefox-esr
+         x11-apps,
+         imagemagick,
+         featherpad,
+         eog
+Recommends: eyewitness,
+            firefox-esr | chromium
+Description: operator-guided reconnaissance and penetration testing platform
+ Legion imports or runs Nmap scans into a persistent project, correlates
+ what it learns about each host in a local evidence graph, and runs
+ follow-up tooling through a governed scheduler with approval gates and an
+ audit log. It provides a web interface (the primary surface), a headless
+ CLI for automation, an MCP server for AI agents, and a legacy Qt desktop UI.

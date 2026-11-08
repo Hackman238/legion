@@ -68,6 +68,16 @@
   - Feature coverage for responder/relay/brute-force dedicated workflows.
   - Process detail/output streaming controls and cancellation parity.
 
+## Status Update (2026-11-08)
+- The "next parity priorities" above are implemented: kill/retry/clear process controls, incremental output
+  polling that returns only the requested slice, Responder/NTLMRelay capture sessions, and job cancellation with
+  per-job process tracking.
+- 0.7.1 hardened the runtime behind those features: UTF-8-tolerant output capture, kill reporting independent of the
+  tool's exit code, no signalling of stale PIDs, batched workspace queries, per-host locking for scheduler state,
+  race-safe graph upserts, and per-engine schema caching.
+- Open items: `get_script_output`-style views now slice in SQL, but the Qt desktop UI still has no web equivalent for
+  brute-force tabs; packaging (Phase 4) is unchanged.
+
 ## Locked-In Policy Choices
 - Pre-approval scope is by command family (template-level), not exact one-off command lines.
 - Initial dangerous categories:

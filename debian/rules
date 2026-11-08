@@ -1,16 +1,20 @@
 #!/usr/bin/make -f
 
 PACKAGE_DIR=debian/legion/usr/share/legion
+
 %:
-	dh $@ 
+	dh $@
 
 override_dh_install:
-	PYTHONPATH=. python3 app/settings.py
-	dh_install -X.pyc
+	dh_install -X.pyc -X__pycache__ -XThumbs.db
 
+override_dh_installchangelogs:
+	dh_installchangelogs CHANGELOG.txt
 
 override_dh_fixperms:
 	dh_fixperms
-	chmod 755 debian/legion/usr/share/legion/scripts/*
-	chmod 755 debian/legion/usr/share/legion/deps/*
-	chmod 755 debian/legion/usr/share/legion/startLegion.sh
+	chmod 755 $(PACKAGE_DIR)/startLegion.sh $(PACKAGE_DIR)/legion.py $(PACKAGE_DIR)/primeExploitDb.py
+	find $(PACKAGE_DIR)/scripts $(PACKAGE_DIR)/deps -type f -exec chmod 755 {} +
+	find $(PACKAGE_DIR)/pipettes -type f \( -name '*.sh' -o -name '*.py' \) -exec chmod 755 {} +
+	# only files with a shebang stay executable; data files (wordlists, NSE scripts, logos) must not be
+	find $(PACKAGE_DIR) -type f -perm /111 -exec sh -c 'head -c 2 "$$1" | grep -q "^#!" || chmod 644 "$$1"' _ {} \;
