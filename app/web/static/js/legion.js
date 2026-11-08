@@ -322,6 +322,9 @@ const uiModalState = {
     jobsOpen: false,
     submittedScansOpen: false,
     schedulerDecisionsOpen: false,
+    executionsOpen: false,
+    findingsOpen: false,
+    openWorkspaceOpen: false,
     hostRemoveOpen: false,
     graphNoteOpen: false,
     workspaceSwitchGuardOpen: false,
@@ -436,6 +439,9 @@ function updateBodyModalState() {
         || uiModalState.jobsOpen
         || uiModalState.submittedScansOpen
         || uiModalState.schedulerDecisionsOpen
+        || uiModalState.executionsOpen
+        || uiModalState.findingsOpen
+        || uiModalState.openWorkspaceOpen
         || uiModalState.hostRemoveOpen
         || uiModalState.graphNoteOpen
         || uiModalState.workspaceSwitchGuardOpen
@@ -1865,27 +1871,11 @@ function getHostOsIcon(osText) {
 }
 
 function renderTools(tools) {
+    // The tools catalog feeds the Manual Tool Run picker (the standalone tools table was retired).
     workspaceState.tools = Array.isArray(tools) ? tools : [];
-    const body = document.getElementById("tools-body");
-    if (body) {
-        body.innerHTML = "";
-        workspaceState.tools.forEach((tool) => {
-            const tr = document.createElement("tr");
-            tr.dataset.toolId = String(tool.tool_id || "");
-            tr.appendChild(makeCell(tool.label || ""));
-            tr.appendChild(makeCell(tool.tool_id || ""));
-            tr.appendChild(makeCell(tool.run_count || 0));
-            tr.appendChild(makeCell(tool.last_status || ""));
-            tr.appendChild(makeCell(Array.isArray(tool.danger_categories) ? tool.danger_categories.join(",") : ""));
-            body.appendChild(tr);
-        });
-    }
-
     if (!workspaceState.manualToolTargets.length) {
         populateManualToolSelect(workspaceState.tools);
     }
-
-    setText("tool-count", workspaceState.tools.length);
 }
 
 function renderProcesses(processes) {
@@ -3063,6 +3053,383 @@ async function openSchedulerDecisionsAction() {
     await pollSnapshot();
 }
 
+function setGenericModalOpen(modalId, stateKey, open) {
+    const overlay = document.getElementById(modalId);
+    if (!overlay) {
+        return;
+    }
+    uiModalState[stateKey] = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
+    updateBodyModalState();
+}
+
+// ---- Scheduler executions (Logging > Executions) ----
+async function openExecutionsAction() {
+    closeRibbonMenus();
+    setGenericModalOpen("scheduler-executions-modal", "executionsOpen", true);
+    const output = document.getElementById("executions-output");
+    if (output) {
+        output.hidden = true;
+        output.textContent = "";
+    }
+    try {
+        const body = await fetchJson("/api/scheduler/executions?limit=200");
+        renderExecutions(Array.isArray(body?.executions) ? body.executions : []);
+    } catch (err) {
+        setWorkspaceStatus(`Could not load executions: ${err.message}`, true);
+    }
+}
+
+function renderExecutions(records) {
+    const body = document.getElementById("executions-body");
+    if (!body) {
+        return;
+    }
+    body.innerHTML = "";
+    if (!records.length) {
+        const tr = document.createElement("tr");
+        const td = makeCell("No scheduler executions recorded yet.");
+        td.colSpan = 8;
+        tr.appendChild(td);
+        body.appendChild(tr);
+    }
+    records.forEach((record) => {
+        const tr = document.createElement("tr");
+        tr.appendChild(makeCell(formatTimestamp(record.started_at || "")));
+        tr.appendChild(makeCell(formatTargetLabel(record.host_ip, record.port, record.protocol)));
+        tr.appendChild(makeCell(record.label || record.tool_id || ""));
+        tr.appendChild(makeCell(record.scheduler_mode || ""));
+        tr.appendChild(makeCell(record.runner_type || ""));
+        tr.appendChild(makeCell(record.exit_status || ""));
+        const artifacts = Array.isArray(record.artifact_refs) ? record.artifact_refs : [];
+        tr.appendChild(makeCell(artifacts.length ? String(artifacts.length) : ""));
+        const actions = document.createElement("td");
+        const outputButton = document.createElement("button");
+        outputButton.type = "button";
+        outputButton.textContent = "Output";
+        outputButton.addEventListener("click", () => showExecutionOutput(String(record.execution_id || "")));
+        actions.appendChild(outputButton);
+        tr.appendChild(actions);
+        body.appendChild(tr);
+    });
+    setText("execution-count", records.length);
+}
+
+async function showExecutionOutput(executionId) {
+    const output = document.getElementById("executions-output");
+    if (!output || !executionId) {
+        return;
+    }
+    output.hidden = false;
+    output.textContent = "Loading...";
+    try {
+        const trace = await fetchJson(`/api/scheduler/executions/${encodeURIComponent(executionId)}?max_chars=8000`);
+        const parts = [];
+        if (trace.command) {
+            parts.push(`$ ${trace.command}`);
+        }
+        const stdout = trace.stdout_excerpt || trace.stdout || "";
+        const stderr = trace.stderr_excerpt || trace.stderr || "";
+        parts.push(stdout || "(no stdout captured)");
+        if (stderr) {
+            parts.push(`--- stderr ---\n${stderr}`);
+        }
+        output.textContent = parts.join("\n\n");
+    } catch (err) {
+        output.textContent = `Could not load output: ${err.message}`;
+    }
+}
+
+// ---- Findings (Misc > Findings) ----
+const findingsState = {rows: []};
+
+async function openFindingsAction() {
+    closeRibbonMenus();
+    setGenericModalOpen("findings-modal", "findingsOpen", true);
+    try {
+        const body = await fetchJson("/api/workspace/findings?limit=1000");
+        findingsState.rows = Array.isArray(body?.findings) ? body.findings : [];
+        setText("findings-host-count", body?.host_scope_count ?? 0);
+        renderFindings();
+    } catch (err) {
+        setWorkspaceStatus(`Could not load findings: ${err.message}`, true);
+    }
+}
+
+function renderFindings() {
+    const body = document.getElementById("findings-body");
+    if (!body) {
+        return;
+    }
+    const severityFilter = String(document.getElementById("findings-severity-filter")?.value || "").toLowerCase();
+    const rows = findingsState.rows.filter((row) => !severityFilter || String(row.severity || "").toLowerCase() === severityFilter);
+    body.innerHTML = "";
+    if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = makeCell(findingsState.rows.length ? "No findings at this severity." : "No findings yet. Run the scheduler or import a vulners scan.");
+        td.colSpan = 6;
+        tr.appendChild(td);
+        body.appendChild(tr);
+    }
+    rows.forEach((row) => {
+        const tr = document.createElement("tr");
+        const severity = String(row.severity || "info").toLowerCase();
+        const severityCell = document.createElement("td");
+        const pill = document.createElement("span");
+        pill.className = `severity-pill severity-${severity}`;
+        pill.textContent = severity;
+        severityCell.appendChild(pill);
+        tr.appendChild(severityCell);
+        const host = row.host || {};
+        const hostCell = document.createElement("td");
+        const hostLink = document.createElement("a");
+        hostLink.href = "#";
+        hostLink.textContent = host.hostname ? `${host.ip} (${host.hostname})` : String(host.ip || "");
+        hostLink.addEventListener("click", (event) => {
+            event.preventDefault();
+            setGenericModalOpen("findings-modal", "findingsOpen", false);
+            if (host.id) {
+                selectHost(host.id);
+            }
+        });
+        hostCell.appendChild(hostLink);
+        tr.appendChild(hostCell);
+        tr.appendChild(makeCell(row.title || ""));
+        tr.appendChild(makeCell(row.source_kind || ""));
+        const confidence = Number(row.confidence || 0);
+        tr.appendChild(makeCell(Number.isFinite(confidence) && confidence > 0 ? confidence.toFixed(0) : ""));
+        const finding = row.finding || {};
+        tr.appendChild(makeCell(finding.evidence || finding.cve || finding.url || ""));
+        body.appendChild(tr);
+    });
+    setText("findings-count", rows.length);
+}
+
+// ---- Plan preview (Manual Tool Run) ----
+async function previewPlanAction() {
+    const hostIp = getValue("workspace-tool-host-ip").trim();
+    const port = getValue("workspace-tool-port").trim();
+    const protocol = getValue("workspace-tool-protocol").trim() || "tcp";
+    const container = document.getElementById("workspace-plan-preview");
+    const body = document.getElementById("workspace-plan-preview-body");
+    if (!container || !body) {
+        return;
+    }
+    container.hidden = false;
+    body.innerHTML = "";
+    setText("workspace-plan-preview-meta", "loading...");
+    const params = new URLSearchParams({mode: "compare", limit_targets: "3", limit_actions: "8"});
+    if (hostIp) {
+        params.set("host_ip", hostIp);
+    }
+    if (port) {
+        params.set("port", port);
+    }
+    if (protocol) {
+        params.set("protocol", protocol);
+    }
+    try {
+        const preview = await fetchJson(`/api/scheduler/plan-preview?${params.toString()}`);
+        const targets = Array.isArray(preview?.targets) ? preview.targets : [];
+        setText("workspace-plan-preview-meta", `${targets.length} target${targets.length === 1 ? "" : "s"} | current mode: ${preview.current_mode || ""}`);
+        if (!targets.length) {
+            const empty = document.createElement("p");
+            empty.className = "plan-preview-empty";
+            empty.textContent = "No open services match this target, so the scheduler has nothing to plan.";
+            body.appendChild(empty);
+            return;
+        }
+        targets.forEach((entry) => {
+            const target = entry.target || {};
+            const label = formatTargetLabel(target.host_ip, target.port, target.protocol) + (target.service_name ? ` ${target.service_name}` : "");
+            [["Deterministic", entry.deterministic], ["AI", entry.ai]].forEach(([title, plan]) => {
+                const column = document.createElement("div");
+                column.className = "plan-preview-column";
+                const heading = document.createElement("h4");
+                heading.textContent = `${title} | ${label}${plan?.fallback_used ? " (fallback)" : ""}`;
+                column.appendChild(heading);
+                const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+                if (!steps.length) {
+                    const none = document.createElement("p");
+                    none.className = "plan-preview-empty";
+                    none.textContent = "nothing planned";
+                    column.appendChild(none);
+                } else {
+                    const list = document.createElement("ol");
+                    steps.forEach((step) => {
+                        const item = document.createElement("li");
+                        item.textContent = step.label || step.tool_id || "";
+                        const detail = document.createElement("small");
+                        const bits = [];
+                        if (step.policy_decision) {
+                            bits.push(step.policy_decision);
+                        }
+                        if (step.approval_state && step.approval_state !== "not_required") {
+                            bits.push(step.approval_state);
+                        }
+                        if (step.rationale) {
+                            bits.push(step.rationale);
+                        }
+                        detail.textContent = bits.join(" | ");
+                        item.appendChild(detail);
+                        list.appendChild(item);
+                    });
+                    column.appendChild(list);
+                }
+                body.appendChild(column);
+            });
+        });
+    } catch (err) {
+        setText("workspace-plan-preview-meta", "");
+        const failed = document.createElement("p");
+        failed.className = "plan-preview-empty";
+        failed.textContent = `Preview failed: ${err.message}`;
+        body.appendChild(failed);
+    }
+}
+
+// ---- Pre-approved families (Scheduler Settings) ----
+function renderSchedulerFamilies(families) {
+    const body = document.getElementById("scheduler-families-body");
+    if (!body) {
+        return;
+    }
+    body.innerHTML = "";
+    const rows = Array.isArray(families) ? families : [];
+    if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = makeCell("No family decisions yet. Use \"Allow Family\" or \"Suppress Family\" on a pending approval.");
+        td.colSpan = 6;
+        tr.appendChild(td);
+        body.appendChild(tr);
+        return;
+    }
+    rows.forEach((family) => {
+        const tr = document.createElement("tr");
+        tr.appendChild(makeCell(family.family_id || ""));
+        tr.appendChild(makeCell(family.label || family.tool_id || ""));
+        tr.appendChild(makeCell(family.policy_state || ""));
+        tr.appendChild(makeCell(formatTimestamp(family.approved_at || "")));
+        tr.appendChild(makeCell(family.reason || ""));
+        const actions = document.createElement("td");
+        actions.className = "approval-action-buttons";
+        const state = String(family.policy_state || "");
+        [["allowed", "Allow"], ["suppressed", "Suppress"], ["clear", "Clear"]].forEach(([nextState, text]) => {
+            if (nextState === state) {
+                return;
+            }
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = text;
+            button.addEventListener("click", () => setFamilyPolicyAction(String(family.family_id || ""), nextState));
+            actions.appendChild(button);
+        });
+        tr.appendChild(actions);
+        body.appendChild(tr);
+    });
+}
+
+async function setFamilyPolicyAction(familyId, state) {
+    if (!familyId) {
+        return;
+    }
+    try {
+        const body = await postJson("/api/scheduler/family-policy", {family_id: familyId, state});
+        renderSchedulerFamilies(body?.families || []);
+        setText("scheduler-families", Array.isArray(body?.families) ? body.families.length : 0);
+        setWorkspaceStatus(state === "clear" ? `Family ${familyId} cleared.` : `Family ${familyId} set to ${state}.`);
+        await loadApprovals();
+    } catch (err) {
+        setWorkspaceStatus(`Family update failed: ${err.message}`, true);
+    }
+}
+
+// ---- Open workspace picker ----
+async function openWorkspacePickerAction() {
+    closeRibbonMenus();
+    setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", true);
+    setValue("open-workspace-path-input", getValue("project-open-path"));
+    await refreshProjectListAction();
+}
+
+async function refreshProjectListAction() {
+    const body = document.getElementById("open-workspace-body");
+    const options = document.getElementById("open-workspace-path-options");
+    if (!body) {
+        return;
+    }
+    body.innerHTML = "";
+    try {
+        const payload = await fetchJson("/api/projects?limit=200");
+        const projects = Array.isArray(payload?.projects) ? payload.projects : [];
+        if (options) {
+            options.innerHTML = "";
+            projects.forEach((project) => {
+                const option = document.createElement("option");
+                option.value = String(project.path || "");
+                options.appendChild(option);
+            });
+        }
+        if (!projects.length) {
+            const tr = document.createElement("tr");
+            const td = makeCell("No saved projects found. Enter a path above to open a project stored elsewhere.");
+            td.colSpan = 5;
+            tr.appendChild(td);
+            body.appendChild(tr);
+        }
+        projects.forEach((project) => {
+            const tr = document.createElement("tr");
+            if (project.is_current) {
+                tr.classList.add("is-current-project");
+            }
+            tr.appendChild(makeCell(project.name || ""));
+            tr.appendChild(makeCell(project.source || ""));
+            tr.appendChild(makeCell(formatTimestamp(project.modified_at || "")));
+            const pathCell = makeCell(project.path || "");
+            pathCell.className = "path-cell";
+            tr.appendChild(pathCell);
+            const actions = document.createElement("td");
+            const openButton = document.createElement("button");
+            openButton.type = "button";
+            openButton.textContent = project.is_current ? "Current" : "Open";
+            openButton.disabled = Boolean(project.is_current) || project.exists === false;
+            openButton.addEventListener("click", () => openWorkspacePath(String(project.path || "")));
+            actions.appendChild(openButton);
+            tr.appendChild(actions);
+            body.appendChild(tr);
+        });
+        setText("open-workspace-meta", `${projects.length} project${projects.length === 1 ? "" : "s"} found in the temp and autosave folders on the Legion host.`);
+    } catch (err) {
+        setText("open-workspace-meta", `Could not list projects: ${err.message}`);
+    }
+}
+
+async function openWorkspacePath(path) {
+    const target = String(path || getValue("open-workspace-path-input") || "").trim();
+    if (!target) {
+        setActionStatus("Open failed: a project path is required", true);
+        return;
+    }
+    setValue("project-open-path", target);
+    setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false);
+    await openProject();
+}
+
+function formatTimestamp(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+        return "";
+    }
+    const parsed = new Date(text);
+    if (Number.isNaN(parsed.getTime())) {
+        return text;
+    }
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`;
+}
+
 function requestHostRemoveAction(hostId) {
     const id = parseInt(hostId, 10);
     if (!id) {
@@ -3155,12 +3522,7 @@ function setToolInstallStatus(text, isError = false) {
 }
 
 function setDisplaySettingsStatus(text, isError = false) {
-    const node = document.getElementById("settings-display-status");
-    if (!node) {
-        return;
-    }
-    node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    setInterfaceSettingsStatus(text, isError);  // the display toggles live in the Interface Settings modal
 }
 
 function setInterfaceSettingsStatus(text, isError = false) {
@@ -3467,6 +3829,10 @@ function toggleRibbonMenu(menuId) {
 }
 
 async function openWorkspaceFromRibbonAction() {
+    await openWorkspacePickerAction();
+}
+
+async function openWorkspaceFromRibbonLegacyAction() {
     closeRibbonMenus();
     let path = getValue("project-open-path").trim();
     if (!path) {
@@ -5784,6 +6150,7 @@ function applySchedulerPreferences(prefs) {
     setText("scheduler-mode", prefs.mode || "");
     setText("scheduler-goal", policy.preset_label || policy.preset || prefs.goal_profile || "");
     setText("scheduler-families", prefs.preapproved_families_count || 0);
+    renderSchedulerFamilies(prefs.preapproved_command_families || []);
 
     setValue("scheduler-mode-select", prefs.mode || "deterministic");
     setValue("scheduler-goal-select", policy.preset || "internal_recon");
@@ -11886,10 +12253,10 @@ async function runNmapScanImpl() {
 }
 
 function bindActionButtons() {
-    const bind = (id, handler) => {
+    const bind = (id, handler, eventName = "click") => {
         const node = document.getElementById(id);
         if (node) {
-            node.addEventListener("click", handler);
+            node.addEventListener(eventName, handler);
         }
     };
 
@@ -11924,6 +12291,17 @@ function bindActionButtons() {
     bind("ribbon-logging-jobs-button", openJobsAction);
     bind("ribbon-logging-submitted-scans-button", openSubmittedScansAction);
     bind("ribbon-logging-scheduler-decisions-button", openSchedulerDecisionsAction);
+    bind("ribbon-logging-executions-button", openExecutionsAction);
+    bind("scheduler-executions-modal-close", () => setGenericModalOpen("scheduler-executions-modal", "executionsOpen", false));
+    bind("executions-export-csv-button", () => exportTableAction("scheduler_executions"));
+    bind("ribbon-misc-findings-action-button", openFindingsAction);
+    bind("findings-modal-close", () => setGenericModalOpen("findings-modal", "findingsOpen", false));
+    bind("findings-export-csv-button", () => exportTableAction("findings"));
+    bind("findings-severity-filter", renderFindings, "change");
+    bind("workspace-plan-preview-button", previewPlanAction);
+    bind("open-workspace-modal-close", () => setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false));
+    bind("open-workspace-path-button", () => openWorkspacePath(""));
+    bind("open-workspace-refresh-button", refreshProjectListAction);
     bind("ribbon-logging-ai-provider-button", openProviderLogsAction);
     bind("ribbon-credential-capture-toggle-button", toggleCredentialCapturePanelAction);
     bind("ribbon-scheduler-settings-button", openSchedulerSettingsAction);
@@ -12573,6 +12951,26 @@ function bindActionButtons() {
             closeSchedulerDecisionsModalAction();
             return;
         }
+        if (uiModalState.executionsOpen) {
+            setGenericModalOpen("scheduler-executions-modal", "executionsOpen", false);
+            return;
+        }
+        if (uiModalState.findingsOpen) {
+            setGenericModalOpen("findings-modal", "findingsOpen", false);
+            return;
+        }
+        if (uiModalState.openWorkspaceOpen) {
+            setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false);
+            return;
+        }
+        if (uiModalState.interfaceSettingsOpen) {
+            setInterfaceSettingsModalOpen(false);
+            return;
+        }
+        if (uiModalState.workspaceSwitchGuardOpen) {
+            setWorkspaceSwitchGuardModalOpen(false);
+            return;
+        }
         if (uiModalState.hostRemoveOpen) {
             closeHostRemoveModalAction(true);
             return;
@@ -12625,6 +13023,9 @@ function bindActionButtons() {
             || uiModalState.jobsOpen
             || uiModalState.submittedScansOpen
             || uiModalState.schedulerDecisionsOpen
+            || uiModalState.executionsOpen
+            || uiModalState.findingsOpen
+            || uiModalState.openWorkspaceOpen
             || uiModalState.hostRemoveOpen
             || uiModalState.graphNoteOpen
             || uiModalState.interfaceSettingsOpen

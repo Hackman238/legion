@@ -122,6 +122,7 @@
                         <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
                     </button>
                     <div id="ribbon-misc-menu" class="ribbon-submenu" role="menu" aria-label="Misc options">
+                        <button id="ribbon-misc-findings-action-button" class="ribbon-submenu-item" type="button" title="Project-wide findings ranked by severity">Findings</button>
                         <button id="ribbon-misc-host-selection-action-button" class="ribbon-submenu-item" type="button" title="Open host selection and notes">Host Selection</button>
                         <button id="ribbon-misc-script-cve-action-button" class="ribbon-submenu-item" type="button" title="Open Add Script/CVE form">Add Script/CVE</button>
                     </div>
@@ -144,6 +145,7 @@
                         <button id="ribbon-logging-jobs-button" class="ribbon-submenu-item" type="button" title="View background jobs">Jobs</button>
                         <button id="ribbon-logging-submitted-scans-button" class="ribbon-submenu-item" type="button" title="View submitted scan history">Submitted Scans</button>
                         <button id="ribbon-logging-scheduler-decisions-button" class="ribbon-submenu-item" type="button" title="View scheduler decisions">Scheduler Decisions</button>
+                        <button id="ribbon-logging-executions-button" class="ribbon-submenu-item" type="button" title="View scheduler execution traces with their output">Executions</button>
                         <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View provider request and response logs">Provider Logs</button>
                     </div>
                 </div>
@@ -1452,6 +1454,11 @@
             <div class="scheduler-actions">
                 <button id="workspace-run-tool-button" type="button">Run Tool</button>
                 <button id="workspace-run-scheduler-button" type="button">Run Scheduler Now</button>
+                <button id="workspace-plan-preview-button" type="button" title="Show what the deterministic and AI planners would run against this target">Preview Plan</button>
+            </div>
+            <div id="workspace-plan-preview" class="plan-preview" hidden>
+                <h3>Planned Actions <span id="workspace-plan-preview-meta" class="plan-preview-meta"></span></h3>
+                <div id="workspace-plan-preview-body" class="plan-preview-body"></div>
             </div>
         </div>
     </div>
@@ -1865,6 +1872,25 @@
                     <input id="feature-scheduler-web-followup-sidecar" type="checkbox" value="scheduler_web_followup_sidecar">
                     Enable web follow-up specialist sidecar
                 </label>
+            </fieldset>
+            <fieldset class="danger-group scheduler-settings-group scheduler-families-group">
+                <legend>Pre-approved and Suppressed Families</legend>
+                <p class="meta-note">Decisions taken from the approvals panel ("Allow Family" / "Suppress Family"). Clearing a family sends its actions back through the normal policy.</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Family</th>
+                            <th>Tool</th>
+                            <th>State</th>
+                            <th>Decided</th>
+                            <th>Reason</th>
+                            <th>Actions</th>
+                        </tr>
+                        </thead>
+                        <tbody id="scheduler-families-body"></tbody>
+                    </table>
+                </div>
             </fieldset>
             <div class="scheduler-actions">
                 <button id="scheduler-test-provider-button" type="button">Test Provider</button>
@@ -2289,6 +2315,112 @@
     </div>
 </div>
 
+<div id="scheduler-executions-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-executions-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="scheduler-executions-modal-title">Scheduler Executions</h2>
+            <p><span id="execution-count">0</span> total</p>
+            <button id="executions-export-csv-button" class="modal-header-action" type="button" title="Download every execution record as CSV">Export CSV</button>
+            <button id="scheduler-executions-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Started</th>
+                    <th>Target</th>
+                    <th>Tool</th>
+                    <th>Mode</th>
+                    <th>Runner</th>
+                    <th>Exit</th>
+                    <th>Artifacts</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="executions-body"></tbody>
+            </table>
+        </div>
+        <pre id="executions-output" class="execution-output" hidden></pre>
+    </div>
+</div>
+
+<div id="findings-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="findings-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="findings-modal-title">Findings</h2>
+            <p><span id="findings-count">0</span> across <span id="findings-host-count">0</span> hosts</p>
+            <label class="inline-filter">Severity
+                <select id="findings-severity-filter">
+                    <option value="">all</option>
+                    <option value="critical">critical</option>
+                    <option value="high">high</option>
+                    <option value="medium">medium</option>
+                    <option value="low">low</option>
+                    <option value="info">info</option>
+                </select>
+            </label>
+            <button id="findings-export-csv-button" class="modal-header-action" type="button" title="Download the findings as CSV">Export CSV</button>
+            <button id="findings-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Host</th>
+                    <th>Title</th>
+                    <th>Source</th>
+                    <th>Confidence</th>
+                    <th>Evidence</th>
+                </tr>
+                </thead>
+                <tbody id="findings-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="open-workspace-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="open-workspace-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="open-workspace-modal-title">Open Workspace</h2>
+            <p id="open-workspace-meta">Projects found in the temp and autosave folders on the Legion host.</p>
+            <button id="open-workspace-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block open-workspace-path">
+            <label>
+                Project path on the Legion host
+                <input id="open-workspace-path-input" type="text" placeholder="/path/to/project.legion" list="open-workspace-path-options">
+                <datalist id="open-workspace-path-options"></datalist>
+            </label>
+            <div class="scheduler-actions">
+                <button id="open-workspace-path-button" type="button">Open Path</button>
+                <button id="open-workspace-refresh-button" type="button">Refresh List</button>
+            </div>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Source</th>
+                    <th>Modified</th>
+                    <th>Path</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="open-workspace-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 <div id="host-remove-modal" class="legion-modal-overlay" aria-hidden="true">
     <div class="legion-modal host-remove-modal" role="dialog" aria-modal="true" aria-labelledby="host-remove-modal-title">
         <div class="panel-header modal-header">
@@ -2350,7 +2482,7 @@
             </label>
             <label>
                 Existing Project Path
-                <input id="startup-project-open-path" type="text" placeholder="/path/to/project.legion">
+                <input id="startup-project-open-path" type="text" placeholder="/path/to/project.legion" list="open-workspace-path-options">
             </label>
         </section>
 
