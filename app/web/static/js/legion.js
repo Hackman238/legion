@@ -1420,10 +1420,27 @@ function setStartupWizardStatus(text, isError = false) {
 }
 
 function renderProject(project) {
-    setText("project-name", project.name || "");
+    const name = String(project.name || "");
+    const base = (path) => {
+        const parts = String(path || "").trim().split(/[\\/]/).filter(Boolean);
+        return parts.length ? parts[parts.length - 1] : String(path || "");
+    };
+    const title = (id, value) => {
+        if (typeof document !== "undefined") {
+            const node = document.getElementById(id);
+            if (node) {
+                node.title = value || "";
+            }
+        }
+    };
+    // Show the file name; the full path stays available as a tooltip (temp projects live in a temp folder).
+    setText("project-name", project.is_temporary ? `${base(name)} (unsaved)` : base(name));
+    title("project-name", name);
     setText("project-kind", project.is_temporary ? "temporary" : "saved");
-    setText("project-output-folder", project.output_folder || "");
-    setText("project-running-folder", project.running_folder || "");
+    setText("project-output-folder", project.output_folder ? `Tool output: ${base(project.output_folder)}` : "");
+    title("project-output-folder", project.output_folder || "");
+    setText("project-running-folder", project.running_folder ? `Running: ${base(project.running_folder)}` : "");
+    title("project-running-folder", project.running_folder || "");
 
     const currentSavePath = getValue("project-save-path").trim();
     if (project.is_temporary) {
@@ -1822,7 +1839,43 @@ function toggleServicesPanelAction() {
     if (!body) {
         return;
     }
-    setServicesPanelCollapsed(!body.hidden);
+    const collapsed = !body.hidden;
+    setServicesPanelCollapsed(collapsed);
+    writeStoredFlag("legion_services_collapsed", collapsed);
+}
+
+function readStoredFlag(key, fallback) {
+    try {
+        const raw = window.localStorage.getItem(key);
+        return raw === null ? fallback : raw === "1";
+    } catch (_err) {
+        return fallback;
+    }
+}
+
+function writeStoredFlag(key, value) {
+    try {
+        window.localStorage.setItem(key, value ? "1" : "0");
+    } catch (_err) {
+    }
+}
+
+function formatElapsedSeconds(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+        return "";
+    }
+    const total = Math.floor(seconds);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const rest = total % 60;
+    if (hours > 0) {
+        return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+    }
+    if (minutes > 0) {
+        return `${minutes}m ${String(rest).padStart(2, "0")}s`;
+    }
+    return `${rest}s`;
 }
 
 function setGraphPanelCollapsed(collapsed) {
@@ -1910,6 +1963,13 @@ function renderProcesses(processes) {
         statusWrap.appendChild(statusText);
         statusCell.appendChild(statusWrap);
         tr.appendChild(statusCell);
+        const startedCell = makeCell(formatTimestamp(process.startTime || ""));
+        startedCell.className = "process-started-cell";
+        startedCell.title = String(process.startTime || "");
+        tr.appendChild(startedCell);
+        const elapsedCell = makeCell(formatElapsedSeconds(process.elapsed));
+        elapsedCell.className = "process-elapsed-cell";
+        tr.appendChild(elapsedCell);
 
         let percentDisplay = process.percent || "";
         const numericPercent = Number(String(percentDisplay).replace("%", "").trim());
@@ -5417,7 +5477,7 @@ function renderDecisions(decisions) {
     (decisions || []).forEach((decision) => {
         const tr = document.createElement("tr");
         const target = formatTargetLabel(decision.host_ip, decision.port, decision.protocol);
-        tr.appendChild(makeCell(decision.timestamp || ""));
+        tr.appendChild(makeCell(formatTimestamp(decision.timestamp || "")));
         tr.appendChild(makeCell(target));
         tr.appendChild(makeCell(decision.tool_id || decision.label || ""));
         tr.appendChild(makeCell(decision.scheduler_mode || ""));
@@ -5527,9 +5587,9 @@ function renderJobs(jobs) {
             ? "stopping"
             : (cancelRequested && status === "queued" ? "cancelling" : (job.status || ""));
         tr.appendChild(makeCell(renderedStatus));
-        tr.appendChild(makeCell(job.created_at || ""));
-        tr.appendChild(makeCell(job.started_at || ""));
-        tr.appendChild(makeCell(job.finished_at || ""));
+        tr.appendChild(makeCell(formatTimestamp(job.created_at || "")));
+        tr.appendChild(makeCell(formatTimestamp(job.started_at || "")));
+        tr.appendChild(makeCell(formatTimestamp(job.finished_at || "")));
         const warnings = Array.isArray(job?.result?.warnings) ? job.result.warnings.filter(Boolean) : [];
         const errorText = String(job?.error || "");
         const cancelReason = String(job?.cancel_reason || "").trim();
@@ -5572,7 +5632,7 @@ function renderScanHistory(scans) {
         tr.appendChild(makeCell(scan.target_summary || ""));
         tr.appendChild(makeCell(scan.scope_summary || ""));
         tr.appendChild(makeCell(scan.scan_mode || ""));
-        tr.appendChild(makeCell(scan.created_at || ""));
+        tr.appendChild(makeCell(formatTimestamp(scan.created_at || "")));
         tr.appendChild(makeCell(scan.result_summary || ""));
         body.appendChild(tr);
     });
@@ -12350,7 +12410,7 @@ function bindActionButtons() {
     bind("graph-detail-dock-toggle-button", graphToggleDetailModeAction);
     bind("graph-detail-close-button", graphDismissSelection);
     graphSetFiltersExpanded(graphWorkspaceState.filtersExpanded);
-    setServicesPanelCollapsed(true);
+    setServicesPanelCollapsed(readStoredFlag("legion_services_collapsed", false));
     setGraphPanelCollapsed(false);
 
     const graphScrollNode = getGraphCanvasScrollNode();

@@ -273,8 +273,8 @@
                         <span class="ribbon-process-icon" aria-hidden="true">
                             <i class="fa-solid fa-terminal" aria-hidden="true"></i>
                         </span>
-                        <span class="sr-only">Processes</span>
-                        <strong id="process-count" class="ribbon-process-count">{{ snapshot.processes | length }}</strong>
+                        <h2 class="ribbon-process-title">Processes</h2>
+                        <strong id="process-count" class="ribbon-process-count" title="Processes shown">{{ snapshot.processes | length }}</strong>
                     </div>
                     <div class="process-actions ribbon-process-actions">
                         <button
@@ -305,6 +305,8 @@
                             <th>Name</th>
                             <th>Target</th>
                             <th>Status</th>
+                            <th>Started</th>
+                            <th>Elapsed</th>
                             <th>%</th>
                             <th>ETA</th>
                             <th>Actions</th>
@@ -852,7 +854,7 @@
                 </button>
             </div>
         </div>
-        <div id="services-panel-body" class="table-wrap" hidden>
+        <div id="services-panel-body" class="table-wrap">
             <table>
                 <thead>
                 <tr>
