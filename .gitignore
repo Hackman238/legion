@@ -132,10 +132,18 @@ huge_nmap.xml
 !tests/**/*.xml
 
 legion.code-workspace
-docs/
+# project documentation under docs/ is tracked; only generated output is ignored (see docs/_build/ above)
 -ut/
 ut/
 LEGION_AI_PROMPT_IMPROVEMENT_PLAN.md
 .tmp/
 .codex/
 .codex
+
+# Debian package build output (dpkg-buildpackage)
+debian/legion/
+debian/.debhelper/
+debian/files
+debian/debhelper-build-stamp
+debian/*.substvars
+debian/*.debhelper.log

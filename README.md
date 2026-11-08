@@ -2,273 +2,178 @@
 
 [![Known Vulnerabilities](https://snyk.io/test/github/Hackman238/legion/badge.svg?targetFile=requirements.txt)](https://snyk.io/test/github/Hackman238/legion?targetFile=requirements.txt)
 [![Maintainability](https://api.codeclimate.com/v1/badges/c2055fddab6b95642b6e/maintainability)](https://codeclimate.com/github/Hackman238/legion/maintainability)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 
 <p align="center">
   <img src="images/LegionBanner.png" alt="Legion banner">
 </p>
 
+Legion is a local-first, operator-guided reconnaissance and penetration testing platform. It imports or runs Nmap
+scans into a persistent project, correlates everything it learns about each host in a local evidence graph, and runs
+follow-up tooling through a governed scheduler: deterministic rules by default, with optional AI assistance from
+OpenAI, Claude, LM Studio or any OpenAI-compatible local server. Risky actions pass through engagement policy, risk
+classification and an explicit approval queue before anything runs, and every decision is audited in the project.
+
+The same orchestration core is exposed through a **web UI** (the primary interface), a **headless CLI** for
+automation, and an **MCP server** for AI agents. The original Qt desktop UI remains in the tree for compatibility.
+
 <p align="center">
   <img src="images/LegionScreenshot.png" alt="Legion web interface screenshot">
 </p>
 
-## NOTICE
-
-This is the active home of `LEGION`.
-
-`0.7.0` hardens that web-first foundation: the web runtime is split into clearer domains, high-risk execution paths are stricter, bundle restore/export fidelity is improved, workspace filtering is more useful on large engagements, and the first bundled pipettes provide repeatable aggregate checks for high-value service families.
-
-After upgrading, review tool paths and provider settings under `Settings`, especially if you customize Nmap, browsers/screenshot tooling, Responder, NTLMRelay, or AI providers.
-
-## ✨ About
-
-Legion is a local-first, operator-guided reconnaissance and penetration testing platform with deterministic and AI-assisted orchestration.
-
-It is MCP-enabled and supports governed deterministic and AI-assisted orchestration, project-based persistence, explicit approval gates, shared target state, evidence graphing, graph-backed reporting, and a web-first workflow for Kali and Ubuntu operators. AI providers supported include OpenAI, Claude and LM Studio. It also supports any local server that implements the OpenAI API.
-
-The web interface is now the primary interface. Qt remains in-tree for compatibility, but the main product direction is the shared web, headless, and MCP workflow built on the same orchestration core.
-
-## 🖥 Web Interface (Primary)
-
-Start the primary interface with:
-
-```shell
-python3 legion.py --web --web-port 5000
-```
-
-Useful web launch variants:
-
-```shell
-# Bind on all interfaces
-python3 legion.py --web --web-port 5000 --web-bind-all
-
-# Disable transparency effects on slower hosts
-python3 legion.py --web --web-port 5000 --web-opaque-ui
-```
-
-The web interface includes:
-
-- project create/open/save/export workflows
-- target import, Nmap XML import, and scan submission
-- governed scheduler settings and AI/provider configuration
-- live processes, retries, output viewing, and background jobs
-- host and service workspace views
-- host detail with notes, scripts, CVEs, screenshots, and contextual actions
-- graph workspace with filters, exports, layout management, floating/docked detail inspector, and contextual node actions
-- approval queue, submitted scans, scheduler decision history, and graph-backed reports
-- tool audit visibility for checking whether Legion can resolve the external tools it depends on
-
-## 🍿 What Legion Does
-
-- Imports and scans hosts, subnets, FQDNs, and Nmap XML into a persistent project workspace.
-- Correlates hosts, services, URLs, technologies, findings, screenshots, credentials, sessions, and evidence in a local graph.
-- Runs governed deterministic and AI-assisted follow-up actions from the same action model.
-- Applies engagement policy, risk classification, approval gates, and audit logging before risky execution.
-- Keeps operator-visible evidence, artifacts, screenshots, execution history, and graph annotations in-project.
-- Exposes the same orchestration path through the web UI, headless CLI, and MCP/API surfaces.
-
-## 🚀 0.7.0 Highlights
-
-- Domain route modules, service wrappers, typed schemas, and focused runtime modules continue the migration away from a monolithic web/runtime surface.
-- High-risk execution paths are stricter: bind-all behavior, public tool execution, approval idempotency, MCP state contracts, and provider secret storage were hardened.
-- Project bundle export/restore now preserves artifact fidelity more reliably, stages restored projects before swapping the active workspace, and rebases restored paths more consistently.
-- Workspace filtering now supports service/open-port filters, host-filtered graph views, service port visibility, improved host/service sync, and stronger OS/category enrichment for phones, Windows systems, and out-of-band management devices.
-- Bundled pipettes add repeatable aggregate checks for Cisco Smart Install, internal SMTP/SPF review, Windows SMB/RDP discovery, and IPMI/iDRAC/iLO discovery.
-- Runtime reliability improved across Nmap output isolation, screenshots, artifact cleanup, process/tool execution paths, and Responder/NTLMRelay workspaces.
-- Regression coverage expanded across routes, schemas, bundles, scheduler/approval flows, MCP, graph/reporting, workspace filters, pipettes, and tooling.
-
-## 🧰 Action And Tooling Coverage
-
-Legion 0.7.0 now has three useful coverage counts:
-
-- `289` normalized governed `ActionSpec` entries in the shared orchestrator registry.
-- `358` default loaded configured action entries after migrations:
-  - `46` scheduler mappings
-  - `287` port actions
-  - `11` host actions
-  - `14` port terminal launchers
-- `4` bundled pipettes for focused aggregate checks.
-
-Additional runtime integrations outside static `legion.conf` include:
-
-- normalized banner capture
-- browser/screenshot runner with Chromium / Selenium / EyeWitness fallback paths
-- Responder workspace integration
-- NTLMRelay workspace integration
-
-## 🧪 Pipette Flow
-
-Pipettes are bundled aggregate checks that appear in host, service, graph, and manual action menus when their manifest matches the selected target. They are not part of the default automated scheduler path unless explicitly promoted into a governed scheduler action. Solid green edges show the normal automated path; dashed amber edges show optional/manual pipette paths that require an operator action.
-
-```mermaid
-flowchart TD
-    classDef auto fill:#e8f5e9,stroke:#2e7d32,color:#102a13
-    classDef decision fill:#e3f2fd,stroke:#1565c0,color:#0d2f4f
-    classDef manual fill:#fff8e1,stroke:#f9a825,color:#3b2f00,stroke-dasharray:5 5
-    classDef approval fill:#ffebee,stroke:#c62828,color:#4a1111
-
-    A["Targets imported, restored, or scanned"] --> B["Nmap import and service inventory"]
-    B --> C["Shared target state and evidence graph"]
-    C --> D{"Scheduler enabled?"}
-    D -->|"yes"| E["Build target context"]
-    E --> F{"Policy and risk check"}
-    F -->|"safe automatic action"| G["Run governed scheduler action"]
-    F -->|"approval required"| H["Approval queue"]
-    H -->|"operator approves"| G
-    G --> I["Process tracking, artifacts, observations"]
-    I --> C
-    C --> J["Workspace views, graph, and reports"]
-
-    B -.->|"matching port or service"| P["Pipette appears in action menus"]
-    C -.->|"host, service, or graph selection"| P
-    P -.->|"operator runs pipette"| Q["Run through workspace tool runner"]
-    Q -.-> R{"Pipette risk boundary"}
-    R -.->|"read-only check"| I
-    R -.->|"proof or invasive step"| H
-
-    linkStyle default stroke:#2e7d32,stroke-width:2px
-    linkStyle 11,12,13,14,15,16 stroke:#f9a825,stroke-width:2px,stroke-dasharray:5 5
-    class A,B,C,E,G,I,J auto
-    class D,F,R decision
-    class H approval
-    class P,Q manual
-```
-
-## 🔌 Other Interfaces
-
-### Headless CLI
-
-Legion can also run headless for automation:
-
-```shell
-python3 legion.py --headless --input-file targets.txt --staged-scan --run-actions --output-file results.json
-```
-
-### MCP Server
-
-Legion can expose governed functionality over MCP:
-
-```shell
-python3 legion.py --mcp-server
-```
-
-The MCP surface covers project access, planning, approvals, graph queries, findings, state queries, execution traces, and report export through the same governed core used by the web interface.
-
-### Qt Compatibility
-
-Qt is still in-tree for compatibility and migration purposes, but it is no longer the primary documented path.
-
-## 🌉 Recommended Environments
-
-Legion is best supported today on recent Linux pentest/operator environments:
-
-- current Kali rolling releases
-- Ubuntu `22.04 LTS`
-- Ubuntu `24.04 LTS`
-
-Recommended baseline:
-
-- Python `3.12+`
-- a current Chromium or Firefox install for screenshot workflows
-- Nmap plus whichever local tools you want Legion to orchestrate (`nuclei`, `ffuf`, `whatweb`, `smbmap`, `enum4linux-ng`, `wpscan`, and similar)
-
-Legion is local-first by design. It does not require Docker, external databases, or remote services for its baseline workflow.
-
-## 💻 Installation
-
-### Quick Start From Source
+## Quick start
 
 ```shell
 git clone https://github.com/Hackman238/legion.git
 cd legion
-python3.12 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip -r requirements.txt
 python legion.py --web
 ```
 
-Open `http://127.0.0.1:5000` unless you used `--web-bind-all`.
+Then open <http://127.0.0.1:5000>. Scanning needs raw-socket access, so run Legion as root (or via `sudo`) when you
+want it to launch Nmap itself; importing existing Nmap XML works without it.
 
-### Kali Side-By-Side Dev Install
+Check which external tools Legion can find, and get an install script for the missing ones:
 
-To install a separate development copy on Kali, use:
+```shell
+python legion.py --tool-audit
+python legion.py --tool-install-plan kali      # or: ubuntu
+```
+
+## What it does
+
+- **Projects:** import targets, hostnames, subnets or Nmap XML into a single `.legion` project file; export and
+  restore complete project bundles including artifacts and screenshots.
+- **Evidence graph:** hosts, services, URLs, technologies, findings, CVEs, screenshots, credentials and sessions are
+  linked in-project and browsable in a graph workspace with filtering, layouts and exports.
+- **Governed follow-up:** deterministic and AI-assisted scheduling share one action model with nearly 300 governed
+  actions (Nmap scripts, `nuclei`, `ffuf`, `whatweb`, `enum4linux-ng`, `smbmap`, `wpscan` and many more), plus bundled
+  **pipettes** for focused aggregate checks. See [docs/pipettes.md](docs/pipettes.md).
+- **Safety first:** engagement presets, a risk taxonomy, approval gates, family-level pre-approval and a decision
+  audit log sit between the planner and every command.
+- **Operator workspace:** live process output, retries, kill controls, host notes, screenshots (EyeWitness with
+  Chromium/Firefox fallbacks), Responder and NTLMRelay capture sessions, and graph-backed reports.
+
+## Interfaces
+
+### Web UI (primary)
+
+```shell
+python legion.py --web                                # http://127.0.0.1:5000
+python legion.py --web --web-port 8080 --web-bind-all # listen on all interfaces
+python legion.py --web --web-transparent-ui           # enable translucent UI effects (opaque by default)
+```
+
+### Headless CLI
+
+```shell
+python legion.py --headless --input-file targets.txt --staged-scan --run-actions --output-file results.json
+```
+
+`--output-file` accepts `.json` (hosts, ports, services, scripts, notes, CVEs and screenshots) or `.legion` (a project
+file you can open in the UI). The process exits non-zero if the scan or import fails.
+
+### MCP server
+
+```shell
+python legion.py --mcp-server
+```
+
+Exposes project access, planning, approvals, graph and state queries, findings, execution traces and report export
+over MCP, through the same governed core as the web UI.
+
+### Qt desktop (compatibility)
+
+```shell
+python legion.py
+```
+
+Kept for migration purposes; new features land in the web UI first.
+
+## Installation
+
+### Supported environments
+
+- Kali Linux (current rolling release), Ubuntu 22.04 LTS or 24.04 LTS
+- Python 3.12 or newer
+- Nmap, plus whichever tools you want Legion to orchestrate (`--tool-audit` lists them)
+- Chromium or Firefox for screenshots
+
+Legion is local-first: no Docker, external database or remote service is required.
+
+### From source
+
+Follow the [Quick start](#quick-start) above. Re-run `pip install -r requirements.txt` after pulling updates.
+
+### Kali side-by-side install
+
+Installs a self-contained copy under `~/.local/opt/legion-web-dev` with its own virtualenv and data directory, a
+`legion` launcher in `~/.local/bin`, and root-owned `legion-web` / `legion-web-dev` launchers in `/usr/bin` (the
+installer prompts for `sudo` for those). Re-running it updates the checkout in place.
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/Hackman238/legion/master/scripts/install-kali-side-by-side.sh | bash
-```
-
-This creates:
-
-- source checkout and venv under `~/.local/opt/legion-web-dev`
-- isolated Legion data/config under `~/.local/share/legion-web-dev`
-- user launcher `~/.local/bin/legion`
-- system launchers `/usr/bin/legion-web` and `/usr/bin/legion-web-dev`
-
-The installer will prompt for `sudo` when it refreshes the system launchers. It also removes the old user-local `legion-web-dev` alias so `pkexec legion-web-dev` resolves to the root-owned launcher instead of a writable wrapper.
-
-Re-running the installer fetches the latest branch with git, resets the checkout in place, recreates the venv, refreshes the launchers, and keeps the `pkexec` path clean.
-
-Recommended way to launch the side-by-side install:
-
-```shell
 legion
 ```
 
-If you want to run it manually from the checkout:
+### Docker
 
-```shell
-cd ~/.local/opt/legion-web-dev
-source ~/.local/opt/legion-web-dev/.venv/bin/activate
-python legion.py --web
-```
+A `Dockerfile` is included for local builds (`docker build -t legion .`). Pre-built images are not published.
 
-## 🏗 Development
+## Configuration
 
-### Command Line Flags
+| What | Where |
+| --- | --- |
+| Runtime data, projects, logs | `${LEGION_HOME:-~/.local/share/legion}` |
+| Action mappings (scheduler, port and host actions, terminal launchers) | `${LEGION_HOME}/legion.conf` |
+| Scheduler and AI provider preferences | `${LEGION_HOME}/scheduler-ai.json` |
+| API keys | OS keyring or encrypted local store, never the JSON file; `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `SHODAN_API_KEY`, `CHAOS_API_KEY` and `GRAYHATWARFARE_API_KEY` are also honoured |
+| Tool paths, providers, engagement policy | **Settings** in the web UI |
+
+Exploit-DB references for vulners CVEs are looked up offline from the bundled `pyexploitdb` data; run
+`python primeExploitDb.py` to fetch or refresh that data (this is the only step that needs network access).
+
+## Command-line reference
 
 | Option | Description |
 | --- | --- |
-| `--web` | Run Legion with the web interface. |
-| `--web-port` | Set the web interface port. Default: `5000`. |
-| `--web-bind-all` | Bind the web interface to `0.0.0.0` instead of `127.0.0.1`. |
-| `--web-opaque-ui` | Disable transparent UI effects for better responsiveness on slower hosts. |
-| `--tool-audit` | Print an external tool availability audit and exit. |
-| `--headless` | Run Legion in headless CLI mode. |
-| `--mcp-server` | Start the MCP server for external automation / AI integration. |
-| `--input-file` | Path to a text file of targets for headless mode. |
-| `--discovery` | Enable host discovery in headless mode. |
-| `--staged-scan` | Run staged Nmap scanning in headless mode. |
-| `--output-file` | Export headless results to `.legion` or `.json`. |
-| `--run-actions` | Run configured scripted actions / automated attacks after scan or import in headless mode. |
+| `--web` | Run the web interface. |
+| `--web-port PORT` | Web interface port (default `5000`). |
+| `--web-bind-all` | Bind to `0.0.0.0` instead of `127.0.0.1`. |
+| `--web-transparent-ui` | Enable translucent UI effects (the UI is opaque by default). |
+| `--headless` | Run without a UI, driven by the options below. |
+| `--input-file FILE` | Text file of targets, one per line (IPs, subnets, hostnames, URLs). |
+| `--discovery` | Enable host discovery (headless). |
+| `--staged-scan` | Run the staged Nmap scan profile (headless). |
+| `--run-actions` | Run configured scripted actions after the scan or import (headless). |
+| `--output-file FILE` | Export headless results to `.legion` or `.json`. |
+| `--mcp-server` | Start the MCP server. |
+| `--tool-audit` | Print which external tools can be resolved, then exit. |
+| `--tool-install-plan {kali,ubuntu}` | Print an install script for the missing tools, then exit. |
+| `--tool-install {kali,ubuntu}` | Run that install plan, then exit. |
 
-### Configuration Notes
+## What's new
 
-- Legion stores its runtime data under `${LEGION_HOME:-~/.local/share/legion}`.
-- Scheduler AI preferences live at `${LEGION_HOME:-~/.local/share/legion}/scheduler-ai.json`, but provider and integration API keys are stored outside that JSON via the local secret store when available.
-- Supported secret inputs can also come from environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `SHODAN_API_KEY`, `CHAOS_API_KEY`, and `GRAYHATWARFARE_API_KEY`.
-- The checked-in action mappings still live in `legion.conf`.
-- Tool paths, providers, and runtime behavior can be reviewed from the web UI under `Settings`.
+Version 0.7.1 is a stability release: it fixes the desktop UI failing to start and crashing on exit, several data-loss
+paths around *Save As* and Nmap imports, a per-host report that included other hosts' findings and credentials, and a
+long list of web runtime, scheduler and importer bugs. See [CHANGELOG.txt](CHANGELOG.txt) for the full list.
 
-To modify the action mappings directly:
-
-```shell
-sudoedit "${LEGION_HOME:-~/.local/share/legion}/legion.conf"
-```
-
-### Running Tests
-
-To run the full test suite:
+## Development
 
 ```shell
-python3 -m unittest
+python3 -m unittest            # or: python3 -m pytest tests
 ```
 
-## ⚖️ License
+The suite runs headless (`QT_QPA_PLATFORM=offscreen` is set by the tests that need Qt). Design notes live in
+[docs/](docs/); contribution guidelines are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Legion is licensed under the GNU General Public License v3.0. See
-[LICENSE](https://github.com/Hackman238/legion/blob/master/LICENSE).
+## License
 
-## ⭐️ Attribution
+Legion is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE).
+
+## Attribution
 
 - Fork based from <http://github.com/GoVanguard/legion> by Shane Scott.
 - Refactored Python 3 codebase, expanded feature set, and ongoing Legion development are credited to Hackman238 and sscottgvit.

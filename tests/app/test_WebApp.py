@@ -2039,7 +2039,8 @@ class WebAppTest(unittest.TestCase):
         body = response.get_data(as_text=True)
         self.assertIn('<body class="opaque-ui">', body)
         self.assertIn("<h1>LEGION</h1>", body)
-        self.assertIn("v0.7.0", body)
+        from app.ApplicationInfo import applicationInfo
+        self.assertIn(f"v{applicationInfo['version']}", body)  # the version chip tracks ApplicationInfo
         self.assertIn("Localhost only", body)
         self.assertNotIn("Web Console", body)
         self.assertIn("Graph Workspace", body)
