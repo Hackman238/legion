@@ -185,7 +185,7 @@
                 <div class="ribbon-lower-row">
                     <div class="ribbon-group ribbon-project-group" aria-label="Project summary">
                         <div class="ribbon-project-header">
-                            <h2>Project</h2>
+                            <h2>Workspace</h2>
                             <p id="project-name">{{ snapshot.project.name }}</p>
                         </div>
                         <div class="ribbon-project-body">
@@ -257,11 +257,11 @@
                             <strong id="stat-services" class="ribbon-stat-value">{{ snapshot.summary.services }}</strong>
                         </div>
                         <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Running Jobs</span>
+                            <span class="ribbon-stat-label">Running Processes</span>
                             <strong id="stat-running" class="ribbon-stat-value">{{ snapshot.summary.running_processes }}</strong>
                         </div>
                         <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Finished Jobs</span>
+                            <span class="ribbon-stat-label">Finished Processes</span>
                             <strong id="stat-finished" class="ribbon-stat-value">{{ snapshot.summary.finished_processes }}</strong>
                         </div>
                     </div>
@@ -877,6 +877,16 @@
         <div class="panel-header">
             <h2>Host Detail</h2>
             <p id="host-detail-name"></p>
+            <button id="host-detail-copy-ip" class="icon-btn" type="button" title="Copy IP address" aria-label="Copy IP address" hidden>
+                <i class="fa-solid fa-copy" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div id="host-detail-note-block" class="host-detail-note" hidden>
+            <label>
+                Operator note
+                <textarea id="host-detail-note" rows="2" placeholder="Context, credentials found, next steps..."></textarea>
+            </label>
+            <button id="host-detail-save-note-button" type="button">Save Note</button>
         </div>
         <div class="table-wrap">
             <table>
@@ -899,8 +909,7 @@
             <table>
                 <thead>
                 <tr>
-                    <th>Script DB ID</th>
-                    <th>Script ID</th>
+                    <th>Script</th>
                     <th>Output</th>
                     <th>Action</th>
                 </tr>
@@ -912,11 +921,11 @@
             <table>
                 <thead>
                 <tr>
-                    <th>CVE ID</th>
-                    <th>Name</th>
+                    <th>CVE</th>
                     <th>Severity</th>
                     <th>Product</th>
-                    <th>URL</th>
+                    <th>Exploit</th>
+                    <th>Reference</th>
                     <th>Action</th>
                 </tr>
                 </thead>
