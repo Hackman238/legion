@@ -85,7 +85,7 @@ class ProcessRepositoryTest(unittest.TestCase):
         from db.entities.processOutput import process_output
 
         expected_process: process = MagicMock()
-        process.status = 'Running'
+        expected_process.status = 'Running'  # never assign to the ORM class: it breaks the mapping for later tests
         expected_process_output: process_output = MagicMock()
         mock_query = MagicMock()
         mock_query.filter_by.return_value = mockFirstBySideEffect([expected_process, expected_process_output])

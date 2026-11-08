@@ -1,6 +1,6 @@
 import datetime
 import json
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import text
 
@@ -180,6 +180,43 @@ def _host_matches_node(node: Dict[str, Any], host_id: int, host_ip: str) -> bool
     return False
 
 
+# Node types keyed project-wide rather than per host (see app.scheduler.graph); several hosts can link to
+# the same node, so a host report includes them but does not expand through them. Host-type nodes that are
+# not the reported host (e.g. pivot targets) are treated the same way.
+_REPORT_HUB_NODE_TYPES = frozenset({
+    "scope",
+    "subnet",
+    "fqdn",
+    "host",
+    "cve",
+    "cpe",
+    "identity",
+    "exploit_reference",
+})
+# Global reference data hanging off a hub that still describes the host's own hub (CVE -> exploit).
+_REPORT_HUB_REFERENCE_NODE_TYPES = frozenset({"exploit_reference"})
+
+
+def _node_type(node: Dict[str, Any]) -> str:
+    return str(node.get("type", "") or "").strip().lower()
+
+
+def _is_report_hub_node(node: Dict[str, Any]) -> bool:
+    return _node_type(node) in _REPORT_HUB_NODE_TYPES
+
+
+def _node_owned_by_other_host(node: Dict[str, Any], own_host_ids: Set[int], host_ip: str) -> bool:
+    properties = node.get("properties", {}) if isinstance(node.get("properties", {}), dict) else {}
+    node_host_id = _safe_int(properties.get("host_id", 0), 0)
+    if node_host_id > 0:
+        return node_host_id not in own_host_ids
+    if _node_type(node) == "host":
+        # Other host nodes (pivot targets etc.) are hubs: kept as leaves, never expanded.
+        return False
+    node_ip = str(properties.get("ip", "") or "").strip()
+    return bool(node_ip and host_ip and node_ip != str(host_ip).strip())
+
+
 def _filter_graph_snapshot(snapshot: Dict[str, Any], host_id: int = 0, host_ip: str = "") -> Dict[str, Any]:
     if int(host_id or 0) <= 0 and not str(host_ip or "").strip():
         return {
@@ -190,24 +227,46 @@ def _filter_graph_snapshot(snapshot: Dict[str, Any], host_id: int = 0, host_ip: 
 
     nodes = [item for item in list(snapshot.get("nodes", []) or []) if isinstance(item, dict)]
     edges = [item for item in list(snapshot.get("edges", []) or []) if isinstance(item, dict)]
-    included = {
-        str(item.get("node_id", "") or "")
-        for item in nodes
+    nodes_by_id = {str(item.get("node_id", "") or ""): item for item in nodes if str(item.get("node_id", "") or "")}
+    seeds = {
+        node_id
+        for node_id, item in nodes_by_id.items()
         if _host_matches_node(item, int(host_id or 0), str(host_ip or ""))
     }
-    changed = True
-    while changed:
-        changed = False
-        for edge in edges:
-            from_id = str(edge.get("from_node_id", "") or "")
-            to_id = str(edge.get("to_node_id", "") or "")
-            if from_id in included or to_id in included:
-                if from_id and from_id not in included:
-                    included.add(from_id)
-                    changed = True
-                if to_id and to_id not in included:
-                    included.add(to_id)
-                    changed = True
+    own_host_ids = {int(host_id)} if int(host_id or 0) > 0 else {
+        _safe_int((nodes_by_id[node_id].get("properties", {}) or {}).get("host_id", 0), 0)
+        for node_id in seeds
+        if isinstance(nodes_by_id[node_id].get("properties", {}), dict)
+    } - {0}
+    adjacency: Dict[str, List[str]] = {}
+    for edge in edges:
+        from_id = str(edge.get("from_node_id", "") or "")
+        to_id = str(edge.get("to_node_id", "") or "")
+        if from_id and to_id:
+            adjacency.setdefault(from_id, []).append(to_id)
+            adjacency.setdefault(to_id, []).append(from_id)
+
+    # Walk outward from the host's own nodes. Nodes owned by another host are never entered, and
+    # shared hubs (scope, subnet, CVE, identity, other host nodes, ...) are included but not walked
+    # through, otherwise host -> subnet -> scope -> other subnets -> other hosts pulls in the whole project.
+    included = set(seeds)
+    pending = list(seeds)
+    while pending:
+        current_id = pending.pop()
+        for neighbor_id in adjacency.get(current_id, []):
+            if neighbor_id in included or neighbor_id not in nodes_by_id:
+                continue
+            neighbor = nodes_by_id[neighbor_id]
+            if _node_owned_by_other_host(neighbor, own_host_ids, str(host_ip or "")):
+                continue
+            included.add(neighbor_id)
+            if _is_report_hub_node(neighbor):
+                for reference_id in adjacency.get(neighbor_id, []):
+                    reference = nodes_by_id.get(reference_id)
+                    if reference is not None and _node_type(reference) in _REPORT_HUB_REFERENCE_NODE_TYPES:
+                        included.add(reference_id)
+                continue
+            pending.append(neighbor_id)
     filtered_nodes = [item for item in nodes if str(item.get("node_id", "") or "") in included]
     filtered_edges = [
         item for item in edges
@@ -732,7 +791,9 @@ def build_host_report(
         host_row: Dict[str, Any],
         engagement_policy: Optional[Dict[str, Any]] = None,
         project_metadata: Optional[Dict[str, Any]] = None,
+        graph_snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    # Cheap after the first call per database (see app.scheduler.schema_cache).
     ensure_scheduler_target_state_table(database)
     ensure_scheduler_execution_table(database)
     ensure_scheduler_graph_tables(database)
@@ -743,18 +804,19 @@ def build_host_report(
     host_id = _safe_int(resolved_host.get("id", 0), 0)
     host_ip = str(resolved_host.get("ip", "") or "")
     target_state = get_target_state(database, host_id) or {}
-    graph_snapshot = _filter_graph_snapshot(get_evidence_graph_snapshot(database), host_id=host_id, host_ip=host_ip)
-    all_executions = list_execution_records(database, limit=1000)
+    if not isinstance(graph_snapshot, dict):
+        graph_snapshot = get_evidence_graph_snapshot(database)
+    graph_snapshot = _filter_graph_snapshot(graph_snapshot, host_id=host_id, host_ip=host_ip)
     executions = [
-        item for item in list(all_executions or [])
-        if isinstance(item, dict) and str(item.get("host_ip", "") or "") == host_ip
+        item for item in list(list_execution_records(database, limit=1000, host_ip=host_ip) or [])
+        if isinstance(item, dict)
     ]
     decisions = _load_audit_rows(database, host_ip=host_ip, limit=1200)
     cves = _load_cves(database, host_id=host_id)
     notes = _load_notes(database, host_id=host_id)
     approvals = [
-        item for item in list(list_pending_approvals(database, limit=400, status="pending") or [])
-        if isinstance(item, dict) and str(item.get("host_ip", "") or "") == host_ip
+        item for item in list(list_pending_approvals(database, limit=400, status="pending", host_ip=host_ip) or [])
+        if isinstance(item, dict)
     ]
     findings = _build_findings_section(resolved_host, target_state, cves, graph_snapshot)
     credentials_and_sessions = _build_credentials_section(target_state, graph_snapshot)
@@ -840,16 +902,17 @@ def build_project_report(
     ensure_scheduler_approval_table(database)
 
     hosts = [dict(item) for item in list(host_inventory or []) if isinstance(item, dict)]
+    graph_snapshot = get_evidence_graph_snapshot(database)
     host_reports = [
         build_host_report(
             database,
             host_row=item,
             engagement_policy=engagement_policy,
             project_metadata=project_metadata,
+            graph_snapshot=graph_snapshot,
         )
         for item in hosts
     ]
-    graph_snapshot = get_evidence_graph_snapshot(database)
     executions = list_execution_records(database, limit=1000)
     decisions = _load_audit_rows(database, limit=2000)
     approvals = list_pending_approvals(database, limit=600, status="pending")

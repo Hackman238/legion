@@ -32,7 +32,7 @@ class serviceObj(Base):
     version = Column(String)
     extrainfo = Column(String)
     fingerprint = Column(String)
-    hostId = Column(String, ForeignKey('hostObj.id'))
+    hostId = Column(String, ForeignKey('hostObj.id'), index=True)
     port = relationship(portObj)
     cves = relationship(cve)
     application = relationship(appObj)

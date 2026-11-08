@@ -418,6 +418,7 @@ if __name__ == "__main__":
 
         # Run nmap scan if requested
         nmap_xml = None
+        nmap_failed = False
         if args.staged_scan or args.discovery:
             # Build targets string for nmap (space-separated)
             targets = []
@@ -428,20 +429,29 @@ if __name__ == "__main__":
                         targets.append(t)
             targets_str = " ".join(targets)
             output_prefix = os.path.join(logic.activeProject.properties.runningFolder, f"cli-nmap-{int(time.time())}")
-            nmap_xml = run_nmap_scan(
-                targets_str,
-                output_prefix,
-                discovery=args.discovery,
-                staged=args.staged_scan
-            )
-            # Import nmap XML results into the project
-            import_nmap_xml_into_project(
-                project=logic.activeProject,
-                xml_path=nmap_xml,
-                output="",
-                update_progress_observable=None,
-                host_repository=hostRepository,
-            )
+            try:
+                nmap_xml = run_nmap_scan(
+                    targets_str,
+                    output_prefix,
+                    discovery=args.discovery,
+                    staged=args.staged_scan
+                )
+                if nmap_xml is None:
+                    # run_nmap_scan already printed nmap's error; keep the imported targets and still export.
+                    nmap_failed = True
+                    print("Error: nmap scan failed; skipping nmap import.", file=sys.stderr)
+                else:
+                    # Import nmap XML results into the project
+                    import_nmap_xml_into_project(
+                        project=logic.activeProject,
+                        xml_path=nmap_xml,
+                        output="",
+                        update_progress_observable=None,
+                        host_repository=hostRepository,
+                    )
+            except Exception as exc:  # e.g. nmap not installed, or an unreadable XML report
+                nmap_failed = True
+                print(f"Error: nmap scan/import failed: {exc}", file=sys.stderr)
 
         # Run scripted actions/automated attacks if requested
         if args.run_actions:
@@ -455,69 +465,8 @@ if __name__ == "__main__":
                 # Export directly from the current activeProject (no temp .legion file)
                 import json
                 import base64
-                hostRepository = logic.activeProject.repositoryContainer.hostRepository
-                hosts = hostRepository.getAllHostObjs()
-                hosts_data = []
-                for host in hosts:
-                    host_dict = host.__dict__.copy()
-                    host_dict.pop('_sa_instance_state', None)
-                    # Ports/services for this host
-                    try:
-                        ports = logic.activeProject.repositoryContainer.portRepository.getPortsByHostId(host.id)
-                    except Exception:
-                        ports = []
-                    ports_data = []
-                    for port in ports:
-                        port_dict = port.__dict__.copy()
-                        port_dict.pop('_sa_instance_state', None)
-                        # Service for this port
-                        try:
-                            service = (
-                                logic.activeProject.repositoryContainer.serviceRepository.getServiceById(port.serviceId)
-                                if hasattr(port, 'serviceId') and port.serviceId
-                                else None
-                            )
-                        except Exception:
-                            service = None
-                        if service:
-                            service_dict = service.__dict__.copy()
-                            service_dict.pop('_sa_instance_state', None)
-                            port_dict['service'] = service_dict
-                        # Scripts for this port
-                        try:
-                            scripts = (
-                                logic.activeProject.repositoryContainer.scriptRepository.getScriptsByPortId(port.id)
-                                if hasattr(logic.activeProject.repositoryContainer, 'scriptRepository')
-                                else []
-                            )
-                        except Exception:
-                            scripts = []
-                        scripts_data = []
-                        for script in scripts:
-                            script_dict = script.__dict__.copy()
-                            script_dict.pop('_sa_instance_state', None)
-                            scripts_data.append(script_dict)
-                        port_dict['scripts'] = scripts_data
-                        ports_data.append(port_dict)
-                    host_dict['ports'] = ports_data
-                    # Notes for this host
-                    try:
-                        note = logic.activeProject.repositoryContainer.noteRepository.getNoteByHostId(host.id)
-                        host_dict['note'] = note.text if note else ""
-                    except Exception:
-                        host_dict['note'] = ""
-                    # CVEs for this host
-                    try:
-                        cves = logic.activeProject.repositoryContainer.cveRepository.getCVEsByHostIP(host.ip)
-                    except Exception:
-                        cves = []
-                    cves_data = []
-                    for cve in cves:
-                        cve_dict = cve.__dict__.copy()
-                        cve_dict.pop('_sa_instance_state', None)
-                        cves_data.append(cve_dict)
-                    host_dict['cves'] = cves_data
-                    hosts_data.append(host_dict)
+                from app.cli_utils import build_hosts_export
+                hosts_data = build_hosts_export(logic.activeProject.database)
                 # Gather screenshots
                 screenshots_dir = os.path.join(logic.activeProject.properties.outputFolder, "screenshots")
                 screenshots_data = {}
@@ -540,7 +489,29 @@ if __name__ == "__main__":
                 print(f"Exported results as JSON to {args.output_file}")
             elif args.output_file.endswith(".legion"):
                 # Save project as .legion file
-                projectManager.saveProjectAs(logic.activeProject, args.output_file, replace=1, projectType="legion")
+                saved_project = projectManager.saveProjectAs(
+                    logic.activeProject, args.output_file, replace=1, projectType="legion"
+                )
+                if not saved_project:
+                    print(f"Error: failed to export project to {args.output_file}", file=sys.stderr)
+                    sys.exit(1)
+                # saveProjectAs reopens the project at the new path; use that project from here on and
+                # release the source database (nothing else is running in headless mode at this point).
+                previous_project = logic.activeProject
+                previous_database = getattr(previous_project, "database", None)
+                logic.activeProject = saved_project
+                if previous_database is not None and previous_database is not saved_project.database:
+                    previous_database.dispose()
+                # saveProjectAs removed the temporary source database and copied its tool output, but its
+                # running folder (nmap XML written by this run) is only removed by closeProject, which
+                # headless mode never calls for the source project.
+                previous_running_folder = str(getattr(previous_project.properties, "runningFolder", "") or "")
+                if os.path.isdir(previous_running_folder) and os.path.realpath(previous_running_folder) != \
+                        os.path.realpath(str(saved_project.properties.runningFolder or "")):
+                    try:
+                        shell.remove_directory(previous_running_folder)
+                    except Exception as exc:
+                        startupLog.warning(f"Could not remove running folder {previous_running_folder}: {exc}")
                 print(f"Exported project as .legion to {args.output_file}")
             else:
                 print("Error: --output-file must end with .json or .legion", file=sys.stderr)
@@ -548,6 +519,16 @@ if __name__ == "__main__":
         else:
             print("No --output-file specified, skipping export.")
 
+        # Close the project as the GUI does on exit: this removes its running folder and, for a project
+        # that was never exported as .legion, the temporary database and tool output folder.
+        try:
+            projectManager.closeProject(logic.activeProject)
+        except Exception as exc:
+            startupLog.warning(f"Could not clean up the headless project: {exc}")
+
+        if nmap_failed:
+            print("Headless Legion run finished with errors (nmap scan/import failed).", file=sys.stderr)
+            sys.exit(1)
         print("Headless Legion run complete.")
         sys.exit(0)
 
@@ -626,6 +607,8 @@ if __name__ == "__main__":
                 controller.screenshooter.wait(3000)
         except Exception as e:
             startupLog.error(f"Error during QThread shutdown: {e}")
+        # Stopping the loop makes run_forever() return, and the teardown below then runs; exiting
+        # straight from here would leave the window tree alive past the QApplication and segfault.
         try:
             loop.stop()
         except Exception:
@@ -634,13 +617,18 @@ if __name__ == "__main__":
             app.quit()
         except Exception:
             pass
-        sys.exit(0)
 
     signal.signal(signal.SIGINT, graceful_shutdown)
     signal.signal(signal.SIGTERM, graceful_shutdown)
 
     startupLog.info("Legion started successfully.")
+    exit_code = 0
     try:
-        sys.exit(loop.run_forever())
+        exit_code = loop.run_forever() or 0
     except KeyboardInterrupt:
         graceful_shutdown()
+    finally:
+        # Destroy the Qt object tree while the QApplication still exists; see ui/qt_shutdown.py.
+        from ui.qt_shutdown import destroy_main_window
+        destroy_main_window(MainWindow, app)
+    sys.exit(exit_code)

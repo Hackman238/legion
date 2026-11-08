@@ -33,7 +33,7 @@ class cve(Base):
     exploit = Column(String)
     exploitUrl = Column(String)
     serviceId = Column(String, ForeignKey('serviceObj.id'))
-    hostId = Column(String, ForeignKey('hostObj.id'))
+    hostId = Column(String, ForeignKey('hostObj.id'), index=True)
 
     def __init__(self, name, url, product, hostId, severity='', source='', version='', exploitId=0, exploit='',
                  exploitUrl=''):

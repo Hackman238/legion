@@ -16,6 +16,20 @@ from db.entities.l1script import l1ScriptObj
 
 _PROCESS_READER_EXIT_GRACE_SECONDS = 2.0
 _PROCESS_CRASH_MIN_RUNTIME_SECONDS = 5.0
+_PARTIAL_OUTPUT_FLUSH_MIN_SECONDS = 0.5
+_PARTIAL_OUTPUT_FLUSH_MAX_SECONDS = 5.0
+
+
+def _is_signal_exit(code: int) -> bool:
+    # Negative: Popen saw the signal directly; 128+N: a wrapping shell reported a signalled child.
+    return code < 0 or 128 <= code <= 192
+
+
+def _partial_output_flush_interval(output_length: int) -> float:
+    # Each partial flush rewrites the whole accumulated output, so back off as it grows:
+    # 0.5s up to 64 KiB, then +0.5s per additional 64 KiB, capped at 5s.
+    extra_steps = max(0, int(output_length or 0)) // 65536
+    return min(_PARTIAL_OUTPUT_FLUSH_MAX_SECONDS, _PARTIAL_OUTPUT_FLUSH_MIN_SECONDS * (1 + extra_steps))
 
 
 class _TrackedProcessStub:
@@ -58,7 +72,13 @@ def run_command_with_tracking(
         timeout: int,
         job_id: int = 0,
         return_metadata: bool = False,
+        on_process_created=None,
 ) -> Any:
+    """Run a tool command with process-table tracking.
+
+    on_process_created(process_id), if given, is called as soon as the process row exists, so callers
+    without a job id can still find (and kill) the process while it runs.
+    """
     with runtime._lock:
         project = runtime._require_active_project()
         runtime._ensure_process_tables()
@@ -82,6 +102,12 @@ def run_command_with_tracking(
         with runtime._lock:
             runtime._ensure_process_tables()
         process_id = int(process_repo.storeProcess(stub) or 0)
+
+    if process_id > 0 and callable(on_process_created):
+        try:
+            on_process_created(int(process_id))
+        except Exception:
+            pass
 
     if process_id <= 0:
         failed_result = (False, "error: failed to create process record", 0)
@@ -155,10 +181,23 @@ def run_command_with_tracking(
         except (TypeError, ValueError):
             return "Problem"
 
-        signal_terminated = code < 0 or 128 <= code <= 192
-        if signal_terminated and float(runtime_seconds) >= float(_PROCESS_CRASH_MIN_RUNTIME_SECONDS):
+        if _is_signal_exit(code) and float(runtime_seconds) >= float(_PROCESS_CRASH_MIN_RUNTIME_SECONDS):
             return "Crashed"
         return "Problem"
+
+    def _was_killed_externally(returncode_value) -> bool:
+        # kill_process (HTTP thread) may signal and reap the process itself, so the loop above never
+        # sees it running with a kill request: recognise that kill from the request or the stored status.
+        # The exit code is deliberately not consulted: a tool that handles SIGTERM may exit 0 or 1, and a
+        # kill request is only ever recorded for a process that was still running when the user asked.
+        _ = returncode_value
+        with runtime._process_runtime_lock:
+            if int(process_id) in runtime._kill_requests:
+                return True
+        try:
+            return bool(process_repo.isKilledProcess(str(process_id)))
+        except Exception:
+            return False
 
     def _reader(pipe):
         try:
@@ -202,20 +241,32 @@ def run_command_with_tracking(
             pass
 
     try:
+        # The process may have been killed while it was still "Waiting" (no live handle yet).
+        if process_repo.isKilledProcess(str(process_id)):
+            process_repo.storeProcessOutput(str(process_id), "[killed before start]")
+            return _build_result(False, "killed", int(process_id))
         proc = subprocess.Popen(
             command,
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            # Tools emit arbitrary bytes; a strict decode error would kill the reader (and the tool, via SIGPIPE).
+            errors="replace",
             bufsize=1,
             start_new_session=(os.name != "nt"),
             env=build_tool_execution_env(),
         )
-        process_repo.storeProcessRunningStatus(str(process_id), str(proc.pid))
         with runtime._process_runtime_lock:
             runtime._active_processes[int(process_id)] = proc
             runtime._kill_requests.discard(int(process_id))
+        # Registered above, so a kill from now on finds the live handle. A kill that landed between the
+        # pre-start check and registration only marked the row Killed: honour it instead of overwriting it.
+        if process_repo.isKilledProcess(str(process_id)):
+            with runtime._process_runtime_lock:
+                runtime._kill_requests.add(int(process_id))
+        else:
+            process_repo.storeProcessRunningStatus(str(process_id), str(proc.pid))
         if quiet_long_running:
             last_process_activity = runtime._sample_process_tree_activity(proc)
 
@@ -247,8 +298,10 @@ def run_command_with_tracking(
                 last_output_at = now
                 last_activity_at = now
             if changed and now >= flush_due_at:
-                runtime._write_process_output_partial(int(process_id), "".join(output_parts))
-                flush_due_at = now + 0.5
+                partial_output = "".join(output_parts)
+                output_parts[:] = [partial_output]
+                runtime._write_process_output_partial(int(process_id), partial_output)
+                flush_due_at = now + _partial_output_flush_interval(len(partial_output))
 
             if quiet_long_running and now >= activity_sample_due_at and proc.poll() is None:
                 current_activity = runtime._sample_process_tree_activity(proc)
@@ -342,6 +395,8 @@ def run_command_with_tracking(
         combined_output = "".join(output_parts)
         runtime_seconds = max(0.0, float((process_exited_at or time.monotonic()) - started_at))
         allowed_exit_codes = AppSettings.allowed_nonzero_exit_codes(str(tool_name or ""))
+        if not timed_out and not killed and _was_killed_externally(proc.returncode):
+            killed = True
         if timed_out:
             combined_output += f"\n[{timeout_reason}]"
             process_repo.storeProcessProblemStatus(str(process_id))
@@ -413,14 +468,14 @@ def write_process_output_partial(runtime, process_id: int, output_text: str):
         runtime._ensure_process_tables()
         session = project.database.session()
         try:
-            session.execute(text(
-                "INSERT INTO process_output (processId, output) "
-                "SELECT :process_id, '' "
-                "WHERE NOT EXISTS (SELECT 1 FROM process_output WHERE processId = :process_id)"
-            ), {"process_id": int(process_id)})
-            session.execute(text(
+            params = {"process_id": int(process_id), "output": str(output_text)}
+            updated = session.execute(text(
                 "UPDATE process_output SET output = :output WHERE processId = :process_id"
-            ), {"process_id": int(process_id), "output": str(output_text)})
+            ), params)
+            if not int(getattr(updated, "rowcount", 0) or 0):
+                session.execute(text(
+                    "INSERT INTO process_output (processId, output) VALUES (:process_id, :output)"
+                ), params)
             session.commit()
         except Exception:
             session.rollback()
@@ -451,8 +506,7 @@ def save_script_result_if_missing(runtime, host_ip: str, port: str, protocol: st
             if str(getattr(existing, "scriptId", "")) == str(tool_id):
                 return
 
-        process_output = runtime.get_process_output(int(process_id))
-        output_text = str(process_output.get("output", "") or "")
+        output_text = str(runtime.get_process_output_text(int(process_id)) or "")
 
         session = project.database.session()
         try:

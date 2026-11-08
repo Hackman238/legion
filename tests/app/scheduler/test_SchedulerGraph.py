@@ -17,7 +17,7 @@ from app.scheduler.graph import (
     upsert_graph_layout_state,
 )
 from app.scheduler.models import ExecutionRecord, PlanStep
-from app.scheduler.state import upsert_target_state
+from app.scheduler.state import get_target_state, upsert_target_state
 from app.shell.DefaultShell import DefaultShell
 from db.RepositoryFactory import RepositoryFactory
 from db.entities.cve import cve
@@ -425,6 +425,364 @@ class SchedulerEvidenceGraphTest(unittest.TestCase):
             self.assertTrue(annotation["annotation_id"])
         finally:
             project_manager.closeProject(project)
+
+    def test_single_host_rebuild_only_resyncs_that_hosts_executions(self):
+        from unittest.mock import patch
+        from app.scheduler import graph as graph_module
+
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            host_a = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="alpha.local", status="up")
+            host_b = hostObj(ip="10.0.1.7", ipv4="10.0.1.7", hostname="bravo.local", status="up")
+            session.add(host_a)
+            session.add(host_b)
+            session.commit()
+            host_a_id = int(host_a.id)
+            session.close()
+
+            for host_ip in ("10.0.0.5", "10.0.1.7"):
+                step = PlanStep.from_legacy_fields(
+                    tool_id="whatweb",
+                    label="WhatWeb",
+                    command_template="whatweb [IP]",
+                    protocol="tcp",
+                    score=100.0,
+                    rationale="fingerprint",
+                    mode="deterministic",
+                    goal_profile="internal_asset_discovery",
+                    family_id="whatweb",
+                    target_ref={"host_ip": host_ip, "port": "80", "service": "http", "protocol": "tcp"},
+                )
+                record = ExecutionRecord.from_plan_step(
+                    step,
+                    started_at="2026-03-17T02:10:00Z",
+                    finished_at="2026-03-17T02:10:05Z",
+                    exit_status="completed",
+                    stdout_ref=f"process_output:{host_ip}",
+                )
+                store_execution_record(project.database, record, step=step, host_ip=host_ip, port="80", protocol="tcp", service="http")
+
+            real_sync = graph_module.sync_execution_record_to_evidence_graph
+            synced_hosts = []
+
+            def _recording_sync(database, **kwargs):
+                synced_hosts.append(kwargs.get("host_ip", ""))
+                return real_sync(database, **kwargs)
+
+            with patch.object(graph_module, "sync_execution_record_to_evidence_graph", side_effect=_recording_sync):
+                graph_module.rebuild_evidence_graph(project.database, host_id=host_a_id)
+                self.assertEqual(["10.0.0.5"], synced_hosts)
+
+                synced_hosts.clear()
+                graph_module.rebuild_evidence_graph(project.database, host_id=999999)
+                self.assertEqual([], synced_hosts)
+
+                synced_hosts.clear()
+                graph_module.rebuild_evidence_graph(project.database)
+                self.assertEqual(["10.0.0.5", "10.0.1.7"], sorted(synced_hosts))
+        finally:
+            project_manager.closeProject(project)
+
+    def test_host_sync_prunes_screenshot_and_artifact_nodes_removed_from_target_state(self):
+        from app.scheduler import graph as graph_module
+        from app.scheduler.state import modify_target_state
+
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="portal.local", status="up")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+            session.close()
+
+            upsert_target_state(project.database, host_id, {
+                "host_ip": "10.0.0.5",
+                "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https"}],
+                "screenshots": [
+                    {"artifact_ref": "/tmp/shots/portal-443.png", "filename": "portal-443.png", "port": "443", "protocol": "tcp"},
+                    {"artifact_ref": "/tmp/shots/portal-80.png", "filename": "portal-80.png", "port": "80", "protocol": "tcp"},
+                ],
+                "artifacts": [
+                    {"ref": "/tmp/shots/portal-443.png", "kind": "screenshot", "port": "443", "protocol": "tcp"},
+                    {"ref": "/tmp/scan.txt", "kind": "artifact", "port": "443", "protocol": "tcp"},
+                ],
+            })
+            before = get_evidence_graph_snapshot(project.database)
+            self.assertEqual(
+                {"portal-443.png", "portal-80.png"},
+                {item["label"] for item in before["nodes"] if item["type"] == "screenshot"},
+            )
+
+            # What app/web/runtime_artifacts.py does when a screenshot file is deleted.
+            def drop_port_443_screenshot(state):
+                state["screenshots"] = [item for item in state.get("screenshots", []) if item.get("port") != "443"]
+                state["artifacts"] = [item for item in state.get("artifacts", []) if item.get("ref") != "/tmp/shots/portal-443.png"]
+                return state
+
+            modify_target_state(project.database, host_id, drop_port_443_screenshot)
+            graph_module.rebuild_evidence_graph(project.database, host_id=host_id)
+
+            after = get_evidence_graph_snapshot(project.database)
+            self.assertEqual(["portal-80.png"], [item["label"] for item in after["nodes"] if item["type"] == "screenshot"])
+            self.assertEqual(["scan.txt"], [item["label"] for item in after["nodes"] if item["type"] == "artifact"])
+            node_ids = {item["node_id"] for item in after["nodes"]}
+            for edge in after["edges"]:
+                self.assertIn(edge["from_node_id"], node_ids)
+                self.assertIn(edge["to_node_id"], node_ids)
+            self.assertFalse([edge for edge in after["edges"] if edge["type"] == "captured" and "portal-443" in str(edge.get("source_ref", ""))])
+
+            session = project.database.session()
+            try:
+                stale_refs = session.execute(text(
+                    "SELECT COUNT(*) FROM graph_evidence_ref WHERE owner_id NOT IN (SELECT node_id FROM graph_node) "
+                    "AND owner_id NOT IN (SELECT edge_id FROM graph_edge)"
+                )).scalar()
+            finally:
+                session.close()
+            self.assertEqual(0, int(stale_refs or 0))
+        finally:
+            project_manager.closeProject(project)
+
+    def test_unchanged_resync_of_one_host_reports_no_mutations_on_shared_nodes(self):
+        from app.scheduler.graph import sync_target_state_to_evidence_graph
+
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            host_a = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="alpha.local", status="up")
+            host_b = hostObj(ip="10.0.0.6", ipv4="10.0.0.6", hostname="bravo.local", status="up")
+            session.add(host_a)
+            session.add(host_b)
+            session.commit()
+            host_a_id, host_b_id = int(host_a.id), int(host_b.id)
+            for host_id in (host_a_id, host_b_id):
+                # The same CVE/exploit on both hosts: cve and exploit nodes plus the supports_exploit edge are shared.
+                session.add(cve(
+                    name="CVE-2025-1234",
+                    url="https://example.test/CVE-2025-1234",
+                    product="nginx",
+                    hostId=str(host_id),
+                    severity="high",
+                    source="nmap",
+                    version="1.25",
+                    exploitId=7,
+                    exploit="ExploitDB #7",
+                    exploitUrl="https://exploit-db.test/exploits/7",
+                ))
+            session.commit()
+            session.close()
+
+            state_a = upsert_target_state(project.database, host_a_id, {
+                "host_ip": "10.0.0.5",
+                "hostname": "alpha.local",
+                "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https"}],
+            })
+            upsert_target_state(project.database, host_b_id, {
+                "host_ip": "10.0.0.6",
+                "hostname": "bravo.local",
+                "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https"}],
+            })
+
+            mutations = sync_target_state_to_evidence_graph(project.database, host_id=host_a_id, target_state=state_a)
+            self.assertEqual([], mutations)
+
+            snapshot = get_evidence_graph_snapshot(project.database)
+            subnet_nodes = [item for item in snapshot["nodes"] if item["type"] == "subnet"]
+            self.assertEqual(1, len(subnet_nodes))
+            # An equal-priority refresh that changes nothing else keeps the ref already stored.
+            self.assertEqual(f"host:{host_a_id}", subnet_nodes[0]["source_ref"])
+        finally:
+            project_manager.closeProject(project)
+
+    def test_partial_target_state_passed_to_sync_does_not_prune_discovered_nodes(self):
+        from app.scheduler.graph import sync_target_state_to_evidence_graph
+
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            host = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="portal.local", status="up")
+            session.add(host)
+            session.commit()
+            host_id = int(host.id)
+            session.close()
+
+            upsert_target_state(project.database, host_id, {
+                "host_ip": "10.0.0.5",
+                "hostname": "portal.local",
+                "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https"}],
+                "urls": [
+                    {"url": "https://portal.local/", "port": "443", "protocol": "tcp", "service": "https"},
+                    {"url": "https://portal.local/admin", "port": "443", "protocol": "tcp", "service": "https"},
+                ],
+                "screenshots": [
+                    {"artifact_ref": "/tmp/shots/portal-443.png", "filename": "portal-443.png", "port": "443", "protocol": "tcp"},
+                ],
+            })
+
+            def _labels(node_type):
+                snapshot = get_evidence_graph_snapshot(project.database)
+                return sorted(item["label"] for item in snapshot["nodes"] if item["type"] == node_type)
+
+            self.assertEqual(["https://portal.local", "https://portal.local/admin"], _labels("url"))
+            self.assertEqual(["portal-443.png"], _labels("screenshot"))
+
+            # A partial dict (no urls/screenshots keys) must not be read as "the host has none".
+            sync_target_state_to_evidence_graph(project.database, host_id=host_id, target_state={
+                "host_ip": "10.0.0.5",
+                "hostname": "portal.local",
+                "last_mode": "deterministic",
+            })
+            self.assertEqual(["https://portal.local", "https://portal.local/admin"], _labels("url"))
+            self.assertEqual(["portal-443.png"], _labels("screenshot"))
+
+            # The full stored state with the keys present (even empty) is authoritative.
+            full_state = dict(get_target_state(project.database, host_id))
+            full_state["screenshots"] = []
+            sync_target_state_to_evidence_graph(project.database, host_id=host_id, target_state=full_state)
+            self.assertEqual([], _labels("screenshot"))
+        finally:
+            project_manager.closeProject(project)
+
+
+class LegacyGraphTableUniqueKeyTest(unittest.TestCase):
+    def test_legacy_tables_get_unique_node_and_edge_keys(self):
+        import os
+        import tempfile
+        from sqlalchemy import create_engine
+        from sqlalchemy.exc import IntegrityError
+        from sqlalchemy.orm import sessionmaker
+        from app.scheduler.graph import ensure_scheduler_graph_tables
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = create_engine(f"sqlite:///{os.path.join(tmpdir, 'legacy.db')}")
+            make_session = sessionmaker(bind=engine)
+            session = make_session()
+            # Pre-node_key/edge_key schema: those columns are later added by ALTER TABLE (no UNIQUE).
+            session.execute(text("CREATE TABLE graph_node (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT)"))
+            session.execute(text("CREATE TABLE graph_edge (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT)"))
+            session.execute(text("ALTER TABLE graph_node ADD COLUMN node_key TEXT"))
+            # Duplicates written by the old race: they must be collapsed so the unique index can be added.
+            session.execute(text("INSERT INTO graph_node (label, node_key) VALUES ('old', 'dup'), ('new', 'dup')"))
+            session.commit()
+            session.close()
+
+            database = type("LegacyDb", (), {"engine": engine, "session": staticmethod(make_session)})()
+            ensure_scheduler_graph_tables(database)
+
+            session = make_session()
+            try:
+                labels = [row[0] for row in session.execute(text("SELECT label FROM graph_node WHERE node_key = 'dup'"))]
+                self.assertEqual(["new"], labels)
+                for table, column in (("graph_node", "node_key"), ("graph_edge", "edge_key")):
+                    session.execute(text(f"INSERT INTO {table} ({column}) VALUES ('shared')"))
+                    with self.assertRaises(IntegrityError):
+                        session.execute(text(f"INSERT INTO {table} ({column}) VALUES ('shared')"))
+                    session.rollback()
+            finally:
+                session.close()
+            engine.dispose()
+
+
+class GraphSchemaCacheRollbackTest(unittest.TestCase):
+    def test_rolled_back_unique_index_pass_is_not_cached(self):
+        import os
+        import tempfile
+        from unittest.mock import patch
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.scheduler import graph as graph_module
+        from app.scheduler.schema_cache import clear_schema_cache
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = create_engine(f"sqlite:///{os.path.join(tmpdir, 'legacy.db')}")
+            make_session = sessionmaker(bind=engine)
+            session = make_session()
+            session.execute(text("CREATE TABLE graph_node (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT)"))
+            session.execute(text("CREATE TABLE graph_edge (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT)"))
+            session.commit()
+            # Bring every column up to date but, like an older release, without the unique key indexes.
+            with patch.object(graph_module, "_ensure_unique_index"):
+                graph_module._ensure_tables_uncached(session)
+            # Duplicates make the index pass start a transaction (DELETE) that a rollback can undo.
+            session.execute(text("INSERT INTO graph_node (label, node_key) VALUES ('old', 'dup'), ('new', 'dup')"))
+            session.commit()
+            session.close()
+            clear_schema_cache()
+            self.addCleanup(clear_schema_cache)
+
+            # A read-only caller runs the schema pass, then rolls it back (no commit).
+            rolled_back = make_session()
+            graph_module._ensure_tables(rolled_back)
+            rolled_back.rollback()
+            rolled_back.close()
+            check = make_session()
+            self.assertFalse(graph_module._has_unique_index_on(check, "graph_node", "node_key"))
+            check.close()
+
+            # The next committing pass must still create the index (it was not cached as done).
+            database = type("LegacyDb", (), {"engine": engine, "session": staticmethod(make_session)})()
+            graph_module.ensure_scheduler_graph_tables(database)
+            check = make_session()
+            self.assertTrue(graph_module._has_unique_index_on(check, "graph_node", "node_key"))
+            self.assertTrue(graph_module._has_unique_index_on(check, "graph_edge", "edge_key"))
+            check.close()
+            engine.dispose()
+
+
+class GraphEvidenceRefIndexTest(unittest.TestCase):
+    def test_existing_project_gets_evidence_ref_lookup_index(self):
+        import os
+        import tempfile
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.scheduler import graph as graph_module
+        from app.scheduler.schema_cache import clear_schema_cache, is_schema_ensured
+
+        columns = ["owner_kind", "owner_id", "evidence_ref"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = create_engine(f"sqlite:///{os.path.join(tmpdir, 'legacy.db')}")
+            make_session = sessionmaker(bind=engine)
+            session = make_session()
+            # An older project file: every graph table/column/unique index present, but no evidence ref index.
+            graph_module._ensure_tables_uncached(session)
+            session.execute(text("DROP INDEX IF EXISTS ix_graph_evidence_ref_owner_ref"))
+            session.commit()
+            self.assertFalse(graph_module._has_index_on(session, "graph_evidence_ref", columns))
+            session.close()
+            clear_schema_cache()
+            self.addCleanup(clear_schema_cache)
+
+            # A rolled back pass must not be cached as complete.
+            rolled_back = make_session()
+            graph_module._ensure_tables(rolled_back)
+            rolled_back.rollback()
+            rolled_back.close()
+            self.assertFalse(is_schema_ensured(engine, "graph"))
+
+            database = type("LegacyDb", (), {"engine": engine, "session": staticmethod(make_session)})()
+            graph_module.ensure_scheduler_graph_tables(database)
+            check = make_session()
+            try:
+                self.assertTrue(graph_module._has_index_on(check, "graph_evidence_ref", columns))
+                plan = " ".join(
+                    str(row[-1]) for row in check.execute(text(
+                        "EXPLAIN QUERY PLAN SELECT id FROM graph_evidence_ref "
+                        "WHERE owner_kind = 'node' AND owner_id = 'n1' AND evidence_ref = 'ref' LIMIT 1"
+                    )).fetchall()
+                )
+                self.assertIn("ix_graph_evidence_ref_owner_ref", plan)
+            finally:
+                check.close()
+            # Once the index exists the schema pass is cached.
+            graph_module.ensure_scheduler_graph_tables(database)
+            self.assertTrue(is_schema_ensured(engine, "graph"))
+            engine.dispose()
 
 
 if __name__ == "__main__":

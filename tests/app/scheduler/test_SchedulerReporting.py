@@ -265,6 +265,68 @@ class SchedulerReportingTest(unittest.TestCase):
         finally:
             project_manager.closeProject(project)
 
+    def test_host_report_does_not_leak_other_hosts_graph_data(self):
+        import json
+
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_graph_tables(project.database)
+            session = project.database.session()
+            host_a = hostObj(ip="10.0.0.5", ipv4="10.0.0.5", hostname="alpha.local", osMatch="Linux", status="up")
+            host_b = hostObj(ip="10.0.1.7", ipv4="10.0.1.7", hostname="bravo.local", osMatch="Linux", status="up")
+            session.add(host_a)
+            session.add(host_b)
+            session.commit()
+            host_a_id, host_b_id = int(host_a.id), int(host_b.id)
+            session.close()
+
+            def _state(ip, hostname, marker):
+                return {
+                    "host_ip": ip,
+                    "hostname": hostname,
+                    "technologies": [
+                        {"name": "nginx", "version": "1.25", "cpe": "cpe:/a:nginx:nginx:1.25", "evidence": f"{marker} header"},
+                    ],
+                    "findings": [
+                        # Shared CVE: both hosts link to the same project-wide cve node.
+                        {"title": f"{marker} shared cve finding", "severity": "high", "cve": "CVE-2025-1111", "evidence": f"{marker} proof"},
+                        {"title": f"{marker} private finding", "severity": "medium", "evidence": f"{marker} only"},
+                    ],
+                    "credentials": [
+                        {"username": f"svc-{marker}", "realm": "corp", "type": "password", "evidence": f"{marker} cred"},
+                        # Shared identity hub.
+                        {"username": "administrator", "realm": "corp", "type": "hash", "evidence": f"{marker} admin hash"},
+                    ],
+                    "sessions": [
+                        {"session_type": "shell", "username": f"svc-{marker}", "host": ip, "port": "22", "protocol": "tcp", "evidence": f"{marker} shell"},
+                    ],
+                }
+
+            upsert_target_state(project.database, host_a_id, _state("10.0.0.5", "alpha.local", "alphamark"))
+            upsert_target_state(project.database, host_b_id, _state("10.0.1.7", "bravo.local", "bravomark"))
+
+            report_a = build_host_report(
+                project.database,
+                host_row={"id": host_a_id, "ip": "10.0.0.5", "hostname": "alpha.local", "status": "up", "os": "Linux"},
+            )
+            for section in ("validated_findings", "attack_paths", "credentials_and_sessions", "observed_facts"):
+                payload = json.dumps(report_a.get(section), default=str)
+                self.assertNotIn("bravomark", payload, section)
+                self.assertNotIn("svc-bravomark", payload, section)
+                self.assertNotIn("10.0.1.7", payload, section)
+                self.assertNotIn("bravo.local", payload, section)
+
+            finding_titles = {item["title"] for item in report_a["validated_findings"]["items"]}
+            self.assertIn("alphamark private finding", finding_titles)
+            self.assertIn("alphamark shared cve finding", finding_titles)
+            identity_labels = {item["label"] for item in report_a["credentials_and_sessions"]["identities"]}
+            self.assertIn("corp\\svc-alphamark", identity_labels)
+            self.assertIn("corp\\administrator", identity_labels)
+            self.assertTrue(report_a["attack_paths"])
+            self.assertIn("alphamark", json.dumps(report_a["observed_facts"], default=str))
+        finally:
+            project_manager.closeProject(project)
+
 
 if __name__ == "__main__":
     unittest.main()

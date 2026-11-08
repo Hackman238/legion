@@ -96,7 +96,7 @@ def _decision_for_tag(tag: str, policy: EngagementPolicy) -> str:
     if normalized == "network_flooding":
         return "blocked" if policy.intent == "recon" else "approval_required"
     if normalized == "high_detection_likelihood":
-        return "approval_required" if policy.detection_risk_mode in {"low", "medium", "high"} else "allowed"
+        return "allowed" if policy.detection_risk_mode == "high" else "approval_required"
     if normalized == "destructive_write":
         if bool(policy.custom_overrides.get("allow_destructive_write", False)):
             return "approval_required"

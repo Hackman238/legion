@@ -112,8 +112,7 @@ def handle_scheduler_execution_result(runtime, *, target, decision, result: Dict
     output_text = ""
     if process_id > 0:
         try:
-            process_output = runtime.get_process_output(int(process_id), offset=0, max_chars=200000)
-            output_text = str(process_output.get("output", "") or "")
+            output_text = str(runtime.get_process_output_text(int(process_id)) or "")
         except Exception:
             output_text = ""
     if output_text or artifact_refs:

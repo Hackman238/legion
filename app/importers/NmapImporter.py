@@ -15,6 +15,8 @@ Copyright (c) 2025 Shane William Scott
 
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
+import ipaddress
+import re
 import sys
 
 try:
@@ -63,7 +65,7 @@ except Exception:  # pragma: no cover - exercised only in non-Qt environments.
             return _SignalDescriptor()
 
     QtCore = _FallbackQtCore()
-from sqlalchemy import text
+from sqlalchemy import func, or_, text
 
 from app.actions.updateProgress import AbstractUpdateProgressObservable
 from app.hostsfile import add_temporary_host_alias
@@ -75,6 +77,7 @@ from app.nmap_enrichment import (
     is_unknown_hostname,
     is_unknown_os_match,
 )
+from db.entities.cve import cve
 from db.entities.host import hostObj
 from db.entities.l1script import l1ScriptObj
 from db.entities.nmapSession import nmapSessionObj
@@ -84,16 +87,24 @@ from db.entities.port import portObj
 from db.entities.service import serviceObj
 from db.repositories.HostRepository import HostRepository
 from parsers.Parser import parseNmapReport, MalformedXmlDocumentException
+from parsers.Script import Script
 from time import time
 
 appLog = getAppLogger()
+
+def _new_import_session(database):
+    new_session = getattr(database, "new_session", None)
+    return new_session() if callable(new_session) else database.session()
+
 
 class NmapImporter(QtCore.QThread):
     tick = QtCore.pyqtSignal(int, name="changed")  # New style signal
     done = QtCore.pyqtSignal(name="done")  # New style signal
     schedule = QtCore.pyqtSignal(object, bool, name="schedule")  # New style signal
     log = QtCore.pyqtSignal(str, name="log")
+    HOST_COMMIT_BATCH = 50  # new hosts per commit while adding hosts
     progressUpdated = QtCore.pyqtSignal(int, str)  # progress, title
+    failed = QtCore.pyqtSignal(str)  # error message when an import fails (run() never raises)
 
     def __init__(self, updateProgressObservable: AbstractUpdateProgressObservable, hostRepository: HostRepository):
         QtCore.QThread.__init__(self, parent=None)
@@ -104,6 +115,11 @@ class NmapImporter(QtCore.QThread):
 
     def cancel(self):
         self._cancel_requested = True
+
+    def resetCancel(self):
+        """Clear a cancel request; call when starting a new import (not inside the run, so an early cancel
+        pressed right after start() is still honoured)."""
+        self._cancel_requested = False
 
     # Removed startProgressTimer and stopProgressTimer (QTimer usage) due to threading issues.
 
@@ -121,9 +137,7 @@ class NmapImporter(QtCore.QThread):
                 if highest_percent is not None:
                     self.tsLog(f"[Periodic] Nmap scan percent complete: {highest_percent}%")
                     appLog.debug(f"[Periodic] Nmap scan percent complete: {highest_percent}%")
-                    self.db.repositoryContainer.processRepository.storeProcessPercent(
-                        self.processId, str(highest_percent)
-                    )
+                    self._getProcessRepository().storeProcessPercent(self.processId, str(highest_percent))
                 else:
                     self.tsLog("[Periodic] No percent found in XML.")
                     appLog.debug("[Periodic] No percent found in XML.")
@@ -133,6 +147,145 @@ class NmapImporter(QtCore.QThread):
 
     def tsLog(self, msg):
         self.log.emit(str(msg))
+
+    def _getProcessRepository(self):
+        # self.db is a Database adapter (it has no repositoryContainer); build a ProcessRepository on top of it.
+        db = getattr(self, "_run_db", None) or self.db
+        repo = getattr(self, "processRepository", None)
+        if repo is None or getattr(repo, "dbAdapter", None) is not db:
+            from app.logging.legionLog import getDbLogger
+            from db.repositories.ProcessRepository import ProcessRepository
+            repo = ProcessRepository(db, getDbLogger())
+            self.processRepository = repo
+        return repo
+
+    @staticmethod
+    def _storedVulnersState(session, db_host, h):
+        """What the host's already-stored vulners script rows say.
+
+        Returns (pairs_outside_scan, products): the (product, version) pairs reported for ports this scan does
+        not cover (their CVEs must survive a partial re-scan), and every product any stored vulners output
+        mentions, including ports this scan covers again (their stored output is the previous scan's).
+        """
+        scanned = {(str(p.portId), str(p.protocol)) for p in h.all_ports()}
+        scanned_port_ids = {
+            str(row.id)
+            for row in session.query(portObj).filter_by(hostId=db_host.id).all()
+            if (str(row.portId), str(row.protocol)) in scanned
+        }
+        scan_has_host_vulners = any('vulners' in str(scr.scriptId).lower() for scr in h.getHostScripts())
+        pairs_outside_scan, products = set(), set()
+        for row in session.query(l1ScriptObj).filter_by(hostId=db_host.id).all():
+            if 'vulners' not in str(row.scriptId or '').lower():
+                continue
+            pairs = Script.vulnersProductVersions(row.output)
+            products |= {product for product, _version in pairs}
+            if row.portId in (None, ''):
+                covered_by_scan = scan_has_host_vulners
+            else:
+                covered_by_scan = str(row.portId) in scanned_port_ids
+            if not covered_by_scan:
+                pairs_outside_scan |= pairs
+        return pairs_outside_scan, products
+
+    def _replaceVulnersCves(self, session, db_host, h, new_cves):
+        """Store this scan's vulners CVEs, superseding only the stored rows they make stale.
+
+        CVE rows are not linked to ports, so which rows to drop is decided from (product, version):
+        - rows for a (product, version) this scan reports are replaced by this scan's rows;
+        - rows for a product vulners reported (now or in a stored scan) whose version no port of the host
+          runs any more are dropped (e.g. after an upgrade, or a service replaced on a re-scanned port);
+        - everything else stays: versions still present on ports outside this scan, products vulners never
+          reported, and version-less rows (manually added CVEs).
+        """
+        scanned_pairs = {(str(c.product or "").lower(), str(c.version or "")) for c in new_cves}
+        pairs_outside_scan, known_products = self._storedVulnersState(session, db_host, h)
+        expected_pairs = scanned_pairs | pairs_outside_scan
+        known_products |= {product for product, _version in scanned_pairs}
+        for row in session.query(cve).filter(cve.hostId == str(db_host.id)).all():
+            product = str(row.product or "").lower()
+            version = str(row.version or "")
+            if product not in known_products:
+                continue
+            if (product, version) in scanned_pairs:
+                session.delete(row)
+            elif version and (product, version) not in expected_pairs:
+                session.delete(row)
+        session.add_all(new_cves)
+
+    @staticmethod
+    def _getDbHost(session, ip):
+        # Query through the importer's own session so lookups see rows flushed earlier in this import.
+        return session.query(hostObj).filter_by(ip=str(ip)).first()
+
+    @staticmethod
+    def _isIpAddress(value):
+        try:
+            ipaddress.ip_address(str(value or "").strip())
+        except ValueError:
+            return False
+        return True
+
+    def _adoptHostnamePlaceholder(self, session, h):
+        """Return the row a hostname target was imported as (ip == hostname, see app.cli_utils.import_targets)
+        once nmap has resolved that hostname to h.ip, after pointing the row at the real address; None otherwise.
+        Without this the resolved host would be stored a second time and the placeholder never updated."""
+        hostname = str(getattr(h, "hostname", "") or "").strip()
+        if not hostname or is_unknown_hostname(hostname) or self._isIpAddress(hostname):
+            return None
+        lowered = hostname.lower()
+        candidates = session.query(hostObj).filter(
+            or_(func.lower(hostObj.ip) == lowered, func.lower(hostObj.hostname) == lowered)
+        ).order_by(hostObj.id).all()
+        for row in candidates:
+            if self._isIpAddress(row.ip):
+                continue  # a real address that merely shares the hostname is a different host
+            row.ip = h.ip
+            if not self._isEmptyHostValue(h.ipv4):
+                row.ipv4 = h.ipv4
+            elif not self._isIpAddress(row.ipv4):
+                row.ipv4 = ''  # the placeholder's hostname text; the scan reported no IPv4 address
+            if not self._isEmptyHostValue(h.ipv6):
+                row.ipv6 = h.ipv6
+            session.add(row)
+            session.flush()
+            self.tsLog(f"Resolved imported target {hostname} to {h.ip}")
+            return row
+        return None
+
+    @staticmethod
+    def _isEmptyHostValue(value):
+        # hostObj stores missing values as 'unknown' and a missing OS accuracy as 'NaN'.
+        if value is None:
+            return True
+        text_value = str(value).strip()
+        return text_value == '' or text_value.lower() in ('unknown', 'nan')
+
+    @staticmethod
+    def _isPlaceholderHostname(db_host):
+        """True when the stored hostname carries no name: unknown, or the host's own address (targets imported
+        from a list are stored with their IP as hostname, see app.cli_utils.import_targets)."""
+        hostname = str(getattr(db_host, "hostname", "") or "").strip()
+        if is_unknown_hostname(hostname):
+            return True
+        addresses = {str(getattr(db_host, field, "") or "").strip().lower() for field in ("ip", "ipv4", "ipv6")}
+        return hostname.lower() in addresses
+
+    def _fillHostField(self, db_host, field, new_value):
+        # hostObj stores missing values as 'unknown', so treat '', 'unknown' and None as empty.
+        if self._isEmptyHostValue(getattr(db_host, field, None)) and not self._isEmptyHostValue(new_value):
+            setattr(db_host, field, new_value)
+
+    def _abortForCancel(self, session, message):
+        self.tsLog(message)
+        # Keep whatever has been imported so far (previously every row was committed immediately).
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
+        if self.updateProgressObservable is not None:
+            self.updateProgressObservable.finished()
+        self.done.emit()
 
     def setDB(self, db):
         self.db = db
@@ -146,20 +299,41 @@ class NmapImporter(QtCore.QThread):
     def setOutput(self, output):
         self.output = output
 
-    # it is necessary to get the qprocess because we need to send it back to the scheduler when we're done importing
     def run(self):
+        """QThread entry point. Never lets an exception escape: under PyQt6 an exception leaving a QThread's
+        run() aborts the whole application (SIGABRT), so a failed import is reported via `failed` instead."""
+        try:
+            self.importFile()
+        except Exception as exc:
+            appLog.exception("Nmap XML import failed: %s", getattr(self, "filename", ""))
+            try:
+                self.failed.emit(f"Nmap import failed for {getattr(self, 'filename', '')}: {exc}")
+            except Exception:
+                pass
+
+    # it is necessary to get the qprocess because we need to send it back to the scheduler when we're done importing
+    def importFile(self):
+        """Import self.filename synchronously; raises on failure (used directly by headless/web callers)."""
         session = None
         db_lock_acquired = False
+        # Pin the file for this run: setFilename() for a queued import must not change it mid-import.
+        import_filename = self.filename
+        # Pin the database for this run: setDB() may be called mid-import (e.g. after Save As), and the
+        # session and write semaphore must stay on the database the import started with.
+        run_db = self.db
+        self._run_db = run_db
         try:
             # Removed periodic progress updates (QTimer) due to threading issues.
             if self.updateProgressObservable is not None:
                 self.updateProgressObservable.start()
-            session = self.db.session()
-            self.tsLog("Parsing nmap xml file: " + self.filename)
+            # An independent session: repository calls on this thread close the thread-scoped session,
+            # which would otherwise discard this import's flushed-but-uncommitted rows.
+            session = _new_import_session(run_db)
+            self.tsLog("Parsing nmap xml file: " + import_filename)
             startTime = time()
 
             import os
-            nmap_xml_path = self.filename
+            nmap_xml_path = import_filename
             if not os.path.isfile(nmap_xml_path):
                 parent_dir = os.path.dirname(nmap_xml_path)
                 base_name = os.path.basename(nmap_xml_path)
@@ -175,26 +349,22 @@ class NmapImporter(QtCore.QThread):
                     nmap_xml_path = found_path
                 else:
                     self.tsLog('Giving up on import due to previous errors.')
-                    appLog.error("NMAP xml report is likely malformed or missing: %s", nmap_xml_path)
-                    appLog.error("Nmap XML import failed: %s", nmap_xml_path)
-                    if self.updateProgressObservable is not None:
-                        self.updateProgressObservable.finished()
-                    self.done.emit()
-                    return
+                    appLog.error("Nmap XML import failed: report not found: %s", nmap_xml_path)
+                    # Raise so callers (web/MCP jobs, run() -> `failed`) see the failure; the handler below
+                    # still reports finished/done to the UI.
+                    raise FileNotFoundError(f"Nmap XML report not found: {nmap_xml_path}")
 
             try:
                 nmapReport = parseNmapReport(nmap_xml_path)
             except (MalformedXmlDocumentException, FileNotFoundError) as e:
                 self.tsLog('Giving up on import due to previous errors.')
-                appLog.error(f"NMAP xml report is likely malformed: {e}")
-                appLog.error(f"Nmap XML import failed: {e}")
-                if self.updateProgressObservable is not None:
-                    self.updateProgressObservable.finished()
-                self.done.emit()
-                return
+                appLog.error(f"Nmap XML import failed: the report is likely malformed: {e}")
+                raise MalformedXmlDocumentException(
+                    f"Nmap XML report is malformed or unreadable: {nmap_xml_path}: {e}"
+                ) from e
 
             self.tsLog('nmap xml report read successfully!')
-            self.db.dbsemaphore.acquire()  # ensure that while this thread is running, no one else can write to the DB
+            run_db.dbsemaphore.acquire()  # ensure that while this thread is running, no one else can write to the DB
             db_lock_acquired = True
             s = nmapReport.getSession()  # nmap session info
             if s:
@@ -213,13 +383,17 @@ class NmapImporter(QtCore.QThread):
                 try:
                     highest_percent = nmapReport.get_highest_percent()
                     if hasattr(self, "processId") and self.processId and highest_percent is not None:
-                        self.db.repositoryContainer.processRepository.storeProcessPercent(
-                            self.processId, str(highest_percent)
+                        # Through this import's own session: a second connection would wait on our write lock.
+                        session.execute(
+                            text("UPDATE process SET percent = :percent WHERE id = :id"),
+                            {"percent": str(highest_percent), "id": int(self.processId)},
                         )
+                        # Commit on its own: a duplicate nmap-session insert below rolls back its transaction.
+                        session.commit()
                 except Exception as e:
                     self.tsLog(f"Failed to set highest percent: {e}")
                 n = nmapSessionObj(
-                    self.filename, s.startTime, s.finish_time, s.nmapVersion, s.scanArgs, s.totalHosts,
+                    import_filename, s.startTime, s.finish_time, s.nmapVersion, s.scanArgs, s.totalHosts,
                     s.upHosts, s.downHosts
                 )
                 try:
@@ -229,7 +403,7 @@ class NmapImporter(QtCore.QThread):
                     from sqlalchemy.exc import IntegrityError
                     if isinstance(e, IntegrityError):
                         msg = (
-                            f"Duplicate nmap session for filename '{self.filename}' detected. "
+                            f"Duplicate nmap session for filename '{import_filename}' detected. "
                             "Skipping session insert."
                         )
                         self.tsLog(msg)
@@ -255,15 +429,15 @@ class NmapImporter(QtCore.QThread):
 
             last_update_time = time()
             update_interval = 1.0
+            pending_new_hosts = 0
             for h in allHosts:  # create all the hosts that need to be created
                 if self._cancel_requested:
-                    self.tsLog("Import canceled by user.")
-                    if self.updateProgressObservable is not None:
-                        self.updateProgressObservable.finished()
-                    self.done.emit()
+                    self._abortForCancel(session, "Import canceled by user.")
                     return
 
-                db_host = self.hostRepository.getHostInformation(h.ip)
+                db_host = self._getDbHost(session, h.ip)
+                if not db_host:
+                    db_host = self._adoptHostnamePlaceholder(session, h)
 
                 if not db_host:  # if host doesn't exist in DB, create it first
                     hid = hostObj(
@@ -273,10 +447,15 @@ class NmapImporter(QtCore.QThread):
                     )
                     self.tsLog("Adding db_host")
                     session.add(hid)
-                    session.commit()
-                    t_note = note(h.ip, 'Added by nmap')
+                    session.flush()  # assign hid.id so the note references the host row, not its IP
+                    t_note = note(hid.id, 'Added by nmap')
                     session.add(t_note)
-                    session.commit()
+                    session.flush()
+                    pending_new_hosts += 1
+                    if pending_new_hosts >= self.HOST_COMMIT_BATCH:
+                        # Commit in batches so other writers are not blocked for the whole phase.
+                        session.commit()
+                        pending_new_hosts = 0
                 else:
                     self.tsLog("Found db_host already in db")
 
@@ -292,6 +471,8 @@ class NmapImporter(QtCore.QThread):
                     )
                     self.progressUpdated.emit(int(createProgress), 'Adding hosts...')
                     last_update_time = now
+
+            session.commit()
 
             if self.updateProgressObservable is not None:
                 self.updateProgressObservable.updateProgress(
@@ -311,7 +492,7 @@ class NmapImporter(QtCore.QThread):
             for h in allHosts:  # create all OS, service and port objects that need to be created
                 self.tsLog("Processing h {ip}".format(ip=h.ip))
 
-                db_host = self.hostRepository.getHostInformation(h.ip)
+                db_host = self._getDbHost(session, h.ip)
                 if db_host:
                     self.tsLog("Found db_host during os/ports/service processing")
                 else:
@@ -336,7 +517,7 @@ class NmapImporter(QtCore.QThread):
                             os.name, os.family, os.generation, os.osType, os.vendor, os.accuracy, db_host.id
                         )
                         session.add(t_osObj)
-                        session.commit()
+                        session.flush()
 
                 createOsNodesProgress = createOsNodesProgress + (100.0 / hostCount)
                 now_os = time()
@@ -364,10 +545,7 @@ class NmapImporter(QtCore.QThread):
                 self.tsLog("    'ports' to process: {all_ports}".format(all_ports=str(len(all_ports))))
                 for p in all_ports:  # parse the ports
                     if self._cancel_requested:
-                        self.tsLog("Import canceled by user during port processing.")
-                        if self.updateProgressObservable is not None:
-                            self.updateProgressObservable.finished()
-                        self.done.emit()
+                        self._abortForCancel(session, "Import canceled by user during port processing.")
                         return
 
                     self.tsLog("        Processing port obj {port}".format(port=str(p.portId)))
@@ -394,7 +572,7 @@ class NmapImporter(QtCore.QThread):
                                 s.name, db_host.id, s.product, s.version, s.extrainfo, s.fingerprint
                             )
                             session.add(db_service)
-                            session.commit()
+                            session.flush()
                     else:  # else, there is no service info to parse
                         db_service = None
                         # fetch the port
@@ -412,7 +590,7 @@ class NmapImporter(QtCore.QThread):
                         else:
                             db_port = portObj(p.portId, p.protocol, p.state, db_host.id, '')
                         session.add(db_port)
-                        session.commit()
+                        session.flush()
 
                     # Update global progress for each port
                     total_ports_processed += 1
@@ -425,6 +603,9 @@ class NmapImporter(QtCore.QThread):
                                 )
                             self.progressUpdated.emit(port_progress, 'Processing ports...')
 
+                # Commit once per host (not per row) so other writers are not locked out for a whole phase.
+                session.commit()
+
                 createPortsProgress = createPortsProgress + (100.0 / hostCount)
                 now_ports = time()
                 if (
@@ -436,6 +617,8 @@ class NmapImporter(QtCore.QThread):
                     )
                     self.progressUpdated.emit(int(createPortsProgress), 'Processing ports...')
                     last_update_time_ports = now_ports
+
+            session.commit()
 
             # --- Begin global script progress calculation ---
             # Calculate total number of scripts (port scripts + host scripts) across all hosts
@@ -457,7 +640,7 @@ class NmapImporter(QtCore.QThread):
                     appLog.warning("Skipping script creation for a null host entry from nmap report.")
                     continue
 
-                db_host = self.hostRepository.getHostInformation(h.ip)
+                db_host = self._getDbHost(session, h.ip)
                 if not db_host:
                     self.tsLog(
                         "A host that should have been found was not. Skipping script creation for this host."
@@ -468,10 +651,7 @@ class NmapImporter(QtCore.QThread):
                 for p in h.all_ports():
                     for scr in p.getScripts():
                         if self._cancel_requested:
-                            self.tsLog("Import canceled by user during script creation.")
-                            if self.updateProgressObservable is not None:
-                                self.updateProgressObservable.finished()
-                            self.done.emit()
+                            self._abortForCancel(session, "Import canceled by user during script creation.")
                             return
                         self.tsLog("        Processing script obj {scr}".format(scr=str(scr)))
                         db_port = session.query(portObj).filter_by(hostId=db_host.id) \
@@ -494,7 +674,7 @@ class NmapImporter(QtCore.QThread):
                             t_l1ScriptObj = l1ScriptObj(scr.scriptId, scr.output, db_port.id, db_host.id)
                             self.tsLog("        Adding l1ScriptObj obj {script}".format(script=scr.scriptId))
                             session.add(t_l1ScriptObj)
-                            session.commit()
+                            session.flush()
                         # Update global script progress
                         total_scripts_processed += 1
                         if total_scripts > 0:
@@ -506,17 +686,14 @@ class NmapImporter(QtCore.QThread):
                             self.progressUpdated.emit(script_progress, 'Creating script objects...')
                 for hs in h.getHostScripts():
                     if self._cancel_requested:
-                        self.tsLog("Import canceled by user during script creation.")
-                        if self.updateProgressObservable is not None:
-                            self.updateProgressObservable.finished()
-                        self.done.emit()
+                        self._abortForCancel(session, "Import canceled by user during script creation.")
                         return
                     db_script = session.query(l1ScriptObj).filter_by(scriptId=hs.scriptId) \
                         .filter_by(hostId=db_host.id).first()
                     if not db_script:
                         t_l1ScriptObj = l1ScriptObj(hs.scriptId, hs.output, None, db_host.id)
                         session.add(t_l1ScriptObj)
-                        session.commit()
+                        session.flush()
                     # Update global script progress
                     total_scripts_processed += 1
                     if total_scripts > 0:
@@ -526,6 +703,7 @@ class NmapImporter(QtCore.QThread):
                                 script_progress, 'Creating script objects...'
                             )
                         self.progressUpdated.emit(script_progress, 'Creating script objects...')
+                session.commit()  # once per host
 
             # --- Begin global update objects progress calculation ---
             total_update_hosts = len(allHosts)
@@ -539,7 +717,7 @@ class NmapImporter(QtCore.QThread):
 
             for h in allHosts:  # update everything
 
-                db_host = self.hostRepository.getHostInformation(h.ip)
+                db_host = self._getDbHost(session, h.ip)
                 if not db_host:
                     self.tsLog(
                         "A host that should have been found was not. Something is wrong. "
@@ -569,60 +747,54 @@ class NmapImporter(QtCore.QThread):
 
                 # Only update/replace CVEs if vulners data is present
                 if has_vulners:
-                    # Remove existing CVEs for this host
-                    session.execute(
-                        text("DELETE FROM cve WHERE hostId = :hostId"),
-                        {'hostId': db_host.id}
-                    )
-                    session.commit()
-                    # Add new CVEs from vulners scripts
-                    for scr in h.getHostScripts():
-                        for cve_obj in scr.scriptSelector(db_host):
-                            session.add(cve_obj)
-                            session.commit()
+                    # Build CVEs from vulners scripts (host scripts and port scripts) before writing anything:
+                    # the exploit-db lookups are slow and must not run while this session holds the SQLite
+                    # write lock. This is the only place script-derived CVEs are inserted; dedupe so a CVE
+                    # reported twice is stored once.
+                    seen_cves = set()
+                    new_cves = []
+                    vulners_scripts = list(h.getHostScripts())
                     for p in h.all_ports():
-                        db_port = session.query(portObj).filter_by(hostId=db_host.id).filter_by(portId=p.portId) \
-                            .filter_by(protocol=p.protocol).first()
-                        for scr in p.getScripts():
-                            for cve_obj in scr.scriptSelector(db_host):
-                                session.add(cve_obj)
-                                session.commit()
+                        vulners_scripts.extend(p.getScripts())
+                    for scr in vulners_scripts:
+                        if 'vulners' not in str(scr.scriptId).lower():
+                            continue
+                        for cve_obj in scr.scriptSelector(db_host):
+                            cve_key = (cve_obj.name, cve_obj.product, cve_obj.version)
+                            if cve_key in seen_cves:
+                                continue
+                            seen_cves.add(cve_key)
+                            new_cves.append(cve_obj)
+                    self._replaceVulnersCves(session, db_host, h, new_cves)
+                    session.flush()
                 # If no vulners data, do not touch existing CVEs
 
-                if db_host.ipv4 == '' and not h.ipv4 == '':
-                    db_host.ipv4 = h.ipv4
-                if db_host.ipv6 == '' and not h.ipv6 == '':
-                    db_host.ipv6 = h.ipv6
-                if db_host.macaddr == '' and not h.macaddr == '':
-                    db_host.macaddr = h.macaddr
+                self._fillHostField(db_host, 'ipv4', h.ipv4)
+                self._fillHostField(db_host, 'ipv6', h.ipv6)
+                self._fillHostField(db_host, 'macaddr', h.macaddr)
                 if not h.status == '':
                     db_host.status = h.status
                 script_records = self._collect_script_records(h)
                 inferred_hostname = infer_hostname_from_nmap_data(getattr(h, "hostname", ""), script_records)
-                if is_unknown_hostname(getattr(db_host, "hostname", "")) and inferred_hostname:
+                if self._isPlaceholderHostname(db_host) and inferred_hostname:
                     db_host.hostname = inferred_hostname
                     self.tsLog(f"Inferred hostname for {db_host.ip}: {inferred_hostname}")
                     added, reason = add_temporary_host_alias(db_host.ip, inferred_hostname)
                     if not added:
                         self.tsLog(f"Skipped /etc/hosts update for {db_host.ip} ({inferred_hostname}): {reason}")
-                if db_host.vendor == '' and not h.vendor == '':
-                    db_host.vendor = h.vendor
-                if db_host.uptime == '' and not h.uptime == '':
-                    db_host.uptime = h.uptime
-                if db_host.lastboot == '' and not h.lastboot == '':
-                    db_host.lastboot = h.lastboot
-                if db_host.distance == '' and not h.distance == '':
-                    db_host.distance = h.distance
-                if db_host.state == '' and not h.state == '':
-                    db_host.state = h.state
-                if db_host.count == '' and not h.count == '':
-                    db_host.count = h.count
+                self._fillHostField(db_host, 'vendor', h.vendor)
+                self._fillHostField(db_host, 'uptime', h.uptime)
+                self._fillHostField(db_host, 'lastboot', h.lastboot)
+                # the parser defaults distance to 0 when nmap reported none
+                self._fillHostField(db_host, 'distance', h.distance or '')
+                self._fillHostField(db_host, 'state', h.state)
+                self._fillHostField(db_host, 'count', h.count)
 
                 session.add(db_host)
-                session.commit()
 
                 tmp_name = ''
-                tmp_accuracy = '0'  # TODO: check if better to convert to int for comparison
+                tmp_accuracy = '0'
+                best_accuracy = 0
 
                 os_nodes = h.getOs()
                 for os in os_nodes:
@@ -630,11 +802,17 @@ class NmapImporter(QtCore.QThread):
                         .filter_by(family=os.family).filter_by(generation=os.generation) \
                         .filter_by(osType=os.osType).filter_by(vendor=os.vendor).first()
 
-                    db_os.osAccuracy = os.accuracy  # update the accuracy
+                    if db_os is not None:
+                        db_os.accuracy = os.accuracy  # update the accuracy
 
                     # get the most accurate OS match/accuracy to store it in the host table for easier access
                     if not os.name == '':
-                        if os.accuracy > tmp_accuracy:
+                        # nmap reports accuracy as a string such as "98" or "98%"; compare
+                        # numerically so "100" beats "95"
+                        accuracy_match = re.match(r"\s*(\d+)", str(os.accuracy or ""))
+                        accuracy_value = int(accuracy_match.group(1)) if accuracy_match else 0
+                        if accuracy_value > best_accuracy:
+                            best_accuracy = accuracy_value
                             tmp_name = os.name
                             tmp_accuracy = os.accuracy
 
@@ -651,50 +829,12 @@ class NmapImporter(QtCore.QThread):
                         inferred_os = infer_os_from_service_inventory(service_records)
                     if inferred_os:
                         db_host.osMatch = inferred_os
-                        if not str(getattr(db_host, "osAccuracy", "") or "").strip():
+                        if self._isEmptyHostValue(getattr(db_host, "osAccuracy", "")):
                             db_host.osAccuracy = "85"
                         self.tsLog(f"Inferred OS for {db_host.ip} from scripts: {inferred_os}")
 
                 session.add(db_host)
-                session.commit()
-
-                for scr in h.getHostScripts():
-                    self.tsLog("-----------------------Host SCR: {0}".format(scr.scriptId))
-                    db_host_for_script = self.hostRepository.getHostInformation(h.ip)
-                    if not db_host_for_script:
-                        self.tsLog(
-                            "Skipping host script {script} for host {host}; host not found in database.".format(
-                                script=scr.scriptId, host=getattr(h, "ip", "<unknown>")
-                            )
-                        )
-                        appLog.warning(
-                            "Skipping host-level script %s for host %s because the host is missing in the database.",
-                            scr.scriptId, getattr(h, "ip", "<unknown>")
-                        )
-                        continue
-                    scrProcessorResults = scr.scriptSelector(db_host_for_script)
-                    for scrProcessorResult in scrProcessorResults:
-                        session.add(scrProcessorResult)
-                        session.commit()
-
-                for scr in h.getScripts():
-                    self.tsLog("-----------------------SCR: {0}".format(scr.scriptId))
-                    db_host_for_script = self.hostRepository.getHostInformation(h.ip)
-                    if not db_host_for_script:
-                        self.tsLog(
-                            "Skipping script {script} for host {host}; host not found in database.".format(
-                                script=scr.scriptId, host=getattr(h, "ip", "<unknown>")
-                            )
-                        )
-                        appLog.warning(
-                            "Skipping generic script %s for host %s because the host is missing in the database.",
-                            scr.scriptId, getattr(h, "ip", "<unknown>")
-                        )
-                        continue
-                    scrProcessorResults = scr.scriptSelector(db_host_for_script)
-                    for scrProcessorResult in scrProcessorResults:
-                        session.add(scrProcessorResult)
-                        session.commit()
+                session.flush()
 
                 for p in h.all_ports():
                     s = p.getService()
@@ -722,12 +862,10 @@ class NmapImporter(QtCore.QThread):
                     if db_port.state != p.state:
                         db_port.state = p.state
                         session.add(db_port)
-                        session.commit()
                     # if there is some new service information, update it -- might be causing issue 164
-                    if not (db_service is None) and db_port.serviceId != db_service.id:
+                    if not (db_service is None) and str(db_port.serviceId) != str(db_service.id):
                         db_port.serviceId = db_service.id
                         session.add(db_port)
-                        session.commit()
                     # store the script results (note that existing script outputs are also kept)
                     for scr in p.getScripts():
                         db_script = session.query(l1ScriptObj).filter_by(scriptId=scr.scriptId) \
@@ -738,7 +876,7 @@ class NmapImporter(QtCore.QThread):
                                 db_script.output = scr.output
 
                             session.add(db_script)
-                        session.commit()
+                session.commit()  # once per host
 
                 # Update global update objects progress
                 update_hosts_processed += 1
@@ -760,7 +898,7 @@ class NmapImporter(QtCore.QThread):
             # Release the DB write lock as soon as DB operations are done; follow-up UI/scheduler work
             # may also touch the DB.
             if db_lock_acquired:
-                self.db.dbsemaphore.release()
+                run_db.dbsemaphore.release()
                 db_lock_acquired = False
             self.tsLog(f"Finished in {str(time() - startTime)} seconds.")
             if self.updateProgressObservable is not None:
@@ -777,17 +915,29 @@ class NmapImporter(QtCore.QThread):
             self.tsLog('Something went wrong when parsing the nmap file..')
             self.tsLog("Unexpected error: {0}".format(sys.exc_info()[0]))
             self.tsLog(e)
+            # Rows are flushed and committed in batches; keep what was already imported (as the former
+            # per-row commits did) instead of letting session.close() roll it back.
+            if session is not None:
+                try:
+                    session.commit()
+                except Exception:
+                    try:
+                        session.rollback()
+                    except Exception:
+                        pass
             if self.updateProgressObservable is not None:
                 self.updateProgressObservable.finished()
-            self.done.emit()
+            # No `done` here: `done` means "hosts were imported" to the UI (overlay hidden, tables and
+            # scheduler refreshed). run() reports the failure through `failed` instead.
             raise
         finally:
             # Always release the DB write lock (if acquired) and close the session to avoid leaked SQLite fds.
             try:
                 if db_lock_acquired:
-                    self.db.dbsemaphore.release()
+                    run_db.dbsemaphore.release()
             except Exception:
                 pass
+            self._run_db = None  # later calls follow setDB() again
             try:
                 if session is not None:
                     session.close()

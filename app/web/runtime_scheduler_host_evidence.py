@@ -4,6 +4,8 @@ from typing import Any, Dict
 
 from sqlalchemy import text
 
+from app.web.runtime_scheduler_host_inference import PROCESS_OUTPUT_HEAD_SQL
+
 
 def load_scheduler_host_evidence(
         runtime,
@@ -83,7 +85,7 @@ def load_scheduler_host_evidence(
                 "SELECT COALESCE(p.name, '') AS tool_id, "
                 "COALESCE(p.status, '') AS status, "
                 "COALESCE(p.command, '') AS command_text, "
-                "COALESCE(o.output, '') AS output_text, "
+                f"{PROCESS_OUTPUT_HEAD_SQL} AS output_text, "
                 "COALESCE(p.port, '') AS port, "
                 "COALESCE(p.protocol, '') AS protocol "
                 "FROM process AS p "

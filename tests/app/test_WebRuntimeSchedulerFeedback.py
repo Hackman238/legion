@@ -6,6 +6,8 @@ import tempfile
 from unittest import mock
 from types import SimpleNamespace
 
+from tests.timezone_helpers import pin_local_timezone
+
 
 class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
     def test_apply_engagement_scan_profile_uses_quick_recon_ports(self):
@@ -636,6 +638,9 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
 
     def test_build_scheduler_rationale_feed_items_summarizes_scores_and_outcomes(self):
         from app.web.runtime import WebRuntime
+
+        # Decision timestamps are naive local times; the fixture data assumes UTC-5.
+        pin_local_timezone(self, "LEGIONTEST5")
 
         provider_logs = [{
             "timestamp": "2026-03-22T05:35:17+00:00",

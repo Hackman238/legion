@@ -26,23 +26,24 @@ def start_host_screenshot_refresh_job(runtime, host_id: int) -> Dict[str, Any]:
             existing_copy["existing"] = True
             return existing_copy
 
-    targets = collect_host_screenshot_targets(runtime, resolved_host_id)
-    if not targets:
-        raise ValueError("Host does not have any open HTTP/HTTPS services to screenshot.")
+        # Keep the duplicate check and job start atomic under the runtime lock.
+        targets = collect_host_screenshot_targets(runtime, resolved_host_id)
+        if not targets:
+            raise ValueError("Host does not have any open HTTP/HTTPS services to screenshot.")
 
-    return runtime._start_job(
-        "host-screenshot-refresh",
-        lambda job_id: run_host_screenshot_refresh(
-            runtime,
-            host_id=resolved_host_id,
-            job_id=int(job_id or 0),
-        ),
-        payload={
-            "host_id": resolved_host_id,
-            "host_ip": host_ip,
-            "target_count": len(targets),
-        },
-    )
+        return runtime._start_job(
+            "host-screenshot-refresh",
+            lambda job_id: run_host_screenshot_refresh(
+                runtime,
+                host_id=resolved_host_id,
+                job_id=int(job_id or 0),
+            ),
+            payload={
+                "host_id": resolved_host_id,
+                "host_ip": host_ip,
+                "target_count": len(targets),
+            },
+        )
 
 
 def start_graph_screenshot_refresh_job(runtime, host_id: int, port: str, protocol: str = "tcp") -> Dict[str, Any]:
@@ -83,22 +84,23 @@ def start_graph_screenshot_refresh_job(runtime, host_id: int, port: str, protoco
         ):
             raise ValueError("Target does not support screenshot refresh.")
 
-    return runtime._start_job(
-        "graph-screenshot-refresh",
-        lambda job_id: run_graph_screenshot_refresh(
-            runtime,
-            host_id=resolved_host_id,
-            port=resolved_port,
-            protocol=resolved_protocol,
-            job_id=int(job_id or 0),
-        ),
-        payload={
-            "host_id": resolved_host_id,
-            "host_ip": host_ip,
-            "port": resolved_port,
-            "protocol": resolved_protocol,
-        },
-    )
+        # Keep the duplicate check and job start atomic under the runtime lock.
+        return runtime._start_job(
+            "graph-screenshot-refresh",
+            lambda job_id: run_graph_screenshot_refresh(
+                runtime,
+                host_id=resolved_host_id,
+                port=resolved_port,
+                protocol=resolved_protocol,
+                job_id=int(job_id or 0),
+            ),
+            payload={
+                "host_id": resolved_host_id,
+                "host_ip": host_ip,
+                "port": resolved_port,
+                "protocol": resolved_protocol,
+            },
+        )
 
 
 def run_host_screenshot_refresh(runtime, *, host_id: int, job_id: int = 0) -> Dict[str, Any]:

@@ -1599,7 +1599,6 @@ class DummyRuntime:
             "protocol": "tcp",
             "command": "echo test",
             "status": "Finished",
-            "output": text,
             "output_chunk": chunk,
             "output_length": len(text),
             "offset": offset_value,
@@ -3126,7 +3125,8 @@ class WebAppTest(unittest.TestCase):
 
         process_output = self.client.get("/api/processes/1/output")
         self.assertEqual(200, process_output.status_code)
-        self.assertEqual("sample output", process_output.json["output"])
+        self.assertEqual("sample output", process_output.json["output_chunk"])
+        self.assertEqual(len("sample output"), process_output.json["output_length"])
         self.assertEqual("no-store, max-age=0, must-revalidate", process_output.headers.get("Cache-Control"))
         process_output_tail = self.client.get("/api/processes/1/output?offset=7")
         self.assertEqual(200, process_output_tail.status_code)

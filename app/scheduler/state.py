@@ -1,7 +1,11 @@
+import contextlib
 import datetime
 import json
+import logging
 import re
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from typing import Any, Callable, Dict, List, Optional
 
 from app.device_categories import (
     category_names,
@@ -13,6 +17,7 @@ from app.device_categories import (
 from sqlalchemy import text
 
 from app.scheduler.policy import preset_from_legacy_goal_profile
+from app.scheduler.schema_cache import ensure_schema_once, ensure_column
 from app.url_normalization import normalize_discovered_url
 
 
@@ -27,21 +32,26 @@ _LOW_SIGNAL_FINDING_EVIDENCE = {
     "previous tls scan result",
 }
 _FINDING_QUALITY_ACTIONS = {"suppressed", "downgraded"}
+# key -> [lock, holder count]; entries are removed once no thread holds or waits on them, so the
+# table stays bounded and a recycled engine id() never inherits a stale lock.
+_target_state_locks: Dict[Any, list] = {}
+_target_state_locks_guard = threading.Lock()
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def _ensure_column(session, table_name: str, column_name: str, column_type: str):
-    rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-    existing = {str(row[1]) for row in rows if len(row) > 1}
-    if str(column_name) in existing:
-        return
-    session.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+_ensure_column = ensure_column
 
 
 def _ensure_target_state_table(session):
+    ensure_schema_once(session, "target_state", _ensure_target_state_table_uncached, ["scheduler_target_state"])
+
+
+def _ensure_target_state_table_uncached(session):
     session.execute(text(
         "CREATE TABLE IF NOT EXISTS scheduler_target_state ("
         "host_id INTEGER PRIMARY KEY,"
@@ -237,11 +247,37 @@ def _normalize_device_categories(
     return _merge_rows([], rows, key_fields=["name"], limit=32)
 
 
+_device_category_rules_cache: Dict[str, Any] = {}
+_device_category_rules_cache_lock = threading.Lock()
+
+
+_DEVICE_CATEGORY_RULES_MAX_AGE_SECONDS = 2.0
+
+
 def _load_custom_device_category_rules() -> List[Dict[str, Any]]:
     try:
-        from app.scheduler.config import SchedulerConfigManager
+        # Read only the device-category rules, so that per-upsert classification does not rebuild a config
+        # manager or hydrate provider secrets. Cached per config path for a couple of seconds: upserts can run
+        # many times per second, and an edit to the rules is picked up on the next read after that.
+        from app.paths import get_scheduler_config_path
+        from app.scheduler.config import read_device_categories_from_config_file
 
-        return list(SchedulerConfigManager().get_device_categories() or [])
+        config_path = get_scheduler_config_path("scheduler-ai.json")
+        now = time.monotonic()
+        with _device_category_rules_cache_lock:
+            fresh = now - float(_device_category_rules_cache.get("loaded_at", 0.0) or 0.0) \
+                < _DEVICE_CATEGORY_RULES_MAX_AGE_SECONDS
+            if fresh and _device_category_rules_cache.get("path") == config_path:
+                return list(_device_category_rules_cache.get("rules", []) or [])
+        # strict=True: a torn or half-written file (a save racing this read) raises instead of yielding the
+        # DEFAULT rules, so the error path below returns defaults for this call only and leaves the cache
+        # untouched for the next read. A missing file still reads as the defaults and is cached.
+        rules = list(read_device_categories_from_config_file(config_path, strict=True) or [])
+        with _device_category_rules_cache_lock:
+            _device_category_rules_cache["path"] = config_path
+            _device_category_rules_cache["rules"] = list(rules)
+            _device_category_rules_cache["loaded_at"] = now
+        return rules
     except Exception:
         return []
 
@@ -887,27 +923,9 @@ def migrate_legacy_ai_state_to_target_state(database, host_id: Optional[int] = N
     migrated_host_ids: List[int] = []
     try:
         _ensure_target_state_table(session)
-        session.execute(text(
-            "CREATE TABLE IF NOT EXISTS scheduler_host_ai_state ("
-            "host_id INTEGER PRIMARY KEY,"
-            "host_ip TEXT,"
-            "updated_at TEXT,"
-            "provider TEXT,"
-            "goal_profile TEXT,"
-            "last_port TEXT,"
-            "last_protocol TEXT,"
-            "last_service TEXT,"
-            "hostname TEXT,"
-            "hostname_confidence REAL,"
-            "os_match TEXT,"
-            "os_confidence REAL,"
-            "next_phase TEXT,"
-            "technologies_json TEXT,"
-            "findings_json TEXT,"
-            "manual_tests_json TEXT,"
-            "raw_json TEXT"
-            ")"
-        ))
+        # The table is owned by app.scheduler.insights; imported here because insights imports this module.
+        from app.scheduler.insights import _ensure_table as _ensure_host_ai_state_table
+        _ensure_host_ai_state_table(session)
         query = (
             "SELECT host_id, host_ip, updated_at, provider, goal_profile, last_port, last_protocol, last_service, "
             "hostname, hostname_confidence, os_match, os_confidence, next_phase, technologies_json, findings_json, "
@@ -1012,7 +1030,7 @@ def migrate_legacy_ai_state_to_target_state(database, host_id: Optional[int] = N
                 if int(migrated_host_id or 0) > 0:
                     sync_target_state_to_evidence_graph(database, host_id=int(migrated_host_id))
         except Exception:
-            pass
+            logger.warning("Failed to sync migrated target state to evidence graph.", exc_info=True)
     return migrated
 
 
@@ -1026,7 +1044,93 @@ def get_target_state(database, host_id: int) -> Optional[Dict[str, Any]]:
     return _fetch_target_state_row(database, int(host_id or 0))
 
 
-def upsert_target_state(database, host_id: int, payload: Dict[str, Any], *, merge: bool = True) -> Dict[str, Any]:
+@contextlib.contextmanager
+def _target_state_lock(database, host_id: int):
+    database_key = id(getattr(database, "engine", None) or database)
+    key = (database_key, int(host_id or 0))
+    with _target_state_locks_guard:
+        entry = _target_state_locks.get(key)
+        if entry is None:
+            entry = [threading.RLock(), 0]
+            _target_state_locks[key] = entry
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _target_state_locks_guard:
+            entry[1] -= 1
+            if entry[1] <= 0 and _target_state_locks.get(key) is entry:
+                del _target_state_locks[key]
+
+
+def upsert_target_state(
+        database,
+        host_id: int,
+        payload: Dict[str, Any],
+        *,
+        merge: bool = True,
+) -> Dict[str, Any]:
+    # Serialize read-merge-write per host so concurrent writers do not drop each other's updates. The graph
+    # sync runs under the same lock: syncs replace (not union) a host's url/screenshot/artifact nodes, so two
+    # syncs for one host landing out of order would let an older state prune what the newer one just wrote.
+    with _target_state_lock(database, host_id):
+        merged = _upsert_target_state_locked(
+            database,
+            host_id,
+            payload,
+            merge=merge,
+        )
+        _sync_target_state_graph(database, host_id, merged)
+    return merged
+
+
+def modify_target_state(
+        database,
+        host_id: int,
+        mutate_fn: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Atomically read, modify and replace a host's target state.
+
+    mutate_fn receives a copy of the current state ({} when there is none) and returns the full
+    replacement state (or None to store the dict it mutated in place). The read, the write
+    (merge=False) and the evidence-graph sync happen under the same per-host lock as
+    upsert_target_state, so concurrent scheduler updates are not lost between them. The stored
+    state's updated_at is set to now. Returns the stored state.
+    """
+    with _target_state_lock(database, host_id):
+        current = dict(get_target_state(database, int(host_id or 0)) or {})
+        updated = mutate_fn(current)
+        if updated is None:
+            updated = current
+        payload = dict(updated)
+        # A replace carries the previous row's updated_at; the modification is a new write.
+        payload["updated_at"] = _utc_now()
+        merged = _upsert_target_state_locked(
+            database,
+            host_id,
+            payload,
+            merge=False,
+        )
+        _sync_target_state_graph(database, host_id, merged)
+    return merged
+
+
+def _sync_target_state_graph(database, host_id: int, merged: Dict[str, Any]):
+    try:
+        from app.scheduler.graph import sync_target_state_to_evidence_graph
+        sync_target_state_to_evidence_graph(database, host_id=int(host_id or 0), target_state=merged)
+    except Exception:
+        logger.warning("Failed to sync target state for host %s to evidence graph.", host_id, exc_info=True)
+
+
+def _upsert_target_state_locked(
+        database,
+        host_id: int,
+        payload: Dict[str, Any],
+        *,
+        merge: bool,
+) -> Dict[str, Any]:
     ensure_scheduler_target_state_table(database)
     existing = get_target_state(database, int(host_id or 0)) if merge else None
     normalized = legacy_ai_payload_to_target_state(int(host_id or 0), payload)
@@ -1242,11 +1346,6 @@ def upsert_target_state(database, host_id: int, payload: Dict[str, Any], *, merg
         raise
     finally:
         session.close()
-    try:
-        from app.scheduler.graph import sync_target_state_to_evidence_graph
-        sync_target_state_to_evidence_graph(database, host_id=int(host_id or 0), target_state=merged)
-    except Exception:
-        pass
     return merged
 
 

@@ -1,7 +1,7 @@
 import time
 import ipaddress
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from app.hostsfile import registrable_root_domain
 from app.settings import AppSettings
@@ -673,6 +673,7 @@ class SchedulerOrchestrator:
             options: SchedulerRunOptions,
             reflections_used: int,
             context: Optional[Dict[str, Any]] = None,
+            round_number: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         if not bool(options.reflection_enabled):
             return None
@@ -683,7 +684,7 @@ class SchedulerOrchestrator:
 
         rounds = [item for item in list(recent_rounds or []) if isinstance(item, dict)]
         current_phase = cls._context_current_phase(context)
-        round_number = len(rounds) + 1
+        round_number = int(round_number) if round_number else len(rounds) + 1
         window_size = max(1, int(options.stall_rounds_without_progress or 1))
         analysis_mode = cls._normalize_text_token((context or {}).get("analysis_mode", "")) if isinstance(context, dict) else ""
 
@@ -1161,8 +1162,12 @@ class SchedulerOrchestrator:
             promoted_tool_ids: List[str] = []
             recent_rounds: List[Dict[str, Any]] = []
             reflections_used = 0
+            round_counter = 0
+            carried_context = None
+            carried_context_key = None
 
             for _round in range(int(resolved_options.max_rounds or 1) if use_feedback_loop else 1):
+                round_counter += 1
                 if should_cancel and should_cancel(int(resolved_options.job_id or 0)):
                     summary["cancelled"] = True
                     summary["cancel_reason"] = "cancelled by user"
@@ -1182,14 +1187,25 @@ class SchedulerOrchestrator:
 
                 context = None
                 if use_feedback_loop and build_context:
-                    context = build_context(
-                        target=target,
-                        attempted_tool_ids=set(attempted_tool_ids),
-                        attempted_family_ids=set(attempted_family_ids),
-                        attempted_command_signatures=set(attempted_command_signatures),
-                        recent_output_chars=int(resolved_options.recent_output_chars or 900),
-                        analysis_mode=resolved_options.analysis_mode,
+                    context_key = (
+                        frozenset(attempted_tool_ids),
+                        frozenset(attempted_family_ids),
+                        frozenset(attempted_command_signatures),
                     )
+                    if carried_context is not None and carried_context_key == context_key:
+                        # The previous round's post-round context was built from identical inputs.
+                        context = carried_context
+                    else:
+                        context = build_context(
+                            target=target,
+                            attempted_tool_ids=set(attempted_tool_ids),
+                            attempted_family_ids=set(attempted_family_ids),
+                            attempted_command_signatures=set(attempted_command_signatures),
+                            recent_output_chars=int(resolved_options.recent_output_chars or 900),
+                            analysis_mode=resolved_options.analysis_mode,
+                        )
+                    carried_context = None
+                    carried_context_key = None
 
                 reflection_trigger = None
                 if use_feedback_loop and reflect_progress and context is not None:
@@ -1198,6 +1214,7 @@ class SchedulerOrchestrator:
                         options=resolved_options,
                         reflections_used=reflections_used,
                         context=context,
+                        round_number=round_counter,
                     )
 
                 if reflection_trigger:
@@ -1528,9 +1545,15 @@ class SchedulerOrchestrator:
                         recent_output_chars=int(resolved_options.recent_output_chars or 900),
                         analysis_mode=resolved_options.analysis_mode,
                     )
+                    carried_context = post_round_context
+                    carried_context_key = (
+                        frozenset(attempted_tool_ids),
+                        frozenset(attempted_family_ids),
+                        frozenset(attempted_command_signatures),
+                    )
 
                 round_snapshot = self._build_round_snapshot(
-                    round_number=len(recent_rounds) + 1,
+                    round_number=round_counter,
                     context=post_round_context,
                     provider_payload=provider_payload if isinstance(locals().get("provider_payload"), dict) else {},
                     decision_tool_ids=round_selected_tool_ids,

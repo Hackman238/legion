@@ -40,3 +40,13 @@ class DefaultShellTest(unittest.TestCase):
     def test_isFile_whenProvidedAFile_ReturnsFalse(self):
         with patch("os.path.isfile", return_value=False):
             self.assertFalse(self.shell.isFile("some-directory"))
+
+
+class DefaultShellListFilesTest(unittest.TestCase):
+    def test_list_files_returnsDirectoryEntries(self):
+        import tempfile
+        from app.shell.DefaultShell import DefaultShell
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("b.xml", "a.nmap"):
+                open(os.path.join(tmp, name), "w").close()
+            self.assertEqual(["a.nmap", "b.xml"], DefaultShell().list_files(tmp))

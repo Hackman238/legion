@@ -41,7 +41,7 @@ class hostObj(Base):
     # Network
     isp = Column(String)
     asn = Column(String)
-    ip = Column(String)
+    ip = Column(String, index=True)
     ipv4 = Column(String)
     ipv6 = Column(String)
     macaddr = Column(String)

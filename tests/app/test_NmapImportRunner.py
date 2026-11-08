@@ -9,6 +9,7 @@ from app.importers.nmap_runner import import_nmap_xml_into_project
 from app.logging.legionLog import getAppLogger, getDbLogger
 from app.shell.DefaultShell import DefaultShell
 from db.RepositoryFactory import RepositoryFactory
+from parsers.Parser import MalformedXmlDocumentException
 
 
 class NmapImportRunnerTest(unittest.TestCase):
@@ -54,14 +55,25 @@ class NmapImportRunnerTest(unittest.TestCase):
                 service_names.add(str(service.name))
         self.assertTrue({"domain", "http", "netbios-ssn", "https", "msft"}.issubset(service_names))
 
-    def test_import_malformed_fixture_creates_no_hosts(self):
+    def test_import_malformed_fixture_raises_and_creates_no_hosts(self):
         project = self._create_project()
         xml_path = os.path.join("tests", "parsers", "nmap-fixtures", "malformed-nmap-report.xml")
 
-        import_nmap_xml_into_project(project=project, xml_path=xml_path)
+        # Callers (web/MCP import jobs, headless mode) must see the failure instead of a "completed" import.
+        with self.assertRaises(MalformedXmlDocumentException):
+            import_nmap_xml_into_project(project=project, xml_path=xml_path)
 
         hosts = project.repositoryContainer.hostRepository.getAllHostObjs()
         self.assertEqual(0, len(hosts))
+
+    def test_import_missing_file_raises(self):
+        project = self._create_project()
+        missing_xml = os.path.join(self.tempdir, "no-such-dir", "scan.xml")
+
+        with self.assertRaises(FileNotFoundError):
+            import_nmap_xml_into_project(project=project, xml_path=missing_xml)
+
+        self.assertEqual([], project.repositoryContainer.hostRepository.getAllHostObjs())
 
     def test_importer_finds_xml_in_subdirectory_when_primary_path_is_missing(self):
         project = self._create_project()

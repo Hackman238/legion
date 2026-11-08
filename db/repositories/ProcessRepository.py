@@ -16,6 +16,7 @@ Copyright (c) 2025 Shane William Scott
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
+from contextlib import contextmanager
 from typing import Union
 
 import time
@@ -30,7 +31,29 @@ from db.entities.process import process
 from db.entities.processOutput import process_output
 
 
+# Column aliases returned by getProcesses(); the only values accepted for ORDER BY.
+_SORTABLE_PROCESS_COLUMNS = frozenset({
+    'progress', 'display', 'elapsed', 'estimatedRemaining', 'percent', 'progressMessage', 'progressSource',
+    'progressUpdatedAt', 'pid', 'name', 'tabTitle', 'hostIp', 'port', 'protocol', 'command', 'startTime',
+    'endTime', 'outputfile', 'output', 'status', 'closed', 'id',
+})
+# Columns of the process table that getFieldByProcessId() may read.
+_PROCESS_FIELD_COLUMNS = frozenset(column.name for column in process.__table__.columns)
+
+
 class ProcessRepository:
+    @contextmanager
+    def _session_scope(self):
+        """The adapter's session for one unit of work: roll back on error and always close it."""
+        session = self.dbAdapter.session()
+        try:
+            yield session
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def __init__(self, dbAdapter: Database, log):
         self.dbAdapter = dbAdapter
         self.log = log
@@ -185,6 +208,9 @@ class ProcessRepository:
                     'WHERE process.display=:display'
                 )
                 params['display'] = str(showProcesses)
+                # ncol/sort cannot be bound parameters, so only accept known column names and directions.
+                ncol = ncol if str(ncol) in _SORTABLE_PROCESS_COLUMNS else 'id'
+                sort = str(sort).lower() if str(sort).lower() in ('asc', 'desc') else 'desc'
                 order_clause = f' ORDER BY {ncol} {sort}'
                 query = text(base_query + status_clause + order_clause)
                 result = session.execute(query, params)
@@ -218,25 +244,21 @@ class ProcessRepository:
                 pass
 
     def storeProcess(self, proc):
-        session = self.dbAdapter.session()
-        p_output = process_output()
-       
-        #p = process(str(proc.processId()), str(proc.name), str(proc.tabTitle),
-        p = process(str(proc.processId()), str(proc.name), str(proc.tabTitle),
-                    str(proc.hostIp), str(proc.port), str(proc.protocol),
-                    unicode(proc.command), proc.startTime, "", str(proc.outputfile),
-                    'Waiting', [p_output], None, 0)
+        with self._session_scope() as session:
+            p_output = process_output()
+            p = process(str(proc.processId()), str(proc.name), str(proc.tabTitle),
+                        str(proc.hostIp), str(proc.port), str(proc.protocol),
+                        unicode(proc.command), proc.startTime, "", str(proc.outputfile),
+                        'Waiting', [p_output], None, 0)
 
-        self.log.info(f"Adding process: {p}")
-        session.add(p)
-        session.commit()
-        proc.id = p.id
-        session.close()
-        return proc.id
+            self.log.info(f"Adding process: {p}")
+            session.add(p)
+            session.commit()
+            proc.id = p.id
+            return proc.id
 
     def storeProcessOutput(self, process_id: str, output: str):
-        session = self.dbAdapter.session()
-        try:
+        with self._session_scope() as session:
             proc = session.query(process).filter_by(id=process_id).first()
 
             if not proc:
@@ -264,11 +286,6 @@ class ProcessRepository:
             session.add(proc)
             session.commit()
             return True
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
 
     def getStatusByProcessId(self, process_id: str):
         return self.getFieldByProcessId("status", process_id)
@@ -285,12 +302,15 @@ class ProcessRepository:
         return True if status == "Cancelled" else False
 
     def getFieldByProcessId(self, field_name: str, process_id: str):
+        if str(field_name) not in _PROCESS_FIELD_COLUMNS:
+            raise ValueError(f"Unknown process field: {field_name!r}")
         session = self.dbAdapter.session()
-        query = text("SELECT process.{0} FROM process AS process WHERE process.id=:process_id".format(field_name))
-        p = session.execute(query, {'process_id': str(process_id)}).fetchall()
-        result = p[0][0] if p else -1
-        session.close()
-        return result
+        try:
+            query = text("SELECT process.{0} FROM process AS process WHERE process.id=:process_id".format(field_name))
+            p = session.execute(query, {'process_id': str(process_id)}).fetchall()
+            return p[0][0] if p else -1
+        finally:
+            session.close()
 
     def getHostsByToolName(self, toolName: str, closed: str = "False"):
         session = self.dbAdapter.session()
@@ -402,69 +422,78 @@ class ProcessRepository:
         return [dict(zip(keys, row)) for row in rows]
 
     def storeProcessCrashStatus(self, processId: str):
-        session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=processId).first()
-        if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
-            proc.status = 'Crashed'
-            proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = None
-            session.add(proc)
-            session.commit()
-        session.close()
+        with self._session_scope() as session:
+            proc = session.query(process).filter_by(id=processId).first()
+            if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
+                proc.status = 'Crashed'
+                proc.endTime = getTimestamp(True)
+                proc.estimatedRemaining = None
+                session.add(proc)
+                session.commit()
 
     def storeProcessProblemStatus(self, processId: str):
-        session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=processId).first()
-        if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
-            proc.status = 'Problem'
-            proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = None
-            session.add(proc)
+        with self._session_scope() as session:
+            proc = session.query(process).filter_by(id=processId).first()
+            if proc and not proc.status == 'Killed' and not proc.status == 'Cancelled':
+                proc.status = 'Problem'
+                proc.endTime = getTimestamp(True)
+                proc.estimatedRemaining = None
+                session.add(proc)
+                session.commit()
+
+    def markInterruptedProcesses(self) -> int:
+        """Mark processes still recorded as Running/Waiting as 'Crashed' and return how many were marked.
+
+        Call only when a project is opened: such rows were left by an earlier session (e.g. one that crashed),
+        nothing of this session can be running for them, and their stored PIDs may since have been reused.
+        'Crashed' (rather than 'Problem') is what the process views' "Failed" filter lists, and
+        storeProcessOutput never turns it back into 'Finished'.
+        """
+        with self._session_scope() as session:
+            # Only columns every project file has (older files may lack the progress columns).
+            marked = session.query(process).filter(process.status.in_(('Running', 'Waiting'))).update(
+                {process.status: 'Crashed', process.endTime: getTimestamp(True), process.estimatedRemaining: None},
+                synchronize_session=False
+            )
             session.commit()
-        session.close()
+            return int(marked or 0)
 
     def storeProcessCancelStatus(self, processId: str):
-        session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=processId).first()
-        if proc:
-            proc.status = 'Cancelled'
-            proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = None
-            session.add(proc)
-            session.commit()
-        session.close()
+        with self._session_scope() as session:
+            proc = session.query(process).filter_by(id=processId).first()
+            if proc:
+                proc.status = 'Cancelled'
+                proc.endTime = getTimestamp(True)
+                proc.estimatedRemaining = None
+                session.add(proc)
+                session.commit()
 
     def storeProcessKillStatus(self, processId: str):
-        session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=processId).first()
-        if proc and not proc.status == 'Finished':
-            proc.status = 'Killed'
-            proc.endTime = getTimestamp(True)
-            proc.estimatedRemaining = None
-            session.add(proc)
-            session.commit()
-        session.close()
+        with self._session_scope() as session:
+            proc = session.query(process).filter_by(id=processId).first()
+            if proc and not proc.status == 'Finished':
+                proc.status = 'Killed'
+                proc.endTime = getTimestamp(True)
+                proc.estimatedRemaining = None
+                session.add(proc)
+                session.commit()
 
     def storeProcessRunningStatus(self, processId: str, pid):
-        session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=processId).first()
-        if proc:
-            proc.status = 'Running'
-            proc.pid = str(pid)
-            session.add(proc)
-            session.commit()
-        session.close()
+        with self._session_scope() as session:
+            proc = session.query(process).filter_by(id=processId).first()
+            if proc:
+                proc.status = 'Running'
+                proc.pid = str(pid)
+                session.add(proc)
+                session.commit()
 
     def storeProcessRunningElapsedTime(self, processId: str, elapsed):
-        session = self.dbAdapter.session()
-        try:
+        with self._session_scope() as session:
             proc = session.query(process).filter_by(id=processId).first()
             if proc:
                 proc.elapsed = elapsed
                 session.add(proc)
                 session.commit()
-        finally:
-            session.close()
 
     def storeProcessPercent(self, processId: str, percent):
         """Update the percent field for a process."""
@@ -482,8 +511,7 @@ class ProcessRepository:
             progress_source=Ellipsis,
             progress_updated_at=Ellipsis,
     ):
-        session = self.dbAdapter.session()
-        try:
+        with self._session_scope() as session:
             proc = session.query(process).filter_by(id=processId).first()
             if not proc:
                 return
@@ -511,36 +539,29 @@ class ProcessRepository:
 
             session.add(proc)
             session.commit()
-        finally:
-            session.close()
 
     def storeCloseStatus(self, processId):
-        session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(id=processId).first()
-        if proc:
-            proc.closed = 'True'
-            session.add(proc)
-            session.commit()
-        session.close()
+        with self._session_scope() as session:
+            proc = session.query(process).filter_by(id=processId).first()
+            if proc:
+                proc.closed = 'True'
+                session.add(proc)
+                session.commit()
 
     def storeScreenshot(self, ip: str, port: str, filename: str):
-        session = self.dbAdapter.session()
-        p = process(0, "screenshooter", "screenshot (" + str(port) + "/tcp)", str(ip), str(port), "tcp", "",
-                    getTimestamp(True), getTimestamp(True), str(filename), "Finished", [process_output()], None, 0)
-        if p:
+        with self._session_scope() as session:
+            p = process(0, "screenshooter", "screenshot (" + str(port) + "/tcp)", str(ip), str(port), "tcp", "",
+                        getTimestamp(True), getTimestamp(True), str(filename), "Finished", [process_output()], None, 0)
             session.add(p)
             session.commit()
-            pD = p.id
-            session.close()
-        return pD
+            return p.id
 
     def toggleProcessDisplayStatus(self, resetAll=False):
-        session = self.dbAdapter.session()
-        proc = session.query(process).filter_by(display='True').all()
-        for p in proc:
-            session.add(self.toggleProcessStatusField(p, resetAll))
-        session.commit()
-        session.close()
+        with self._session_scope() as session:
+            proc = session.query(process).filter_by(display='True').all()
+            for p in proc:
+                session.add(self.toggleProcessStatusField(p, resetAll))
+            session.commit()
 
     @staticmethod
     def toggleProcessStatusField(p, reset_all):
@@ -553,11 +574,8 @@ class ProcessRepository:
         return p
 
     def resetDisplayStatusForOpenProcesses(self):
-        session = self.dbAdapter.session()
-        try:
+        with self._session_scope() as session:
             session.query(process).filter_by(closed='False').update(
                 {process.display: 'True'}, synchronize_session=False
             )
             session.commit()
-        finally:
-            session.close()

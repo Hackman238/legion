@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from app.core.common import getTempFolder
 from app.paths import get_legion_autosave_dir
+from app.web import runtime_jobs as web_runtime_jobs
 from app.web import runtime_processes as web_runtime_processes
 from app.web import runtime_project_autosave as web_runtime_project_autosave
 from app.web import runtime_project_bundle as web_runtime_project_bundle
@@ -229,10 +230,30 @@ def save_project_as_impl(runtime, project_path: str, replace: bool = True) -> Di
             projectType="legion",
         )
         if not saved_project:
+            if not replace:
+                raise RuntimeError(
+                    f"Project file already exists: {project_path}. Enable replace to overwrite it."
+                )
             raise RuntimeError("Save operation did not complete.")
 
         with runtime._lock:
             runtime.logic.activeProject = saved_project
+            # Requests use the new project from here on. Release the source database now if no other job is
+            # running; otherwise job types outside the scan guard above (screenshot refresh, capture sessions, ...)
+            # may still hold the old project's repositories, so it is retired and released once jobs go idle
+            # (runtime_jobs.handle_job_change).
+            source_database = getattr(source_project, "database", None)
+            if source_database is not None and source_database is not getattr(saved_project, "database", None):
+                if count_other_running_jobs(runtime, exclude_types={"project-save-as"}) == 0:
+                    try:
+                        source_database.dispose()
+                    except Exception:
+                        pass
+                else:
+                    runtime.logic.retireDatabase(source_database)
+                    # A job that finished between the count above and the retire ran its idle check before
+                    # the database was retired; re-check now so it is not left until some later job ends.
+                    web_runtime_jobs._dispose_retired_databases_if_idle(runtime)
             runtime._ensure_scheduler_table()
             runtime._ensure_scheduler_approval_store()
             runtime._ensure_process_tables()
@@ -241,6 +262,17 @@ def save_project_as_impl(runtime, project_path: str, replace: bool = True) -> Di
     finally:
         with runtime._lock:
             runtime._save_in_progress = False
+
+
+def count_other_running_jobs(runtime, *, exclude_types=frozenset()) -> int:
+    count = 0
+    for job in list(runtime.jobs.list_jobs(limit=200) or []):
+        if str(job.get("status", "") or "").strip().lower() != "running":
+            continue
+        if str(job.get("type", "") or "").strip() in exclude_types:
+            continue
+        count += 1
+    return count
 
 
 def count_running_scan_jobs(runtime, include_queued: bool = True) -> int:

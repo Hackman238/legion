@@ -67,8 +67,10 @@ def delete_script_entry(runtime, script_db_id: int) -> Dict[str, Any]:
 
 
 def get_script_output(runtime, script_db_id: int, offset: int = 0, max_chars: int = 12000) -> Dict[str, Any]:
+    """Return script metadata plus one output chunk; the output is sliced in SQL, never loaded whole."""
     offset_value = max(0, int(offset or 0))
     max_len = max(256, min(int(max_chars or 12000), 50000))
+    chunk_params = {"chunk_start": offset_value + 1, "chunk_len": max_len}
     with runtime._lock:
         project = runtime._require_active_project()
         session = project.database.session()
@@ -76,7 +78,9 @@ def get_script_output(runtime, script_db_id: int, offset: int = 0, max_chars: in
             script_result = session.execute(text(
                 "SELECT s.id AS script_db_id, "
                 "COALESCE(s.scriptId, '') AS script_id, "
-                "COALESCE(s.output, '') AS script_output, "
+                "length(COALESCE(s.output, '')) AS output_length, "
+                "substr(COALESCE(s.output, ''), :chunk_start, :chunk_len) AS output_chunk, "
+                "instr(CAST(COALESCE(s.output, '') AS BLOB), X'00') AS output_nul_at, "
                 "COALESCE(p.portId, '') AS port, "
                 "LOWER(COALESCE(p.protocol, 'tcp')) AS protocol, "
                 "COALESCE(h.ip, '') AS host_ip "
@@ -84,7 +88,7 @@ def get_script_output(runtime, script_db_id: int, offset: int = 0, max_chars: in
                 "LEFT JOIN portObj AS p ON p.id = s.portId "
                 "LEFT JOIN hostObj AS h ON h.id = s.hostId "
                 "WHERE s.id = :id LIMIT 1"
-            ), {"id": int(script_db_id)})
+            ), {"id": int(script_db_id), **chunk_params})
             script_row = script_result.fetchone()
             if script_row is None:
                 raise KeyError(f"Unknown script id: {script_db_id}")
@@ -95,7 +99,9 @@ def get_script_output(runtime, script_db_id: int, offset: int = 0, max_chars: in
                 "COALESCE(p.command, '') AS command, "
                 "COALESCE(p.outputfile, '') AS outputfile, "
                 "COALESCE(p.status, '') AS status, "
-                "COALESCE(o.output, '') AS output "
+                "length(COALESCE(o.output, '')) AS output_length, "
+                "substr(COALESCE(o.output, ''), :chunk_start, :chunk_len) AS output_chunk, "
+                "instr(CAST(COALESCE(o.output, '') AS BLOB), X'00') AS output_nul_at "
                 "FROM process AS p "
                 "LEFT JOIN process_output AS o ON o.processId = p.id "
                 "WHERE p.name = :tool_id "
@@ -108,18 +114,31 @@ def get_script_output(runtime, script_db_id: int, offset: int = 0, max_chars: in
                 "host_ip": str(script_data.get("host_ip", "") or ""),
                 "port": str(script_data.get("port", "") or ""),
                 "protocol": str(script_data.get("protocol", "tcp") or "tcp"),
+                **chunk_params,
             })
             process_row = process_result.fetchone()
             process_data = dict(zip(process_result.keys(), process_row)) if process_row else {}
+
+            has_process = bool(process_data.get("process_id"))
+            source_data = process_data if has_process else script_data
+            output_length = int(source_data.get("output_length", 0) or 0)
+            chunk = str(source_data.get("output_chunk", "") or "")
+            if int(source_data.get("output_nul_at", 0) or 0) > 0:
+                # SQLite's text functions stop at an embedded NUL; slice such (rare) output in Python instead.
+                if has_process:
+                    full_row = session.execute(text(
+                        "SELECT COALESCE(output, '') FROM process_output WHERE processId = :id LIMIT 1"
+                    ), {"id": int(process_data.get("process_id", 0) or 0)}).fetchone()
+                else:
+                    full_row = session.execute(text(
+                        "SELECT COALESCE(output, '') FROM l1ScriptObj WHERE id = :id LIMIT 1"
+                    ), {"id": int(script_db_id)}).fetchone()
+                full_output = str(full_row[0] or "") if full_row is not None else ""
+                output_length = len(full_output)
+                chunk = full_output[offset_value:offset_value + max_len]
         finally:
             session.close()
 
-    has_process = bool(process_data.get("process_id"))
-    output_text = str(process_data.get("output", "") or "") if has_process else str(script_data.get("script_output", "") or "")
-    output_length = len(output_text)
-    chunk = ""
-    if offset_value < output_length:
-        chunk = output_text[offset_value:offset_value + max_len]
     next_offset = offset_value + len(chunk)
     status = str(process_data.get("status", "") or "")
     completed = status not in {"Running", "Waiting"} if has_process else True
@@ -135,7 +154,6 @@ def get_script_output(runtime, script_db_id: int, offset: int = 0, max_chars: in
         "outputfile": str(process_data.get("outputfile", "") or ""),
         "command": web_runtime_processes.redact_command_secrets(process_data.get("command", "")),
         "status": status if has_process else "Saved",
-        "output": output_text,
         "output_chunk": chunk,
         "output_length": output_length,
         "offset": offset_value,

@@ -29,6 +29,7 @@ import ipaddress
 
 from app.httputil.isHttps import isHttps
 from app.logging.legionLog import getAppLogger
+from app.screenshot_targets import resolve_deferred_target
 from app.timing import timing
 from app.tooling import build_tool_execution_env
 
@@ -268,6 +269,7 @@ class BrowserOpener(QtCore.QThread):
         while self.urls:
             try:
                 url = self.urls.pop(0)
+                url = resolve_deferred_target(url)
                 self.tsLog('Opening url in browser: ' + url)
                 if isHttps(url.split(':')[0], url.split(':')[1]):
                     webbrowser.open_new_tab('https://' + url)

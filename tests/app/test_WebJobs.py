@@ -202,5 +202,88 @@ class WebJobManagerTest(unittest.TestCase):
         self._wait_for_state(manager, running_job["id"], {"completed"})
 
 
+    def test_cancel_queued_job_runs_discard_callback_and_running_job_reports_cancel_requested(self):
+        from app.web.jobs import WebJobManager
+
+        events = []
+        manager = WebJobManager(max_jobs=20, on_change=lambda job, event: events.append((job["id"], event)))
+        release = threading.Event()
+        started = threading.Event()
+        discarded = []
+
+        def _blocking():
+            started.set()
+            release.wait(timeout=1.5)
+            return {}
+
+        running = manager.start("unit-test", _blocking, on_discard=lambda: discarded.append("running"))
+        self.assertTrue(started.wait(timeout=1.5))
+        queued = manager.start("unit-test", lambda: {}, on_discard=lambda: discarded.append("queued"))
+
+        manager.cancel_job(queued["id"])
+        manager.cancel_job(running["id"])
+        self.assertIn((queued["id"], "cancelled"), events)
+        self.assertIn((running["id"], "cancel_requested"), events)
+        self.assertNotIn((running["id"], "cancelled"), events)
+
+        release.set()
+        finished = self._wait_for_state(manager, running["id"], {"cancelled"})
+        self.assertEqual("cancelled", finished["status"])
+        self.assertEqual(["queued"], discarded)
+
+
+    def test_cancelled_queued_restore_zip_job_removes_uploaded_zip(self):
+        import os
+        import tempfile
+
+        from app.web.jobs import WebJobManager
+        from app.web.runtime import WebRuntime
+        from app.web.runtime_project_bundle_restore import start_restore_project_zip_job
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime.jobs = WebJobManager(max_jobs=20)
+        release = threading.Event()
+        started = threading.Event()
+
+        def _blocking():
+            started.set()
+            release.wait(timeout=1.5)
+            return {}
+
+        blocker = runtime.jobs.start("unit-test", _blocking)
+        self.assertTrue(started.wait(timeout=1.5))
+        handle = tempfile.NamedTemporaryFile(prefix="legion-restore-upload-", suffix=".zip", delete=False)
+        handle.close()
+        try:
+            job = start_restore_project_zip_job(runtime, handle.name)
+            self.assertEqual("queued", job["status"])
+            runtime.jobs.cancel_job(job["id"])
+            self.assertFalse(os.path.exists(handle.name))
+        finally:
+            release.set()
+            self._wait_for_state(runtime.jobs, blocker["id"], {"completed"})
+            if os.path.exists(handle.name):
+                os.remove(handle.name)
+
+
+
+class WebJobManagerSkippedJobDiscardTest(unittest.TestCase):
+    def test_job_skipped_at_dequeue_runs_its_discard_callback(self):
+        import threading as _threading
+        from app.web.jobs import WebJobManager
+
+        discarded = _threading.Event()
+        manager = WebJobManager(worker_count=1)
+        blocker = _threading.Event()
+        manager.start("blocker", lambda: (blocker.wait(5), {})[1])
+        job = manager.start("restore", lambda: {}, on_discard=discarded.set)
+        with manager._queue_cv:
+            # The runner disappears without going through cancel_job (the skip path in dequeue).
+            manager._runners.pop(job["id"], None)
+        blocker.set()
+
+        self.assertTrue(discarded.wait(5))
+        self.assertNotIn(job["id"], manager._discard_callbacks)
+
 if __name__ == "__main__":
     unittest.main()

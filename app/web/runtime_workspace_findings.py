@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 from app.scheduler.state import get_target_state as load_target_state
 from app.web.runtime_workspace_identity import resolve_host_os
+from app.web.runtime_workspace_target_state import load_target_state_cache
 
 
 def _host_state_row(host: Any, target_state: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -70,13 +71,26 @@ def get_findings(
                 raise KeyError(f"Unknown host id: {host_id}")
             target_state = target_state_getter(project.database, int(host_id)) or {}
             host_rows = [_host_state_row(host, target_state)]
+            preloaded_states = {int(host_id): target_state}
         else:
             host_rows = list(runtime._hosts(limit=max(1, min(int(limit_hosts or 500), 5000))) or [])
+            preloaded_states = None
+            if target_state_getter is load_target_state:
+                # Default getter (also what WebRuntime passes): one bulk query instead of a lookup per host.
+                # A custom getter (e.g. in tests) is still called per host.
+                preloaded_states = load_target_state_cache(
+                    project,
+                    [int(row.get("id", 0) or 0) for row in host_rows],
+                )
 
         findings = []
         max_items = max(1, min(int(limit_findings or 1000), 5000))
         for row in host_rows:
-            state = target_state_getter(project.database, int(row.get("id", 0) or 0)) or {}
+            row_host_id = int(row.get("id", 0) or 0)
+            if preloaded_states is not None:
+                state = preloaded_states.get(row_host_id) or {}
+            else:
+                state = target_state_getter(project.database, row_host_id) or {}
             for item in list(state.get("findings", []) or []):
                 if not isinstance(item, dict):
                     continue

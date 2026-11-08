@@ -26,8 +26,8 @@ class l1ScriptObj(Base):
     scriptId = Column(String)
     id = Column(Integer, primary_key=True)
     output = Column(String)
-    portId = Column(String, ForeignKey('portObj.id'))
-    hostId = Column(String, ForeignKey('hostObj.id'))
+    portId = Column(String, ForeignKey('portObj.id'), index=True)
+    hostId = Column(String, ForeignKey('hostObj.id'), index=True)
 
     def __init__(self, scriptId, output, portId, hostId):
         self.scriptId = scriptId

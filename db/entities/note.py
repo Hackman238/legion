@@ -23,7 +23,7 @@ from six import u as unicode
 
 class note(Base):
     __tablename__ = 'note'
-    hostId = Column(Integer, ForeignKey('hostObj.id'))
+    hostId = Column(Integer, ForeignKey('hostObj.id'), index=True)
     id = Column(Integer, primary_key=True)
     text = Column(String)
 
