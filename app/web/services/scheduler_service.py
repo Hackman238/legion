@@ -80,6 +80,34 @@ class SchedulerService:
         self.runtime.scheduler_config.approve_family(request.family_id, request.metadata)
         return {"status": "ok", "family_id": request.family_id}
 
+    def set_family_policy(self, payload: Any) -> Dict[str, Any]:
+        source = payload if isinstance(payload, dict) else {}
+        family_id = str(source.get("family_id", "") or "").strip()
+        state = str(source.get("state", "") or "").strip().lower()
+        if not family_id:
+            raise ValueError("family_id is required.")
+        if state in {"", "clear", "none"}:
+            self.runtime.scheduler_config.clear_family_policy(family_id)
+        elif state in {"allowed", "suppressed", "approval_required", "blocked"}:
+            existing = self.runtime.scheduler_config.get_family_policy(family_id)
+            metadata = {
+                "tool_id": str(source.get("tool_id", existing.get("tool_id", "")) or ""),
+                "label": str(source.get("label", existing.get("label", "")) or ""),
+                "danger_categories": source.get("danger_categories", existing.get("danger_categories", [])),
+                "risk_tags": source.get("risk_tags", existing.get("risk_tags", [])),
+            }
+            self.runtime.scheduler_config.set_family_policy(
+                family_id, metadata, state, reason=str(source.get("reason", "") or "set via web"),
+            )
+        else:
+            raise ValueError("state must be allowed, suppressed, approval_required, blocked or clear.")
+        return {
+            "status": "ok",
+            "family_id": family_id,
+            "state": self.runtime.scheduler_config.get_family_policy_state(family_id),
+            "families": self.runtime.scheduler_config.list_family_policies(),
+        }
+
     def get_decisions(self, args) -> Dict[str, Any]:
         query = SchedulerDecisionQuery.from_args(args)
         return {"decisions": self.runtime.get_scheduler_decisions(limit=query.limit)}

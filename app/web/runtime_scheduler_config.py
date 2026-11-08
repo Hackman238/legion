@@ -233,6 +233,9 @@ def scheduler_preferences(runtime) -> Dict[str, Any]:
         "feature_flags": runtime.scheduler_config.get_feature_flags(),
         "dangerous_categories": config.get("dangerous_categories", []),
         "preapproved_families_count": len(config.get("preapproved_command_families", [])),
+        "preapproved_command_families": [
+            dict(item) for item in list(config.get("preapproved_command_families", []) or []) if isinstance(item, dict)
+        ],
         "ai_feedback": scheduler_feedback_config(config),
         "project_report_delivery": project_report_delivery_config(config),
         "secret_storage": runtime.scheduler_config.secret_storage_status(),

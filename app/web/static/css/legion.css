@@ -3098,3 +3098,96 @@ td button {
         justify-content: flex-start;
     }
 }
+
+
+/* Plan preview inside the Manual Tool Run modal */
+.plan-preview {
+    margin-top: 1rem;
+    border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+    padding-top: 0.75rem;
+}
+.plan-preview h3 {
+    margin: 0 0 0.5rem;
+    font-size: 0.95rem;
+}
+.plan-preview-meta {
+    color: var(--text-muted);
+    font-weight: normal;
+    font-size: 0.8rem;
+    margin-left: 0.5rem;
+}
+.plan-preview-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.75rem;
+}
+.plan-preview-column h4 {
+    margin: 0 0 0.35rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.plan-preview-column ol {
+    margin: 0;
+    padding-left: 1.2rem;
+    font-size: 0.85rem;
+}
+.plan-preview-column li {
+    margin-bottom: 0.3rem;
+}
+.plan-preview-column li small {
+    display: block;
+    color: var(--text-muted);
+}
+.plan-preview-empty {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+/* Execution output excerpt */
+.execution-output {
+    margin: 0.75rem 0 0;
+    max-height: 18rem;
+    overflow: auto;
+    padding: 0.75rem;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.45);
+    font-size: 0.78rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.inline-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+
+.open-workspace-path {
+    margin-bottom: 0.75rem;
+}
+.open-workspace-body td.path-cell {
+    font-family: monospace;
+    font-size: 0.78rem;
+    word-break: break-all;
+}
+.is-current-project td {
+    font-weight: 600;
+}
+.severity-pill {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: rgba(255, 255, 255, 0.08);
+}
+.severity-critical { background: rgba(214, 48, 49, 0.35); }
+.severity-high { background: rgba(225, 112, 85, 0.35); }
+.severity-medium { background: rgba(253, 203, 110, 0.3); }
+.severity-low { background: rgba(0, 184, 148, 0.25); }

@@ -87,6 +87,17 @@ def scheduler_approve_family():
         return json_error(str(exc), 500)
 
 
+@scheduler_bp.post("/api/scheduler/family-policy")
+def scheduler_family_policy():
+    service = _scheduler_service()
+    try:
+        return jsonify(service.set_family_policy(request.get_json(silent=True) or {}))
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    except Exception as exc:
+        return json_error(str(exc), 500)
+
+
 @scheduler_bp.get("/api/scheduler/decisions")
 def scheduler_decisions():
     service = _scheduler_service()
