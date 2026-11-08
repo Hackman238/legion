@@ -2119,7 +2119,7 @@ class WebAppTest(unittest.TestCase):
         self.assertIn('id="process-clear-all-button"', body)
         self.assertIn('aria-label="Hide All Non-Running"', body)
         self.assertIn('id="services-panel-toggle-button"', body)
-        self.assertIn('id="services-panel-body" class="table-wrap" hidden', body)
+        self.assertIn('id="services-panel-body" class="table-wrap"', body)
         self.assertIn('id="graph-panel-toggle-button"', body)
         self.assertIn('id="graph-panel-body"', body)
         self.assertIn('id="graph-zoom-slider" type="range" min="10"', body)

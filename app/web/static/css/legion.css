@@ -1,4 +1,5 @@
 :root {
+    color-scheme: dark;
     --bg-top: #0d0015;
     --bg-mid: #1a0a2e;
     --bg-bottom: #050010;
@@ -419,7 +420,7 @@ body.colorful-background .background-glow {
 }
 
 .ribbon-process-group {
-    flex: 0 1 744px;
+    flex: 1 1 620px;
     min-width: min(100%, 620px);
     flex-direction: column;
     flex-wrap: nowrap;
@@ -3191,3 +3192,24 @@ td button {
 .severity-high { background: rgba(225, 112, 85, 0.35); }
 .severity-medium { background: rgba(253, 203, 110, 0.3); }
 .severity-low { background: rgba(0, 184, 148, 0.25); }
+
+
+.ribbon-process-title {
+    margin: 0;
+    font-size: 1rem;
+}
+
+select {
+    background-color: rgba(13, 0, 21, 0.84);
+}
+
+.process-started-cell {
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+.process-elapsed-cell {
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}

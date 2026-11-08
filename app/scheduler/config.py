@@ -17,7 +17,7 @@ from app.scheduler.policy import (
 from app.scheduler.runners import normalize_runner_settings
 
 DEFAULT_FEATURE_FLAGS = {
-    "graph_workspace": False,
+    "graph_workspace": True,
     "credential_capture_panel": True,
     "optional_runners": True,
     "context_summary_enabled": True,
