@@ -1,3 +1,18 @@
+LEGION 0.7.1
+
+* Fixed the desktop UI failing to start (missing imports after the module split) and segfaulting on exit; Qt objects are now torn down in order on every exit path.
+* Fixed nmap import crashes: an import error or a bad XML no longer aborts the application, overlapping imports are queued instead of silently dropped, cancel state is per import, and a malformed or missing XML fails the import instead of reporting success.
+* Fixed data-loss paths around Save As: the replace prompt appears again, a refused or cancelled save no longer discards the project, saving a temporary project onto its own path keeps it, importers follow the reopened project, and scans still running across a Save As are imported.
+* Fixed CVE handling: a partial vulners re-scan no longer wipes CVEs for other ports or manually added entries, old-version CVEs are dropped after an upgrade, OS accuracy is stored and compared numerically, and MAC/vendor/uptime are filled on re-import.
+* Fixed per-host reports including other hosts' findings and credentials, the detection-risk policy setting having no effect, and approval lookups matching the wrong approval number.
+* Hardened process handling: a killed tool is reported as killed whatever its exit code, stale PIDs from a crashed session are never signalled, interrupted rows are reset when a project opens, user kills no longer show a crash dialog, and the process queue no longer leaks slots or timers.
+* Web runtime: tool output survives non-UTF-8 bytes, output polling and previews return only the requested slice, the host view reads each process output once, N+1 queries in the workspace views are batched, duplicate jobs are prevented, failed restores clean up, and RFC1918 sweeps survive a bad chunk.
+* Scheduler: Claude truncation retry and non-JSON handling, LM Studio reasoning output and model-cache invalidation, race-safe graph upserts with unique keys on legacy tables, stale screenshot/artifact nodes pruned, per-host locking for state updates, a per-engine schema cache, and indexed evidence lookups.
+* Importer and CLI: Exploit-DB lookups are offline (no git pull during imports) and work with both pyexploitdb and pyExploitDb package names; hostname targets are updated in place when resolved; headless mode handles nmap failures, leaves no temp folders and exports every CVE column; commits are batched and hot columns are indexed.
+* MCP server survives malformed or oversized requests and starts with a temporary project; governed discovery adds to the open project instead of replacing it.
+* Test suite grows from 723 to 937 tests, exits cleanly, and the fixtures that were never committed (ignored by `*.xml`) are restored.
+* README rewritten and shortened; pipette documentation moved to docs/pipettes.md.
+
 LEGION 0.7.0
 
 * Continued the web-first replatform by splitting the Flask surface into domain route modules, adding service/schema boundaries, and shrinking `WebRuntime` into focused project, scan, scheduler, graph, workspace, process, report, artifact, and settings modules.

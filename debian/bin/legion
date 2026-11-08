@@ -1,0 +1,10 @@
+#!/bin/sh
+# /usr/bin/legion: launcher installed by the Debian package.
+# With no arguments it starts the web interface (the primary surface); any
+# arguments are passed straight to legion.py, e.g. `legion --headless ...`,
+# `legion --mcp-server`, or `legion --web --web-bind-all`.
+cd /usr/share/legion || exit 1
+if [ "$#" -eq 0 ]; then
+    exec python3 legion.py --web
+fi
+exec python3 legion.py "$@"
