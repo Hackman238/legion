@@ -326,6 +326,8 @@ const uiModalState = {
     findingsOpen: false,
     openWorkspaceOpen: false,
     confirmOpen: false,
+    importOpen: false,
+    saveAsOpen: false,
     hostRemoveOpen: false,
     graphNoteOpen: false,
     workspaceSwitchGuardOpen: false,
@@ -444,6 +446,8 @@ function updateBodyModalState() {
         || uiModalState.findingsOpen
         || uiModalState.openWorkspaceOpen
         || uiModalState.confirmOpen
+        || uiModalState.importOpen
+        || uiModalState.saveAsOpen
         || uiModalState.hostRemoveOpen
         || uiModalState.graphNoteOpen
         || uiModalState.workspaceSwitchGuardOpen
@@ -4003,16 +4007,27 @@ async function openWorkspaceFromRibbonLegacyAction() {
 
 async function saveWorkspaceFromRibbonAction(forcePrompt = false) {
     closeRibbonMenus();
-    let path = getValue("project-save-path").trim();
+    const path = getValue("project-save-path").trim();
     if (forcePrompt || !path) {
-        const suggested = String(getValue("project-name") || "").trim();
-        const prompted = window.prompt("Enter destination path (.legion):", suggested);
-        path = String(prompted || "").trim();
-        if (!path) {
-            return;
-        }
-        setValue("project-save-path", path);
+        const current = document.getElementById("project-name")?.title || "";
+        setValue("save-as-path-input", path || (current.endsWith(".legion") && !current.includes("/tmp/") ? current : ""));
+        setChecked("save-as-replace", getChecked("project-save-replace"));
+        refreshProjectListAction().catch(() => {});  // fills the path suggestions
+        setGenericModalOpen("save-as-modal", "saveAsOpen", true);
+        return;
     }
+    await saveProjectAs();
+}
+
+async function confirmSaveAsDialog() {
+    const path = getValue("save-as-path-input").trim();
+    if (!path) {
+        setActionStatus("Save failed: destination path is required", true);
+        return;
+    }
+    setValue("project-save-path", path);
+    setChecked("project-save-replace", getChecked("save-as-replace"));
+    setGenericModalOpen("save-as-modal", "saveAsOpen", false);
     await saveProjectAs();
 }
 
@@ -4110,22 +4125,92 @@ async function restoreWorkspaceBundleSelectedAction(event) {
 }
 
 async function importNmapXmlFromRibbonAction() {
+    openImportDialog("xml");
+}
+
+function openImportDialog(kind = "xml") {
     closeRibbonMenus();
-    let path = getValue("nmap-xml-path").trim();
-    if (!path) {
-        const prompted = window.prompt("Enter Nmap XML path:", "");
-        path = String(prompted || "").trim();
-        if (!path) {
-            return;
-        }
-        setValue("nmap-xml-path", path);
+    setValue("import-kind-select", kind === "targets" ? "targets" : "xml");
+    setValue("import-path-input", kind === "targets" ? getValue("targets-file-path") : getValue("nmap-xml-path"));
+    const fileInput = document.getElementById("import-file-input");
+    if (fileInput) {
+        fileInput.value = "";
     }
-    const runActions = window.confirm("Run scripted actions after XML import?");
-    setChecked("nmap-xml-run-actions", runActions);
-    await importNmapXml();
+    setText("import-modal-status", "");
+    syncImportDialogKind();
+    setGenericModalOpen("import-modal", "importOpen", true);
+}
+
+function syncImportDialogKind() {
+    const kind = getValue("import-kind-select") || "xml";
+    const wrapper = document.getElementById("import-run-actions-wrapper");
+    if (wrapper) {
+        wrapper.hidden = kind !== "xml";
+    }
+    const pathInput = document.getElementById("import-path-input");
+    if (pathInput) {
+        pathInput.placeholder = kind === "xml" ? "/path/to/scan.xml" : "/path/to/targets.txt";
+    }
+    const fileInput = document.getElementById("import-file-input");
+    if (fileInput) {
+        fileInput.accept = kind === "xml" ? ".xml,text/xml,application/xml" : ".txt,.lst,.csv,text/plain";
+    }
+}
+
+async function submitImportDialog() {
+    const kind = getValue("import-kind-select") || "xml";
+    const fileInput = document.getElementById("import-file-input");
+    const file = fileInput?.files && fileInput.files.length ? fileInput.files[0] : null;
+    const path = getValue("import-path-input").trim();
+    const runActions = getChecked("import-run-actions");
+    if (!file && !path) {
+        setText("import-modal-status", "Choose a file to upload or enter a path on the Legion host.");
+        return;
+    }
+    setText("import-modal-status", file ? `Uploading ${file.name}...` : "Queueing import...");
+    try {
+        let body;
+        if (file) {
+            const formData = new FormData();
+            formData.append("file", file, file.name);
+            if (kind === "xml") {
+                formData.append("run_actions", runActions ? "true" : "false");
+            }
+            const response = await fetch(kind === "xml" ? "/api/nmap/import-xml-upload" : "/api/targets/import-upload", {
+                method: "POST",
+                body: formData,
+            });
+            try {
+                body = await response.json();
+            } catch (_err) {
+                body = {};
+            }
+            if (!response.ok) {
+                throw new Error(body.error || `Request failed (${response.status})`);
+            }
+        } else if (kind === "xml") {
+            setValue("nmap-xml-path", path);
+            body = await postJson("/api/nmap/import-xml", {path, run_actions: runActions});
+        } else {
+            setValue("targets-file-path", path);
+            body = await postJson("/api/targets/import-file", {path});
+        }
+        const jobId = body?.job?.id;
+        const label = kind === "xml" ? "Nmap XML import" : "Targets import";
+        setActionStatus(jobId ? `${label} queued (job ${jobId})` : `${label} queued`);
+        setGenericModalOpen("import-modal", "importOpen", false);
+        await pollSnapshot();
+    } catch (err) {
+        setText("import-modal-status", `Import failed: ${err.message}`);
+        setActionStatus(`Import failed: ${err.message}`, true);
+    }
 }
 
 async function importTargetsFromRibbonAction() {
+    openImportDialog("targets");
+}
+
+async function importTargetsFromRibbonLegacyAction() {
     closeRibbonMenus();
     let path = getValue("targets-file-path").trim();
     if (!path) {
@@ -6183,6 +6268,35 @@ function renderHostDetail(payload) {
                 }
             }
             tr.appendChild(screenshotCell);
+            const portActions = document.createElement("td");
+            portActions.className = "process-actions";
+            const runButton = document.createElement("button");
+            runButton.type = "button";
+            runButton.className = "icon-btn";
+            runButton.title = `Run a tool against ${row.port}/${row.protocol || "tcp"}`;
+            runButton.setAttribute("aria-label", runButton.title);
+            runButton.innerHTML = '<i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i>';
+            runButton.addEventListener("click", () => {
+                const target = {
+                    host_id: Number(host.id || 0),
+                    host_ip: String(host.ip || ""),
+                    hostname: String(host.hostname || ""),
+                    port: String(row.port || ""),
+                    protocol: String(row.protocol || "tcp"),
+                    service: String(row.service?.name || ""),
+                    service_product: String(row.service?.product || ""),
+                    service_version: String(row.service?.version || ""),
+                    label: [host.ip, host.hostname, row.service?.name, `${row.port}/${row.protocol || "tcp"}`].filter(Boolean).join(" | "),
+                };
+                openManualToolPicker({
+                    contextLabel: `Tools for ${host.ip} ${row.port}/${row.protocol || "tcp"}${row.service?.name ? ` (${row.service.name})` : ""}`,
+                    targets: [target],
+                    hostId: Number(host.id || 0),
+                    service: String(row.service?.name || ""),
+                });
+            });
+            portActions.appendChild(runButton);
+            tr.appendChild(portActions);
             portsBody.appendChild(tr);
         });
     }
@@ -12548,6 +12662,12 @@ function bindActionButtons() {
     bind("workspace-plan-preview-button", previewPlanAction);
     bind("open-workspace-modal-close", () => setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false));
     bind("confirm-modal-close", () => resolveConfirmModal(false));
+    bind("import-modal-close", () => setGenericModalOpen("import-modal", "importOpen", false));
+    bind("import-submit-button", submitImportDialog);
+    bind("import-kind-select", syncImportDialogKind, "change");
+    bind("save-as-modal-close", () => setGenericModalOpen("save-as-modal", "saveAsOpen", false));
+    bind("save-as-cancel-button", () => setGenericModalOpen("save-as-modal", "saveAsOpen", false));
+    bind("save-as-confirm-button", confirmSaveAsDialog);
     bind("confirm-modal-cancel", () => resolveConfirmModal(false));
     bind("confirm-modal-confirm", () => resolveConfirmModal(true));
     bind("open-workspace-path-button", () => openWorkspacePath(""));
@@ -13220,6 +13340,14 @@ function bindActionButtons() {
             resolveConfirmModal(false);
             return;
         }
+        if (uiModalState.importOpen) {
+            setGenericModalOpen("import-modal", "importOpen", false);
+            return;
+        }
+        if (uiModalState.saveAsOpen) {
+            setGenericModalOpen("save-as-modal", "saveAsOpen", false);
+            return;
+        }
         if (uiModalState.interfaceSettingsOpen) {
             setInterfaceSettingsModalOpen(false);
             return;
@@ -13284,6 +13412,8 @@ function bindActionButtons() {
             || uiModalState.findingsOpen
             || uiModalState.openWorkspaceOpen
             || uiModalState.confirmOpen
+            || uiModalState.importOpen
+            || uiModalState.saveAsOpen
             || uiModalState.hostRemoveOpen
             || uiModalState.graphNoteOpen
             || uiModalState.interfaceSettingsOpen
