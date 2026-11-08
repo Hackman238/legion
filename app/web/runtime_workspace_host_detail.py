@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from app.scheduler.state import get_target_state as load_target_state
+from app.web.runtime_scheduler_host_inference import host_observation_cache
 from app.web.runtime_workspace_identity import resolve_host_os
 
 
@@ -19,7 +20,9 @@ def get_host_workspace(
         from app.web.runtime_workspace_read import host_detail_script_preview
         preview_builder = host_detail_script_preview
 
-    with runtime._lock:
+    # The AI analysis and URL inference below each read the host's script/process outputs; the cache loads
+    # them once for this request instead of once per inference while the runtime lock is held.
+    with runtime._lock, host_observation_cache():
         project = runtime._require_active_project()
         host = runtime._resolve_host(host_id)
         if host is None:

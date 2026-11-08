@@ -1,6 +1,7 @@
 import os
 import tempfile
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -242,6 +243,66 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
         self.assertIn("192.168.3.0/24", commands[1])
         self.assertEqual("completed", str(status_updates[-1].get("status", "")))
 
+    def test_rfc1918_sweep_keeps_going_when_one_chunk_cannot_be_imported(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        runtime.jobs = SimpleNamespace(is_cancel_requested=lambda _job_id: False)
+        runtime._emit_ui_invalidation = lambda *args, **kwargs: None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            host_repo = SimpleNamespace(getAllHostObjs=lambda: [])
+            project = SimpleNamespace(
+                properties=SimpleNamespace(runningFolder=temp_dir),
+                repositoryContainer=SimpleNamespace(hostRepository=host_repo),
+            )
+            runtime.logic = SimpleNamespace(activeProject=project)
+            runtime._require_active_project = lambda: project
+            imported_xmls = []
+            killed = []
+
+            def fake_run_command_with_tracking(**kwargs):
+                xml_path = f"{kwargs.get('outputfile', '')}.xml"
+                with open(xml_path, "w", encoding="utf-8") as handle:
+                    handle.write("<nmaprun/>")
+                return True, "", 1
+
+            def fake_import(xml_path, run_actions=False):
+                if "-chunk-00001" in xml_path:
+                    raise ValueError("truncated XML")  # e.g. MalformedXmlDocumentException
+                imported_xmls.append(xml_path)
+                return {"xml_path": xml_path}
+
+            runtime._run_command_with_tracking = fake_run_command_with_tracking
+            runtime._import_nmap_xml = fake_import
+            runtime.kill_process = lambda process_id: killed.append(process_id)
+            runtime._run_scheduler_actions_web = lambda: None
+            runtime._update_scan_submission_status = lambda **kwargs: None
+
+            result = runtime._run_nmap_scan_and_import(
+                targets=["192.168.0.0/22"],
+                discovery=True,
+                staged=False,
+                run_actions=False,
+                nmap_path="nmap",
+                nmap_args="",
+                scan_mode="rfc1918_discovery",
+                scan_options={
+                    "host_discovery_only": False,
+                    "scan_profile": "quick",
+                    "service_detection": False,
+                    "default_scripts": False,
+                    "os_detection": False,
+                },
+                job_id=7,
+            )
+
+        self.assertEqual(2, result["chunks_completed"])          # the sweep finished
+        self.assertEqual(1, len(imported_xmls))                   # the good chunk was imported
+        self.assertEqual([], killed)                              # nothing was aborted
+        self.assertTrue(any("batch 1/2" in item and "truncated XML" in item for item in result["warnings"]))
+
     def test_run_nmap_scan_and_import_respects_rfc1918_chunk_concurrency(self):
         from app.web.runtime import WebRuntime
 
@@ -311,6 +372,144 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
         self.assertEqual(2, max_active)
         self.assertEqual(2, len(imported_xmls))
         self.assertEqual("completed", str(status_updates[-1].get("status", "")))
+
+
+    def test_rfc1918_sweep_failure_kills_outstanding_batches_without_waiting(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        runtime.jobs = SimpleNamespace(is_cancel_requested=lambda _job_id: False)
+        runtime._emit_ui_invalidation = lambda *args, **kwargs: None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            host_repo = SimpleNamespace(getAllHostObjs=lambda: [])
+            project = SimpleNamespace(
+                properties=SimpleNamespace(runningFolder=temp_dir),
+                repositoryContainer=SimpleNamespace(hostRepository=host_repo),
+            )
+            runtime.logic = SimpleNamespace(activeProject=project)
+            runtime._require_active_project = lambda: project
+
+            release_slow = threading.Event()
+            slow_started = threading.Event()
+            killed = []
+
+            def fake_run_command_with_tracking(**kwargs):
+                if "-chunk-00001" in str(kwargs.get("outputfile", "")):
+                    slow_started.wait(1.0)
+                    return False, "failed: exit 1", 1
+                slow_started.set()
+                release_slow.wait(5.0)
+                return False, "killed", 2
+
+            def fake_kill_process(process_id):
+                killed.append(int(process_id))
+                release_slow.set()
+                return {"killed": True}
+
+            runtime._run_command_with_tracking = fake_run_command_with_tracking
+            runtime._job_active_process_ids = lambda _job_id: [2]
+            runtime.kill_process = fake_kill_process
+            runtime._import_nmap_xml = lambda xml_path, run_actions=False: {"xml_path": xml_path}
+            runtime._run_scheduler_actions_web = lambda: {"ran": True}
+            runtime._update_scan_submission_status = lambda **kwargs: None
+
+            started = time.monotonic()
+            with self.assertRaises(RuntimeError):
+                runtime._run_nmap_scan_and_import(
+                    targets=["192.168.0.0/22"],
+                    discovery=True,
+                    staged=False,
+                    run_actions=False,
+                    nmap_path="nmap",
+                    nmap_args="",
+                    scan_mode="rfc1918_discovery",
+                    scan_options={
+                        "host_discovery_only": False,
+                        "scan_profile": "quick",
+                        "chunk_concurrency": 2,
+                        "service_detection": False,
+                        "default_scripts": False,
+                        "os_detection": False,
+                    },
+                    job_id=7,
+                )
+            elapsed = time.monotonic() - started
+            release_slow.set()
+
+        self.assertEqual([2], killed)
+        self.assertLess(elapsed, 3.0)
+
+    def test_rfc1918_sweep_without_job_id_still_kills_outstanding_batches(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        runtime.jobs = SimpleNamespace(is_cancel_requested=lambda _job_id: False)
+        runtime._emit_ui_invalidation = lambda *args, **kwargs: None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            host_repo = SimpleNamespace(getAllHostObjs=lambda: [])
+            project = SimpleNamespace(
+                properties=SimpleNamespace(runningFolder=temp_dir),
+                repositoryContainer=SimpleNamespace(hostRepository=host_repo),
+            )
+            runtime.logic = SimpleNamespace(activeProject=project)
+            runtime._require_active_project = lambda: project
+
+            release_slow = threading.Event()
+            slow_started = threading.Event()
+            killed = []
+
+            def fake_run_command_with_tracking(**kwargs):
+                if "-chunk-00001" in str(kwargs.get("outputfile", "")):
+                    kwargs["on_process_created"](11)
+                    slow_started.wait(1.0)
+                    return False, "failed: exit 1", 11
+                kwargs["on_process_created"](12)
+                slow_started.set()
+                release_slow.wait(5.0)
+                return False, "killed", 12
+
+            def fake_kill_process(process_id):
+                killed.append(int(process_id))
+                if int(process_id) == 12:
+                    release_slow.set()
+                return {"killed": True}
+
+            runtime._run_command_with_tracking = fake_run_command_with_tracking
+            runtime._job_active_process_ids = lambda _job_id: self.fail("no job id to look up")
+            runtime.kill_process = fake_kill_process
+            runtime._import_nmap_xml = lambda xml_path, run_actions=False: {"xml_path": xml_path}
+            runtime._run_scheduler_actions_web = lambda: {"ran": True}
+            runtime._update_scan_submission_status = lambda **kwargs: None
+
+            started = time.monotonic()
+            with self.assertRaises(RuntimeError):
+                runtime._run_nmap_scan_and_import(
+                    targets=["192.168.0.0/22"],
+                    discovery=True,
+                    staged=False,
+                    run_actions=False,
+                    nmap_path="nmap",
+                    nmap_args="",
+                    scan_mode="rfc1918_discovery",
+                    scan_options={
+                        "host_discovery_only": False,
+                        "scan_profile": "quick",
+                        "chunk_concurrency": 2,
+                        "service_detection": False,
+                        "default_scripts": False,
+                        "os_detection": False,
+                    },
+                    job_id=0,
+                )
+            elapsed = time.monotonic() - started
+            release_slow.set()
+
+        self.assertIn(12, killed)
+        self.assertLess(elapsed, 3.0)
 
 
 if __name__ == "__main__":

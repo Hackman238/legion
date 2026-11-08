@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<!-- Synthetic test fixture. -->
+<nmaprun scanner="nmap" args="nmap -sV -oX - 172.67.68.11" start="1773748800" startstr="Tue Mar 17 12:00:00 2026" version="7.94" xmloutputversion="1.05">
+    <scaninfo type="connect" protocol="tcp" numservices="1000" services="1-1000"/>
+    <verbose level="0"/>
+    <debugging level="0"/>
+    <host starttime="1773748800" endtime="1773748860">
+        <status state="up" reason="syn-ack" reason_ttl="0"/>
+        <address addr="172.67.68.11" addrtype="ipv4"/>
+        <hostnames>
+            <hostname name="tantalumlabs.io" type="PTR"/>
+        </hostnames>
+        <ports>
+            <port protocol="tcp" portid="80">
+                <state state="open" reason="syn-ack" reason_ttl="0"/>
+                <service name="http" product="cloudflare" version="" method="probed" conf="10"/>
+            </port>
+            <port protocol="tcp" portid="443">
+                <state state="open" reason="syn-ack" reason_ttl="0"/>
+                <service name="https" product="cloudflare" version="" method="probed" conf="10"/>
+            </port>
+        </ports>
+        <times srtt="2060" rttvar="281" to="100000"/>
+    </host>
+    <host starttime="1773748800" endtime="1773748860">
+        <status state="up" reason="syn-ack" reason_ttl="0"/>
+        <address addr="172.67.68.11" addrtype="ipv4"/>
+        <hostnames>
+            <hostname name="tantalumlabs.io" type="PTR"/>
+        </hostnames>
+        <ports>
+            <port protocol="tcp" portid="8080">
+                <state state="open" reason="syn-ack" reason_ttl="0"/>
+                <service name="http-proxy" product="cloudflare" version="" method="probed" conf="10"/>
+            </port>
+            <port protocol="tcp" portid="8443">
+                <state state="open" reason="syn-ack" reason_ttl="0"/>
+                <service name="https-alt" product="cloudflare" version="" method="probed" conf="10"/>
+            </port>
+        </ports>
+        <times srtt="2060" rttvar="281" to="100000"/>
+    </host>
+    <runstats>
+        <finished time="1773748860" timestr="Tue Mar 17 12:01:00 2026" elapsed="60.00" summary="Synthetic fixture." exit="success"/>
+        <hosts up="1" down="0" total="1"/>
+    </runstats>
+</nmaprun>

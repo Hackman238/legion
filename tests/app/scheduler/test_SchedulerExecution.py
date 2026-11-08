@@ -83,3 +83,31 @@ class SchedulerExecutionStoreTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SchedulerExecutionHostFilterTest(unittest.TestCase):
+    def test_list_execution_records_filters_by_host_ip_in_sql(self):
+        from sqlalchemy import text
+
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        try:
+            ensure_scheduler_execution_table(project.database)
+            session = project.database.session()
+            session.execute(text(
+                "INSERT INTO scheduler_execution_record (execution_id, host_ip) VALUES ('old-a', '10.0.0.1')"
+            ))
+            for index in range(5):
+                session.execute(text(
+                    "INSERT INTO scheduler_execution_record (execution_id, host_ip) VALUES (:eid, '10.0.0.2')"
+                ), {"eid": f"new-b-{index}"})
+            session.commit()
+            session.close()
+
+            self.assertEqual([], [item for item in list_execution_records(project.database, limit=3)
+                                  if item["host_ip"] == "10.0.0.1"])
+            host_rows = list_execution_records(project.database, limit=3, host_ip="10.0.0.1")
+            self.assertEqual(["old-a"], [item["execution_id"] for item in host_rows])
+        finally:
+            project_manager.closeProject(project)

@@ -134,7 +134,14 @@ def _graph_inline_evidence_text(runtime, project, node: Dict[str, Any], props: D
     return inline_text[:safe_max_chars] if safe_max_chars > 0 else ""
 
 
-def _resolve_graph_content_entry_locked(runtime, project, node: Dict[str, Any], *, max_chars: int = 12000) -> Dict[str, Any]:
+def _resolve_graph_content_entry_locked(
+        runtime,
+        project,
+        node: Dict[str, Any],
+        *,
+        max_chars: int = 12000,
+        full_process_output: bool = False,
+) -> Dict[str, Any]:
     node_id = str(node.get("node_id", "") or "")
     node_type = str(node.get("type", "") or "").strip().lower()
     props = node.get("properties", {}) if isinstance(node.get("properties", {}), dict) else {}
@@ -182,8 +189,16 @@ def _resolve_graph_content_entry_locked(runtime, project, node: Dict[str, Any], 
             process_id = int(ref.split(":", 1)[1])
         except (TypeError, ValueError):
             return base
-        payload = runtime.get_process_output(process_id, offset=0, max_chars=max_chars)
-        output_text = str(payload.get("output", "") or payload.get("output_chunk", "") or "")
+        if full_process_output:
+            # Downloads serve the whole captured output.
+            output_text = str(runtime.get_process_output_text(process_id) or "")
+        else:
+            # Previews (up to several per related-content listing, under runtime._lock) only need the head.
+            try:
+                payload = runtime.get_process_output(process_id, offset=0, max_chars=max_chars)
+            except KeyError:  # the process row is gone
+                payload = {}
+            output_text = str(payload.get("output_chunk", "") or "")
         return {
             **base,
             "kind": "text",
@@ -297,7 +312,9 @@ def get_graph_content(runtime, node_id: str, *, download: bool = False, max_char
         )
         if node is None:
             raise KeyError(f"Unknown graph node id: {node_id}")
-        entry = _resolve_graph_content_entry_locked(runtime, project, node, max_chars=max_chars)
+        entry = _resolve_graph_content_entry_locked(
+            runtime, project, node, max_chars=max_chars, full_process_output=bool(download),
+        )
         ref = str(entry.get("ref", "") or "").strip()
         resolved_path = str(entry.get("path", "") or "").strip()
         if str(entry.get("kind", "") or "") == "text" and (ref.startswith("process_output:") or not resolved_path):

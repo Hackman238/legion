@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from app.timing import getTimestamp
 from app.web import runtime_processes as web_runtime_processes
+from app.web import runtime_jobs as web_runtime_jobs
 
 
 def default_credential_capture_config() -> Dict[str, Any]:
@@ -271,13 +272,23 @@ def save_credential_capture_config(runtime, updates: Optional[Dict[str, Any]] = 
     return state
 
 
+def find_active_credential_capture_job(runtime, tool_id: str) -> Optional[Dict[str, Any]]:
+    """Return the queued/running capture job for a tool; its process row only exists once the job runs."""
+    normalized_tool = str(tool_id or "").strip().lower()
+    return web_runtime_jobs.find_active_job(
+        runtime,
+        job_type="credential-capture-session",
+        payload_match=lambda payload: str(payload.get("tool", "") or "").strip().lower() == normalized_tool,
+    )
+
+
 def start_credential_capture_session_job(runtime, tool_id: str) -> Dict[str, Any]:
     normalized_tool = str(tool_id or "").strip().lower()
     if normalized_tool not in {"responder", "ntlmrelayx"}:
         raise ValueError("Unsupported credential capture tool.")
     with runtime._lock:
         session_state = latest_credential_capture_session_locked(runtime, normalized_tool)
-        if bool(session_state.get("running")):
+        if bool(session_state.get("running")) or find_active_credential_capture_job(runtime, normalized_tool):
             raise ValueError(f"{normalized_tool} is already running.")
         config = normalize_credential_capture_config(
             runtime._get_workspace_setting_locked("credential_capture_config", default_credential_capture_config())
@@ -286,11 +297,12 @@ def start_credential_capture_session_job(runtime, tool_id: str) -> Dict[str, Any
             "tool": normalized_tool,
             "config": dict(config.get(normalized_tool, {})),
         }
-    return runtime._start_job(
-        "credential-capture-session",
-        lambda job_id: run_credential_capture_session(runtime, tool_id=normalized_tool, job_id=int(job_id or 0)),
-        payload=payload,
-    )
+        # Start while still holding the lock so concurrent requests cannot both pass the check above.
+        return runtime._start_job(
+            "credential-capture-session",
+            lambda job_id: run_credential_capture_session(runtime, tool_id=normalized_tool, job_id=int(job_id or 0)),
+            payload=payload,
+        )
 
 
 def stop_credential_capture_session(runtime, tool_id: str) -> Dict[str, Any]:
@@ -300,16 +312,28 @@ def stop_credential_capture_session(runtime, tool_id: str) -> Dict[str, Any]:
     with runtime._lock:
         session_state = latest_credential_capture_session_locked(runtime, normalized_tool)
         process_id = int(session_state.get("process_id", 0) or 0)
-    if process_id <= 0 or not bool(session_state.get("running")):
+        active_job = find_active_credential_capture_job(runtime, normalized_tool)
+    process_running = process_id > 0 and bool(session_state.get("running"))
+    if not process_running and active_job is None:
         return {"stopped": False, "tool": normalized_tool, "reason": "not running"}
-    result = runtime.kill_process(int(process_id))
+    result: Dict[str, Any] = {}
+    if process_running:
+        result = runtime.kill_process(int(process_id))
+    else:
+        # Queued, or running but its process row is not created yet: cancelling the job stops it
+        # (a queued job is dropped; the runner checks the cancel request before launching the tool).
+        runtime.jobs.cancel_job(int(active_job.get("id", 0) or 0), reason="stopped by user")
+        process_id = 0
     runtime._emit_ui_invalidation("processes", "overview", "credential_capture", throttle_seconds=0.1)
-    return {
+    response = {
         "stopped": True,
         "tool": normalized_tool,
         "process_id": int(process_id),
         **result,
     }
+    if active_job is not None:
+        response["job_id"] = int(active_job.get("id", 0) or 0)
+    return response
 
 
 def get_credential_capture_log_payload(runtime, tool_id: str) -> Dict[str, Any]:
@@ -321,27 +345,12 @@ def get_credential_capture_log_payload(runtime, tool_id: str) -> Dict[str, Any]:
     process_id = int(session_state.get("process_id", 0) or 0)
     if process_id <= 0:
         raise KeyError(f"No {normalized_tool} session found.")
-    output = runtime.get_process_output(process_id, offset=0, max_chars=50000)
-    full_text = str(output.get("output", "") or "")
-    chunk = str(output.get("output_chunk", "") or "")
-    if full_text:
-        text_value = full_text
-    else:
-        text_value = chunk
-        next_offset = int(output.get("next_offset", len(chunk)) or len(chunk))
-        output_length = int(output.get("output_length", len(chunk)) or len(chunk))
-        while next_offset < output_length:
-            next_payload = runtime.get_process_output(process_id, offset=next_offset, max_chars=50000)
-            next_chunk = str(next_payload.get("output_chunk", "") or "")
-            if not next_chunk:
-                break
-            text_value += next_chunk
-            next_offset = int(next_payload.get("next_offset", next_offset + len(next_chunk)) or (next_offset + len(next_chunk)))
+    output = runtime.get_process_output(process_id, offset=0, max_chars=256)
     return {
         "tool": normalized_tool,
         "process_id": process_id,
         "status": str(output.get("status", "") or session_state.get("status", "")),
-        "text": text_value,
+        "text": str(runtime.get_process_output_text(process_id) or ""),
     }
 
 

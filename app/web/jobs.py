@@ -16,6 +16,8 @@ class WebJobManager:
         self._jobs_by_id: Dict[int, Dict[str, Any]] = {}
         self._pending_job_ids: List[int] = []
         self._runners: Dict[int, Callable[[], Dict[str, Any]]] = {}
+        # Called when a job is dropped before its runner ever started (e.g. cancelled while queued).
+        self._discard_callbacks: Dict[int, Callable[[], None]] = {}
         self._workers: List[threading.Thread] = []
         self._running_job_count = 0
         self._running_exclusive_job_id = 0
@@ -29,6 +31,7 @@ class WebJobManager:
             payload: Optional[Dict[str, Any]] = None,
             queue_front: bool = False,
             exclusive: bool = False,
+            on_discard: Optional[Callable[[], None]] = None,
     ):
         job_id = next(self._counter)
         now = self._utc_now()
@@ -50,6 +53,8 @@ class WebJobManager:
             self._jobs.append(job)
             self._jobs_by_id[job_id] = job
             self._runners[job_id] = runner
+            if callable(on_discard):
+                self._discard_callbacks[job_id] = on_discard
             if queue_front:
                 self._pending_job_ids.insert(0, job_id)
             else:
@@ -113,6 +118,7 @@ class WebJobManager:
     def cancel_job(self, job_id: int, reason: str = "cancelled by user") -> Optional[Dict[str, Any]]:
         target_id = int(job_id)
         cancel_reason = str(reason or "cancelled by user")
+        discarded: List[Callable[[], None]] = []
         with self._queue_cv:
             job = self._jobs_by_id.get(target_id)
             if job is None:
@@ -133,11 +139,17 @@ class WebJobManager:
                 job["status"] = "cancelled"
                 job["error"] = cancel_reason
                 job["finished_at"] = self._utc_now()
+                discard_callback = self._discard_callbacks.pop(target_id, None)
+                if discard_callback is not None:
+                    discarded.append(discard_callback)
                 self._trim_locked()
 
             self._queue_cv.notify_all()
             copied = self._copy_job(job)
-        self._notify_change(copied, "cancelled")
+        self._run_discard_callbacks(discarded)
+        # A running job only has a cancel request recorded; it reports "cancelled" when it stops.
+        event_name = "cancelled" if str(copied.get("status", "") or "") == "cancelled" else "cancel_requested"
+        self._notify_change(copied, event_name)
         return copied
 
     def is_cancel_requested(self, job_id: int) -> bool:
@@ -218,6 +230,7 @@ class WebJobManager:
                 self._pending_job_ids.pop(0)
                 if job_id in self._runners:
                     del self._runners[job_id]
+                self._discard_skipped_job_locked(job_id)
                 continue
 
             status = str(job.get("status", "") or "").strip().lower()
@@ -225,6 +238,7 @@ class WebJobManager:
                 self._pending_job_ids.pop(0)
                 if job_id in self._runners:
                     del self._runners[job_id]
+                self._discard_skipped_job_locked(job_id)
                 continue
 
             if self._running_exclusive_job_id:
@@ -235,6 +249,7 @@ class WebJobManager:
                     return None
                 self._pending_job_ids.pop(0)
                 self._runners.pop(job_id, None)
+                self._discard_callbacks.pop(job_id, None)
                 self._running_job_count += 1
                 self._running_exclusive_job_id = int(job_id)
                 job["status"] = "running"
@@ -243,6 +258,7 @@ class WebJobManager:
 
             self._pending_job_ids.pop(0)
             self._runners.pop(job_id, None)
+            self._discard_callbacks.pop(job_id, None)
             self._running_job_count += 1
             job["status"] = "running"
             job["started_at"] = self._utc_now()
@@ -259,7 +275,18 @@ class WebJobManager:
         thread.start()
         self._workers.append(thread)
 
+    def _discard_skipped_job_locked(self, job_id: int):
+        # The job leaves the queue without ever running: run its cleanup, but not while holding the queue
+        # lock (callbacks may do I/O), so hand it to a short-lived thread.
+        callback = self._discard_callbacks.pop(job_id, None)
+        if callback is not None:
+            threading.Thread(
+                target=self._run_discard_callbacks, args=([callback],), daemon=True,
+                name=f"legion-job-discard-{job_id}",
+            ).start()
+
     def _trim_locked(self):
+        # Only finished jobs are trimmed; queued jobs (the only ones with discard callbacks) are never dropped here.
         while len(self._jobs) > self.max_jobs:
             drop_index = None
             for idx, candidate in enumerate(self._jobs):
@@ -280,6 +307,15 @@ class WebJobManager:
                 del self._runners[dropped_id]
             if dropped_id in self._pending_job_ids:
                 self._pending_job_ids.remove(dropped_id)
+            self._discard_callbacks.pop(dropped_id, None)
+
+    @staticmethod
+    def _run_discard_callbacks(callbacks: List[Callable[[], None]]):
+        for callback in list(callbacks or []):
+            try:
+                callback()
+            except Exception:
+                pass
 
     @staticmethod
     def _copy_job(job: Dict[str, Any]) -> Dict[str, Any]:

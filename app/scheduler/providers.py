@@ -81,6 +81,12 @@ class ProviderError(RuntimeError):
 _provider_log_lock = threading.Lock()
 _provider_logs = deque(maxlen=MAX_PROVIDER_LOG_ENTRIES)
 _provider_thread_state = threading.local()
+LMSTUDIO_MODEL_CACHE_TTL_SECONDS = 60.0
+# Short: just long enough that a burst of scheduler calls does not each wait out the discovery timeout
+# while LM Studio is down, without hiding a freshly started server for long.
+LMSTUDIO_MODEL_FAILURE_CACHE_TTL_SECONDS = 3.0
+_lmstudio_model_cache: Dict[Tuple[str, str], Tuple[float, Any]] = {}
+_lmstudio_model_cache_lock = threading.Lock()
 
 
 def _load_requests_module():
@@ -175,10 +181,6 @@ def _sanitize_headers_for_log(headers: Optional[Dict[str, Any]]) -> Dict[str, st
             continue
         safe[label] = _sanitize_header_value(label, value)
     return safe
-
-
-def _normalize_tool_token(value: Any) -> str:
-    return str(value or "").strip().lower()[:120]
 
 
 def _expand_unavailable_tool_ids(values: Any) -> List[str]:
@@ -592,7 +594,7 @@ def reflect_on_scheduler_progress(
         content = _request_claude_content(
             provider_cfg,
             prompt_package,
-            max_tokens=420,
+            max_tokens=MAX_PROVIDER_REFLECTION_RESPONSE_TOKENS,
             temperature=0.1,
         )
     else:
@@ -655,7 +657,7 @@ def select_web_followup_with_provider(
         content = _request_claude_content(
             provider_cfg,
             prompt_package,
-            max_tokens=360,
+            max_tokens=MAX_PROVIDER_SPECIALIST_RESPONSE_TOKENS,
             temperature=0.1,
         )
     else:
@@ -1452,7 +1454,7 @@ def _call_openai_compatible(
         *,
         context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    base_url, headers, model, _models, _auto_selected = _openai_compatible_context(provider_name, provider_cfg)
+    base_url, headers, model, _models, auto_selected = _openai_compatible_context(provider_name, provider_cfg)
     system_prompt, user_prompt, prompt_metadata = _prompt_package_parts(prompt_package)
     allowed_tool_ids = _visible_candidate_tool_ids_from_metadata(prompt_metadata)
     normalized_context = context if isinstance(context, dict) else {}
@@ -1460,7 +1462,8 @@ def _call_openai_compatible(
     current_phase = str(prompt_metadata.get("current_phase", "") or "").strip().lower() if normalized_context else ""
     structured_outputs_enabled = _openai_structured_outputs_enabled(provider_name, provider_cfg)
     if provider_name == "lm_studio":
-        result = _post_lmstudio_chat_with_fallback(
+        result = _post_lmstudio_chat_for_model(
+            auto_selected_model=auto_selected,
             base_url=base_url,
             headers=headers,
             model=model,
@@ -1538,10 +1541,11 @@ def _request_openai_compatible_content(
         max_tokens: int,
         temperature: float,
 ) -> str:
-    base_url, headers, model, _models, _auto_selected = _openai_compatible_context(provider_name, provider_cfg)
+    base_url, headers, model, _models, auto_selected = _openai_compatible_context(provider_name, provider_cfg)
     system_prompt, user_prompt, prompt_metadata = _prompt_package_parts(prompt_package)
     if provider_name == "lm_studio":
-        result = _post_lmstudio_chat_with_fallback(
+        result = _post_lmstudio_chat_for_model(
+            auto_selected_model=auto_selected,
             base_url=base_url,
             headers=headers,
             model=model,
@@ -1887,14 +1891,19 @@ def _probe_openai_compatible(provider_name: str, provider_cfg: Dict[str, Any], s
     structured_output_used = False
     structured_output_fallback = False
     try:
-        base_url, headers, model, discovered_models, auto_selected = _openai_compatible_context(provider_name, provider_cfg)
+        base_url, headers, model, discovered_models, auto_selected = _openai_compatible_context(
+            provider_name,
+            provider_cfg,
+            use_model_cache=False,
+        )
         auth_header_sent = _has_authorization_header(headers)
         test_prompt = (
             "Return only this JSON:\n"
             "{\"actions\":[{\"tool_id\":\"healthcheck\",\"score\":100,\"rationale\":\"ok\"}]}"
         )
         if provider_name == "lm_studio":
-            result = _post_lmstudio_chat_with_fallback(
+            result = _post_lmstudio_chat_for_model(
+                auto_selected_model=auto_selected,
                 base_url=base_url,
                 headers=headers,
                 model=model,
@@ -1983,7 +1992,12 @@ def _probe_openai_compatible(provider_name: str, provider_cfg: Dict[str, Any], s
     }
 
 
-def _openai_compatible_context(provider_name: str, provider_cfg: Dict[str, Any]) -> Tuple[str, Dict[str, str], str, List[str], bool]:
+def _openai_compatible_context(
+        provider_name: str,
+        provider_cfg: Dict[str, Any],
+        *,
+        use_model_cache: bool = True,
+) -> Tuple[str, Dict[str, str], str, List[str], bool]:
     base_url = str(provider_cfg.get("base_url", "")).rstrip("/")
     if not base_url:
         raise ProviderError(f"Base URL is required for provider {provider_name}.")
@@ -2001,6 +2015,7 @@ def _openai_compatible_context(provider_name: str, provider_cfg: Dict[str, Any])
         provider_cfg=provider_cfg,
         base_url=base_url,
         headers=headers,
+        use_cache=use_model_cache,
     )
     return base_url, headers, model, discovered_models, auto_selected
 
@@ -2010,6 +2025,7 @@ def _resolve_openai_compatible_model(
         provider_cfg: Dict[str, Any],
         base_url: str,
         headers: Dict[str, str],
+        use_cache: bool = True,
 ) -> Tuple[str, List[str], bool]:
     model = str(provider_cfg.get("model", "")).strip()
     if model:
@@ -2021,14 +2037,69 @@ def _resolve_openai_compatible_model(
     if provider_name != "lm_studio":
         raise ProviderError(f"Model is required for provider {provider_name}.")
 
-    discovered_models = _fetch_lmstudio_models(base_url, headers)
-    if not discovered_models:
-        raise ProviderError(
-            "LM Studio model is empty and no models were returned from /models. "
-            "Load a model in LM Studio or set the model explicitly."
-        )
+    cache_key = _lmstudio_model_cache_key(base_url, headers)
+    with _lmstudio_model_cache_lock:
+        cached = _lmstudio_model_cache.get(cache_key)
+    if use_cache and cached and cached[0] > time.monotonic():
+        cached_value = cached[1]
+        if isinstance(cached_value, ProviderError):
+            raise ProviderError(str(cached_value))
+        selected, discovered_models = cached_value
+        return selected, list(discovered_models), True
+
+    try:
+        discovered_models = _fetch_lmstudio_models(base_url, headers)
+        if not discovered_models:
+            raise ProviderError(
+                "LM Studio model is empty and no models were returned from /models. "
+                "Load a model in LM Studio or set the model explicitly."
+            )
+    except ProviderError as exc:
+        # Expiry is computed after discovery: a slow/failed fetch can take ~15s per endpoint, so an
+        # expiry based on the pre-fetch clock would already be stale when stored.
+        with _lmstudio_model_cache_lock:
+            _lmstudio_model_cache[cache_key] = (time.monotonic() + LMSTUDIO_MODEL_FAILURE_CACHE_TTL_SECONDS, exc)
+        raise
     selected = _select_preferred_lmstudio_model(discovered_models)
+    with _lmstudio_model_cache_lock:
+        _lmstudio_model_cache[cache_key] = (
+            time.monotonic() + LMSTUDIO_MODEL_CACHE_TTL_SECONDS,
+            (selected, list(discovered_models)),
+        )
     return selected, discovered_models, True
+
+
+def _lmstudio_model_cache_key(base_url: str, headers: Optional[Dict[str, str]]) -> Tuple[str, str]:
+    return str(base_url or ""), str((headers or {}).get("Authorization", "") or "")
+
+
+def clear_lmstudio_model_cache():
+    with _lmstudio_model_cache_lock:
+        _lmstudio_model_cache.clear()
+
+
+def _invalidate_lmstudio_model_cache(base_url: str, headers: Optional[Dict[str, str]], model: str):
+    """Drop the cached auto-discovered model, unless another caller already replaced it."""
+    cache_key = _lmstudio_model_cache_key(base_url, headers)
+    with _lmstudio_model_cache_lock:
+        cached = _lmstudio_model_cache.get(cache_key)
+        cached_value = cached[1] if cached else None
+        if isinstance(cached_value, tuple) and cached_value and cached_value[0] == model:
+            del _lmstudio_model_cache[cache_key]
+
+
+def _post_lmstudio_chat_for_model(*, auto_selected_model: bool, **kwargs) -> Dict[str, str]:
+    """Post an LM Studio chat request; drop a cached auto-discovered model when the request fails.
+
+    The auto-selected model is cached for LMSTUDIO_MODEL_CACHE_TTL_SECONDS. If the user unloads or
+    switches models in LM Studio, requests with the stale model fail, so the next call must rediscover.
+    """
+    try:
+        return _post_lmstudio_chat_with_fallback(**kwargs)
+    except ProviderError:
+        if auto_selected_model:
+            _invalidate_lmstudio_model_cache(kwargs.get("base_url", ""), kwargs.get("headers"), kwargs.get("model", ""))
+        raise
 
 
 def _fetch_lmstudio_models(base_url: str, headers: Dict[str, str]) -> List[str]:
@@ -2120,11 +2191,47 @@ def _post_openai_compatible_chat_with_retry(
         *,
         prompt_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
-    retriable_provider = str(provider_name or "").strip().lower() == "openai"
     request_payload = dict(payload or {})
-    token_limit = _extract_chat_completion_token_limit(request_payload)
-    retry_reason = "initial_request"
+    retriable_provider = str(provider_name or "").strip().lower() == "openai"
 
+    def _truncation(result: Dict[str, Any]) -> str:
+        finish_reason = str(result.get("finish_reason", "")).strip().lower()
+        return finish_reason if retriable_provider and finish_reason == "length" else ""
+
+    return _post_with_truncation_retry(
+        post=lambda body, metadata: _post_openai_compatible_chat_detailed(
+            provider_name, endpoint, headers, body, prompt_metadata=metadata,
+        ),
+        payload=request_payload,
+        token_limit=_extract_chat_completion_token_limit(request_payload),
+        set_token_limit=lambda body, limit: _set_chat_completion_token_limit(
+            body, provider_name=provider_name, max_tokens=limit,
+        ),
+        truncation_reason=_truncation,
+        reason_label="finish_reason",
+        prompt_metadata=prompt_metadata,
+    )
+
+
+def _post_with_truncation_retry(
+        *,
+        post,
+        payload: Dict[str, Any],
+        token_limit: int,
+        set_token_limit,
+        truncation_reason,
+        reason_label: str,
+        prompt_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Shared retry policy for truncated chat responses (OpenAI-compatible and Claude).
+
+    post(payload, attempt_metadata) -> result dict with "content"; truncation_reason(result) returns the
+    provider's truncation reason, or "" when the response was not cut off. On truncation the token budget
+    grows (capped at MAX_PROVIDER_OPENAI_RETRY_TOKENS) and a compact-JSON retry instruction is added.
+    """
+    token_limit = int(token_limit)
+    retry_reason = "initial_request"
+    content = ""
     for attempt in range(1, MAX_PROVIDER_OPENAI_RETRY_ATTEMPTS + 1):
         attempt_prompt_metadata = dict(prompt_metadata or {})
         attempt_prompt_metadata.update({
@@ -2132,32 +2239,26 @@ def _post_openai_compatible_chat_with_retry(
             "retry_reason": str(retry_reason or "initial_request"),
             "effective_max_completion_tokens": int(token_limit),
         })
-        result = _post_openai_compatible_chat_detailed(
-            provider_name,
-            endpoint,
-            headers,
-            request_payload,
-            prompt_metadata=attempt_prompt_metadata,
-        )
+        result = post(payload, attempt_prompt_metadata)
         content = str(result.get("content", "") or "")
-        finish_reason = str(result.get("finish_reason", "")).strip().lower()
-
-        if not retriable_provider or finish_reason != "length":
+        reason = str(truncation_reason(result) or "")
+        if not reason:
             return content
         if attempt >= MAX_PROVIDER_OPENAI_RETRY_ATTEMPTS:
             return content
         if _response_is_complete_for_prompt(content, prompt_metadata):
             return content
-
-        token_limit = min(
+        next_limit = min(
             MAX_PROVIDER_OPENAI_RETRY_TOKENS,
             max(token_limit + 200, token_limit * 2),
         )
-        _set_chat_completion_token_limit(request_payload, provider_name=provider_name, max_tokens=token_limit)
-        _append_retry_instruction(request_payload)
-        retry_reason = f"finish_reason:{finish_reason or 'unknown'}"
-
-    return ""
+        if next_limit <= token_limit:
+            return content  # already at the cap: retrying would resend the same request
+        token_limit = next_limit
+        set_token_limit(payload, token_limit)
+        _append_retry_instruction(payload)
+        retry_reason = f"{reason_label}:{reason}"
+    return content
 
 
 def _post_openai_compatible_chat(
@@ -2278,10 +2379,13 @@ def _append_retry_instruction(payload: Dict[str, Any]):
         marker = "IMPORTANT RETRY:"
         if marker in content:
             return
-        item["content"] = (
+        # Replace rather than mutate: earlier attempts' provider-log entries may share these objects.
+        updated_messages = list(messages)
+        updated_messages[index] = dict(item, content=(
             f"{content}\n\n"
             "IMPORTANT RETRY: Return compact JSON only, with short rationales and no extra text."
-        )
+        ))
+        payload["messages"] = updated_messages
         return
 
 
@@ -2430,6 +2534,16 @@ def _post_lmstudio_native_chat(
         return output
 
     if isinstance(output, list):
+        def _item_type(item):
+            return str(item.get("type", "") or "").strip().lower() if isinstance(item, dict) else ""
+
+        # Native chat output can mix typed items (e.g. reasoning, message). Prefer message items; failing
+        # that, keep everything except reasoning, so other or untyped item kinds still yield text.
+        message_items = [item for item in output if _item_type(item) == "message"]
+        if message_items:
+            output = message_items
+        else:
+            output = [item for item in output if _item_type(item) != "reasoning"]
         chunks = []
         for item in output:
             if isinstance(item, dict):
@@ -2456,7 +2570,7 @@ def _call_claude(
     content = _request_claude_content(
         provider_cfg,
         prompt_package,
-        max_tokens=600,
+        max_tokens=MAX_PROVIDER_RESPONSE_TOKENS,
         temperature=0.2,
     )
     prompt_metadata = prompt_package.get("metadata", {}) if isinstance(prompt_package, dict) else {}
@@ -2477,7 +2591,7 @@ def _request_claude_content(
         max_tokens: int,
         temperature: float,
 ) -> str:
-    requests_module = _get_requests_module()
+    _get_requests_module()
     model = str(provider_cfg.get("model", "")).strip()
     if not model:
         raise ProviderError("Model is required for provider claude.")
@@ -2516,6 +2630,32 @@ def _request_claude_content(
     if system_prompt:
         payload["system"] = system_prompt
 
+    def _truncation(result: Dict[str, Any]) -> str:
+        stop_reason = str(result.get("stop_reason", "") or "").strip().lower()
+        return stop_reason if stop_reason == "max_tokens" else ""
+
+    return _post_with_truncation_retry(
+        post=lambda body, metadata: _post_claude_messages_detailed(
+            endpoint, headers, body, prompt_metadata=metadata,
+        ),
+        payload=payload,
+        token_limit=int(payload["max_tokens"]),
+        set_token_limit=lambda body, limit: body.__setitem__("max_tokens", int(limit)),
+        truncation_reason=_truncation,
+        reason_label="stop_reason",
+        prompt_metadata=prompt_metadata,
+    )
+
+
+def _post_claude_messages_detailed(
+        endpoint: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        *,
+        prompt_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    requests_module = _get_requests_module()
+    prompt_metadata = prompt_metadata if isinstance(prompt_metadata, dict) else {}
     try:
         response = requests_module.post(endpoint, headers=headers, json=payload, timeout=25)
     except Exception as exc:
@@ -2549,14 +2689,21 @@ def _request_claude_content(
     if response.status_code >= 300:
         raise ProviderError(f"claude API error: {response.status_code} {response.text}")
 
-    data = response.json()
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise ProviderError(f"claude API returned non-JSON response: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ProviderError("claude API returned an unexpected response payload.")
     parts = data.get("content", [])
     text_chunks = []
-    for part in parts:
+    for part in parts if isinstance(parts, list) else []:
         if isinstance(part, dict) and part.get("type") == "text":
             text_chunks.append(str(part.get("text", "")))
-    content = "\n".join(text_chunks)
-    return content
+    return {
+        "content": "\n".join(text_chunks),
+        "stop_reason": str(data.get("stop_reason", "") or "").strip().lower(),
+    }
 
 
 def _probe_claude(provider_cfg: Dict[str, Any], started: float) -> Dict[str, Any]:

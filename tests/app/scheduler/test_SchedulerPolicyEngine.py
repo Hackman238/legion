@@ -38,6 +38,26 @@ class SchedulerPolicyEngineTest(unittest.TestCase):
         self.assertEqual("approval_required", decision.state)
         self.assertTrue(decision.requires_approval)
 
+    def test_detection_risk_mode_gates_high_detection_tools(self):
+        # detection_risk_mode is the engagement's tolerance for noisy tools: only "high" lets
+        # high-detection tools run without approval. approval_mode="always" still gates them.
+        from app.scheduler.policy import normalize_engagement_policy
+        from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
+
+        expected = {"low": "approval_required", "medium": "approval_required", "high": "allowed"}
+        for mode, state in expected.items():
+            policy = normalize_engagement_policy({"preset": "internal_pentest", "detection_risk_mode": mode})
+            decision = evaluate_policy_for_risk_tags(["high_detection_likelihood"], policy)
+            self.assertEqual(state, decision.state, mode)
+
+        strict = normalize_engagement_policy({
+            "preset": "internal_pentest", "detection_risk_mode": "high", "approval_mode": "always",
+        })
+        self.assertEqual(
+            "approval_required",
+            evaluate_policy_for_risk_tags(["high_detection_likelihood"], strict).state,
+        )
+
     def test_family_allow_only_bypasses_approval_required_not_blocked(self):
         from app.scheduler.policy import normalize_engagement_policy
         from app.scheduler.policy_engine import evaluate_policy_for_risk_tags

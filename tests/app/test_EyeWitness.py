@@ -403,5 +403,97 @@ class EyeWitnessHelpersTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(screenshot_path))
 
 
+    @patch("app.eyewitness._run_selenium_fallback_capture")
+    @patch("app.eyewitness._run_selenium_chromium_fallback_capture")
+    @patch("app.eyewitness._run_browser_cli_fallback_capture")
+    @patch("app.eyewitness.resolve_eyewitness_executables")
+    @patch("app.eyewitness.subprocess.run")
+    def test_run_eyewitness_capture_without_eyewitness_still_uses_fallbacks(
+            self, mock_run, mock_resolve, mock_browser_fallback, mock_chromium_fallback, mock_fallback,
+    ):
+        from app.eyewitness import run_eyewitness_capture
+
+        mock_resolve.return_value = []
+        mock_chromium_fallback.return_value = {"ok": True, "executable": "selenium-chromium-direct",
+                                               "output_dir": "", "command": [], "returncode": 0,
+                                               "screenshot_path": "/tmp/shot.png"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = run_eyewitness_capture(url="http://127.0.0.1:8080", output_parent_dir=temp_dir, timeout=10)
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual("selenium-chromium-direct", result.get("executable"))
+        mock_run.assert_not_called()
+        mock_browser_fallback.assert_not_called()
+
+    @patch("app.eyewitness._run_selenium_fallback_capture")
+    @patch("app.eyewitness._run_selenium_chromium_fallback_capture")
+    @patch("app.eyewitness._run_browser_cli_fallback_capture")
+    @patch("app.eyewitness.resolve_eyewitness_executables")
+    def test_run_eyewitness_capture_without_eyewitness_reports_missing_after_fallbacks_fail(
+            self, mock_resolve, mock_browser_fallback, mock_chromium_fallback, mock_fallback,
+    ):
+        from app.eyewitness import capture_tooling_unavailable, run_eyewitness_capture
+
+        mock_resolve.return_value = []
+        for mocked in (mock_chromium_fallback, mock_fallback):
+            mocked.return_value = {
+                "ok": False,
+                "error": "selenium fallback command returned non-zero",
+                "stderr": "ModuleNotFoundError: No module named 'selenium'",
+            }
+        mock_browser_fallback.return_value = {"ok": False, "error": "no supported browser binary found"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = run_eyewitness_capture(url="http://127.0.0.1:8080", output_parent_dir=temp_dir, timeout=10)
+
+        self.assertFalse(result.get("ok"))
+        self.assertEqual("eyewitness missing", result.get("reason"))
+        self.assertTrue(capture_tooling_unavailable(result))
+        self.assertTrue(mock_fallback.called)
+        self.assertTrue(mock_browser_fallback.called)
+
+    @patch("app.eyewitness._run_selenium_fallback_capture")
+    @patch("app.eyewitness._run_selenium_chromium_fallback_capture")
+    @patch("app.eyewitness._run_browser_cli_fallback_capture")
+    @patch("app.eyewitness.resolve_eyewitness_executables")
+    def test_firefox_selenium_failure_is_not_reported_as_missing_tooling(
+            self, mock_resolve, mock_browser_fallback, mock_chromium_fallback, mock_fallback,
+    ):
+        # Firefox-only host: no EyeWitness, no Chromium binary, but Selenium+Firefox ran and the page failed.
+        from app.eyewitness import capture_tooling_unavailable, run_eyewitness_capture
+
+        mock_resolve.return_value = []
+        mock_browser_fallback.return_value = {"ok": False, "error": "no supported browser binary found"}
+        mock_chromium_fallback.return_value = {
+            "ok": False, "error": "selenium chromium fallback command returned non-zero",
+            "stderr": "selenium.common.exceptions.NoSuchDriverException: Unable to obtain driver for chrome",
+        }
+        mock_fallback.return_value = {
+            "ok": False, "error": "selenium fallback command returned non-zero",
+            "stderr": "selenium.common.exceptions.WebDriverException: Reached error page: about:neterror",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = run_eyewitness_capture(url="https://127.0.0.1:8443", output_parent_dir=temp_dir, timeout=10)
+
+        self.assertEqual("screenshot png missing", result.get("reason"))
+        self.assertFalse(capture_tooling_unavailable(result))  # so the caller still tries http://
+
+    @patch("app.eyewitness._run_selenium_fallback_capture")
+    @patch("app.eyewitness._run_selenium_chromium_fallback_capture")
+    @patch("app.eyewitness._run_browser_cli_fallback_capture")
+    @patch("app.eyewitness.resolve_eyewitness_executables")
+    def test_failed_browser_fallback_is_reported_as_capture_failure_not_missing_eyewitness(
+            self, mock_resolve, mock_browser_fallback, mock_chromium_fallback, mock_fallback,
+    ):
+        from app.eyewitness import capture_tooling_unavailable, run_eyewitness_capture
+
+        mock_resolve.return_value = []
+        for mocked in (mock_browser_fallback, mock_chromium_fallback, mock_fallback):
+            mocked.return_value = {"ok": False, "error": "tls handshake failed"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = run_eyewitness_capture(url="https://127.0.0.1:8443", output_parent_dir=temp_dir, timeout=10)
+
+        self.assertEqual("screenshot png missing", result.get("reason"))
+        self.assertFalse(capture_tooling_unavailable(result))
+
 if __name__ == "__main__":
     unittest.main()

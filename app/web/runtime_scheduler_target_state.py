@@ -18,6 +18,7 @@ from app.scheduler.state import (
     upsert_target_state,
 )
 from app.screenshot_metadata import build_screenshot_state_row, load_screenshot_metadata
+from app.web import runtime_scheduler_host_inference as web_runtime_scheduler_host_inference
 
 
 def coverage_gaps_from_summary(coverage: Any) -> List[Dict[str, Any]]:
@@ -395,13 +396,14 @@ def load_host_ai_analysis(runtime, project, host_id: int, host_ip: str) -> Dict[
     if not isinstance(manual_tests, list):
         manual_tests = []
     host_cves_raw = runtime._load_cves_for_host(project, int(host_id or 0))
-    inferred_technologies = runtime._infer_host_technologies(project, int(host_id), str(host_ip or ""))
-    inferred_findings = runtime._infer_host_findings(
-        project,
-        host_id=int(host_id),
-        host_ip=str(host_ip or ""),
-        host_cves_raw=host_cves_raw,
-    )
+    with web_runtime_scheduler_host_inference.host_observation_cache():
+        inferred_technologies = runtime._infer_host_technologies(project, int(host_id), str(host_ip or ""))
+        inferred_findings = runtime._infer_host_findings(
+            project,
+            host_id=int(host_id),
+            host_ip=str(host_ip or ""),
+            host_cves_raw=host_cves_raw,
+        )
     technologies = runtime._merge_technologies(
         existing=inferred_technologies,
         incoming=runtime._normalize_ai_technologies(stored_technologies),

@@ -7,17 +7,125 @@ __modified_by = 'ketchup'
 
 import parsers.CVE as CVE
 
-try:
-    from pyExploitDb import PyExploitDb
-except Exception as import_error:
-    PyExploitDb = None
-    PY_EXPLOIT_DB_IMPORT_ERROR = import_error
-else:
-    PY_EXPLOIT_DB_IMPORT_ERROR = None
+import csv
+import re
+import importlib.util
+import json
+import os
+import threading
+import time
+
+# The exploit-db package installs as "pyexploitdb" (current PyPI releases) or "pyExploitDb" (older releases,
+# e.g. Kali's package). Only its bundled data files are used: every version's openFile()/updateDb() clones or
+# pulls the exploit-database git repository (and some crawl exploit-db.com), which must never happen in the
+# middle of an nmap import. Run primeExploitDb.py to fetch/refresh that data out of band.
+_PY_EXPLOIT_DB_MODULE_NAMES = ("pyexploitdb", "pyExploitDb")
+PY_EXPLOIT_DB_IMPORT_ERROR = None
+
+_PY_EXPLOIT_DB_LOCK = threading.Lock()
+_PY_EXPLOIT_DB_INSTANCE = None
+_PY_EXPLOIT_DB_INIT_ATTEMPTED = False  # True once loaded, or once the module is known to be unavailable
+_PY_EXPLOIT_DB_RETRY_AFTER = 0.0       # monotonic time before which a failed load is not retried
+_PY_EXPLOIT_DB_RETRY_SECONDS = 60.0
+
+
+def _find_exploit_db_package_dir():
+    """Directory of the installed exploit-db package (without importing it), or None."""
+    for name in _PY_EXPLOIT_DB_MODULE_NAMES:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is not None and spec.origin:
+            return os.path.dirname(os.path.abspath(spec.origin))
+    return None
+
+
+class LocalExploitDb:
+    """Offline CVE -> exploit-db lookups from the package's bundled data (no network access)."""
+
+    def __init__(self, package_dir):
+        self.package_dir = package_dir
+        with open(os.path.join(package_dir, "cveToEdbid.json"), encoding="utf-8") as handle:
+            raw = json.load(handle)
+        self.cve_to_edbids = {
+            str(cve_id).upper(): [str(edb_id) for edb_id in (edb_ids or [])]
+            for cve_id, edb_ids in (raw.items() if isinstance(raw, dict) else [])
+        }
+        # Only the first exploit per CVE is ever looked up, and only its description and file are used.
+        wanted_edbids = {edb_ids[0] for edb_ids in self.cve_to_edbids.values() if edb_ids}
+        self.exploits_by_edbid = {}  # edb id -> (description, file)
+        csv_path = os.path.join(package_dir, "exploit-database", "files_exploits.csv")
+        if os.path.isfile(csv_path):  # present once primeExploitDb.py has fetched the exploit-database repo
+            with open(csv_path, encoding="utf-8", newline="") as handle:
+                reader = csv.reader(handle)
+                next(reader, None)
+                for row in reader:
+                    if row and row[0] in wanted_edbids:
+                        self.exploits_by_edbid[row[0]] = (
+                            row[2] if len(row) > 2 else "",
+                            row[1] if len(row) > 1 else "",
+                        )
+
+    def searchCve(self, cve_id):
+        """Return {'id', 'description', 'file'} for the first known exploit for cve_id, or {}."""
+        edb_ids = self.cve_to_edbids.get(str(cve_id or "").upper(), [])
+        if not edb_ids:
+            return {}
+        edb_id = edb_ids[0]
+        description, file_path = self.exploits_by_edbid.get(edb_id, ("", ""))
+        return {"id": edb_id, "description": description, "file": file_path}
+
+
+def getPyExploitDb():
+    """Return a lazily-initialised, process-wide exploit lookup (or None if the package is unavailable).
+
+    Loading the data is expensive, so it is done once and shared by every vulners script. A failed load
+    (e.g. unreadable data files) is retried after a short cooldown instead of disabling exploit enrichment
+    for the rest of the process.
+    """
+    global _PY_EXPLOIT_DB_INSTANCE, _PY_EXPLOIT_DB_INIT_ATTEMPTED, _PY_EXPLOIT_DB_RETRY_AFTER
+    if _PY_EXPLOIT_DB_INIT_ATTEMPTED or time.monotonic() < _PY_EXPLOIT_DB_RETRY_AFTER:
+        return _PY_EXPLOIT_DB_INSTANCE
+    with _PY_EXPLOIT_DB_LOCK:
+        if _PY_EXPLOIT_DB_INIT_ATTEMPTED or time.monotonic() < _PY_EXPLOIT_DB_RETRY_AFTER:
+            return _PY_EXPLOIT_DB_INSTANCE
+        package_dir = _find_exploit_db_package_dir()
+        if package_dir is None:
+            print("[PyExploitDb] Module unavailable: install pyexploitdb for exploit-db references.")
+            _PY_EXPLOIT_DB_INIT_ATTEMPTED = True
+            return None
+        try:
+            instance = LocalExploitDb(package_dir)
+        except FileNotFoundError as exc:
+            # The package ships no CVE map (it is not a transient condition): disable enrichment once.
+            print("[PyExploitDb] Exploit data not found ({0}); exploit references are disabled.".format(exc))
+            _PY_EXPLOIT_DB_INIT_ATTEMPTED = True
+            return None
+        except Exception as exc:
+            print("[PyExploitDb] Failed to load exploit data from {0}: {1}".format(package_dir, exc))
+            _PY_EXPLOIT_DB_RETRY_AFTER = time.monotonic() + _PY_EXPLOIT_DB_RETRY_SECONDS
+            return None
+        _PY_EXPLOIT_DB_INSTANCE = instance
+        _PY_EXPLOIT_DB_INIT_ATTEMPTED = True
+        return instance
+
+_VULNERS_CPE_LINE = re.compile(r'^\s*cpe:/[a-z]:([^:]+):([^:]+):([^:]+):?$')
+
 
 class Script:
     scriptId = ''
     output = ''
+
+    @staticmethod
+    def vulnersProductVersions(output):
+        """(product, version) pairs named by a vulners script's output; product is lower-cased."""
+        pairs = set()
+        for line in str(output or "").splitlines():
+            match = _VULNERS_CPE_LINE.match(line.rstrip())
+            if match:
+                pairs.add((match.group(2).lower(), match.group(3)))
+        return pairs
 
     def __init__(self, ScriptNode):
         if not (ScriptNode is None):
@@ -36,20 +144,7 @@ class Script:
 
 
     def processVulnersScriptOutput(self, vulnersOutput):
-        import re
-
-        pyExploitDb = None
-        if PyExploitDb is None:
-            print("[PyExploitDb] Module unavailable: {0}".format(PY_EXPLOIT_DB_IMPORT_ERROR))
-        else:
-            try:
-                pyExploitDb = PyExploitDb()
-                pyExploitDb.debug = False
-                pyExploitDb.autoUpdate = False
-                pyExploitDb.openFile()
-            except Exception as exc:
-                print("[PyExploitDb] Failed to initialise: {0}".format(exc))
-                pyExploitDb = None
+        pyExploitDb = getPyExploitDb()
 
         resultsDict = {}
         current_product = None
@@ -62,7 +157,7 @@ class Script:
         for line in lines:
             line = line.rstrip()
             # CPE line (e.g. "  cpe:/a:openbsd:openssh:8.4p1:")
-            cpe_match = re.match(r'^\s*cpe:/[a-z]:([^:]+):([^:]+):([^:]+):?$', line)
+            cpe_match = _VULNERS_CPE_LINE.match(line)
             if cpe_match:
                 # Save previous product's CVEs
                 if current_product and cve_list:
@@ -102,7 +197,7 @@ class Script:
                                 cve_dict['exploit'] = exploit_summary
                         elif exploitResults:
                             print("[PyExploitDb] Unexpected lookup result for {0}: {1}".format(fields[0], type(exploitResults)))
-                cve_list.append(cve_dict)
+                    cve_list.append(cve_dict)
                 continue
         # Save last product's CVEs
         if current_product and cve_list:

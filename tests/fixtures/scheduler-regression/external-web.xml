@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<!-- Synthetic test fixture. -->
+<nmaprun scanner="nmap" args="nmap -sV -oX - 198.51.100.25" start="1773748800" startstr="Tue Mar 17 12:00:00 2026" version="7.94" xmloutputversion="1.05">
+    <scaninfo type="connect" protocol="tcp" numservices="1000" services="1-1000"/>
+    <verbose level="0"/>
+    <debugging level="0"/>
+    <host starttime="1773748800" endtime="1773748860">
+        <status state="up" reason="syn-ack" reason_ttl="0"/>
+        <address addr="198.51.100.25" addrtype="ipv4"/>
+        <hostnames>
+            <hostname name="portal.example.test" type="PTR"/>
+        </hostnames>
+        <ports>
+            <port protocol="tcp" portid="80">
+                <state state="open" reason="syn-ack" reason_ttl="0"/>
+                <service name="http" product="nginx" version="1.25" method="probed" conf="10"/>
+            </port>
+            <port protocol="tcp" portid="443">
+                <state state="open" reason="syn-ack" reason_ttl="0"/>
+                <service name="https" product="nginx" version="1.25" method="probed" conf="10"/>
+            </port>
+        </ports>
+        <os>
+            <osmatch name="Linux 5.4" accuracy="96" line="1">
+                <osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="" accuracy="96"/>
+            </osmatch>
+        </os>
+        <times srtt="2060" rttvar="281" to="100000"/>
+    </host>
+    <runstats>
+        <finished time="1773748860" timestr="Tue Mar 17 12:01:00 2026" elapsed="60.00" summary="Synthetic fixture." exit="success"/>
+        <hosts up="1" down="0" total="1"/>
+    </runstats>
+</nmaprun>

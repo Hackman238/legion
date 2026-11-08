@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
+from app.scheduler.schema_cache import ensure_schema_once, ensure_column
+
 
 APPROVAL_COLUMNS = (
     "id",
@@ -38,17 +40,14 @@ def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def _ensure_column(session, table_name: str, column_name: str, column_type: str):
-    rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-    existing = {str(row[1]) for row in rows if len(row) > 1}
-    if str(column_name) in existing:
-        return
-    session.execute(text(
-        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-    ))
+_ensure_column = ensure_column
 
 
 def _ensure_table(session):
+    ensure_schema_once(session, "pending_approval", _ensure_table_uncached, ["scheduler_pending_approval"])
+
+
+def _ensure_table_uncached(session):
     session.execute(text(
         "CREATE TABLE IF NOT EXISTS scheduler_pending_approval ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -162,15 +161,26 @@ def queue_pending_approval(database, record: Dict[str, Any]) -> int:
         session.close()
 
 
-def list_pending_approvals(database, limit: int = 200, status: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_pending_approvals(
+        database,
+        limit: int = 200,
+        status: Optional[str] = None,
+        host_ip: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     session = database.session()
     try:
         _ensure_table(session)
         query = f"SELECT {_select_columns()} FROM scheduler_pending_approval"
         params: Dict[str, Any] = {"limit": max(1, min(int(limit), 1000))}
+        clauses = []
         if status:
-            query += " WHERE status = :status"
+            clauses.append("status = :status")
             params["status"] = str(status)
+        if host_ip is not None:
+            clauses.append("COALESCE(host_ip, '') = :host_ip")  # NULL host_ip matches "" as before
+            params["host_ip"] = str(host_ip or "")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY id DESC LIMIT :limit"
         result = session.execute(text(query), params)
         rows = result.fetchall()

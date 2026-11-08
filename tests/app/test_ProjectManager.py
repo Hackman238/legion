@@ -146,7 +146,10 @@ class ProjectManagerTest(unittest.TestCase):
         )
         self.mockShell.remove_file.assert_called_once_with("some-running-temporary-project")
         self.mockShell.remove_directory.assert_called_once_with("some-temporary-output-folder")
-        self.projectManager.openExistingProject.assert_called_once_with("my-test-project.legion", "legion")
+        # Processes started before the save keep running: the reopen must not mark them interrupted.
+        self.projectManager.openExistingProject.assert_called_once_with(
+            "my-test-project.legion", "legion", mark_interrupted_processes=False
+        )
         self.assertEqual("saved-project", savedProject)
         osSystem.assert_not_called()
 
@@ -161,6 +164,6 @@ class ProjectManagerTest(unittest.TestCase):
                 projectType="legion",
             )
 
-        self.assertIs(saved, self.project)
+        self.assertIsNone(saved)
         self.project.database.verify_integrity.assert_not_called()
         self.project.database.backup_to.assert_not_called()

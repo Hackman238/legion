@@ -15,6 +15,7 @@ Copyright (c) 2025 Shane William Scott
 
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
+import http.client
 import ssl
 
 
@@ -36,7 +37,7 @@ def _is_certificate_error(message: str) -> bool:
 
 
 def isHttps(host, port) -> bool:
-    from urllib.error import URLError
+    from urllib.error import HTTPError, URLError
     try:
         from urllib.request import Request, urlopen
         headers = {"User-Agent": defaultUserAgent()}
@@ -44,7 +45,11 @@ def isHttps(host, port) -> bool:
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        urlopen(req, timeout=5, context=context).read(1)
+        with urlopen(req, timeout=5, context=context) as response:
+            response.read(1)
+        return True
+    except HTTPError:
+        # Any HTTP status (401, 404, 500, ...) means the TLS handshake succeeded: the port speaks HTTPS.
         return True
     except URLError as e:
         reason = str(getattr(e, "reason", e))
@@ -55,3 +60,6 @@ def isHttps(host, port) -> bool:
         return True
     except ssl.SSLError as e:
         return _is_certificate_error(str(e))
+    except (OSError, ValueError, http.client.HTTPException):
+        # Timeouts, connection resets and other socket-level failures: treat as "not HTTPS".
+        return False

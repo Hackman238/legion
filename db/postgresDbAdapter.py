@@ -20,6 +20,7 @@ import threading
 from random import randint
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.scoping import scoped_session
 
@@ -32,29 +33,26 @@ class Database:
         self.log = getDbLogger()
         self.base = Base
         try:
-            self.establishSqliteConnection(user, passw. db. host, port)
+            self.establishPostgresConnection(user, passw, db, host, port)
         except Exception as e:
-            self.log.error('Could not create SQLite database. Please try again.')
+            self.log.error('Could not connect to the Postgres database. Please try again.')
             self.log.info(e)
+            raise
 
     def openDB(self, dbfilename):
-        try:
-            self.log.error('Not implemented for Postgres yet.')
-        except:
-            self.log.error('Could not open SQLite database file. Is the file corrupted?')
+        raise NotImplementedError('openDB is not implemented for Postgres yet.')
 
-    def establishSqliteConnection(self, user: str, passw: str, db: str, host='localhost', port=5432):
+    def establishPostgresConnection(self, user: str, passw: str, db: str, host='localhost', port=5432):
         self.name = db
         self.port = port
         self.host = host
         self.user = user
         self.passw = passw
         self.dbsemaphore = threading.Semaphore(1)  # to control concurrent write access to db
-        url = 'postgresql://{}:{}@{}:{}/{}'
-        url = url.format(user, password, host, port, db)
+        # URL.create escapes credentials containing special characters such as '@' or ':'
+        url = URL.create('postgresql', username=user, password=passw, host=host, port=port, database=db)
         # The return value of create_engine() is our connection object
-        self.engine = sqlalchemy.create_engine(
-            url, client_encoding='utf8')
+        self.engine = create_engine(url, client_encoding='utf8')
         # We then bind the connection to MetaData()
         #meta = sqlalchemy.MetaData(bind=con, reflect=True)
         self.session = scoped_session(sessionmaker())
@@ -63,28 +61,34 @@ class Database:
         self.metadata.create_all(self.engine)
         self.metadata.echo = True
         self.metadata.bind = self.engine
-        self.log.info(f"Established SQLite connection on file '{dbFileName}'")
+        self.log.info(f"Established Postgres connection to '{host}:{port}/{db}'")
 
     def commit(self):
         self.dbsemaphore.acquire()
         self.log.debug("DB lock acquired")
         try:
             session = self.session()
-            rnd = float(randint(1, 99)) / 1000.00
-            self.log.debug("Waiting {0}s before commit...".format(str(rnd)))
-            time.sleep(rnd)
-            session.commit()
-        except Exception as e:
-            self.log.error("DB Commit issue")
-            self.log.error(str(e))
             try:
-                rnd = float(randint(1, 99)) / 100.00
-                time.sleep(rnd)
+                rnd = float(randint(1, 99)) / 1000.00
                 self.log.debug("Waiting {0}s before commit...".format(str(rnd)))
+                time.sleep(rnd)
                 session.commit()
             except Exception as e:
-                self.log.error("DB Commit issue on retry")
+                self.log.error("DB Commit issue")
                 self.log.error(str(e))
-                pass
-        self.dbsemaphore.release()
-        self.log.debug("DB lock released")
+                session.rollback()
+                raise
+        finally:
+            self.dbsemaphore.release()
+            self.log.debug("DB lock released")
+
+    def dispose(self):
+        """Dispose of engine/session resources."""
+        try:
+            self.session.remove()
+        except Exception:
+            pass
+        try:
+            self.engine.dispose()
+        except Exception:
+            pass

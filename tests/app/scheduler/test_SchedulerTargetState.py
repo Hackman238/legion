@@ -258,5 +258,257 @@ class SchedulerTargetStateStoreTest(unittest.TestCase):
             project_manager.closeProject(project)
 
 
+
+class TargetStateLockTableTest(unittest.TestCase):
+    def test_lock_entries_are_released_after_use(self):
+        from app.scheduler import state as state_module
+
+        database = object()
+        with state_module._target_state_lock(database, 7):
+            self.assertIn((id(database), 7), state_module._target_state_locks)
+            with state_module._target_state_lock(database, 7):  # re-entrant
+                pass
+            self.assertIn((id(database), 7), state_module._target_state_locks)
+        self.assertNotIn((id(database), 7), state_module._target_state_locks)
+
+
+class DeviceCategoryRulesCacheTest(unittest.TestCase):
+    def test_same_size_edit_within_one_mtime_tick_is_picked_up_after_max_age(self):
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+        from app.scheduler import state as state_module
+
+        def write_rules(path, name):
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"device_categories": [{"name": name, "match": {"hostname_contains": ["x"]}}]}, handle)
+            os.utime(path, ns=(1_000_000_000, 1_000_000_000))  # identical mtime: a coarse filesystem clock
+
+        clock = {"now": 100.0}
+        state_module._device_category_rules_cache.clear()
+        self.addCleanup(state_module._device_category_rules_cache.clear)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "scheduler-ai.json")
+            write_rules(config_path, "alpha")
+            with patch("app.paths.get_scheduler_config_path", return_value=config_path), \
+                    patch.object(state_module.time, "monotonic", side_effect=lambda: clock["now"]):
+                first = [rule["name"] for rule in state_module._load_custom_device_category_rules()]
+                write_rules(config_path, "bravo")  # same size, same mtime
+                clock["now"] += 0.5
+                cached = [rule["name"] for rule in state_module._load_custom_device_category_rules()]
+                clock["now"] += 5.0
+                refreshed = [rule["name"] for rule in state_module._load_custom_device_category_rules()]
+
+        self.assertIn("alpha", first)
+        self.assertEqual(first, cached)
+        self.assertIn("bravo", refreshed)
+
+    def test_torn_rules_file_is_not_cached(self):
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+        from app.scheduler import state as state_module
+
+        def write_rules(path, name):
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"device_categories": [{"name": name, "match": {"hostname_contains": ["x"]}}]}, handle)
+
+        clock = {"now": 100.0}
+        state_module._device_category_rules_cache.clear()
+        self.addCleanup(state_module._device_category_rules_cache.clear)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "scheduler-ai.json")
+            write_rules(config_path, "alpha")
+            with patch("app.paths.get_scheduler_config_path", return_value=config_path), \
+                    patch.object(state_module.time, "monotonic", side_effect=lambda: clock["now"]):
+                first = [rule["name"] for rule in state_module._load_custom_device_category_rules()]
+                clock["now"] += 5.0
+                # A save in progress (non-atomic writer / torn read): the file is not valid JSON right now.
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    handle.write('{"device_categories": [{"name": "bra')
+                torn = state_module._load_custom_device_category_rules()
+                write_rules(config_path, "bravo")
+                clock["now"] += 0.1  # well within the cache max age
+                after = [rule["name"] for rule in state_module._load_custom_device_category_rules()]
+
+        self.assertIn("alpha", first)
+        self.assertNotIn("alpha", [rule.get("name") for rule in torn])
+        self.assertIn("bravo", after)
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class SchedulerTargetStateConcurrencyTest(unittest.TestCase):
+    def _create_project(self):
+        repository_factory = RepositoryFactory(getDbLogger())
+        project_manager = ProjectManager(DefaultShell(), repository_factory, getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        return project_manager, project
+
+    def test_concurrent_upserts_for_same_host_do_not_drop_merged_rows(self):
+        import threading
+
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_target_state_table(project.database)
+            upsert_target_state(project.database, 21, {"host_ip": "10.0.0.21"})
+            errors = []
+
+            def worker(index):
+                try:
+                    upsert_target_state(project.database, 21, {
+                        "host_ip": "10.0.0.21",
+                        "findings": [{"title": f"Finding {index}", "severity": "low", "evidence": f"e{index}"}],
+                    })
+                except Exception as exc:  # pragma: no cover - surfaced through the assertion below
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker, args=(index,)) for index in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual([], errors)
+            titles = {item.get("title") for item in get_target_state(project.database, 21).get("findings", [])}
+            self.assertEqual({f"Finding {index}" for index in range(6)}, titles)
+        finally:
+            project_manager.closeProject(project)
+
+    def test_resync_without_changes_reports_no_graph_mutations(self):
+        from app.scheduler.graph import sync_target_state_to_evidence_graph
+
+        project_manager, project = self._create_project()
+        try:
+            state = upsert_target_state(project.database, 31, {
+                "host_ip": "10.0.0.31",
+                "hostname": "edge.local",
+                "service_inventory": [{"port": "443", "protocol": "tcp", "state": "open", "service": "https"}],
+            })
+            sync_target_state_to_evidence_graph(project.database, host_id=31, target_state=state)
+            mutations = sync_target_state_to_evidence_graph(project.database, host_id=31, target_state=state)
+            self.assertEqual([], mutations)
+        finally:
+            project_manager.closeProject(project)
+
+    def test_schema_ensure_is_cached_per_engine_once_tables_exist(self):
+        from app.scheduler import schema_cache
+
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_target_state_table(project.database)
+            ensure_scheduler_target_state_table(project.database)
+            engine = project.database.session().get_bind()
+            self.assertIn("target_state", schema_cache._ensured_by_engine.get(engine, set()))
+        finally:
+            project_manager.closeProject(project)
+
+    def test_modify_target_state_does_not_lose_concurrent_scheduler_updates(self):
+        import threading
+        from app.scheduler.state import modify_target_state
+
+        project_manager, project = self._create_project()
+        try:
+            upsert_target_state(project.database, 41, {
+                "host_ip": "10.0.0.41",
+                "screenshots": [
+                    {"artifact_ref": "/tmp/a-80.png", "filename": "a-80.png", "port": "80", "protocol": "tcp"},
+                    {"artifact_ref": "/tmp/a-443.png", "filename": "a-443.png", "port": "443", "protocol": "tcp"},
+                ],
+            })
+            mutate_started = threading.Event()
+            writer_done = threading.Event()
+            errors = []
+
+            def scheduler_writer():
+                mutate_started.wait(5)
+                try:
+                    upsert_target_state(project.database, 41, {
+                        "host_ip": "10.0.0.41",
+                        "findings": [{"title": "Concurrent finding", "severity": "low", "evidence": "scheduler"}],
+                    })
+                except Exception as exc:  # pragma: no cover - surfaced through the assertion below
+                    errors.append(exc)
+                finally:
+                    writer_done.set()
+
+            writer = threading.Thread(target=scheduler_writer)
+            writer.start()
+
+            def drop_port_80(state):
+                mutate_started.set()
+                # The scheduler write must wait for this read-modify-write instead of landing in between.
+                self.assertFalse(writer_done.wait(0.3))
+                state["screenshots"] = [item for item in state.get("screenshots", []) if item.get("port") != "80"]
+                return state
+
+            stored = modify_target_state(project.database, 41, drop_port_80)
+            writer.join(5)
+
+            self.assertEqual([], errors)
+            self.assertEqual(["443"], [item.get("port") for item in stored.get("screenshots", [])])
+            final = get_target_state(project.database, 41)
+            self.assertEqual(["443"], [item.get("port") for item in final.get("screenshots", [])])
+            self.assertEqual(["Concurrent finding"], [item.get("title") for item in final.get("findings", [])])
+        finally:
+            project_manager.closeProject(project)
+
+    def test_graph_sync_runs_under_the_per_host_lock(self):
+        import threading
+        from unittest.mock import patch
+        from app.scheduler import state as state_module
+
+        project_manager, project = self._create_project()
+        try:
+            ensure_scheduler_target_state_table(project.database)
+            lock_key = (id(getattr(project.database, "engine", None) or project.database), 51)
+            observed = {}
+
+            def _sync(database, *, host_id, target_state=None):
+                entry = state_module._target_state_locks.get(lock_key)
+                observed["lock_present"] = entry is not None
+                if entry is not None:
+                    # Another thread must not be able to take the host lock while the sync runs.
+                    acquired = []
+                    probe = threading.Thread(target=lambda: acquired.append(entry[0].acquire(timeout=0.3)))
+                    probe.start()
+                    probe.join(5)
+                    if acquired and acquired[0]:
+                        entry[0].release()
+                    observed["lock_free_during_sync"] = bool(acquired and acquired[0])
+                return []
+
+            with patch("app.scheduler.graph.sync_target_state_to_evidence_graph", side_effect=_sync):
+                upsert_target_state(project.database, 51, {"host_ip": "10.0.0.51"})
+                self.assertEqual({"lock_present": True, "lock_free_during_sync": False}, observed)
+                observed.clear()
+                state_module.modify_target_state(project.database, 51, lambda state: state)
+                self.assertEqual({"lock_present": True, "lock_free_during_sync": False}, observed)
+        finally:
+            project_manager.closeProject(project)
+
+    def test_modify_target_state_bumps_updated_at(self):
+        from app.scheduler.state import modify_target_state
+
+        project_manager, project = self._create_project()
+        try:
+            stored = upsert_target_state(project.database, 61, {
+                "host_ip": "10.0.0.61",
+                "updated_at": "2020-01-01T00:00:00+00:00",
+                "screenshots": [
+                    {"artifact_ref": "/tmp/a-80.png", "filename": "a-80.png", "port": "80", "protocol": "tcp"},
+                ],
+            })
+            self.assertEqual("2020-01-01T00:00:00+00:00", stored["updated_at"])
+
+            modified = modify_target_state(project.database, 61, lambda state: state)  # identity round-trip
+
+            self.assertNotEqual("2020-01-01T00:00:00+00:00", modified["updated_at"])
+            self.assertGreater(modified["updated_at"], "2020-01-01T00:00:00+00:00")
+            self.assertEqual(modified["updated_at"], get_target_state(project.database, 61)["updated_at"])
+            self.assertEqual(["80"], [item.get("port") for item in modified.get("screenshots", [])])
+        finally:
+            project_manager.closeProject(project)

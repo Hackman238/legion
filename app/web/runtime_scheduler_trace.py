@@ -13,11 +13,17 @@ from app.scheduler.models import ExecutionRecord
 from app.scheduler.planner import ScheduledAction
 
 
-def get_scheduler_execution_records(runtime, limit: int = 200) -> List[Dict[str, Any]]:
+def get_scheduler_execution_records(
+        runtime,
+        limit: int = 200,
+        *,
+        host_ip: Optional[str] = None,
+        tool_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     with runtime._lock:
         project = runtime._require_active_project()
         ensure_scheduler_execution_table(project.database)
-        return list_execution_records(project.database, limit=limit)
+        return list_execution_records(project.database, limit=limit, host_ip=host_ip, tool_id=tool_id)
 
 
 def read_text_excerpt(path: str, max_chars: int = 4000) -> str:
@@ -39,6 +45,29 @@ def read_text_excerpt(path: str, max_chars: int = 4000) -> str:
         return ""
 
 
+def read_ref_excerpt(runtime, ref: str, max_chars: int = 4000) -> str:
+    normalized_ref = str(ref or "").strip()
+    if normalized_ref.startswith("process_output:"):
+        try:
+            process_id = int(normalized_ref.split(":", 1)[1])
+        except (TypeError, ValueError):
+            return ""
+        safe_max_chars = max(0, min(int(max_chars or 4000), 200000))
+        if safe_max_chars <= 0:
+            return ""
+        try:
+            tail_reader = getattr(runtime, "get_process_output_tail", None)
+            if callable(tail_reader):
+                # Slices the tail in SQL so large outputs are not loaded just to keep the end.
+                return str(tail_reader(process_id, max_chars=safe_max_chars) or "")[-safe_max_chars:]
+            payload = runtime.get_process_output(process_id, offset=0, max_chars=safe_max_chars)
+        except Exception:
+            return ""
+        output_text = str(payload.get("output", "") or payload.get("output_chunk", "") or "")
+        return output_text[-safe_max_chars:]
+    return runtime._read_text_excerpt(normalized_ref, max_chars=max_chars)
+
+
 def get_scheduler_execution_traces(
         runtime,
         *,
@@ -55,27 +84,31 @@ def get_scheduler_execution_traces(
             host = runtime._resolve_host(int(host_id))
             if host is None:
                 raise KeyError(f"Unknown host id: {host_id}")
-            resolved_host_ip = str(getattr(host, "ip", "") or "")
-    rows = get_scheduler_execution_records(runtime, limit=max(1, min(max(int(limit or 200), 50), 1000)))
-    filtered = []
+            resolved_host_ip = str(getattr(host, "ip", "") or "").strip()
     normalized_tool_id = str(tool_id or "").strip().lower()
+    max_items = max(1, min(int(limit or 200), 1000))
+    rows = get_scheduler_execution_records(
+        runtime,
+        limit=max_items,
+        host_ip=resolved_host_ip or None,
+        tool_id=normalized_tool_id or None,
+    )
+    filtered = []
     for item in list(rows or []):
-        if resolved_host_ip and str(item.get("host_ip", "") or "").strip() != resolved_host_ip:
-            continue
-        if normalized_tool_id and str(item.get("tool_id", "") or "").strip().lower() != normalized_tool_id:
-            continue
         record = dict(item)
         if include_output:
-            record["stdout_excerpt"] = runtime._read_text_excerpt(
+            record["stdout_excerpt"] = read_ref_excerpt(
+                runtime,
                 str(record.get("stdout_ref", "") or ""),
                 max_chars=output_max_chars,
             )
-            record["stderr_excerpt"] = runtime._read_text_excerpt(
+            record["stderr_excerpt"] = read_ref_excerpt(
+                runtime,
                 str(record.get("stderr_ref", "") or ""),
                 max_chars=output_max_chars,
             )
         filtered.append(record)
-        if len(filtered) >= max(1, min(int(limit or 200), 1000)):
+        if len(filtered) >= max_items:
             break
     return filtered
 
@@ -92,11 +125,13 @@ def get_scheduler_execution_trace(
     if trace is None:
         raise KeyError(f"Unknown execution id: {execution_id}")
     payload = dict(trace)
-    payload["stdout_excerpt"] = runtime._read_text_excerpt(
+    payload["stdout_excerpt"] = read_ref_excerpt(
+        runtime,
         str(payload.get("stdout_ref", "") or ""),
         max_chars=output_max_chars,
     )
-    payload["stderr_excerpt"] = runtime._read_text_excerpt(
+    payload["stderr_excerpt"] = read_ref_excerpt(
+        runtime,
         str(payload.get("stderr_ref", "") or ""),
         max_chars=output_max_chars,
     )

@@ -6,6 +6,12 @@ from typing import Any, Dict, Iterable, List, Optional
 from sqlalchemy import text
 
 from app.scheduler.state import get_target_state as load_target_state
+from db.entities.host import hostObj
+from db.entities.port import portObj
+from db.entities.service import serviceObj
+from db.repositories.HostRepository import HostRepository
+from db.repositories.PortRepository import PortRepository
+from db.repositories.ServiceRepository import ServiceRepository
 from app.web import runtime_workspace_findings as web_runtime_workspace_findings
 from app.web import runtime_workspace_services as web_runtime_workspace_services
 from app.web import runtime_workspace_target_state as web_runtime_workspace_target_state
@@ -71,6 +77,60 @@ def summary(runtime) -> Dict[str, int]:
         session.close()
 
 
+_BULK_LOOKUP_CHUNK = 500
+
+
+def _chunks(values: List[Any], size: int = _BULK_LOOKUP_CHUNK):
+    for offset in range(0, len(values), size):
+        yield values[offset:offset + size]
+
+
+def _load_host_port_inventories(host_rows: List[Any], port_repo: Any, service_repo: Any) -> Dict[int, tuple]:
+    """Return {host_id: (ports, service_inventory)} using batched queries where possible."""
+    host_ids = [int(getattr(host, "id", 0) or 0) for host in list(host_rows or [])]
+    ports_by_host: Optional[Dict[str, List[Any]]] = None
+    if isinstance(port_repo, PortRepository) and host_ids:
+        session = port_repo.dbAdapter.session()
+        try:
+            ports_by_host = {}
+            for chunk in _chunks([str(host_id) for host_id in host_ids]):
+                for port in session.query(portObj).filter(portObj.hostId.in_(chunk)).order_by(portObj.id).all():
+                    ports_by_host.setdefault(str(getattr(port, "hostId", "") or ""), []).append(port)
+        except Exception:
+            ports_by_host = None
+        finally:
+            session.close()
+
+    service_lookup: Optional[Dict[str, Any]] = None
+    if ports_by_host is not None and isinstance(service_repo, ServiceRepository):
+        service_ids = sorted({
+            str(getattr(port, "serviceId", "") or "")
+            for ports in ports_by_host.values()
+            for port in ports
+            if getattr(port, "serviceId", None)
+        })
+        session = service_repo.dbAdapter.session()
+        try:
+            service_lookup = {}
+            for chunk in _chunks(service_ids):
+                for service_obj in session.query(serviceObj).filter(serviceObj.id.in_(chunk)).all():
+                    service_lookup[str(getattr(service_obj, "id", "") or "")] = service_obj
+        except Exception:
+            service_lookup = None
+        finally:
+            session.close()
+
+    inventories: Dict[int, tuple] = {}
+    for host in list(host_rows or []):
+        host_id = int(getattr(host, "id", 0) or 0)
+        if ports_by_host is not None:
+            ports = list(ports_by_host.get(str(host_id), []))
+        else:
+            ports = list(port_repo.getPortsByHostId(host.id) or [])
+        inventories[host_id] = (ports, workspace_host_service_inventory(ports, service_repo, service_lookup))
+    return inventories
+
+
 def hosts(
         runtime,
         limit: Optional[int] = None,
@@ -99,9 +159,9 @@ def hosts(
         if normalized_limit > 0:
             host_rows = host_rows[:normalized_limit]
     prepared = []
+    inventories = _load_host_port_inventories(host_rows, port_repo, service_repo)
     for host in host_rows:
-        ports = list(port_repo.getPortsByHostId(host.id) or [])
-        service_inventory = workspace_host_service_inventory(ports, service_repo)
+        ports, service_inventory = inventories[int(getattr(host, "id", 0) or 0)]
         prepared.append((host, ports, service_inventory, _service_names_from_inventory(service_inventory)))
     target_states = _load_target_state_cache(project, [int(getattr(host, "id", 0) or 0) for host, *_ in prepared])
     return [
@@ -129,7 +189,16 @@ def resolve_host(runtime, host_id: int):
             return None
     finally:
         session.close()
-    hosts = project.repositoryContainer.hostRepository.getAllHostObjs()
+    host_repo = project.repositoryContainer.hostRepository
+    if isinstance(host_repo, HostRepository):
+        host_session = host_repo.dbAdapter.session()
+        try:
+            return host_session.query(hostObj).filter_by(id=int(host_id)).first()
+        except Exception:
+            pass
+        finally:
+            host_session.close()
+    hosts = host_repo.getAllHostObjs()
     for host in hosts:
         if int(getattr(host, "id", 0) or 0) == int(host_id):
             return host
@@ -267,9 +336,9 @@ def get_workspace_hosts(
         service_filters = _normalize_service_filters(service)
         category_filter = str(category or "").strip().lower()
         prepared = []
+        inventories = _load_host_port_inventories(hosts, port_repo, service_repo)
         for host in hosts:
-            ports = list(port_repo.getPortsByHostId(host.id) or [])
-            service_inventory = workspace_host_service_inventory(ports, service_repo)
+            ports, service_inventory = inventories[int(getattr(host, "id", 0) or 0)]
             services = _service_names_from_inventory(service_inventory)
             if service_filters and not _services_match_filters(services, service_filters):
                 continue
