@@ -889,6 +889,7 @@
                     <th>Product</th>
                     <th>Banner</th>
                     <th>Screenshot</th>
+                    <th>Actions</th>
                 </tr>
                 </thead>
                 <tbody id="host-detail-ports"></tbody>
@@ -2421,6 +2422,71 @@
                 </thead>
                 <tbody id="open-workspace-body"></tbody>
             </table>
+        </div>
+    </div>
+</div>
+
+<div id="import-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal manual-scan-modal" role="dialog" aria-modal="true" aria-labelledby="import-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="import-modal-title">Import Data</h2>
+            <p id="import-modal-meta">Add scan results or a target list to the open workspace.</p>
+            <button id="import-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block">
+            <label>
+                What to import
+                <select id="import-kind-select">
+                    <option value="xml">Nmap XML report</option>
+                    <option value="targets">Target list (one IP, CIDR, hostname or URL per line)</option>
+                </select>
+            </label>
+            <label>
+                Upload a file from this browser
+                <input id="import-file-input" type="file" accept=".xml,.txt,.lst,.csv,text/plain,text/xml,application/xml">
+            </label>
+            <p class="meta-note">or</p>
+            <label>
+                Path on the Legion host
+                <input id="import-path-input" type="text" placeholder="/path/to/scan.xml" list="import-path-options">
+                <datalist id="import-path-options"></datalist>
+            </label>
+            <label id="import-run-actions-wrapper" class="checkbox">
+                <input id="import-run-actions" type="checkbox">
+                Run scheduled actions after the import
+            </label>
+            <div class="scheduler-actions">
+                <button id="import-submit-button" type="button">Import</button>
+            </div>
+            <p id="import-modal-status" class="meta-note"></p>
+        </div>
+    </div>
+</div>
+
+<div id="save-as-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal host-remove-modal" role="dialog" aria-modal="true" aria-labelledby="save-as-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="save-as-modal-title">Save Workspace As</h2>
+            <p>Writes a .legion project file on the Legion host.</p>
+            <button id="save-as-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block">
+            <label>
+                Destination path
+                <input id="save-as-path-input" type="text" placeholder="/home/you/engagements/client.legion" list="open-workspace-path-options" data-modal-initial-focus>
+            </label>
+            <label class="checkbox">
+                <input id="save-as-replace" type="checkbox" checked>
+                Replace the file if it already exists
+            </label>
+            <div class="modal-actions">
+                <button id="save-as-cancel-button" type="button">Cancel</button>
+                <button id="save-as-confirm-button" type="button">Save</button>
+            </div>
         </div>
     </div>
 </div>

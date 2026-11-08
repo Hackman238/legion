@@ -72,3 +72,29 @@ class FullWorkspaceExportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImportUploadRouteTest(FullWorkspaceExportTest):
+    def test_uploaded_nmap_xml_is_stored_on_the_host_and_queued(self):
+        import io as _io
+        import time
+        xml_path = "tests/parsers/nmap-fixtures/valid-nmap-report.xml"
+        with open(xml_path, "rb") as handle:
+            data = {"file": (_io.BytesIO(handle.read()), "scan.xml"), "run_actions": "false"}
+        response = self.client.post("/api/nmap/import-xml-upload", data=data, content_type="multipart/form-data")
+        self.assertEqual(202, response.status_code, response.data)
+        payload = json.loads(response.data)
+        self.assertEqual("accepted", payload["status"])
+        job_id = int(payload["job"]["id"])
+        for _ in range(100):
+            job = self.runtime.jobs.get_job(job_id)
+            if str(job.get("status", "")).lower() in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.1)
+        self.assertEqual("completed", str(job.get("status", "")).lower(), job)
+        ips = {host["ip"] for host in self.runtime.get_workspace_hosts(include_down=True)}
+        self.assertIn("192.168.1.1", ips)
+
+    def test_upload_without_a_file_is_a_400(self):
+        response = self.client.post("/api/targets/import-upload", data={}, content_type="multipart/form-data")
+        self.assertEqual(400, response.status_code)
