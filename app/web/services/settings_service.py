@@ -141,11 +141,8 @@ class SettingsService:
         )
 
     def start_tool_install(self, payload: Any) -> Dict[str, Any]:
-        runtime_start = getattr(self.runtime, "start_tool_install_job", None) if self.runtime is not None else None
-        if not callable(runtime_start):
-            raise NotImplementedError("Tool installation is unavailable in this runtime.")
         request = ToolAuditInstallRequest.from_payload(payload)
-        job = runtime_start(
+        job = self.runtime.start_tool_install_job(
             platform=request.platform,
             scope=request.scope,
             tool_keys=request.tool_keys,

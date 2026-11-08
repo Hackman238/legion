@@ -4,11 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Legion{% endblock %}</title>
-    <link
-        rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
-        referrerpolicy="no-referrer"
-    >
+    {# Font Awesome Free 6.5.1 is bundled (app/web/static/vendor/fontawesome) so icons work on offline labs. #}
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/legion.css') }}">
 </head>
 <body{% if legion_ui_opaque or legion_colorful_ascii_background %} class="{% if legion_ui_opaque %}opaque-ui{% endif %}{% if legion_ui_opaque and legion_colorful_ascii_background %} {% endif %}{% if legion_colorful_ascii_background %}colorful-background{% endif %}"{% endif %}>

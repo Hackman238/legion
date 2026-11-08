@@ -49,6 +49,9 @@ def _bool_arg(arguments: Dict[str, Any], key: str, default: bool = False) -> boo
     return bool(default)
 
 
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
 class MCPServer:
     def __init__(self, runtime=None):
         self._runtime = runtime
@@ -295,6 +298,164 @@ class MCPServer:
                 },
                 "handler": self.create_annotation,
             },
+            "list_hosts": {
+                "description": "List hosts in the open project with status, OS, categories and open port counts.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer"},
+                        "filter": {"type": "string", "description": "hide_down (default) or show_all"},
+                        "service": {"type": "string", "description": "Only hosts exposing this service name"},
+                        "category": {"type": "string", "description": "Only hosts in this device category"},
+                    },
+                    "required": [],
+                },
+                "handler": self.list_hosts,
+            },
+            "get_host": {
+                "description": "Full detail for one host: ports, services, scripts, CVEs, notes, screenshots and AI analysis.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"host_id": {"type": "integer"}},
+                    "required": ["host_id"],
+                },
+                "handler": self.get_host,
+            },
+            "list_services": {
+                "description": "Services aggregated across hosts (optionally for one host or category).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer"},
+                        "host_id": {"type": "integer"},
+                        "category": {"type": "string"},
+                    },
+                    "required": [],
+                },
+                "handler": self.list_services,
+            },
+            "list_tool_catalog": {
+                "description": "Tools and pipettes that can be run against a service/port, with their risk categories.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "service": {"type": "string"},
+                        "port": {"type": "string"},
+                        "protocol": {"type": "string"},
+                        "limit": {"type": "integer"},
+                    },
+                    "required": [],
+                },
+                "handler": self.list_tool_catalog,
+            },
+            "run_tool": {
+                "description": "Run one catalog tool against a host/port as a tracked process (dangerous tools follow the approval policy).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "host_ip": {"type": "string"},
+                        "port": {"type": "string"},
+                        "protocol": {"type": "string"},
+                        "tool_id": {"type": "string"},
+                        "timeout": {"type": "integer"},
+                        "parameters": {"type": "object"},
+                    },
+                    "required": ["host_ip", "port", "tool_id"],
+                },
+                "handler": self.run_tool,
+            },
+            "start_nmap_scan": {
+                "description": "Queue an nmap scan of targets (IPs, CIDRs, hostnames) and import the results.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "targets": {"type": "array", "items": {"type": "string"}},
+                        "discovery": {"type": "boolean"},
+                        "staged": {"type": "boolean"},
+                        "run_actions": {"type": "boolean"},
+                        "nmap_args": {"type": "string"},
+                        "scan_mode": {"type": "string", "description": "easy, hard, legacy or rfc1918_discovery"},
+                        "scan_options": {"type": "object"},
+                    },
+                    "required": ["targets"],
+                },
+                "handler": self.start_nmap_scan,
+            },
+            "import_nmap_xml": {
+                "description": "Import an nmap XML report that exists on the Legion host.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "run_actions": {"type": "boolean"},
+                    },
+                    "required": ["path"],
+                },
+                "handler": self.import_nmap_xml,
+            },
+            "run_scheduler": {
+                "description": "Start a governed scheduler run over the open project.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+                "handler": self.run_scheduler,
+            },
+            "list_jobs": {
+                "description": "Background jobs (scans, imports, tool runs, scheduler runs) with status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer"}},
+                    "required": [],
+                },
+                "handler": self.list_jobs,
+            },
+            "get_job": {
+                "description": "Status, error and result of one background job.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"job_id": {"type": "integer"}},
+                    "required": ["job_id"],
+                },
+                "handler": self.get_job,
+            },
+            "list_processes": {
+                "description": "Tracked tool processes (running and finished) with host, port, status and timing.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer"}},
+                    "required": [],
+                },
+                "handler": self.list_processes,
+            },
+            "get_process_output": {
+                "description": "A slice of a process's captured output.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "process_id": {"type": "integer"},
+                        "offset": {"type": "integer"},
+                        "limit": {"type": "integer", "description": "Max characters (default 20000)"},
+                    },
+                    "required": ["process_id"],
+                },
+                "handler": self.get_process_output,
+            },
+            "kill_process": {
+                "description": "Stop a running tracked process.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"process_id": {"type": "integer"}},
+                    "required": ["process_id"],
+                },
+                "handler": self.kill_process,
+            },
+            "list_scan_history": {
+                "description": "Submitted scans and imports with their status and result summary.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer"}},
+                    "required": [],
+                },
+                "handler": self.list_scan_history,
+            },
         }
 
     def _ensure_runtime(self):
@@ -480,40 +641,171 @@ class MCPServer:
 
         return {"annotation": GraphService(runtime).save_annotation(arguments)["annotation"]}
 
-    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        if request.get("method") == "list_tools":
-            return {
-                "jsonrpc": "2.0",
-                "id": request.get("id"),
-                "result": [
-                    {
-                        "name": name,
-                        "description": tool["description"],
-                        "inputSchema": tool["inputSchema"],
-                    }
-                    for name, tool in self.tools.items()
-                ],
-            }
-        if request.get("method") == "call_tool":
-            tool_name = request.get("params", {}).get("name")
-            arguments = request.get("params", {}).get("arguments", {})
-            if tool_name in self.tools:
-                result = await self.tools[tool_name]["handler"](arguments)
-                return {
-                    "jsonrpc": "2.0",
-                    "id": request.get("id"),
-                    "result": result,
-                }
-            return {
-                "jsonrpc": "2.0",
-                "id": request.get("id"),
-                "error": {"code": -32601, "message": "Tool not found"},
-            }
-        return {
-            "jsonrpc": "2.0",
-            "id": request.get("id"),
-            "error": {"code": -32601, "message": "Method not found"},
-        }
+    async def list_hosts(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.workspace_service import WorkspaceService
+
+        return WorkspaceService(self._ensure_runtime()).list_workspace_hosts({
+            "limit": _int_arg(arguments, "limit", 500),
+            "filter": str(arguments.get("filter", "") or ""),
+            "service": str(arguments.get("service", "") or ""),
+            "category": str(arguments.get("category", "") or ""),
+        })
+
+    async def get_host(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.workspace_service import WorkspaceService
+
+        return WorkspaceService(self._ensure_runtime()).get_host_workspace(_int_arg(arguments, "host_id", 0))
+
+    async def list_services(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.workspace_service import WorkspaceService
+
+        return WorkspaceService(self._ensure_runtime()).list_workspace_services({
+            "limit": _int_arg(arguments, "limit", 500),
+            "host_id": _int_arg(arguments, "host_id", 0),
+            "category": str(arguments.get("category", "") or ""),
+        })
+
+    async def list_tool_catalog(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.tool_service import ToolService
+
+        return ToolService(self._ensure_runtime()).list_workspace_tools({
+            "service": str(arguments.get("service", "") or ""),
+            "port": str(arguments.get("port", "") or ""),
+            "protocol": str(arguments.get("protocol", "tcp") or "tcp"),
+            "limit": _int_arg(arguments, "limit", 500),
+        })
+
+    async def run_tool(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.tool_service import ToolService
+
+        return ToolService(self._ensure_runtime()).start_tool_run(dict(arguments or {}))
+
+    async def start_nmap_scan(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.scan_service import ScanService
+
+        return ScanService(self._ensure_runtime()).nmap_scan(dict(arguments or {}))
+
+    async def import_nmap_xml(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.scan_service import ScanService
+
+        return ScanService(self._ensure_runtime()).import_nmap_xml(dict(arguments or {}))
+
+    async def run_scheduler(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.scheduler_service import SchedulerService
+
+        body, _status = SchedulerService(self._ensure_runtime()).start_run()
+        return dict(body or {})
+
+    async def list_jobs(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.runtime_service import RuntimeService
+
+        return RuntimeService(self._ensure_runtime()).list_jobs({"limit": _int_arg(arguments, "limit", 100)})
+
+    async def get_job(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.runtime_service import RuntimeService
+
+        return RuntimeService(self._ensure_runtime()).get_job(_int_arg(arguments, "job_id", 0))
+
+    async def list_processes(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.runtime_service import RuntimeService
+
+        return RuntimeService(self._ensure_runtime()).list_processes({"limit": _int_arg(arguments, "limit", 200)})
+
+    async def get_process_output(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.process_service import ProcessService
+
+        return ProcessService(self._ensure_runtime()).get_process_output(
+            _int_arg(arguments, "process_id", 0),
+            {"offset": _int_arg(arguments, "offset", 0), "limit": _int_arg(arguments, "limit", 20000)},
+        )
+
+    async def kill_process(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.process_service import ProcessService
+
+        return ProcessService(self._ensure_runtime()).kill_process(_int_arg(arguments, "process_id", 0))
+
+    async def list_scan_history(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from app.web.services.scan_service import ScanService
+
+        return ScanService(self._ensure_runtime()).scan_history(_int_arg(arguments, "limit", 200))
+
+    def _tool_listing(self):
+        return [
+            {"name": name, "description": tool["description"], "inputSchema": tool["inputSchema"]}
+            for name, tool in self.tools.items()
+        ]
+
+    @staticmethod
+    def _jsonrpc_result(request: Dict[str, Any], result: Any) -> Dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+
+    @staticmethod
+    def _jsonrpc_error(request: Dict[str, Any], code: int, message: str) -> Dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": int(code), "message": str(message)}}
+
+    async def _call_tool(self, tool_name: str, arguments: Any):
+        tool = self.tools.get(str(tool_name or ""))
+        if tool is None:
+            raise KeyError(f"Tool not found: {tool_name}")
+        return await tool["handler"](dict(arguments or {}) if isinstance(arguments, dict) else {})
+
+    async def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Dispatch one JSON-RPC request.
+
+        Implements the Model Context Protocol methods (initialize, ping, tools/list, tools/call, plus empty
+        resources/prompts listings) so standard MCP clients can connect over stdio, and keeps the pre-MCP
+        `list_tools` / `call_tool` methods for existing scripts. Notifications (no id) get no response.
+        """
+        method = str(request.get("method", "") or "")
+        params = request.get("params", {}) if isinstance(request.get("params", {}), dict) else {}
+        is_notification = "id" not in request
+
+        if method == "initialize":
+            from app.ApplicationInfo import applicationInfo
+
+            return self._jsonrpc_result(request, {
+                "protocolVersion": str(params.get("protocolVersion") or MCP_PROTOCOL_VERSION),
+                "capabilities": {"tools": {"listChanged": False}, "resources": {}, "prompts": {}},
+                "serverInfo": {"name": "legion", "version": str(applicationInfo.get("version", "0.0.0"))},
+                "instructions": (
+                    "Legion exposes a reconnaissance project: list_hosts/get_host for inventory, "
+                    "start_nmap_scan/import_nmap_xml to add data, list_tool_catalog/run_tool for single tools, "
+                    "run_scheduler and the approval tools for governed follow-up, and query_* / export_report for results."
+                ),
+            })
+        if method.startswith("notifications/"):
+            return None
+        if method == "ping":
+            return self._jsonrpc_result(request, {})
+        if method in {"tools/list", "list_tools"}:
+            listing = self._tool_listing()
+            return self._jsonrpc_result(request, {"tools": listing} if method == "tools/list" else listing)
+        if method in {"resources/list", "resources/templates/list"}:
+            return self._jsonrpc_result(request, {"resources": [], "resourceTemplates": []})
+        if method == "prompts/list":
+            return self._jsonrpc_result(request, {"prompts": []})
+        if method in {"tools/call", "call_tool"}:
+            tool_name = params.get("name")
+            arguments = params.get("arguments", {})
+            if tool_name not in self.tools:
+                return self._jsonrpc_error(request, -32601, "Tool not found")
+            if method == "call_tool":
+                return self._jsonrpc_result(request, await self._call_tool(tool_name, arguments))
+            try:
+                result = await self._call_tool(tool_name, arguments)
+            except Exception as exc:  # tool errors are reported in-band per the MCP spec
+                return self._jsonrpc_result(request, {
+                    "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
+                    "isError": True,
+                })
+            return self._jsonrpc_result(request, {
+                "content": [{"type": "text", "text": json.dumps(result, indent=2, default=str)}],
+                "structuredContent": result if isinstance(result, dict) else {"result": result},
+                "isError": False,
+            })
+        if is_notification:
+            return None
+        return self._jsonrpc_error(request, -32601, "Method not found")
 
     async def run(self):
         reader = asyncio.StreamReader(limit=_MAX_REQUEST_LINE_BYTES)
@@ -542,7 +834,8 @@ class MCPServer:
                     else:
                         request_id = request.get("id")
                         response = await self.handle_request(request)
-                        print(json.dumps(response), flush=True)
+                        if response is not None:
+                            print(json.dumps(response, default=str), flush=True)
                         continue
             except Exception as exc:
                 error = {"code": -32000, "message": str(exc)}

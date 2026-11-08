@@ -1,52 +1,50 @@
 from __future__ import annotations
 
+import os
+import re
+import shlex
+import shutil
 from typing import Any, Dict, List
 
 from sqlalchemy import text
 
-from app.pipettes import find_pipette, list_pipettes
+from app.pipettes import list_pipettes
 from app.scheduler.risk import classify_command_danger
 
 _SCHEDULER_ONLY_LABELS = {
     "screenshooter": "Capture web screenshot",
 }
 
-_SUPPORTED_WORKSPACE_TOOL_IDS = {
-    "curl-headers",
-    "curl-options",
-    "curl-robots",
-    "dirsearch",
-    "dnsmap",
-    "enum4linux",
-    "enum4linux-ng",
-    "ffuf",
-    "http-sqlmap",
-    "httpx",
-    "nbtscan",
-    "nikto",
-    "nmap",
-    "nmap-vuln.nse",
-    "nuclei-cves",
-    "nuclei-exposures",
-    "nuclei-web",
-    "nuclei-wordpress",
-    "rpcclient-enum",
-    "screenshooter",
-    "smbmap",
-    "sqlmap",
-    "sslscan",
-    "testssl.sh",
-    "wafw00f",
-    "web-content-discovery",
-    "whatweb",
-    "whatweb-http",
-    "whatweb-https",
-    "wpscan",
-}
+_PLACEHOLDER_TOKEN = re.compile(r"^\[[A-Z_]+\]$")
 
-_SUPPORTED_WORKSPACE_TOOL_PREFIXES = (
-    "http-vuln-",
-)
+
+def command_executable(command_template: str) -> str:
+    """The program a command template launches (first token after env assignments, sudo and placeholders)."""
+    text_value = str(command_template or "").strip()
+    if not text_value:
+        return ""
+    try:
+        tokens = shlex.split(text_value, posix=True)
+    except ValueError:
+        tokens = text_value.split()
+    for token in tokens:
+        if not token or "=" in token and not token.startswith(("/", ".")) and token.split("=", 1)[0].isidentifier():
+            continue  # FOO=bar prefix
+        if token in {"sudo", "-n", "-E", "env", "nice", "timeout", "nohup"} or token.startswith("-"):
+            continue
+        if _PLACEHOLDER_TOKEN.match(token):
+            continue
+        return token
+    return ""
+
+
+def _executable_available(executable: str, cache: Dict[str, bool]) -> bool:
+    name = str(executable or "").strip()
+    if not name:
+        return False
+    if name not in cache:
+        cache[name] = bool(shutil.which(name)) or (os.path.isabs(name) and os.path.isfile(name))
+    return cache[name]
 
 
 def _service_matches_scope(normalized_service: str, service_scope: List[str]) -> bool:
@@ -86,17 +84,6 @@ def _pipette_matches_context(
     if normalized_service and _service_matches_scope(normalized_service, service_scope):
         return True
     return _port_matches_scope(normalized_port, target_ports)
-
-
-def _is_supported_tool(tool_id: str) -> bool:
-    normalized_tool = str(tool_id or "").strip().lower()
-    if not normalized_tool:
-        return False
-    if find_pipette(normalized_tool) is not None:
-        return True
-    if normalized_tool in _SUPPORTED_WORKSPACE_TOOL_IDS:
-        return True
-    return any(normalized_tool.startswith(prefix) for prefix in _SUPPORTED_WORKSPACE_TOOL_PREFIXES)
 
 
 def tool_run_stats(project) -> Dict[str, Dict[str, Any]]:
@@ -146,17 +133,19 @@ def workspace_tools_rows(runtime, service: str = "", port: str = "", protocol: s
         rows = []
         seen_tool_ids = set()
 
+        availability_cache: Dict[str, bool] = {}
+        # Every configured port action is offered; whether the tool is installed decides if it can run now.
         for action in settings.portActions:
             label = str(action[0])
             tool_id = str(action[1])
             command_template = str(action[2])
             service_scope = runtime._split_csv(str(action[3] if len(action) > 3 else ""))
 
-            if not _is_supported_tool(tool_id):
-                continue
             if not _service_matches_scope(normalized_service, service_scope):
                 continue
 
+            executable = command_executable(command_template)
+            available = _executable_available(executable, availability_cache)
             stats = run_stats.get(tool_id, {})
             rows.append({
                 "label": label,
@@ -167,15 +156,15 @@ def workspace_tools_rows(runtime, service: str = "", port: str = "", protocol: s
                 "run_count": int(stats.get("run_count", 0) or 0),
                 "last_status": str(stats.get("last_status", "") or ""),
                 "last_start": str(stats.get("last_start", "") or ""),
-                "runnable": True,
+                "runnable": available,
+                "available": available,
+                "executable": executable,
             })
             seen_tool_ids.add(tool_id)
 
         for automated in settings.automatedAttacks:
             tool_id = str(automated[0] if len(automated) > 0 else "").strip()
             if not tool_id or tool_id in seen_tool_ids:
-                continue
-            if not _is_supported_tool(tool_id):
                 continue
             service_scope = runtime._split_csv(str(automated[1] if len(automated) > 1 else ""))
             if not _service_matches_scope(normalized_service, service_scope):
