@@ -211,10 +211,15 @@ def run_nmap_scan_and_import(
         return result
     except Exception as exc:
         if resolved_job_id > 0:
+            cancelled = False
+            try:
+                cancelled = bool(runtime.jobs.is_cancel_requested(resolved_job_id))
+            except Exception:
+                cancelled = False
             runtime._update_scan_submission_status(
                 job_id=resolved_job_id,
-                status="failed",
-                result_summary=str(exc),
+                status="cancelled" if cancelled else "failed",
+                result_summary="cancelled by operator" if cancelled else str(exc),
             )
         runtime._emit_ui_invalidation("scan_history")
         raise

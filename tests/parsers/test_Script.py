@@ -129,5 +129,22 @@ class MalformedXmlExceptionTest(unittest.TestCase):
         self.assertTrue(issubclass(MalformedXmlDocumentException, Exception))
 
 
+class VulnersSoftwareHeaderTest(unittest.TestCase):
+    OUTPUT = (
+        "\n  nginx 1.14.0: \n"
+        "    \tCVE-2019-20372\t5.3\thttps://vulners.com/cve/CVE-2019-20372\n"
+        "  cpe:/a:openbsd:openssh:7.4: \n"
+        "    \tCVE-2023-38408\t9.8\thttps://vulners.com/cve/CVE-2023-38408\n"
+    )
+
+    def test_products_without_a_cpe_are_parsed(self):
+        from parsers.Script import Script
+        self.assertEqual({("nginx", "1.14.0"), ("openssh", "7.4")}, Script.vulnersProductVersions(self.OUTPUT))
+        results = Script(None).processVulnersScriptOutput(self.OUTPUT)
+        self.assertEqual({"nginx", "openssh"}, set(results))
+        self.assertEqual("CVE-2019-20372", results["nginx"][0]["id"])
+        self.assertEqual("software", results["nginx"][0]["source"])
+
+
 if __name__ == "__main__":
     unittest.main()

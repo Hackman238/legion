@@ -19,7 +19,6 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 import os
 import re
 import shutil
-import subprocess
 import sys
 import logging
 from typing import Optional
@@ -221,17 +220,19 @@ def doPathSetup():
         os.makedirs(backup_dir, exist_ok=True)
 
     if not os.path.exists(conf_path):
-        shutil.copy('./legion.conf', conf_path)
+        shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legion.conf"), conf_path)
 
 
 def build_arg_parser():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Start Legion")
+    parser = argparse.ArgumentParser(
+        description="Start Legion. Without a mode flag the web interface is started (same as --web)."
+    )
     audit_group = parser.add_mutually_exclusive_group()
     parser.add_argument("--mcp-server", action="store_true", help="Start MCP server for AI integration")
     parser.add_argument("--headless", action="store_true", help="Run Legion in headless (CLI) mode")
-    parser.add_argument("--web", action="store_true", help="Run Legion with the local Flask web interface")
+    parser.add_argument("--web", action="store_true", help="Run Legion with the local Flask web interface (default)")
     audit_group.add_argument("--tool-audit", action="store_true", help="Print a tool availability audit and exit")
     audit_group.add_argument(
         "--tool-install-plan",
@@ -260,7 +261,7 @@ def build_arg_parser():
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
-    parser.add_argument("--discovery", action="store_true", help="Enable host discovery (default: enabled)")
+    parser.add_argument("--discovery", action="store_true", help="Run an nmap host-discovery scan of the targets (headless)")
     parser.add_argument("--staged-scan", action="store_true", help="Enable staged scan")
     parser.add_argument("--output-file", type=str, help="Output file (.legion or .json)")
     parser.add_argument(
@@ -306,13 +307,14 @@ if __name__ == "__main__":
     startupLog = getStartupLogger()
 
     if args.mcp_server:
-        # Start MCP server as a subprocess (separate stdio)
-        mcp_proc = subprocess.Popen(
-            [sys.executable, "app/mcpServer.py"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-        )
+        # JSON-RPC over this process's stdin/stdout, so stdout must carry nothing but responses: no logo here,
+        # and the loggers write to stderr.
+        import asyncio
+        from app.mcpServer import MCPServer
+
+        doPathSetup()
+        asyncio.run(MCPServer().run())
+        sys.exit(0)
 
     from colorama import init
     from termcolor import cprint
@@ -374,7 +376,8 @@ if __name__ == "__main__":
         print(str(result.get("message", "Tool installation finished.")), file=sys.stderr)
         sys.exit(0)
 
-    if args.web:
+    # Web mode is the default: `python legion.py` with no mode flag starts the web interface.
+    if args.web or not args.headless:
         ensure_web_dependency_compatibility()
         from app.web import create_app
         from app.web.bootstrap import create_default_logic
@@ -391,7 +394,7 @@ if __name__ == "__main__":
         web_app.run(host=web_bind_host, port=args.web_port, debug=False, use_reloader=False)
         sys.exit(0)
 
-    if args.headless:
+    if args.headless:  # the web branch above exits, so this is the only mode left
         # --- HEADLESS CLI MODE ---
         from app.cli_utils import import_targets_from_textfile, run_nmap_scan
         from app.importers.nmap_runner import import_nmap_xml_into_project
@@ -420,21 +423,26 @@ if __name__ == "__main__":
         nmap_xml = None
         nmap_failed = False
         if args.staged_scan or args.discovery:
-            # Build targets string for nmap (space-separated)
+            # Scan the same normalised targets that were imported (URLs become hostnames, comments are dropped).
+            from app.cli_utils import _normalize_import_target
+            from app.settings import AppSettings, Settings
             targets = []
-            with open(args.input_file, "r") as f:
+            with open(args.input_file, "r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
-                    t = line.strip()
-                    if t and not t.startswith("#"):
+                    t = _normalize_import_target(line)
+                    if t and t not in targets:
                         targets.append(t)
             targets_str = " ".join(targets)
+            configured_nmap = str(Settings(AppSettings()).tools_path_nmap or "").strip()
+            nmap_path = configured_nmap if configured_nmap and os.path.isfile(configured_nmap) else "nmap"
             output_prefix = os.path.join(logic.activeProject.properties.runningFolder, f"cli-nmap-{int(time.time())}")
             try:
                 nmap_xml = run_nmap_scan(
                     targets_str,
                     output_prefix,
                     discovery=args.discovery,
-                    staged=args.staged_scan
+                    staged=args.staged_scan,
+                    nmap_path=nmap_path,
                 )
                 if nmap_xml is None:
                     # run_nmap_scan already printed nmap's error; keep the imported targets and still export.
@@ -531,104 +539,3 @@ if __name__ == "__main__":
             sys.exit(1)
         print("Headless Legion run complete.")
         sys.exit(0)
-
-    # --- GUI MODE ---
-    from ui.eventfilter import MyEventFilter
-    from ui.ViewState import ViewState
-    from ui.gui import *
-    from ui.gui import Ui_MainWindow
-    import qasync
-    import asyncio
-
-    app = QApplication(sys.argv)
-    loop = qasync.QEventLoop(app)
-    asyncio.set_event_loop(loop)
-
-    MainWindow = QtWidgets.QMainWindow()
-    Screen = QGuiApplication.primaryScreen()
-    app.setWindowIcon(QIcon('./images/icons/Legion-N_128x128.svg'))
-    app.setStyleSheet("* { font-family: \"monospace\"; font-size: 10pt; }")
-
-    from ui.view import *
-    from controller.controller import *
-
-    ui = Ui_MainWindow()
-    ui.setupUi(MainWindow)
-
-    # Platform-independent privilege check
-    if hasattr(os, "geteuid"):
-        if os.geteuid() != 0:
-            startupLog.error("Legion must run as root for raw socket access. Please start legion using sudo.")
-            notice = QMessageBox()
-            notice.setIcon(QMessageBox.Icon.Critical)
-            notice.setText("Legion must run as root for raw socket access. Please start legion using sudo.")
-            notice.exec()
-            exit(1)
-    elif os.name == "nt":
-        # On Windows, warn but do not exit
-        startupLog.warning("Legion may require Administrator privileges for some features on Windows.")
-        notice = QMessageBox()
-        notice.setIcon(QMessageBox.Icon.Warning)
-        notice.setText("Legion may require Administrator privileges for some features on Windows.")
-        notice.exec()
-
-
-    shell = DefaultShell()
-    dbLog = getDbLogger()
-    appLogger = getAppLogger()
-    repositoryFactory = RepositoryFactory(dbLog)
-    projectManager = ProjectManager(shell, repositoryFactory, appLogger)
-    nmapExporter = DefaultNmapExporter(shell, appLogger)
-    toolCoordinator = ToolCoordinator(shell, nmapExporter)
-    logic = Logic(shell, projectManager, toolCoordinator)
-
-    startupLog.info("Creating temporary project at application start...")
-    logic.createNewTemporaryProject()
-
-    viewState = ViewState()
-    view = View(viewState, ui, MainWindow, shell, app, loop)  # View prep (gui)
-    controller = Controller(view, logic)  # Controller prep (communication between model and view)
-
-    myFilter = MyEventFilter(view, MainWindow)  # to capture events
-    app.installEventFilter(myFilter)
-
-    # Center the application in screen
-    screenCenter = Screen.availableGeometry().center()
-    MainWindow.move(screenCenter - MainWindow.rect().center())
-
-    import signal
-
-    def graceful_shutdown(*args):
-        startupLog.info("Graceful shutdown initiated.")
-        try:
-            # Attempt to stop QThreads (e.g., Screenshooter)
-            if hasattr(controller, "screenshooter") and controller.screenshooter.isRunning():
-                controller.screenshooter.quit()
-                controller.screenshooter.wait(3000)
-        except Exception as e:
-            startupLog.error(f"Error during QThread shutdown: {e}")
-        # Stopping the loop makes run_forever() return, and the teardown below then runs; exiting
-        # straight from here would leave the window tree alive past the QApplication and segfault.
-        try:
-            loop.stop()
-        except Exception:
-            pass
-        try:
-            app.quit()
-        except Exception:
-            pass
-
-    signal.signal(signal.SIGINT, graceful_shutdown)
-    signal.signal(signal.SIGTERM, graceful_shutdown)
-
-    startupLog.info("Legion started successfully.")
-    exit_code = 0
-    try:
-        exit_code = loop.run_forever() or 0
-    except KeyboardInterrupt:
-        graceful_shutdown()
-    finally:
-        # Destroy the Qt object tree while the QApplication still exists; see ui/qt_shutdown.py.
-        from ui.qt_shutdown import destroy_main_window
-        destroy_main_window(MainWindow, app)
-    sys.exit(exit_code)

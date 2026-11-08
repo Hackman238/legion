@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import text
 
 from app.hostsfile import add_temporary_host_alias
@@ -15,6 +17,8 @@ from db.entities.host import hostObj
 
 
 AI_HOST_UPDATE_MIN_CONFIDENCE = web_runtime_scheduler_inference.AI_HOST_UPDATE_MIN_CONFIDENCE
+
+logger = logging.getLogger(__name__)
 
 
 def apply_ai_host_updates(
@@ -87,7 +91,7 @@ def apply_ai_host_updates(
         try:
             add_temporary_host_alias(str(host_ip or ""), alias_to_add)
         except Exception:
-            pass
+            logger.warning("Could not add hosts-file alias %s for %s.", alias_to_add, host_ip, exc_info=True)
 
 
 def enrich_host_from_observed_results(runtime, *, host_ip: str, port: str, protocol: str):
@@ -194,4 +198,4 @@ def enrich_host_from_observed_results(runtime, *, host_ip: str, port: str, proto
         try:
             add_temporary_host_alias(str(host_ip or ""), alias_to_add)
         except Exception:
-            pass
+            logger.warning("Could not add hosts-file alias %s for %s.", alias_to_add, host_ip, exc_info=True)

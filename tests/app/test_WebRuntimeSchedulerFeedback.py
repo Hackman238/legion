@@ -165,7 +165,6 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
 
     def test_ingest_discovered_hosts_imports_targets_and_queues_subfinder_followup(self):
         from app.ProjectManager import ProjectManager
-        from app.logic import Logic
         from app.logging.legionLog import getAppLogger, getDbLogger
         from app.scheduler.state import get_target_state
         from app.web.runtime import WebRuntime

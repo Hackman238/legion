@@ -54,6 +54,8 @@ def job_details(job_id):
         return jsonify(service.get_job(job_id))
     except KeyError:
         return json_error(f"Unknown job id: {job_id}", 404)
+    except Exception as exc:
+        return json_error(str(exc), 500)
 
 
 @runtime_bp.post("/api/jobs/<int:job_id>/stop")

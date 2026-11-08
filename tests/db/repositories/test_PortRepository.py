@@ -58,7 +58,7 @@ class PortRepositoryTest(unittest.TestCase):
         self.assertEqual([('port-state1',), ('port-state2',)], port_states)
 
     def test_getPortsAndServicesByHostIP_InvokedWithNoFilters_ReturnsPortsAndServices(self):
-        from app.auxiliary import Filters
+        from app.core.common import Filters
 
         expected_query = ("SELECT hosts.ip, ports.portId, ports.protocol, ports.state, ports.hostId, ports.serviceId, "
                           "services.name, services.product, services.version, services.extrainfo, services.fingerprint "
@@ -78,7 +78,7 @@ class PortRepositoryTest(unittest.TestCase):
         self.assertEqual([{'ip': 'ip1'}, {'ip': 'ip2'}], results)
 
     def test_getPortsAndServicesByHostIP_InvokedWithFewFilters_ReturnsPortsAndServices(self):
-        from app.auxiliary import Filters
+        from app.core.common import Filters
 
         expected_query = ("SELECT hosts.ip, ports.portId, ports.protocol, ports.state, ports.hostId, ports.serviceId, "
                           "services.name, services.product, services.version, services.extrainfo, services.fingerprint "

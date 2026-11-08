@@ -1,3 +1,17 @@
+LEGION Unreleased
+
+* Removed the legacy Qt desktop UI. `python legion.py` now starts the web interface; the headless CLI and MCP server are unchanged. PyQt6, qasync and the X11/xvfb packages are no longer dependencies, and the Nmap importer no longer needs Qt.
+* Dropped the unused `asyncio` backport and `six` from the requirements.
+* Fixed `legion.py --mcp-server`, which started the MCP server with its stdin and stdout discarded (so it could never answer) and then fell through to the UI; it now serves JSON-RPC on the invoking process's stdio. The first-run copy of `legion.conf` no longer depends on the current directory.
+* Web security: state-changing requests from other origins (cross-site form posts, rebound DNS names) are rejected, uploads are capped, and API errors are always JSON.
+* Scheduler: nmap `*-brute` scripts and `unsafe=1` script arguments are classified as risky (they ran without approval under every preset), an AI plan whose candidates are all filtered out falls back to deterministic planning instead of re-admitting blocked actions, approved actions re-check the current policy before running, rejecting an executed approval no longer rewrites the decision log, tool JSON with non-numeric counters no longer aborts a run, and non-object provider responses are reported as provider errors.
+* Scheduler performance: the evidence-graph sync is skipped when a host's target state has not changed, execution records share artifact nodes with the state sync instead of duplicating them, and the approval, decision-log and execution tables are indexed by host.
+* Web runtime: credential-capture listeners (Responder, ntlmrelayx) are no longer killed after 300 s of silence, hiding a running process stops it, switching projects waits for every running job, project bundles archive a consistent database snapshot, a cancelled scan is recorded as cancelled, scan history no longer shows finished imports as queued, deleting a host removes its evidence-graph nodes, restored bundles live in Legion's temp folder, and an invalid legion.conf is rejected instead of written.
+* Web UI: cancelled jobs end their wait immediately, the hosts/services tables are no longer overwritten by the capped snapshot, credential captures refresh live, project switches clear every filter, the live socket reconnects with backoff and detects a silent connection, double clicks no longer queue duplicate jobs, and modals manage keyboard focus.
+* Importer and parsers: a `<host>` without an address is skipped instead of aborting the import, vulners results for products without a CPE are imported, host scripts are no longer hidden by same-named port scripts, and a hand-edited or non-UTF-8 `legion.conf` (duplicate sections, malformed rows) falls back to defaults instead of crashing every entry point.
+* Headless CLI scans the same normalised targets it imports (URLs become hostnames) and uses the configured nmap path; tool install plans never block on a sudo password and no longer rely on a login shell that resets PATH.
+* Database: deleting a host removes its ports, services, scripts, CVEs, notes and OS rows; keyword filters treat `%` and `_` literally; process-repository queries always release their session and use standard SQL quoting.
+
 LEGION 0.7.1
 
 * Fixed the desktop UI failing to start (missing imports after the module split) and segfaulting on exit; Qt objects are now torn down in order on every exit path.

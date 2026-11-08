@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import tempfile
@@ -650,7 +651,7 @@ class SchedulerConfigManager:
         if not family_key or normalized_state not in VALID_FAMILY_POLICY_STATES:
             return self.load()
 
-        config = self.load()
+        config = copy.deepcopy(self.load())  # load() returns the cache; a failed save must not leave it changed
         families = self.list_family_policies()
         entry = {
             "family_id": family_key,

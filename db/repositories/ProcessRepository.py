@@ -118,29 +118,29 @@ class ProcessRepository:
                 base_query = (
                     'SELECT '
                     '0 AS progress, '
-                    'COALESCE(process.display, "False") AS display, '
+                    'COALESCE(process.display, \'False\') AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
                     'process.estimatedRemaining AS estimatedRemaining, '
-                    'COALESCE(process.percent, "") AS percent, '
-                    'COALESCE(process.progressMessage, "") AS progressMessage, '
-                    'COALESCE(process.progressSource, "") AS progressSource, '
-                    'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
-                    'COALESCE(process.pid, "") AS pid, '
-                    'COALESCE(process.name, "") AS name, '
-                    'COALESCE(process.tabTitle, "") AS tabTitle, '
-                    'COALESCE(process.hostIp, "") AS hostIp, '
-                    'COALESCE(process.port, "") AS port, '
-                    'COALESCE(process.protocol, "") AS protocol, '
-                    'COALESCE(process.command, "") AS command, '
-                    'COALESCE(process.startTime, "") AS startTime, '
-                    'COALESCE(process.endTime, "") AS endTime, '
-                    'COALESCE(process.outputfile, "") AS outputfile, '
-                    '"" AS output, '
-                    'COALESCE(process.status, "") AS status, '
-                    'COALESCE(process.closed, "") AS closed, '
+                    'COALESCE(process.percent, \'\') AS percent, '
+                    'COALESCE(process.progressMessage, \'\') AS progressMessage, '
+                    'COALESCE(process.progressSource, \'\') AS progressSource, '
+                    'COALESCE(process.progressUpdatedAt, \'\') AS progressUpdatedAt, '
+                    'COALESCE(process.pid, \'\') AS pid, '
+                    'COALESCE(process.name, \'\') AS name, '
+                    'COALESCE(process.tabTitle, \'\') AS tabTitle, '
+                    'COALESCE(process.hostIp, \'\') AS hostIp, '
+                    'COALESCE(process.port, \'\') AS port, '
+                    'COALESCE(process.protocol, \'\') AS protocol, '
+                    'COALESCE(process.command, \'\') AS command, '
+                    'COALESCE(process.startTime, \'\') AS startTime, '
+                    'COALESCE(process.endTime, \'\') AS endTime, '
+                    'COALESCE(process.outputfile, \'\') AS outputfile, '
+                    '\'\' AS output, '
+                    'COALESCE(process.status, \'\') AS status, '
+                    'COALESCE(process.closed, \'\') AS closed, '
                     'process.id AS id '
                     'FROM process AS process '
-                    'WHERE process.closed = "False"'
+                    'WHERE process.closed = \'False\''
                 )
                 query = text(base_query + status_clause + ' ORDER BY process.id DESC')
                 result = session.execute(query, params)
@@ -151,27 +151,27 @@ class ProcessRepository:
                     'process.display AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
                     'process.estimatedRemaining AS estimatedRemaining, '
-                    'COALESCE(process.percent, "") AS percent, '
-                    'COALESCE(process.progressMessage, "") AS progressMessage, '
-                    'COALESCE(process.progressSource, "") AS progressSource, '
-                    'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
-                    'COALESCE(process.pid, "") AS pid, '
-                    'COALESCE(process.name, "") AS name, '
-                    'COALESCE(process.tabTitle, "") AS tabTitle, '
-                    'COALESCE(process.hostIp, "") AS hostIp, '
-                    'COALESCE(process.port, "") AS port, '
-                    'COALESCE(process.protocol, "") AS protocol, '
-                    'COALESCE(process.command, "") AS command, '
-                    'COALESCE(process.startTime, "") AS startTime, '
-                    'COALESCE(process.endTime, "") AS endTime, '
-                    'COALESCE(process.outputfile, "") AS outputfile, '
-                    'COALESCE(output.output, "") AS output, '
-                    'COALESCE(process.status, "") AS status, '
-                    'COALESCE(process.closed, "") AS closed, '
+                    'COALESCE(process.percent, \'\') AS percent, '
+                    'COALESCE(process.progressMessage, \'\') AS progressMessage, '
+                    'COALESCE(process.progressSource, \'\') AS progressSource, '
+                    'COALESCE(process.progressUpdatedAt, \'\') AS progressUpdatedAt, '
+                    'COALESCE(process.pid, \'\') AS pid, '
+                    'COALESCE(process.name, \'\') AS name, '
+                    'COALESCE(process.tabTitle, \'\') AS tabTitle, '
+                    'COALESCE(process.hostIp, \'\') AS hostIp, '
+                    'COALESCE(process.port, \'\') AS port, '
+                    'COALESCE(process.protocol, \'\') AS protocol, '
+                    'COALESCE(process.command, \'\') AS command, '
+                    'COALESCE(process.startTime, \'\') AS startTime, '
+                    'COALESCE(process.endTime, \'\') AS endTime, '
+                    'COALESCE(process.outputfile, \'\') AS outputfile, '
+                    'COALESCE(output.output, \'\') AS output, '
+                    'COALESCE(process.status, \'\') AS status, '
+                    'COALESCE(process.closed, \'\') AS closed, '
                     'process.id AS id '
                     'FROM process AS process '
                     'INNER JOIN process_output AS output ON process.id = output.processId '
-                    'WHERE process.display = :display AND process.closed = "False"'
+                    'WHERE process.display = :display AND process.closed = \'False\''
                 )
                 params['display'] = str(showProcesses)
                 query = text(base_query + status_clause + ' ORDER BY process.id DESC')
@@ -183,26 +183,26 @@ class ProcessRepository:
                     'process.display AS display, '
                     'COALESCE(process.elapsed, 0) AS elapsed, '
                     'process.estimatedRemaining AS estimatedRemaining, '
-                    'COALESCE(process.percent, "") AS percent, '
-                    'COALESCE(process.progressMessage, "") AS progressMessage, '
-                    'COALESCE(process.progressSource, "") AS progressSource, '
-                    'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
-                    'COALESCE(process.pid, "") AS pid, '
-                    'COALESCE(process.name, "") AS name, '
-                    'COALESCE(process.tabTitle, "") AS tabTitle, '
-                    'COALESCE(process.hostIp, "") AS hostIp, '
-                    'COALESCE(process.port, "") AS port, '
-                    'COALESCE(process.protocol, "") AS protocol, '
-                    'COALESCE(process.command, "") AS command, '
-                    'COALESCE(process.startTime, "") AS startTime, '
-                    'COALESCE(process.endTime, "") AS endTime, '
-                    'COALESCE(process.outputfile, "") AS outputfile, '
+                    'COALESCE(process.percent, \'\') AS percent, '
+                    'COALESCE(process.progressMessage, \'\') AS progressMessage, '
+                    'COALESCE(process.progressSource, \'\') AS progressSource, '
+                    'COALESCE(process.progressUpdatedAt, \'\') AS progressUpdatedAt, '
+                    'COALESCE(process.pid, \'\') AS pid, '
+                    'COALESCE(process.name, \'\') AS name, '
+                    'COALESCE(process.tabTitle, \'\') AS tabTitle, '
+                    'COALESCE(process.hostIp, \'\') AS hostIp, '
+                    'COALESCE(process.port, \'\') AS port, '
+                    'COALESCE(process.protocol, \'\') AS protocol, '
+                    'COALESCE(process.command, \'\') AS command, '
+                    'COALESCE(process.startTime, \'\') AS startTime, '
+                    'COALESCE(process.endTime, \'\') AS endTime, '
+                    'COALESCE(process.outputfile, \'\') AS outputfile, '
                     # The processes table is refreshed frequently (UI timer). Do not fetch the full tool output blob
                     # every refresh; it can be very large and makes the UI sluggish. Output is loaded on demand when
                     # a tool tab is opened.
-                    '"" AS output, '
-                    'COALESCE(process.status, "") AS status, '
-                    'COALESCE(process.closed, "") AS closed, '
+                    '\'\' AS output, '
+                    'COALESCE(process.status, \'\') AS status, '
+                    'COALESCE(process.closed, \'\') AS closed, '
                     'process.id AS id '
                     'FROM process AS process '
                     'WHERE process.display=:display'
@@ -313,7 +313,13 @@ class ProcessRepository:
             session.close()
 
     def getHostsByToolName(self, toolName: str, closed: str = "False"):
-        session = self.dbAdapter.session()
+        try:
+            with self._session_scope() as session:
+                return self._getHostsByToolName(session, toolName, closed)
+        except OperationalError:
+            return []
+
+    def _getHostsByToolName(self, session, toolName: str, closed: str):
         if closed == 'FetchAll':
             query = text(
                 'SELECT '
@@ -321,23 +327,23 @@ class ProcessRepository:
                 'process.display AS display, '
                 'COALESCE(process.elapsed, 0) AS elapsed, '
                 'process.estimatedRemaining AS estimatedRemaining, '
-                'COALESCE(process.percent, "") AS percent, '
-                'COALESCE(process.progressMessage, "") AS progressMessage, '
-                'COALESCE(process.progressSource, "") AS progressSource, '
-                'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
-                'COALESCE(process.pid, "") AS pid, '
-                'COALESCE(process.name, "") AS name, '
-                'COALESCE(process.tabTitle, "") AS tabTitle, '
-                'COALESCE(process.hostIp, "") AS hostIp, '
-                'COALESCE(process.port, "") AS port, '
-                'COALESCE(process.protocol, "") AS protocol, '
-                'COALESCE(process.command, "") AS command, '
-                'COALESCE(process.startTime, "") AS startTime, '
-                'COALESCE(process.endTime, "") AS endTime, '
-                'COALESCE(process.outputfile, "") AS outputfile, '
-                'COALESCE(output.output, "") AS output, '
-                'COALESCE(process.status, "") AS status, '
-                'COALESCE(process.closed, "") AS closed, '
+                'COALESCE(process.percent, \'\') AS percent, '
+                'COALESCE(process.progressMessage, \'\') AS progressMessage, '
+                'COALESCE(process.progressSource, \'\') AS progressSource, '
+                'COALESCE(process.progressUpdatedAt, \'\') AS progressUpdatedAt, '
+                'COALESCE(process.pid, \'\') AS pid, '
+                'COALESCE(process.name, \'\') AS name, '
+                'COALESCE(process.tabTitle, \'\') AS tabTitle, '
+                'COALESCE(process.hostIp, \'\') AS hostIp, '
+                'COALESCE(process.port, \'\') AS port, '
+                'COALESCE(process.protocol, \'\') AS protocol, '
+                'COALESCE(process.command, \'\') AS command, '
+                'COALESCE(process.startTime, \'\') AS startTime, '
+                'COALESCE(process.endTime, \'\') AS endTime, '
+                'COALESCE(process.outputfile, \'\') AS outputfile, '
+                'COALESCE(output.output, \'\') AS output, '
+                'COALESCE(process.status, \'\') AS status, '
+                'COALESCE(process.closed, \'\') AS closed, '
                 'process.id AS id '
                 'FROM process AS process '
                 'LEFT JOIN process_output AS output ON process.id = output.processId '
@@ -351,23 +357,23 @@ class ProcessRepository:
                 'process.display AS display, '
                 'COALESCE(process.elapsed, 0) AS elapsed, '
                 'process.estimatedRemaining AS estimatedRemaining, '
-                'COALESCE(process.percent, "") AS percent, '
-                'COALESCE(process.progressMessage, "") AS progressMessage, '
-                'COALESCE(process.progressSource, "") AS progressSource, '
-                'COALESCE(process.progressUpdatedAt, "") AS progressUpdatedAt, '
-                'COALESCE(process.pid, "") AS pid, '
-                'COALESCE(process.name, "") AS name, '
-                'COALESCE(process.tabTitle, "") AS tabTitle, '
-                'COALESCE(process.hostIp, "") AS hostIp, '
-                'COALESCE(process.port, "") AS port, '
-                'COALESCE(process.protocol, "") AS protocol, '
-                'COALESCE(process.command, "") AS command, '
-                'COALESCE(process.startTime, "") AS startTime, '
-                'COALESCE(process.endTime, "") AS endTime, '
-                'COALESCE(process.outputfile, "") AS outputfile, '
-                'COALESCE(output.output, "") AS output, '
-                'COALESCE(process.status, "") AS status, '
-                'COALESCE(process.closed, "") AS closed, '
+                'COALESCE(process.percent, \'\') AS percent, '
+                'COALESCE(process.progressMessage, \'\') AS progressMessage, '
+                'COALESCE(process.progressSource, \'\') AS progressSource, '
+                'COALESCE(process.progressUpdatedAt, \'\') AS progressUpdatedAt, '
+                'COALESCE(process.pid, \'\') AS pid, '
+                'COALESCE(process.name, \'\') AS name, '
+                'COALESCE(process.tabTitle, \'\') AS tabTitle, '
+                'COALESCE(process.hostIp, \'\') AS hostIp, '
+                'COALESCE(process.port, \'\') AS port, '
+                'COALESCE(process.protocol, \'\') AS protocol, '
+                'COALESCE(process.command, \'\') AS command, '
+                'COALESCE(process.startTime, \'\') AS startTime, '
+                'COALESCE(process.endTime, \'\') AS endTime, '
+                'COALESCE(process.outputfile, \'\') AS outputfile, '
+                'COALESCE(output.output, \'\') AS output, '
+                'COALESCE(process.status, \'\') AS status, '
+                'COALESCE(process.closed, \'\') AS closed, '
                 'process.id AS id '
                 'FROM process AS process '
                 'LEFT JOIN process_output AS output ON process.id = output.processId '
@@ -376,7 +382,6 @@ class ProcessRepository:
             result = session.execute(query, {'toolName': str(toolName), 'closed': str(closed)})
         rows = result.fetchall()
         keys = result.keys()
-        session.close()
         return [dict(zip(keys, row)) for row in rows]
 
     def getProcessById(self, process_id):
@@ -402,23 +407,25 @@ class ProcessRepository:
             session.close()
 
     def getProcessesForRestore(self):
-        session = self.dbAdapter.session()
         query = text(
             'SELECT '
             'process.id AS id, '
-            'COALESCE(process.hostIp, "") AS hostIp, '
-            'COALESCE(process.tabTitle, "") AS tabTitle, '
-            'COALESCE(process.outputfile, "") AS outputfile, '
-            'COALESCE(output.output, "") AS output '
+            'COALESCE(process.hostIp, \'\') AS hostIp, '
+            'COALESCE(process.tabTitle, \'\') AS tabTitle, '
+            'COALESCE(process.outputfile, \'\') AS outputfile, '
+            'COALESCE(output.output, \'\') AS output '
             'FROM process AS process '
             'LEFT JOIN process_output AS output ON process.id = output.processId '
-            'WHERE process.closed = "False" '
+            'WHERE process.closed = \'False\' '
             'ORDER BY process.id ASC'
         )
-        result = session.execute(query)
-        rows = result.fetchall()
-        keys = result.keys()
-        session.close()
+        try:
+            with self._session_scope() as session:
+                result = session.execute(query)
+                rows = result.fetchall()
+                keys = result.keys()
+        except OperationalError:
+            return []
         return [dict(zip(keys, row)) for row in rows]
 
     def storeProcessCrashStatus(self, processId: str):

@@ -28,7 +28,6 @@ class HeadlessNmapFailureTest(unittest.TestCase):
                 PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""),
                 LEGION_HOME=os.path.join(tmpdir, "home"),
                 LEGION_TMPDIR=os.path.join(tmpdir, "tmp"),
-                QT_QPA_PLATFORM="offscreen",
             )
 
             result = subprocess.run(
@@ -57,7 +56,6 @@ class HeadlessLegionExportCleanupTest(unittest.TestCase):
                 os.environ,
                 LEGION_HOME=os.path.join(tmpdir, "home"),
                 LEGION_TMPDIR=legion_tmp,
-                QT_QPA_PLATFORM="offscreen",
             )
 
             result = subprocess.run(
