@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait
 from typing import Any, Dict, List
+
+RFC1918_ABORT_GRACE_SECONDS = 30.0
+
+logger = logging.getLogger(__name__)
 
 
 def run_rfc1918_chunked_scan_and_import(
@@ -44,7 +50,19 @@ def run_rfc1918_chunked_scan_and_import(
             ),
         )
 
+    abort_event = threading.Event()
+    # Every batch process id, recorded as soon as its row exists, so batches can be killed on abort
+    # even when this sweep has no job id to look them up by.
+    batch_process_ids: List[int] = []
+    batch_process_ids_lock = threading.Lock()
+
+    def _record_batch_process(process_id: int):
+        with batch_process_ids_lock:
+            batch_process_ids.append(int(process_id))
+
     def _run_rfc_batch(batch_index: int, batch_targets: List[str]) -> Dict[str, Any]:
+        if abort_event.is_set():
+            raise RuntimeError("aborted")
         if resolved_job_id > 0 and runtime.jobs.is_cancel_requested(resolved_job_id):
             raise RuntimeError("cancelled")
 
@@ -62,6 +80,8 @@ def run_rfc1918_chunked_scan_and_import(
         target_label = runtime._compact_targets(batch_targets)
 
         for stage in list(scan_plan.get("stages", []) or []):
+            if abort_event.is_set():
+                raise RuntimeError("aborted")
             stage_tab_title = str(stage.get("tab_title", "Nmap RFC1918 Discovery") or "Nmap RFC1918 Discovery")
             if total_batches > 1:
                 stage_tab_title = f"{stage_tab_title} {batch_index}/{total_batches}"
@@ -75,6 +95,7 @@ def run_rfc1918_chunked_scan_and_import(
                 outputfile=str(stage.get("output_prefix", batch_prefix) or batch_prefix),
                 timeout=int(stage.get("timeout", 3600) or 3600),
                 job_id=resolved_job_id,
+                on_process_created=_record_batch_process,
             )
             _ = int(process_id or 0)
             if not executed:
@@ -92,6 +113,7 @@ def run_rfc1918_chunked_scan_and_import(
             "xml_path": xml_path,
         }
 
+    failed_imports: List[str] = []
     batch_iter = iter(list(enumerate(batches, start=1)))
     pending: Dict[object, int] = {}
 
@@ -104,7 +126,27 @@ def run_rfc1918_chunked_scan_and_import(
         pending[future] = int(next_batch_index)
         return True
 
-    with ThreadPoolExecutor(max_workers=active_workers, thread_name_prefix="legion-rfc1918") as pool:
+    def _abort_outstanding_batches():
+        abort_event.set()
+        for future in list(pending.keys()):
+            future.cancel()
+        # Kill nmap processes still running for this sweep so the failure surfaces promptly.
+        process_ids = set()
+        if resolved_job_id > 0:
+            try:
+                process_ids.update(int(item) for item in (runtime._job_active_process_ids(resolved_job_id) or []))
+            except Exception:
+                pass
+        with batch_process_ids_lock:
+            process_ids.update(batch_process_ids)
+        for process_id in sorted(process_ids):
+            try:
+                runtime.kill_process(int(process_id))
+            except Exception:
+                pass
+
+    pool = ThreadPoolExecutor(max_workers=active_workers, thread_name_prefix="legion-rfc1918")
+    try:
         for _ in range(active_workers):
             if not _submit_next(pool):
                 break
@@ -114,8 +156,16 @@ def run_rfc1918_chunked_scan_and_import(
             pending.pop(finished_future, None)
             batch_result = finished_future.result()
             xml_path = str(batch_result.get("xml_path", "") or "")
-            runtime._import_nmap_xml(xml_path, run_actions=False)
-            last_xml_path = xml_path
+            try:
+                runtime._import_nmap_xml(xml_path, run_actions=False)
+            except Exception as exc:
+                # One unreadable chunk result must not abort the sweep and kill the other batches: record it
+                # and carry on with the remaining chunks.
+                batch_index = int(batch_result.get("batch_index", 0) or 0)
+                logger.warning("RFC1918 sweep batch %s could not be imported from %s: %s", batch_index, xml_path, exc)
+                failed_imports.append(f"batch {batch_index}/{total_batches} could not be imported ({exc})")
+            else:
+                last_xml_path = xml_path
             completed_batches += 1
 
             if resolved_job_id > 0:
@@ -130,13 +180,29 @@ def run_rfc1918_chunked_scan_and_import(
             if resolved_job_id > 0 and runtime.jobs.is_cancel_requested(resolved_job_id):
                 raise RuntimeError("cancelled")
             _submit_next(pool)
+    except BaseException:
+        _abort_outstanding_batches()
+        raise
+    finally:
+        if abort_event.is_set():
+            # Their nmap processes were killed above, so in-flight batches should end quickly; wait a
+            # bounded time so the job doesn't report done while they still record process state.
+            # (Batches never import: results are imported on this thread only.)
+            pool.shutdown(wait=False, cancel_futures=True)
+            in_flight = [future for future in pending if not future.cancelled()]
+            if in_flight:
+                _, still_running = futures_wait(in_flight, timeout=RFC1918_ABORT_GRACE_SECONDS)
+                if still_running:
+                    _abort_outstanding_batches()  # catch a stage that started after the first kill
+        else:
+            pool.shutdown(wait=True)
 
     scheduler_result = runtime._run_scheduler_actions_web() if run_actions else None
     with runtime._lock:
         project = runtime._require_active_project()
         host_count_after = len(project.repositoryContainer.hostRepository.getAllHostObjs())
     imported_hosts = max(0, int(host_count_after) - int(host_count_before))
-    warnings: List[str] = []
+    warnings: List[str] = list(failed_imports)
     if imported_hosts == 0:
         warnings.append(
             "RFC1918 sweep completed but no hosts were imported. "

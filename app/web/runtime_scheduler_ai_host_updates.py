@@ -175,7 +175,8 @@ def enrich_host_from_observed_results(runtime, *, host_ip: str, port: str, proto
                     inferred_os = infer_os_from_service_inventory(service_records)
                 if inferred_os and is_unknown_os_match(str(getattr(row, "osMatch", "") or "")):
                     row.osMatch = inferred_os
-                    if not str(getattr(row, "osAccuracy", "") or "").strip():
+                    # hostObj defaults osAccuracy to 'NaN', which is as empty as '' here
+                    if str(getattr(row, "osAccuracy", "") or "").strip().lower() in {"", "nan", "unknown"}:
                         row.osAccuracy = "80"
                     changed = True
 

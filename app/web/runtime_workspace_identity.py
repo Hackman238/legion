@@ -17,12 +17,18 @@ def workspace_host_services(runtime, port_rows: List[Any], service_repo: Any) ->
     return _service_names_from_inventory(workspace_host_service_inventory(port_rows, service_repo))
 
 
-def workspace_host_service_inventory(port_rows: List[Any], service_repo: Any) -> List[Dict[str, Any]]:
+def workspace_host_service_inventory(
+        port_rows: List[Any],
+        service_repo: Any,
+        service_lookup: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for port in list(port_rows or []):
         service_obj = None
         service_id = getattr(port, "serviceId", None)
-        if service_id and service_repo is not None:
+        if service_id and service_lookup is not None:
+            service_obj = service_lookup.get(str(service_id))
+        elif service_id and service_repo is not None:
             try:
                 service_obj = service_repo.getServiceById(service_id)
             except Exception:

@@ -23,7 +23,7 @@ from six import u as unicode
 
 class process_output(Base):
     __tablename__ = 'process_output'
-    processId = Column(Integer, ForeignKey('process.id'))
+    processId = Column(Integer, ForeignKey('process.id'), index=True)
     id = Column(Integer, primary_key=True)
     output = Column(String)
 

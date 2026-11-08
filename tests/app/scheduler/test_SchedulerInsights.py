@@ -61,5 +61,35 @@ class SchedulerInsightsStoreTest(unittest.TestCase):
             project_manager.closeProject(project)
 
 
+    def test_host_ai_state_schema_ensure_runs_once_per_database(self):
+        from sqlalchemy import event
+
+        project_manager = ProjectManager(DefaultShell(), RepositoryFactory(getDbLogger()), getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        try:
+            upsert_host_ai_state(project.database, 12, {"host_ip": "10.0.0.12", "provider": "openai"})
+            get_host_ai_state(project.database, 12)
+            get_host_ai_state(project.database, 13)
+            engine = project.database.session().get_bind()
+            statements = []
+
+            def _capture(_conn, _cursor, statement, *_args):
+                statements.append(statement)
+
+            event.listen(engine, "before_cursor_execute", _capture)
+            try:
+                for _ in range(3):
+                    self.assertEqual("10.0.0.12", get_host_ai_state(project.database, 12)["host_ip"])
+                    get_host_ai_state(project.database, 13)  # no state: falls back to the legacy table
+            finally:
+                event.remove(engine, "before_cursor_execute", _capture)
+            schema_statements = [
+                item for item in statements
+                if "PRAGMA" in item.upper() or "CREATE TABLE" in item.upper()
+            ]
+            self.assertEqual([], schema_statements)
+        finally:
+            project_manager.closeProject(project)
+
 if __name__ == "__main__":
     unittest.main()

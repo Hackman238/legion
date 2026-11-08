@@ -45,3 +45,7 @@ class Shell(ABC):
     @abstractmethod
     def directoryOrFileExists(self, path: str) -> bool:
         pass
+
+    @abstractmethod
+    def list_files(self, directory: str) -> list:
+        pass

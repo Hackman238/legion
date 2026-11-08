@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
+import sqlite3
 import sys
 import subprocess
 import threading
+import zipfile
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -549,6 +552,7 @@ class WebRuntime:
             payload: Optional[Dict[str, Any]] = None,
             queue_front: bool = False,
             exclusive: bool = False,
+            on_discard=None,
     ) -> Dict[str, Any]:
         return web_runtime_jobs.start_job(
             self,
@@ -557,6 +561,7 @@ class WebRuntime:
             payload=payload,
             queue_front=queue_front,
             exclusive=exclusive,
+            on_discard=on_discard,
         )
 
     def start_tool_install_job(
@@ -1101,6 +1106,12 @@ class WebRuntime:
 
     def get_process_output(self, process_id: int, offset: int = 0, max_chars: int = 12000) -> Dict[str, Any]:
         return web_runtime_processes.get_process_output(self, process_id, offset=offset, max_chars=max_chars)
+
+    def get_process_output_tail(self, process_id: int, max_chars: int = 4000) -> str:
+        return web_runtime_processes.get_process_output_tail(self, process_id, max_chars=max_chars)
+
+    def get_process_output_text(self, process_id: int) -> str:
+        return web_runtime_processes.get_process_output_text(self, process_id)
 
     def get_script_output(self, script_db_id: int, offset: int = 0, max_chars: int = 12000) -> Dict[str, Any]:
         return web_runtime_workspace.get_script_output(self, script_db_id, offset=offset, max_chars=max_chars)
@@ -2095,6 +2106,7 @@ class WebRuntime:
             timeout: int,
             job_id: int = 0,
             return_metadata: bool = False,
+            on_process_created=None,
     ) -> Any:
         return web_runtime_execution.run_command_with_tracking(
             self,
@@ -2108,6 +2120,7 @@ class WebRuntime:
             timeout=timeout,
             job_id=job_id,
             return_metadata=return_metadata,
+            on_process_created=on_process_created,
         )
 
     def _write_process_output_partial(self, process_id: int, output_text: str):

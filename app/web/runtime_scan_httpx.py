@@ -83,8 +83,7 @@ def run_httpx_bootstrap(runtime, targets: List[str], *, job_id: int = 0) -> Dict
         output_text = ""
         if int(process_id or 0) > 0:
             try:
-                process_output = runtime.get_process_output(int(process_id), offset=0, max_chars=200000)
-                output_text = str(process_output.get("output", "") or "")
+                output_text = str(runtime.get_process_output_text(int(process_id)) or "")
             except Exception:
                 output_text = ""
 

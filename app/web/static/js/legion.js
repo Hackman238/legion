@@ -1338,7 +1338,13 @@ function renderProject(project) {
     setText("project-running-folder", project.running_folder || "");
 
     const currentSavePath = getValue("project-save-path").trim();
-    if (!currentSavePath && project.name) {
+    if (project.is_temporary) {
+        // A temporary project's name is its temp .legion file: saving there would overwrite it in place,
+        // so leave the destination for the user to choose.
+        if (currentSavePath && currentSavePath === String(project.name || "").trim()) {
+            setValue("project-save-path", "");
+        }
+    } else if (!currentSavePath && project.name) {
         setValue("project-save-path", project.name);
     }
 }
@@ -4202,7 +4208,7 @@ async function openScriptOutputModal(scriptDbId) {
     scriptOutputState.downloadName = "";
     try {
         const payload = await fetchJson(`/api/workspace/scripts/${sid}/output?max_chars=50000`);
-        const outputText = String(payload.output || payload.output_chunk || "");
+        const outputText = String(payload.output_chunk || "");
         const sourceLabel = payload.source === "process"
             ? `Process ${payload.process_id || "?"}`
             : "Script row output";
@@ -4684,8 +4690,6 @@ async function loadProcessOutput(processId, reset = true) {
     const current = processOutputState.text || "";
     if (chunk) {
         setProcessOutputText(`${current}${chunk}`);
-    } else if (reset && payload.output) {
-        setProcessOutputText(payload.output || "");
     }
     processOutputState.offset = nextOffset;
     processOutputState.complete = Boolean(payload.completed);

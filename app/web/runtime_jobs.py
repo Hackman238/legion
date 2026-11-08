@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -57,8 +58,23 @@ def wait_for_ui_event(runtime, after_seq: int = 0, timeout_seconds: float = 30.0
             runtime._ui_event_condition.wait(remaining)
 
 
+def _dispose_retired_databases_if_idle(runtime) -> None:
+    # Databases replaced by a web Save As while other jobs were running are released once no job runs.
+    logic = getattr(runtime, "logic", None)
+    if logic is None or not getattr(logic, "hasRetiredDatabases", lambda: False)():
+        return
+    try:
+        jobs = list(runtime.jobs.list_jobs(limit=200) or [])
+    except Exception:
+        return
+    if any(str(job.get("status", "") or "").strip().lower() == "running" for job in jobs):
+        return
+    logic.disposeRetiredDatabases()
+
+
 def handle_job_change(runtime, job: Dict[str, Any], event_name: str):
-    _ = event_name
+    if str(event_name or "").strip().lower() in {"completed", "failed", "cancelled"}:
+        _dispose_retired_databases_if_idle(runtime)
     channels = {"jobs", "overview"}
     job_type = str(job.get("type", "") or "").strip().lower()
     if job_type in {
@@ -87,36 +103,60 @@ def start_job(
         payload: Optional[Dict[str, Any]] = None,
         queue_front: bool = False,
         exclusive: bool = False,
+        on_discard=None,
 ) -> Dict[str, Any]:
     if not callable(runner_with_job_id):
         raise ValueError("runner_with_job_id must be callable.")
 
     job_ref = {"id": 0}
+    job_id_ready = threading.Event()
+    starter_thread = threading.get_ident()
 
     def _wrapped_runner():
+        # A worker can pick the job up before jobs.start() returns; wait until
+        # the id has been recorded so the runner never sees job_id=0. Skip the
+        # wait when a job manager runs the runner synchronously inside start().
+        if threading.get_ident() != starter_thread:
+            job_id_ready.wait()
         return runner_with_job_id(int(job_ref.get("id", 0) or 0)) or {}
 
-    job = runtime.jobs.start(
-        str(job_type),
-        _wrapped_runner,
-        payload=dict(payload or {}),
-        queue_front=bool(queue_front),
-        exclusive=bool(exclusive),
-    )
-    job_ref["id"] = int(job.get("id", 0) or 0)
+    start_kwargs = {}
+    if callable(on_discard):
+        start_kwargs["on_discard"] = on_discard
+    try:
+        job = runtime.jobs.start(
+            str(job_type),
+            _wrapped_runner,
+            payload=dict(payload or {}),
+            queue_front=bool(queue_front),
+            exclusive=bool(exclusive),
+            **start_kwargs,
+        )
+        job_ref["id"] = int(job.get("id", 0) or 0)
+    finally:
+        job_id_ready.set()
     return job
 
 
-def find_active_job(runtime, *, job_type: str, host_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+def find_active_job(
+        runtime,
+        *,
+        job_type: str,
+        host_id: Optional[int] = None,
+        payload_match=None,
+) -> Optional[Dict[str, Any]]:
+    """First queued/running job of job_type, optionally for host_id and/or whose payload satisfies payload_match."""
     for job in runtime.jobs.list_jobs(limit=200):
         if str(job.get("type", "")).strip() != str(job_type or "").strip():
             continue
         status = str(job.get("status", "")).strip().lower()
         if status not in {"queued", "running"}:
             continue
+        payload = job.get("payload", {}) if isinstance(job.get("payload", {}), dict) else {}
+        if payload_match is not None and not payload_match(payload):
+            continue
         if host_id is None:
             return job
-        payload = job.get("payload", {}) if isinstance(job.get("payload", {}), dict) else {}
         try:
             payload_host_id = int(payload.get("host_id", 0) or 0)
         except (TypeError, ValueError):

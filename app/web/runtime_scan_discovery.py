@@ -290,7 +290,9 @@ def run_governed_discovery(
     if not normalized_targets:
         raise ValueError("Discovery target is required.")
 
-    runtime.create_new_temporary_project()
+    # Keep a project the client already opened; only fall back to a temporary one.
+    if getattr(getattr(runtime, "logic", None), "activeProject", None) is None:
+        runtime.create_new_temporary_project()
     scan_result = runtime._run_nmap_scan_and_import(
         normalized_targets,
         discovery=True,

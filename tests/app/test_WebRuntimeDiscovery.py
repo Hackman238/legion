@@ -1,5 +1,6 @@
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -9,6 +10,7 @@ class WebRuntimeDiscoveryTest(unittest.TestCase):
 
         runtime = WebRuntime.__new__(WebRuntime)
         runtime._lock = threading.RLock()
+        runtime.logic = SimpleNamespace(activeProject=None)
         runtime._normalize_targets = lambda targets: [str(targets[0] or "").strip()] if str(targets[0] or "").strip() else []
         runtime.create_new_temporary_project = MagicMock()
         runtime._run_nmap_scan_and_import = MagicMock(return_value={"targets": ["10.0.0.5"], "xml_path": "/tmp/demo.xml"})
@@ -35,6 +37,26 @@ class WebRuntimeDiscoveryTest(unittest.TestCase):
         self.assertEqual([{"id": 1, "ip": "10.0.0.5"}], result["results"])
         self.assertEqual([{"id": 77}], result["approvals"])
         self.assertEqual([{"id": 88}], result["decisions"])
+
+    def test_run_governed_discovery_keeps_active_project(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        runtime.logic = SimpleNamespace(activeProject=object())
+        runtime._normalize_targets = lambda targets: [str(targets[0] or "").strip()]
+        runtime.create_new_temporary_project = MagicMock()
+        runtime._run_nmap_scan_and_import = MagicMock(return_value={"targets": ["10.0.0.5"]})
+        runtime.get_project_details = MagicMock(return_value={"name": "opened.legion"})
+        runtime.get_workspace_hosts = MagicMock(return_value=[])
+        runtime.get_workspace_services = MagicMock(return_value=[])
+        runtime.get_scheduler_approvals = MagicMock(return_value=[])
+        runtime.get_scheduler_decisions = MagicMock(return_value=[])
+
+        WebRuntime.run_governed_discovery(runtime, "10.0.0.5", run_actions=False)
+
+        runtime.create_new_temporary_project.assert_not_called()
+        runtime._run_nmap_scan_and_import.assert_called_once()
 
     def test_run_governed_discovery_requires_target(self):
         from app.web.runtime import WebRuntime

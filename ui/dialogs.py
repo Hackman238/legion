@@ -532,20 +532,27 @@ class ResponderWidget(QtWidgets.QWidget):
                 raise ValueError('Network interface is required for Responder runs.')
             executable = getattr(self.settings, 'tools_path_responder', '').strip() or 'responder'
             self.command_executable = executable
-            parts = [executable, '-I', interface, '-w', '-F']
+            args = ['-I', interface, '-w', '-F']
             if extra:
-                parts.extend(shlex.split(extra))
-            return ' '.join(parts)
+                args.extend(shlex.split(extra))
+            return self._joinCommand(executable, args)
 
         # ntlmrelayx
         if not target:
             raise ValueError('Target is required for NTLMRelay runs.')
         executable = getattr(self.settings, 'tools_path_ntlmrelay', '').strip() or 'ntlmrelayx.py'
         self.command_executable = executable
-        parts = [executable, '-t', target]
+        args = ['-t', target]
         if extra:
-            parts.extend(shlex.split(extra))
-        return ' '.join(parts)
+            args.extend(shlex.split(extra))
+        return self._joinCommand(executable, args)
+
+    @staticmethod
+    def _joinCommand(executable, args):
+        # The configured executable may itself carry arguments (e.g. "python3 /opt/Responder/Responder.py"),
+        # so keep it verbatim; quote the remaining arguments because the command is re-split with shlex
+        # before QProcess.start().
+        return ' '.join([executable, shlex.join(args)]) if args else executable
 
     def getTool(self):
         return self.toolCombo.currentText().strip()

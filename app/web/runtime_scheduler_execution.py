@@ -61,15 +61,17 @@ def start_host_dig_deeper_job(runtime, host_id: int) -> Dict[str, Any]:
             existing_copy["existing"] = True
             return existing_copy
 
-    return runtime._start_job(
-        "scheduler-dig-deeper",
-        lambda job_id: runtime._run_scheduler_actions_web(
-            host_ids={resolved_host_id},
-            dig_deeper=True,
-            job_id=int(job_id or 0),
-        ),
-        payload={"host_id": resolved_host_id, "host_ip": host_ip, "dig_deeper": True},
-    )
+        # Start while still holding the lock so concurrent requests cannot both
+        # pass the duplicate check above.
+        return runtime._start_job(
+            "scheduler-dig-deeper",
+            lambda job_id: runtime._run_scheduler_actions_web(
+                host_ids={resolved_host_id},
+                dig_deeper=True,
+                job_id=int(job_id or 0),
+            ),
+            payload={"host_id": resolved_host_id, "host_ip": host_ip, "dig_deeper": True},
+        )
 
 
 def run_scheduler_actions_web(

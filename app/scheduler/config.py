@@ -1,7 +1,8 @@
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from app.core.secret_store import SecretStore, SecretStoreError, build_secret_ref
 from app.device_categories import normalize_custom_device_category_rules
@@ -256,6 +257,36 @@ VALID_MODES = {"deterministic", "ai"}
 VALID_GOAL_PROFILES = {"internal_asset_discovery", "external_pentest"}
 
 
+def read_device_categories_from_config_file(
+        config_path: Optional[str] = None,
+        *,
+        strict: bool = False,
+) -> List[Dict[str, Any]]:
+    """Return the normalized device-category rules stored in the scheduler config file.
+
+    A lightweight read for hot paths (target-state classification): unlike SchedulerConfigManager.load()
+    it does not hydrate provider secrets, migrate plaintext keys, create directories or write the file.
+    It applies the same normalization as SchedulerConfigManager for the "device_categories" key.
+
+    A missing file yields the default rules. An unreadable or unparsable file also yields the defaults,
+    unless ``strict`` is set: then the OSError/ValueError propagates so callers that cache the result can
+    tell a transient read failure apart from a config without custom rules.
+    """
+    path = str(config_path or get_scheduler_config_path("scheduler-ai.json"))
+    raw_rules: Any = DEFAULT_SCHEDULER_CONFIG.get("device_categories", [])
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            parsed = json.load(handle)
+        if isinstance(parsed, dict):
+            raw_rules = parsed.get("device_categories", raw_rules)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        if strict:
+            raise
+    return normalize_device_categories(raw_rules)
+
+
 def get_default_scheduler_config_path() -> str:
     ensure_legion_home()
     return get_scheduler_config_path("scheduler-ai.json")
@@ -386,8 +417,24 @@ class SchedulerConfigManager:
         return status
 
     def _write_config_file(self, config: Dict[str, Any]):
-        with open(self.config_path, "w", encoding="utf-8") as handle:
-            json.dump(config, handle, indent=2, sort_keys=True)
+        # Write atomically: readers (e.g. per-upsert device-category classification) must never see a
+        # truncated or half-written file.
+        config_dir = os.path.dirname(os.path.abspath(self.config_path)) or "."
+        handle = tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=config_dir, prefix=".scheduler-ai.", suffix=".tmp", delete=False,
+        )
+        try:
+            with handle:
+                json.dump(config, handle, indent=2, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(handle.name, self.config_path)
+        except BaseException:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
+            raise
 
     def _hydrate_config_secrets(
             self,

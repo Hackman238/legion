@@ -143,5 +143,68 @@ class SchedulerAuditStoreTest(unittest.TestCase):
             project_manager.closeProject(project)
 
 
+
+class SchedulerAuditReasonFallbackTest(unittest.TestCase):
+    def test_reason_fallback_matches_exact_approval_number(self):
+        project_manager = ProjectManager(DefaultShell(), RepositoryFactory(getDbLogger()), getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        try:
+            ensure_scheduler_audit_table(project.database)
+            # Legacy rows: no approval_id column value, only the reason text links them.
+            base = {key: "" for key in (
+                "timestamp", "host_ip", "port", "protocol", "service", "scheduler_mode", "goal_profile",
+                "label", "command_family_id", "danger_categories", "requires_approval",
+                "approved", "executed", "rationale",
+            )}
+            for reason in ("pending approval #1 for smb-default", "pending approval #12", "pending approval #1"):
+                log_scheduler_decision(project.database, dict(base, tool_id="t", reason=reason, approval_id=""))
+
+            updated_12 = update_scheduler_decision_for_approval(project.database, 12, approved=True)
+            self.assertEqual("pending approval #12", updated_12["reason"])
+
+            updated_1 = update_scheduler_decision_for_approval(project.database, 1, approved=True)
+            self.assertEqual("pending approval #1", updated_1["reason"])  # newest exact match, not #12
+
+            self.assertIsNone(update_scheduler_decision_for_approval(project.database, 2, approved=True))
+        finally:
+            project_manager.closeProject(project)
+
+
+class SchedulerAuditFailureLoggingTest(unittest.TestCase):
+    class _BrokenSession:
+        def get_bind(self):
+            return None
+
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("database is locked")
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            pass
+
+    def _broken_database(self):
+        session = self._BrokenSession()
+        return type("BrokenDb", (), {"session": staticmethod(lambda: session)})(), session
+
+    def test_failed_decision_log_is_logged_not_raised(self):
+        database, session = self._broken_database()
+        with self.assertLogs("app.scheduler.audit", level="WARNING") as captured:
+            self.assertIsNone(log_scheduler_decision(database, {"tool_id": "nikto", "host_ip": "10.0.0.5"}))
+        self.assertTrue(getattr(session, "rolled_back", False))
+        self.assertIn("nikto", captured.output[0])
+        self.assertIsNotNone(captured.records[0].exc_info)
+
+    def test_failed_approval_update_is_logged_not_raised(self):
+        database, _session = self._broken_database()
+        with self.assertLogs("app.scheduler.audit", level="WARNING") as captured:
+            self.assertIsNone(update_scheduler_decision_for_approval(database, 7, approved=True))
+        self.assertIn("approval 7", captured.output[0])
+        self.assertIsNotNone(captured.records[0].exc_info)
+
 if __name__ == "__main__":
     unittest.main()

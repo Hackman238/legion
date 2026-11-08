@@ -39,3 +39,6 @@ class DefaultShell(Shell):
 
     def isFile(self, name: str) -> bool:
         return os.path.isfile(name)
+
+    def list_files(self, directory: str) -> list:
+        return sorted(os.listdir(directory))

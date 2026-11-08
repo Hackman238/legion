@@ -29,7 +29,7 @@ class osObj(Base):
     osType = Column(String)
     vendor = Column(String)
     accuracy = Column(String)
-    hostId = Column(String, ForeignKey('hostObj.id'))
+    hostId = Column(String, ForeignKey('hostObj.id'), index=True)
 
     def __init__(
         self,

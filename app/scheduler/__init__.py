@@ -74,6 +74,7 @@ from app.scheduler.state import (
     legacy_ai_payload_to_target_state,
     load_observed_service_inventory,
     migrate_legacy_ai_state_to_target_state,
+    modify_target_state,
     target_state_to_legacy_ai_state,
     upsert_target_state,
 )
@@ -130,6 +131,7 @@ __all__ = [
     "list_graph_layout_states",
     "load_observed_service_inventory",
     "migrate_legacy_ai_state_to_target_state",
+    "modify_target_state",
     "normalize_engagement_policy",
     "evaluate_policy_for_risk_tags",
     "ProviderError",

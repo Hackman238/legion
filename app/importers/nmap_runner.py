@@ -18,5 +18,5 @@ def import_nmap_xml_into_project(
     importer.setHostRepository(repo)
     importer.setFilename(xml_path)
     importer.setOutput(str(output or ""))
-    importer.run()
+    importer.importFile()
     return importer

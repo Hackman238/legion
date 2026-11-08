@@ -26,7 +26,7 @@ class portObj(Base):
     id = Column(Integer, primary_key=True)
     protocol = Column(String)
     state = Column(String)
-    hostId = Column(String, ForeignKey('hostObj.id'))
+    hostId = Column(String, ForeignKey('hostObj.id'), index=True)
     serviceId = Column(String, ForeignKey('serviceObj.id'))
     scriptId = Column(String, ForeignKey('l1ScriptObj.id'))
 

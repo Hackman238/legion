@@ -6,6 +6,29 @@ from typing import Any, Dict, Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# asyncio's default 64 KiB line limit is too small for real requests (e.g. large annotation bodies).
+_MAX_REQUEST_LINE_BYTES = 16 * 1024 * 1024
+
+
+async def _read_request_line(reader: asyncio.StreamReader) -> Optional[bytes]:
+    """Read one newline-terminated request: b"" at EOF, None when an over-limit line was skipped."""
+    try:
+        return await reader.readuntil(b"\n")
+    except asyncio.IncompleteReadError as exc:
+        return bytes(exc.partial or b"")  # a final unterminated line, or b"" at EOF
+    except asyncio.LimitOverrunError as exc:
+        consumed = int(exc.consumed)
+    # Discard the rest of the oversized line so the next request is read from its start.
+    while True:
+        try:
+            await reader.readexactly(consumed)
+            await reader.readuntil(b"\n")
+            return None
+        except asyncio.LimitOverrunError as exc:
+            consumed = int(exc.consumed)
+        except asyncio.IncompleteReadError:
+            return None
+
 
 def _int_arg(arguments: Dict[str, Any], key: str, default: int) -> int:
     try:
@@ -293,6 +316,8 @@ class MCPServer:
         nmap_exporter = DefaultNmapExporter(shell, getAppLogger())
         tool_coordinator = ToolCoordinator(shell, nmap_exporter)
         logic = Logic(shell, project_manager, tool_coordinator)
+        if getattr(logic, "activeProject", None) is None:
+            logic.createNewTemporaryProject()
         self._runtime = WebRuntime(logic)
         return self._runtime
 
@@ -491,25 +516,37 @@ class MCPServer:
         }
 
     async def run(self):
-        reader = asyncio.StreamReader()
+        reader = asyncio.StreamReader(limit=_MAX_REQUEST_LINE_BYTES)
         protocol = asyncio.StreamReaderProtocol(reader)
         await asyncio.get_event_loop().connect_read_pipe(lambda: protocol, sys.stdin)
 
         while True:
-            line = await reader.readline()
+            line = await _read_request_line(reader)
+            if line is None:
+                print(json.dumps({"jsonrpc": "2.0", "id": None, "error": {
+                    "code": -32600,
+                    "message": f"Invalid Request: request line exceeds {_MAX_REQUEST_LINE_BYTES} bytes",
+                }}), flush=True)
+                continue
             if not line:
                 break
+            request_id = None
             try:
-                request = json.loads(line.decode())
-                response = await self.handle_request(request)
-                print(json.dumps(response), flush=True)
+                try:
+                    request = json.loads(line.decode())
+                except (ValueError, UnicodeDecodeError) as exc:
+                    error = {"code": -32700, "message": f"Parse error: {exc}"}
+                else:
+                    if not isinstance(request, dict):
+                        error = {"code": -32600, "message": "Invalid Request: expected a JSON object"}
+                    else:
+                        request_id = request.get("id")
+                        response = await self.handle_request(request)
+                        print(json.dumps(response), flush=True)
+                        continue
             except Exception as exc:
-                error_response = {
-                    "jsonrpc": "2.0",
-                    "id": request.get("id") if "request" in locals() else None,
-                    "error": {"code": -32000, "message": str(exc)},
-                }
-                print(json.dumps(error_response), flush=True)
+                error = {"code": -32000, "message": str(exc)}
+            print(json.dumps({"jsonrpc": "2.0", "id": request_id, "error": error}), flush=True)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 from sqlalchemy import text
 
 from app.scheduler.graph import rebuild_evidence_graph
-from app.scheduler.state import build_target_urls, get_target_state, upsert_target_state
+from app.scheduler.state import build_target_urls, modify_target_state
 from app.screenshot_metadata import screenshot_metadata_path
 
 
@@ -118,46 +118,52 @@ def prune_target_state_for_port(
         port: str,
         protocol: str,
 ) -> Dict[str, Any]:
-    target_state = get_target_state(project.database, int(host_id or 0)) or {}
-    filtered_service_inventory = [
-        dict(item) for item in list(target_state.get("service_inventory", []) or [])
-        if not host_target_item_matches_port(item, port, protocol)
-    ]
-    filtered_attempted_actions = [
-        dict(item) for item in list(target_state.get("attempted_actions", []) or [])
-        if not host_target_item_matches_port(item, port, protocol)
-    ]
-    filtered_screenshots: List[Dict[str, Any]] = []
     removed_screenshots: List[Dict[str, Any]] = []
-    for item in list(target_state.get("screenshots", []) or []):
-        if host_target_item_matches_port(item, port, protocol):
-            removed_screenshots.append(dict(item))
-            continue
-        if isinstance(item, dict):
-            filtered_screenshots.append(dict(item))
-    filtered_artifacts: List[Dict[str, Any]] = []
     removed_artifacts: List[Dict[str, Any]] = []
-    for item in list(target_state.get("artifacts", []) or []):
-        if host_target_item_matches_port(item, port, protocol):
-            removed_artifacts.append(dict(item))
-            continue
-        if isinstance(item, dict):
-            filtered_artifacts.append(dict(item))
-    preserved_urls = [
-        dict(item) for item in list(target_state.get("urls", []) or [])
-        if not host_target_item_matches_port(item, port, protocol)
-    ]
-    rebuilt_urls = build_target_urls(str(host_ip or ""), str(hostname or ""), filtered_service_inventory)
+    updated_states: List[Dict[str, Any]] = []
 
-    updated_state = dict(target_state)
-    updated_state["service_inventory"] = filtered_service_inventory
-    updated_state["attempted_actions"] = filtered_attempted_actions
-    updated_state["screenshots"] = filtered_screenshots
-    updated_state["artifacts"] = filtered_artifacts
-    updated_state["urls"] = preserved_urls + rebuilt_urls
-    upsert_target_state(project.database, int(host_id or 0), updated_state, merge=False)
+    def _prune(target_state: Dict[str, Any]) -> Dict[str, Any]:
+        # Runs under the per-host target state lock so concurrent scheduler updates are kept.
+        filtered_service_inventory = [
+            dict(item) for item in list(target_state.get("service_inventory", []) or [])
+            if not host_target_item_matches_port(item, port, protocol)
+        ]
+        filtered_attempted_actions = [
+            dict(item) for item in list(target_state.get("attempted_actions", []) or [])
+            if not host_target_item_matches_port(item, port, protocol)
+        ]
+        filtered_screenshots: List[Dict[str, Any]] = []
+        for item in list(target_state.get("screenshots", []) or []):
+            if host_target_item_matches_port(item, port, protocol):
+                removed_screenshots.append(dict(item))
+                continue
+            if isinstance(item, dict):
+                filtered_screenshots.append(dict(item))
+        filtered_artifacts: List[Dict[str, Any]] = []
+        for item in list(target_state.get("artifacts", []) or []):
+            if host_target_item_matches_port(item, port, protocol):
+                removed_artifacts.append(dict(item))
+                continue
+            if isinstance(item, dict):
+                filtered_artifacts.append(dict(item))
+        preserved_urls = [
+            dict(item) for item in list(target_state.get("urls", []) or [])
+            if not host_target_item_matches_port(item, port, protocol)
+        ]
+        rebuilt_urls = build_target_urls(str(host_ip or ""), str(hostname or ""), filtered_service_inventory)
+
+        updated_state = dict(target_state)
+        updated_state["service_inventory"] = filtered_service_inventory
+        updated_state["attempted_actions"] = filtered_attempted_actions
+        updated_state["screenshots"] = filtered_screenshots
+        updated_state["artifacts"] = filtered_artifacts
+        updated_state["urls"] = preserved_urls + rebuilt_urls
+        updated_states.append(updated_state)
+        return updated_state
+
+    modify_target_state(project.database, int(host_id or 0), _prune)
     return {
-        "state": updated_state,
+        "state": updated_states[-1] if updated_states else {},
         "removed_screenshots": removed_screenshots,
         "removed_artifacts": removed_artifacts,
     }
@@ -399,43 +405,46 @@ def delete_graph_screenshot(
             except Exception:
                 continue
 
-        target_state = get_target_state(project.database, resolved_host_id) or {}
-        filtered_screenshots = []
-        for item in list(target_state.get("screenshots", []) or []):
-            if not isinstance(item, dict):
-                continue
-            item_ref = str(item.get("artifact_ref", "") or item.get("ref", "") or item.get("url", "") or "").strip()
-            item_name = os.path.basename(str(item.get("filename", "") or item_ref).strip())
-            item_port = str(item.get("port", "") or "").strip()
-            item_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
-            matches_ref = bool(resolved_artifact_ref and (item_ref == resolved_artifact_ref or os.path.basename(item_ref) == resolved_filename))
-            matches_name = bool(resolved_filename and item_name == resolved_filename)
-            matches_target = True
-            if resolved_port:
-                matches_target = item_port == resolved_port
-            if matches_target and resolved_protocol:
-                matches_target = item_protocol == resolved_protocol
-            if (matches_ref or matches_name) and matches_target:
-                continue
-            filtered_screenshots.append(dict(item))
+        def _remove_screenshot(target_state: Dict[str, Any]) -> Dict[str, Any]:
+            # Runs under the per-host target state lock so concurrent scheduler updates are kept.
+            filtered_screenshots = []
+            for item in list(target_state.get("screenshots", []) or []):
+                if not isinstance(item, dict):
+                    continue
+                item_ref = str(item.get("artifact_ref", "") or item.get("ref", "") or item.get("url", "") or "").strip()
+                item_name = os.path.basename(str(item.get("filename", "") or item_ref).strip())
+                item_port = str(item.get("port", "") or "").strip()
+                item_protocol = str(item.get("protocol", "tcp") or "tcp").strip().lower() or "tcp"
+                matches_ref = bool(resolved_artifact_ref and (item_ref == resolved_artifact_ref or os.path.basename(item_ref) == resolved_filename))
+                matches_name = bool(resolved_filename and item_name == resolved_filename)
+                matches_target = True
+                if resolved_port:
+                    matches_target = item_port == resolved_port
+                if matches_target and resolved_protocol:
+                    matches_target = item_protocol == resolved_protocol
+                if (matches_ref or matches_name) and matches_target:
+                    continue
+                filtered_screenshots.append(dict(item))
 
-        filtered_artifacts = []
-        for item in list(target_state.get("artifacts", []) or []):
-            if not isinstance(item, dict):
-                continue
-            item_ref = str(item.get("ref", "") or item.get("artifact_ref", "") or "").strip()
-            item_kind = str(item.get("kind", "") or "").strip().lower()
-            item_name = os.path.basename(item_ref)
-            matches_ref = bool(resolved_artifact_ref and (item_ref == resolved_artifact_ref or os.path.basename(item_ref) == resolved_filename))
-            matches_name = bool(resolved_filename and item_name == resolved_filename)
-            if item_kind == "screenshot" and (matches_ref or matches_name):
-                continue
-            filtered_artifacts.append(dict(item))
+            filtered_artifacts = []
+            for item in list(target_state.get("artifacts", []) or []):
+                if not isinstance(item, dict):
+                    continue
+                item_ref = str(item.get("ref", "") or item.get("artifact_ref", "") or "").strip()
+                item_kind = str(item.get("kind", "") or "").strip().lower()
+                item_name = os.path.basename(item_ref)
+                matches_ref = bool(resolved_artifact_ref and (item_ref == resolved_artifact_ref or os.path.basename(item_ref) == resolved_filename))
+                matches_name = bool(resolved_filename and item_name == resolved_filename)
+                if item_kind == "screenshot" and (matches_ref or matches_name):
+                    continue
+                filtered_artifacts.append(dict(item))
 
-        updated_state = dict(target_state)
-        updated_state["screenshots"] = filtered_screenshots
-        updated_state["artifacts"] = filtered_artifacts
-        upsert_target_state(project.database, resolved_host_id, updated_state, merge=False)
+            updated_state = dict(target_state)
+            updated_state["screenshots"] = filtered_screenshots
+            updated_state["artifacts"] = filtered_artifacts
+            return updated_state
+
+        modify_target_state(project.database, resolved_host_id, _remove_screenshot)
         rebuild_evidence_graph(project.database, host_id=resolved_host_id)
 
         return {

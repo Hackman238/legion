@@ -80,10 +80,12 @@ def stop_job(runtime, job_id: int) -> Dict[str, Any]:
     killed_process_ids = []
     for process_id in job_active_process_ids(runtime, target_job_id):
         try:
-            runtime.kill_process(int(process_id))
-            killed_process_ids.append(int(process_id))
+            kill_result = runtime.kill_process(int(process_id))
         except Exception:
             continue
+        # A live handle whose process already exited reports killed=False; the UI counts only real kills.
+        if isinstance(kill_result, dict) and kill_result.get("killed"):
+            killed_process_ids.append(int(process_id))
 
     final_job = runtime.jobs.get_job(target_job_id) or updated
     return {

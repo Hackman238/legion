@@ -103,7 +103,7 @@ def build_eyewitness_command(
 
 
 def build_eyewitness_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    env = dict(base_env or os.environ)
+    env = dict(os.environ if base_env is None else base_env)
     # Force stdlib HTTPS clients to skip certificate validation.
     env["PYTHONHTTPSVERIFY"] = "0"
     env.setdefault("REQUESTS_CA_BUNDLE", "")
@@ -276,6 +276,48 @@ def _resolve_browser_screenshot_path(
         time.sleep(0.12)
 
 
+NO_BROWSER_BINARY_ERROR = "no supported browser binary found"
+
+
+# Error output that means a capture tool is not installed (as opposed to the target failing to load).
+_MISSING_TOOLING_MARKERS = (
+    "no module named 'selenium'",
+    "no module named selenium",
+    "unable to obtain driver",
+    "needs to be in path",
+    "cannot find chrome binary",
+    "expected browser binary location",
+    "unable to find binary",
+)
+
+
+def _attempt_is_missing_tooling(attempt: Any) -> bool:
+    if not isinstance(attempt, dict):
+        return False
+    error = str(attempt.get("error", "") or "")
+    if error in {"eyewitness missing", NO_BROWSER_BINARY_ERROR}:
+        return True
+    detail = f"{error}\n{attempt.get('stderr', '') or ''}".lower()
+    return any(marker in detail for marker in _MISSING_TOOLING_MARKERS)
+
+
+def _attempts_show_no_capture_tooling(attempts: Any) -> bool:
+    """True only when every attempt failed because its tool is missing. Anything unrecognised counts as
+    a real capture failure, so callers keep trying (e.g. the other URL scheme)."""
+    attempts = list(attempts or [])
+    return bool(attempts) and all(_attempt_is_missing_tooling(attempt) for attempt in attempts)
+
+
+def capture_tooling_unavailable(capture: Dict[str, Any]) -> bool:
+    """True when a failed capture shows no screenshot tool exists at all (no EyeWitness, no browser,
+    no usable Selenium driver), so retrying the same target with another URL scheme cannot succeed."""
+    if not isinstance(capture, dict) or capture.get("ok"):
+        return False
+    if str(capture.get("reason", "") or "") != "eyewitness missing":
+        return False
+    return _attempts_show_no_capture_tooling(capture.get("attempts", []))
+
+
 def _run_browser_cli_fallback_capture(
         *,
         url: str,
@@ -289,7 +331,7 @@ def _run_browser_cli_fallback_capture(
             "executable": "browser-cli-fallback",
             "output_dir": "",
             "command": [],
-            "error": "no supported browser binary found",
+            "error": NO_BROWSER_BINARY_ERROR,
             "returncode": 127,
             "stdout": "",
             "stderr": "",
@@ -780,13 +822,9 @@ def run_eyewitness_capture(
         use_xvfb: bool = True,
         timeout: int = 180,
 ) -> Dict[str, Any]:
+    # When EyeWitness is not installed, skip only the EyeWitness attempts: the selenium/browser
+    # fallbacks below do not depend on it.
     executables = resolve_eyewitness_executables()
-    if not executables:
-        return {
-            "ok": False,
-            "reason": "eyewitness missing",
-            "attempts": [],
-        }
 
     os.makedirs(output_parent_dir, exist_ok=True)
     attempts: List[Dict[str, Any]] = []
@@ -918,8 +956,15 @@ def run_eyewitness_capture(
             "attempts": attempts,
         }
 
+    # "eyewitness missing" tells callers to skip screenshots entirely, so only report it when no capture
+    # tool exists at all. If any fallback actually ran and failed (e.g. Selenium+Firefox against this URL),
+    # report that failure instead.
     return {
         "ok": False,
-        "reason": "screenshot png missing",
+        "reason": (
+            "eyewitness missing"
+            if not executables and _attempts_show_no_capture_tooling(attempts)
+            else "screenshot png missing"
+        ),
         "attempts": attempts,
     }

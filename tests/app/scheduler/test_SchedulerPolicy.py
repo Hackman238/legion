@@ -106,5 +106,35 @@ class SchedulerPolicyTest(unittest.TestCase):
                     project_manager.closeProject(saved_project)
 
 
+    def test_policy_schema_ensure_runs_once_per_database(self):
+        from sqlalchemy import event
+
+        project_manager = ProjectManager(DefaultShell(), RepositoryFactory(getDbLogger()), getAppLogger())
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        try:
+            upsert_project_engagement_policy(project.database, {"preset": "internal_recon"})
+            get_project_engagement_policy(project.database)
+            engine = project.database.session().get_bind()
+            statements = []
+
+            def _capture(_conn, _cursor, statement, *_args):
+                statements.append(statement)
+
+            event.listen(engine, "before_cursor_execute", _capture)
+            try:
+                for _ in range(3):
+                    self.assertEqual("internal_recon", get_project_engagement_policy(project.database)["preset"])
+                ensure_scheduler_engagement_policy_table(project.database)
+            finally:
+                event.remove(engine, "before_cursor_execute", _capture)
+            schema_statements = [
+                item for item in statements
+                if "scheduler_engagement_policy" in item and ("PRAGMA" in item.upper() or "CREATE TABLE" in item.upper())
+            ]
+            self.assertEqual([], schema_statements)
+            self.assertTrue(any("SELECT" in item.upper() for item in statements))
+        finally:
+            project_manager.closeProject(project)
+
 if __name__ == "__main__":
     unittest.main()

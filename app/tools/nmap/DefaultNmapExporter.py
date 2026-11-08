@@ -21,7 +21,6 @@ from logging import Logger
 from app.shell.Shell import Shell
 from app.timing import timing
 from app.tools.nmap.NmapExporter import NmapExporter
-import os
 
 
 class DefaultNmapExporter(NmapExporter):
@@ -29,13 +28,38 @@ class DefaultNmapExporter(NmapExporter):
         self.logger = logger
         self.shell = shell
 
+    # xsltproc runs synchronously because the caller moves the XML right after conversion; bound it so a
+    # hung conversion cannot freeze the caller (this runs on the UI thread in the desktop app).
+    XSLTPROC_TIMEOUT_SECONDS = 60
+
     @timing
     def exportOutputToHtml(self, fileName: str, outputFolder: str) -> None:
+        command = ["xsltproc", "-o", f"{fileName}.html", "/usr/share/nmap/nmap.xsl", f"{fileName}.xml"]
         try:
-            command = f"xsltproc -o {fileName}.html /usr/share/nmap/nmap.xsl {fileName}.xml"
-            p = subprocess.Popen(command, shell=True)
-            p.wait()
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=self.XSLTPROC_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError:
+            self.logger.error('Could not convert nmap XML to HTML: xsltproc not found. Try: apt-get install xsltproc')
+            return
+        except subprocess.TimeoutExpired:
+            self.logger.error(f"nmap output export to html timed out after {self.XSLTPROC_TIMEOUT_SECONDS}s: {fileName}")
+            return
+        except subprocess.CalledProcessError as exc:
+            # xsltproc can report errors (e.g. for a partial XML from a killed scan) and still write a
+            # usable report, so keep going and move whatever it produced.
+            stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+            self.logger.error(f"nmap output export to html reported errors (exit {exc.returncode}): {stderr}")
+        except OSError as exc:
+            self.logger.error(f"nmap output export to html attempted, but failed: {exc}")
+            return
+        if not self.shell.isFile(f"{fileName}.html"):
+            return
+        try:
             self.shell.move(f"{fileName}.html", outputFolder)
-        except:
-            self.logger.error("nmap output export to html attempted, but failed.")
-            self.logger.error('Could not convert nmap XML to HTML. Try: apt-get install xsltproc')
+        except OSError as exc:
+            self.logger.error(f"Could not move nmap HTML report to {outputFolder}: {exc}")

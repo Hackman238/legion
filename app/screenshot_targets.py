@@ -147,3 +147,14 @@ def choose_preferred_screenshot_host(hostname: str, ip: str) -> str:
     if not ip_text or _resolved_addresses_include_ip(resolved_addresses, ip_text):
         return candidate
     return ip_text or candidate
+
+
+def resolve_deferred_target(target) -> str:
+    """Turn a queued screenshot/browser target into a string.
+
+    Targets may be queued as callables (see Controller._deferred_target_url) so that choosing the
+    preferred host, which can need a DNS lookup, happens on the worker thread rather than the UI thread.
+    """
+    if callable(target):
+        target = target()
+    return str(target)

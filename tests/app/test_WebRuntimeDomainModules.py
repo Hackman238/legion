@@ -887,9 +887,17 @@ class WebRuntimeDomainModulesTest(unittest.TestCase):
                 ],
             }
 
-            with mock.patch("app.web.runtime_artifacts.get_target_state", return_value=target_state), mock.patch(
-                "app.web.runtime_artifacts.upsert_target_state"
-            ) as mocked_upsert, mock.patch("app.web.runtime_artifacts.rebuild_evidence_graph") as mocked_rebuild:
+            stored_states = []
+
+            def _modify(_database, host_id, mutate_fn):
+                self.assertEqual(11, host_id)
+                stored_states.append(mutate_fn(dict(target_state)))
+                return stored_states[-1]
+
+            # The read-modify-write goes through modify_target_state (atomic under the per-host lock).
+            with mock.patch(
+                "app.web.runtime_artifacts.modify_target_state", side_effect=_modify
+            ) as mocked_modify, mock.patch("app.web.runtime_artifacts.rebuild_evidence_graph") as mocked_rebuild:
                 result = runtime_artifacts.delete_graph_screenshot(
                     runtime,
                     host_id=11,
@@ -902,7 +910,8 @@ class WebRuntimeDomainModulesTest(unittest.TestCase):
             self.assertEqual(2, result["deleted_files"])
             self.assertFalse(os.path.exists(screenshot_path))
             self.assertFalse(os.path.exists(metadata_path))
-            updated_state = mocked_upsert.call_args.args[2]
+            mocked_modify.assert_called_once()
+            updated_state = stored_states[-1]
             self.assertEqual([], updated_state["screenshots"])
             self.assertEqual(1, len(updated_state["artifacts"]))
             self.assertEqual("artifact", updated_state["artifacts"][0]["kind"])
@@ -1107,6 +1116,27 @@ class WebRuntimeDomainModulesTest(unittest.TestCase):
         self.assertEqual([91, 92], sorted(result["killed_process_ids"]))
         self.assertEqual([91, 92], sorted(runtime.killed))
         self.assertEqual([(5, "stopped by user")], runtime.jobs.cancelled)
+
+    def test_runtime_processes_module_counts_only_processes_the_kill_reports_killed(self):
+        from app.web import runtime_processes
+
+        runtime = _ProcessDomainRuntime()
+        kill_process = runtime.kill_process
+
+        def _kill_already_exited(process_id):
+            result = kill_process(process_id)
+            if int(process_id) == 92:
+                # A live handle whose process already exited is not killed by kill_process.
+                result = {"killed": False, "process_id": 92, "had_live_handle": True}
+            return result
+
+        runtime.kill_process = _kill_already_exited
+
+        result = runtime_processes.stop_job(runtime, 5)
+
+        self.assertTrue(result["stopped"])
+        self.assertEqual([91], result["killed_process_ids"])
+        self.assertEqual([91, 92], sorted(runtime.killed))
 
     def test_runtime_scheduler_module_starts_scheduler_run_and_dig_deeper_jobs(self):
         from app.web import runtime_scheduler
