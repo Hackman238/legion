@@ -33,7 +33,9 @@ python -m pip install --upgrade pip -r requirements.txt
 python legion.py --web
 ```
 
-Then open <http://127.0.0.1:5000>. Scanning needs raw-socket access, so run Legion as root (or via `sudo`) when you
+Then open <http://127.0.0.1:5000>. The web UI has no authentication when it listens on localhost only; when you
+expose it with `--web-bind-all`, Legion requires a web token (generated and printed at startup, or set with
+`--web-token` / `LEGION_WEB_TOKEN`). Scanning needs raw-socket access, so run Legion as root (or via `sudo`) when you
 want it to launch Nmap itself; importing existing Nmap XML works without it.
 
 Check which external tools Legion can find, and get an install script for the missing ones:
@@ -63,7 +65,8 @@ python legion.py --tool-install-plan kali      # or: ubuntu
 
 ```shell
 python legion.py                                      # http://127.0.0.1:5000 (same as --web)
-python legion.py --web --web-port 8080 --web-bind-all # listen on all interfaces
+python legion.py --web --web-port 8080 --web-bind-all # listen on all interfaces (a web token is generated and printed)
+python legion.py --web --web-bind-all --web-token "$(openssl rand -hex 24)"  # or choose the token yourself
 python legion.py --web --web-transparent-ui           # enable translucent UI effects (opaque by default)
 ```
 
@@ -153,7 +156,8 @@ Exploit-DB references for vulners CVEs are looked up offline from the bundled `p
 | --- | --- |
 | `--web` | Run the web interface (the default when no mode flag is given). |
 | `--web-port PORT` | Web interface port (default `5000`). |
-| `--web-bind-all` | Bind to `0.0.0.0` instead of `127.0.0.1`. |
+| `--web-bind-all` | Bind to `0.0.0.0` instead of `127.0.0.1`. Without `--web-token` a random token is generated and printed at startup. |
+| `--web-token TOKEN` | Require this token for the web UI and API (`LEGION_WEB_TOKEN` works too). Sign in at `/login`, or send `Authorization: Bearer TOKEN`. |
 | `--web-transparent-ui` | Enable translucent UI effects (the UI is opaque by default). |
 | `--headless` | Run without a UI, driven by the options below. |
 | `--input-file FILE` | Text file of targets, one per line (IPs, subnets, hostnames, URLs). |

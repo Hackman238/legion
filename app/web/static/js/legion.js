@@ -4696,7 +4696,11 @@ async function saveAppSettingsConfigAction() {
     try {
         const body = await postJson("/api/settings/legion-conf", {text});
         setText("settings-config-path", body.path || "legion.conf");
-        setConfigSettingsStatus("Config saved");
+        if (body.reloaded === false) {
+            setConfigSettingsStatus("Config saved, but the running instance could not reload it; check the log and fix the file.", true);
+        } else {
+            setConfigSettingsStatus("Config saved and reloaded");
+        }
     } catch (err) {
         setConfigSettingsStatus(`Save failed: ${err.message}`, true);
     }

@@ -255,6 +255,13 @@ def build_arg_parser():
         action="store_true",
         help="When used with --web, enable transparent UI effects",
     )
+    parser.add_argument(
+        "--web-token",
+        type=str,
+        default="",
+        help="Require this token for the web UI and API (also LEGION_WEB_TOKEN). "
+             "A random token is generated and printed when --web-bind-all is used without one.",
+    )
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
     parser.add_argument(
         "--discovery",
@@ -280,6 +287,16 @@ def resolve_web_bind_host(args) -> str:
     if bool(getattr(args, "web_bind_all", False)):
         return "0.0.0.0"
     return "127.0.0.1"
+
+
+def resolve_web_token(args, environ=None, *, generate=None) -> str:
+    """The web token from --web-token or LEGION_WEB_TOKEN; generated when the UI is exposed without one."""
+    env = environ if environ is not None else os.environ
+    token = str(getattr(args, "web_token", "") or "").strip() or str(env.get("LEGION_WEB_TOKEN", "") or "").strip()
+    if not token and bool(getattr(args, "web_bind_all", False)):
+        import secrets
+        token = (generate or (lambda: secrets.token_urlsafe(24)))()
+    return token
 
 
 def describe_web_bind_host(host: str) -> str:
@@ -392,6 +409,15 @@ if __name__ == "__main__":
         logic = create_default_logic()
         runtime = WebRuntime(logic)
         web_app = create_app(runtime)
+        web_token = resolve_web_token(args)
+        if web_token:
+            from app.web import configure_web_token
+            configure_web_token(web_app, web_token)
+            if not str(getattr(args, "web_token", "") or "").strip() and not os.environ.get("LEGION_WEB_TOKEN"):
+                print(f"Web token (sign in at http://<host>:{args.web_port}/login): {web_token}", file=sys.stderr)
+            startupLog.info("Web token authentication is enabled.")
+        elif web_bind_host == "0.0.0.0":
+            startupLog.warning("Web interface is exposed on all interfaces without authentication.")
         web_app.config["LEGION_WEB_BIND_HOST"] = web_bind_host
         web_app.config["LEGION_WEB_BIND_LABEL"] = describe_web_bind_host(web_bind_host)
         web_app.config["LEGION_UI_OPAQUE"] = resolve_web_opaque_ui(args)
