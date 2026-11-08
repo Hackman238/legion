@@ -3616,6 +3616,15 @@ function exportWorkspaceCsvAction() {
     window.location.assign(`/api/export/csv?t=${Date.now()}`);
 }
 
+function exportTableAction(table, format = "csv") {
+    closeRibbonMenus();
+    const name = String(table || "").trim();
+    if (!name) {
+        return;
+    }
+    window.location.assign(`/api/export/table/${encodeURIComponent(name)}.${format === "json" ? "json" : "csv"}?t=${Date.now()}`);
+}
+
 function currentHostFilterQuery() {
     const params = new URLSearchParams();
     const filter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
@@ -12239,6 +12248,14 @@ function bindActionButtons() {
     bind("script-cve-modal-close", closeScriptCveModalAction);
     bind("provider-logs-modal-close", closeProviderLogsModalAction);
     bind("jobs-modal-close", closeJobsModalAction);
+    bind("jobs-export-csv-button", () => exportTableAction("jobs"));
+    bind("scan-history-export-csv-button", () => exportTableAction("scan_history"));
+    bind("decisions-export-csv-button", () => exportTableAction("scheduler_decisions"));
+    bind("approvals-export-csv-button", () => exportTableAction("scheduler_approvals"));
+    bind("ribbon-export-services-csv-action-button", () => exportTableAction("services"));
+    bind("ribbon-export-ports-csv-action-button", () => exportTableAction("ports"));
+    bind("ribbon-export-cves-csv-action-button", () => exportTableAction("cves"));
+    bind("ribbon-export-findings-csv-action-button", () => exportTableAction("findings"));
     bind("submitted-scans-modal-close", closeSubmittedScansModalAction);
     bind("scheduler-decisions-modal-close", closeSchedulerDecisionsModalAction);
     bind("provider-logs-refresh-button", loadProviderLogsAction);

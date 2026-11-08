@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import re
 import shlex
 import subprocess
@@ -21,6 +22,17 @@ from app.web.runtime_scan_targets import (
     summarize_scan_scope,
 )
 
+
+
+def default_nmap_path(runtime) -> str:
+    """The configured nmap path when it points at a real file, else plain `nmap` from PATH."""
+    try:
+        configured = str(getattr(runtime._get_settings(), "tools_path_nmap", "") or "").strip()
+    except Exception:
+        configured = ""
+    if configured and (os.path.isfile(configured) or shutil.which(configured)):
+        return configured
+    return "nmap"
 
 def apply_engagement_scan_profile(
         runtime_cls,
@@ -48,7 +60,7 @@ def build_nmap_scan_plan(
         scan_mode: str = "legacy",
         scan_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    resolved_path = str(nmap_path or "nmap").strip() or "nmap"
+    resolved_path = str(nmap_path or "").strip() or default_nmap_path(runtime)
     raw_args = str(nmap_args or "").strip()
     try:
         extra_args = shlex.split(raw_args) if raw_args else []
@@ -144,40 +156,14 @@ def build_nmap_scan_plan(
         )
 
     if staged:
-        stage1_prefix = f"{output_prefix}_stage1"
-        stage2_prefix = f"{output_prefix}_stage2"
-        stage1_cmd_prefix = nmap_output_prefix_for_command(stage1_prefix, resolved_path)
-        stage2_cmd_prefix = nmap_output_prefix_for_command(stage2_prefix, resolved_path)
-
-        stage1_tokens = [resolved_path, "-sn", *targets]
-        stage1_tokens = append_nmap_stats_every(stage1_tokens, interval="15s")
-        stage1_tokens.extend(["-oA", stage1_cmd_prefix])
-        stage2_tokens = [resolved_path, "-sV", "-O"]
-        if not bool(discovery):
-            stage2_tokens.append("-Pn")
-        stage2_tokens.extend(append_nmap_stats_every(extra_args, interval="15s"))
-        stage2_tokens.extend(targets)
-        stage2_tokens.extend(["-oA", stage2_cmd_prefix])
-
-        stages = [
-            {
-                "tool_name": "nmap-stage1",
-                "tab_title": "Nmap Stage 1 Discovery",
-                "output_prefix": stage1_prefix,
-                "xml_path": f"{stage1_prefix}.xml",
-                "command": join_shell_tokens(stage1_tokens),
-                "timeout": 1800,
-            },
-            {
-                "tool_name": "nmap-stage2",
-                "tab_title": "Nmap Stage 2 Service Scan",
-                "output_prefix": stage2_prefix,
-                "xml_path": f"{stage2_prefix}.xml",
-                "command": join_shell_tokens(stage2_tokens),
-                "timeout": 5400,
-            },
-        ]
-        return {"xml_path": f"{stage2_prefix}.xml", "stages": stages}
+        return build_staged_scan_plan(
+            nmap_path=resolved_path,
+            targets=list(targets),
+            output_prefix=output_prefix,
+            discovery=bool(discovery),
+            extra_args=extra_args,
+            stage_specs=staged_stage_specs(runtime._get_settings()),
+        )
 
     output_cmd_prefix = nmap_output_prefix_for_command(output_prefix, resolved_path)
     tokens = [resolved_path]
@@ -197,6 +183,105 @@ def build_nmap_scan_plan(
     }]
     return {"xml_path": f"{output_prefix}.xml", "stages": stages}
 
+
+
+STAGE_SETTING_NAMES = tuple(f"tools_nmap_stage{index}_ports" for index in range(1, 7))
+
+
+def staged_stage_specs(settings) -> List[str]:
+    """The raw [StagedNmapSettings] stage values (stage1-ports .. stage6-ports), skipping blanks."""
+    specs: List[str] = []
+    for name in STAGE_SETTING_NAMES:
+        value = str(getattr(settings, name, "") or "").strip().strip('"')
+        if value:
+            specs.append(value)
+    return specs
+
+
+def parse_stage_spec(value: str) -> Dict[str, Any]:
+    """Interpret one stage value.
+
+    Accepted forms: ``PORTS|T:80,443,U:161`` or ``T:80,443`` (a port stage) and ``NSE|vulners`` or
+    ``Vulners,CVE`` (a script stage; tokens that are not NSE script names, such as CVE, are dropped).
+    """
+    text_value = str(value or "").strip().strip('"')
+    kind_hint = ""
+    if "|" in text_value:
+        kind_hint, text_value = [part.strip() for part in text_value.split("|", 1)]
+    looks_like_ports = bool(re.fullmatch(r"[TU]?:?[0-9,\-TU:\s]+", text_value)) and any(ch.isdigit() for ch in text_value)
+    if kind_hint.upper() == "NSE" or (kind_hint.upper() != "PORTS" and not looks_like_ports):
+        scripts = []
+        for token in re.split(r"[,\s]+", text_value):
+            token = token.strip().lower()
+            if token and token != "cve" and re.fullmatch(r"[a-z0-9_.*+-]+", token):
+                scripts.append(token)
+        return {"kind": "scripts", "scripts": scripts}
+    ports = ",".join(part.strip() for part in text_value.split(",") if part.strip())
+    return {"kind": "ports", "ports": ports}
+
+
+def build_staged_scan_plan(
+        *,
+        nmap_path: str,
+        targets: List[str],
+        output_prefix: str,
+        discovery: bool,
+        extra_args: List[str],
+        stage_specs: List[str],
+) -> Dict[str, Any]:
+    """A host-discovery sweep followed by the configured port and script stages; every stage's XML is imported.
+
+    Port stages run service detection (OS detection on the first one); a script stage runs its NSE scripts against
+    every port the earlier stages covered, so vulners sees the versions found so far.
+    """
+    stages: List[Dict[str, Any]] = []
+    scanned_port_specs: List[str] = []
+
+    def _stage(name: str, title: str, tokens: List[str], timeout: int) -> Dict[str, Any]:
+        prefix = f"{output_prefix}_{name}"
+        command_tokens = list(tokens)
+        command_tokens.extend(append_nmap_stats_every(extra_args, interval="15s"))
+        command_tokens.extend(targets)
+        command_tokens.extend(["-oA", nmap_output_prefix_for_command(prefix, nmap_path)])
+        return {
+            "tool_name": f"nmap-{name}",
+            "tab_title": title,
+            "output_prefix": prefix,
+            "xml_path": f"{prefix}.xml",
+            "command": join_shell_tokens(command_tokens),
+            "timeout": int(timeout),
+        }
+
+    if discovery:
+        stages.append(_stage("stage0-discovery", "Nmap Host Discovery", [nmap_path, "-sn"], 1800))
+
+    port_stage_index = 0
+    for index, raw_spec in enumerate(stage_specs, start=1):
+        spec = parse_stage_spec(raw_spec)
+        base = [nmap_path]
+        if not discovery:
+            base.append("-Pn")
+        if spec["kind"] == "ports":
+            if not spec["ports"]:
+                continue
+            port_stage_index += 1
+            tokens = base + ["-sV"]
+            if port_stage_index == 1:
+                tokens.append("-O")
+            tokens.extend(["-p", spec["ports"]])
+            scanned_port_specs.append(spec["ports"])
+            stages.append(_stage(f"stage{index}", f"Nmap Stage {index}: ports {spec['ports'][:40]}", tokens, 5400))
+        else:
+            if not spec["scripts"]:
+                continue
+            tokens = base + ["-sV", "--script", ",".join(spec["scripts"])]
+            if scanned_port_specs:
+                tokens.extend(["-p", ",".join(scanned_port_specs)])
+            stages.append(_stage(f"stage{index}", f"Nmap Stage {index}: {', '.join(spec['scripts'])}", tokens, 5400))
+
+    if not stages:  # nothing configured: fall back to one service scan
+        stages.append(_stage("stage1", "Nmap Service Scan", [nmap_path] + ([] if discovery else ["-Pn"]) + ["-sV", "-O"], 5400))
+    return {"xml_path": stages[-1]["xml_path"], "stages": stages, "import_each_stage": True}
 
 def build_single_scan_plan(
         runtime,

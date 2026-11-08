@@ -255,14 +255,18 @@ def build_arg_parser():
         action="store_true",
         help="When used with --web, enable transparent UI effects",
     )
-    parser.add_argument(
-        "--web-opaque-ui",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
-    parser.add_argument("--discovery", action="store_true", help="Run an nmap host-discovery scan of the targets (headless)")
-    parser.add_argument("--staged-scan", action="store_true", help="Enable staged scan")
+    parser.add_argument(
+        "--discovery",
+        action="store_true",
+        help="Headless: run an nmap host-discovery sweep (-sn); with --staged-scan it precedes the stages",
+    )
+    parser.add_argument(
+        "--staged-scan",
+        action="store_true",
+        help="Headless: run the [StagedNmapSettings] stages (service detection per port group, then NSE scripts)",
+    )
+    parser.add_argument("--nmap-args", type=str, default="", help="Headless: extra nmap arguments appended to every stage")
     parser.add_argument("--output-file", type=str, help="Output file (.legion or .json)")
     parser.add_argument(
         "--run-actions",
@@ -433,8 +437,11 @@ if __name__ == "__main__":
                     if t and t not in targets:
                         targets.append(t)
             targets_str = " ".join(targets)
-            configured_nmap = str(Settings(AppSettings()).tools_path_nmap or "").strip()
-            nmap_path = configured_nmap if configured_nmap and os.path.isfile(configured_nmap) else "nmap"
+            headless_settings = Settings(AppSettings())
+            configured_nmap = str(headless_settings.tools_path_nmap or "").strip()
+            nmap_path = configured_nmap if configured_nmap and (os.path.isfile(configured_nmap) or shutil.which(configured_nmap)) else "nmap"
+            from app.web.runtime_scan_planning import staged_stage_specs
+            stage_specs = staged_stage_specs(headless_settings)
             output_prefix = os.path.join(logic.activeProject.properties.runningFolder, f"cli-nmap-{int(time.time())}")
             try:
                 nmap_xml = run_nmap_scan(
@@ -443,27 +450,28 @@ if __name__ == "__main__":
                     discovery=args.discovery,
                     staged=args.staged_scan,
                     nmap_path=nmap_path,
+                    stage_specs=stage_specs,
+                    nmap_args=str(getattr(args, "nmap_args", "") or ""),
                 )
                 if nmap_xml is None:
                     # run_nmap_scan already printed nmap's error; keep the imported targets and still export.
                     nmap_failed = True
                     print("Error: nmap scan failed; skipping nmap import.", file=sys.stderr)
                 else:
-                    # Import nmap XML results into the project
-                    import_nmap_xml_into_project(
-                        project=logic.activeProject,
-                        xml_path=nmap_xml,
-                        output="",
-                        update_progress_observable=None,
-                        host_repository=hostRepository,
-                    )
+                    for xml_report in list(nmap_xml):
+                        import_nmap_xml_into_project(
+                            project=logic.activeProject,
+                            xml_path=xml_report,
+                            output="",
+                            update_progress_observable=None,
+                            host_repository=hostRepository,
+                        )
             except Exception as exc:  # e.g. nmap not installed, or an unreadable XML report
                 nmap_failed = True
                 print(f"Error: nmap scan/import failed: {exc}", file=sys.stderr)
 
         # Run scripted actions/automated attacks if requested
         if args.run_actions:
-            # Placeholder: will call logic.run_scripted_actions() after implementation
             print("Running scripted actions/automated attacks (CLI)...")
             logic.run_scripted_actions()
 

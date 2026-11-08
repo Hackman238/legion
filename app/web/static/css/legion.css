@@ -1026,6 +1026,18 @@ body.colorful-background .background-glow {
     font-size: 0.82rem;
 }
 
+.modal-header-action {
+    margin-left: auto;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.8rem;
+    border-radius: 999px;
+}
+
+.modal-header .modal-header-action + .modal-close-btn,
+.panel-header .modal-header-action + .modal-close-btn {
+    margin-left: 0.5rem;
+}
+
 .meta-note {
     margin: 0.65rem 0 0;
     color: var(--text-muted);

@@ -439,7 +439,7 @@ class MCPServerTest(unittest.TestCase):
 
     def test_stdio_server_keeps_answering_after_request_line_over_64_kib(self):
         server_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "app", "mcpServer.py")
-        big_request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"padding": "x" * 70000}})
+        big_request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "no-such-method", "params": {"padding": "x" * 70000}})
         list_tools = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "list_tools"})
 
         completed = subprocess.run(
@@ -481,6 +481,47 @@ class MCPServerTest(unittest.TestCase):
         responses = [json.loads(line) for line in lines]
         self.assertEqual([1], [item.get("id") for item in responses])
         self.assertIn("open_project", {tool["name"] for tool in responses[0]["result"]})
+
+    def test_mcp_protocol_methods(self):
+        # Standard clients speak initialize / tools/list / tools/call with content-wrapped results.
+        init = _drain_coroutine(self.server.handle_request({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}},
+        }))
+        self.assertEqual("2025-06-18", init["result"]["protocolVersion"])
+        self.assertEqual("legion", init["result"]["serverInfo"]["name"])
+        self.assertIn("tools", init["result"]["capabilities"])
+        self.assertIsNone(_drain_coroutine(self.server.handle_request({"jsonrpc": "2.0", "method": "notifications/initialized"})))
+        self.assertEqual({}, _drain_coroutine(self.server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "ping"}))["result"])
+
+        listing = _drain_coroutine(self.server.handle_request({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}))
+        names = {tool["name"] for tool in listing["result"]["tools"]}
+        for expected in ("list_hosts", "get_host", "run_tool", "start_nmap_scan", "import_nmap_xml", "list_processes",
+                         "get_process_output", "kill_process", "run_scheduler", "list_approvals"):
+            self.assertIn(expected, names)
+
+        self.runtime.get_project_details = lambda: {"name": "demo.legion"}
+        call = _drain_coroutine(self.server.handle_request({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "list_projects", "arguments": {}},
+        }))
+        self.assertFalse(call["result"]["isError"])
+        self.assertEqual("text", call["result"]["content"][0]["type"])
+        self.assertIn("structuredContent", call["result"])
+
+        missing = _drain_coroutine(self.server.handle_request({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "no-such-tool", "arguments": {}},
+        }))
+        self.assertEqual(-32601, missing["error"]["code"])
+
+        async def _boom(_arguments):
+            raise ValueError("bad input")
+
+        self.server.tools["boom"] = {"description": "", "inputSchema": {"type": "object"}, "handler": _boom}
+        failed = _drain_coroutine(self.server.handle_request({
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "boom", "arguments": {}},
+        }))
+        self.assertTrue(failed["result"]["isError"])  # tool errors are in-band per the spec
+        self.assertIn("bad input", failed["result"]["content"][0]["text"])
 
 
 if __name__ == "__main__":

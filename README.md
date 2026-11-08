@@ -82,8 +82,27 @@ file you can open in the UI). The process exits non-zero if the scan or import f
 python legion.py --mcp-server
 ```
 
-Exposes project access, planning, approvals, graph and state queries, findings, execution traces and report export
-over MCP, through the same governed core as the web UI.
+A Model Context Protocol server over stdio (`initialize`, `tools/list`, `tools/call`). It exposes the open project to
+an AI agent through the same governed core as the web UI: host and service inventory, nmap scans and XML import,
+the tool catalog and single tool runs, scheduler runs with the approval queue, process output, the evidence graph,
+findings, execution traces and report export. Dangerous actions still go through engagement policy and approvals.
+
+Client configuration (Claude Desktop, Cursor and similar):
+
+```json
+{
+  "mcpServers": {
+    "legion": {
+      "command": "/path/to/legion/.venv/bin/python",
+      "args": ["/path/to/legion/legion.py", "--mcp-server"],
+      "env": {"LEGION_HOME": "/home/you/.local/share/legion"}
+    }
+  }
+}
+```
+
+Scans need the same privileges as the web UI, so run the client (or Legion) as root when the agent should launch
+nmap itself.
 
 ## Installation
 
@@ -138,8 +157,9 @@ Exploit-DB references for vulners CVEs are looked up offline from the bundled `p
 | `--web-transparent-ui` | Enable translucent UI effects (the UI is opaque by default). |
 | `--headless` | Run without a UI, driven by the options below. |
 | `--input-file FILE` | Text file of targets, one per line (IPs, subnets, hostnames, URLs). |
-| `--discovery` | Enable host discovery (headless). |
-| `--staged-scan` | Run the staged Nmap scan profile (headless). |
+| `--discovery` | Headless: run an nmap host-discovery sweep (`-sn`) of the targets; with `--staged-scan` it runs first. |
+| `--staged-scan` | Headless: run the `[StagedNmapSettings]` stages from `legion.conf` (service detection per port group, then NSE scripts), importing each stage. |
+| `--nmap-args ARGS` | Headless: extra nmap arguments appended to every stage. |
 | `--run-actions` | Run configured scripted actions after the scan or import (headless). |
 | `--output-file FILE` | Export headless results to `.legion` or `.json`. |
 | `--mcp-server` | Start the MCP server. |
