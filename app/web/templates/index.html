@@ -998,6 +998,8 @@
         <div class="panel-header">
             <h2>Dangerous Action Approvals</h2>
             <p id="approval-count">{{ snapshot.scheduler_approvals | length }}</p>
+            <button id="approvals-approve-all-button" class="modal-header-action" type="button" title="Approve and run every pending action listed">Approve All</button>
+            <button id="approvals-reject-all-button" class="modal-header-action" type="button" title="Reject every pending action listed">Reject All</button>
             <button id="approvals-export-csv-button" class="modal-header-action" type="button" title="Download every approval (all statuses) as CSV">Export CSV</button>
         </div>
         <div class="table-wrap">
