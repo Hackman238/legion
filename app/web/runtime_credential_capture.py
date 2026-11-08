@@ -318,7 +318,11 @@ def stop_credential_capture_session(runtime, tool_id: str) -> Dict[str, Any]:
         return {"stopped": False, "tool": normalized_tool, "reason": "not running"}
     result: Dict[str, Any] = {}
     if process_running:
-        result = runtime.kill_process(int(process_id))
+        try:
+            result = runtime.kill_process(int(process_id))
+        except KeyError:
+            # The process row is gone (project switched or restored): nothing left to stop.
+            result = {"killed": False, "process_id": int(process_id), "had_live_handle": False}
     else:
         # Queued, or running but its process row is not created yet: cancelling the job stops it
         # (a queued job is dropped; the runner checks the cancel request before launching the tool).

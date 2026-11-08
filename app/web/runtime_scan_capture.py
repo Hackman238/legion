@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import datetime
 import os
 from typing import Any, Dict, List
@@ -54,34 +55,39 @@ def start_passive_capture_scan_job(
         "run_actions": bool(run_actions),
         "scan_mode": "passive_capture",
     }
-    job = runtime._start_job(
-        "passive-capture-scan",
-        lambda job_id: runtime._run_passive_capture_scan(
+    submission_recorded = threading.Event()  # the runner updates the submission row: it must exist first
+
+    def _run(job_id):
+        submission_recorded.wait(5.0)
+        return runtime._run_passive_capture_scan(
             interface_name=resolved_interface,
             duration_minutes=resolved_duration,
             run_actions=bool(run_actions),
             job_id=int(job_id or 0),
-        ),
-        payload=payload,
-    )
-    runtime._record_scan_submission(
-        submission_kind="passive_capture_scan",
-        job_id=int(job.get("id", 0) or 0),
-        targets=[],
-        discovery=False,
-        staged=False,
-        run_actions=bool(run_actions),
-        nmap_path="",
-        nmap_args="",
-        scan_mode="passive_capture",
-        scan_options={
-            "interface_name": resolved_interface,
-            "duration_minutes": resolved_duration,
-        },
-        target_summary=resolved_interface,
-        scope_summary=f"interface: {resolved_interface} | duration: {resolved_duration}m",
-        result_summary=f"queued passive capture on {resolved_interface} for {resolved_duration}m",
-    )
+        )
+
+    job = runtime._start_job("passive-capture-scan", _run, payload=payload)
+    try:
+        runtime._record_scan_submission(
+            submission_kind="passive_capture_scan",
+            job_id=int(job.get("id", 0) or 0),
+            targets=[],
+            discovery=False,
+            staged=False,
+            run_actions=bool(run_actions),
+            nmap_path="",
+            nmap_args="",
+            scan_mode="passive_capture",
+            scan_options={
+                "interface_name": resolved_interface,
+                "duration_minutes": resolved_duration,
+            },
+            target_summary=resolved_interface,
+            scope_summary=f"interface: {resolved_interface} | duration: {resolved_duration}m",
+            result_summary=f"queued passive capture on {resolved_interface} for {resolved_duration}m",
+        )
+    finally:
+        submission_recorded.set()
     return job
 
 

@@ -1696,6 +1696,9 @@ class AppSettings():
         keys = self.actions.childKeys()
         for k in keys:
             value = self.actions.value(k)
+            if not isinstance(value, (list, tuple)) or len(value) < 2:
+                log.warning("Ignoring malformed HostActions entry %r (expected 'label, command').", k)
+                continue
             label = value[0]
             command = self._normalize_action_command(str(k), value[1])
             hostactions.append([label, str(k), command])
@@ -1714,6 +1717,9 @@ class AppSettings():
             if str(k or "").strip().lower() in self.DISABLED_PORT_ACTION_IDS:
                 continue
             value = self.actions.value(k)
+            if not isinstance(value, (list, tuple)) or len(value) < 3:
+                log.warning("Ignoring malformed PortActions entry %r (expected 'label, command, services').", k)
+                continue
             label = value[0]
             command = self._normalize_action_command(str(k), value[1])
             scope = value[2]
@@ -1731,6 +1737,9 @@ class AppSettings():
         keys = self.actions.childKeys()
         for k in keys:
             value = self.actions.value(k)
+            if not isinstance(value, (list, tuple)) or len(value) < 3:
+                log.warning("Ignoring malformed PortTerminalActions entry %r (expected 'label, command, services').", k)
+                continue
             label = value[0]
             command = self._normalize_action_command(str(k), value[1])
             scope = value[2]
@@ -1748,7 +1757,11 @@ class AppSettings():
         for k in keys:
             if str(k or "").strip().lower() in self.DISABLED_PORT_ACTION_IDS:
                 continue
-            settings.append([str(k), self.actions.value(k)[0], self.actions.value(k)[1]])
+            value = self.actions.value(k)
+            if not isinstance(value, (list, tuple)) or len(value) < 2:
+                log.warning("Ignoring malformed SchedulerSettings entry %r (expected 'command, services').", k)
+                continue
+            settings.append([str(k), value[0], value[1]])
         self.actions.endGroup()
         return settings
 
@@ -1896,8 +1909,6 @@ class Settings():
         self.tools_path_hydra = "/usr/bin/hydra"
         self.tools_path_texteditor = "/usr/bin/xdg-open"
         self.tools_pyshodan_api_key = ""
-        self.tools_path_responder = "/usr/bin/responder"
-        self.tools_path_ntlmrelay = "/usr/bin/ntlmrelayx.py"
         self.tools_path_responder = "responder"
         self.tools_path_ntlmrelay = "ntlmrelayx.py"
 
@@ -2042,8 +2053,6 @@ class Settings():
                     'pyshodan-api-key',
                     self.tools_pyshodan_api_key,
                 )
-                self.tools_path_responder = self.toolSettings.get('responder-path', self.tools_path_responder)
-                self.tools_path_ntlmrelay = self.toolSettings.get('ntlmrelay-path', self.tools_path_ntlmrelay)
                 self.tools_path_responder = self.toolSettings.get('responder-path', self.tools_path_responder)
                 self.tools_path_ntlmrelay = self.toolSettings.get('ntlmrelay-path', self.tools_path_ntlmrelay)
 

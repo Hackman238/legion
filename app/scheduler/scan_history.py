@@ -1,3 +1,4 @@
+import logging
 import datetime
 import json
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,8 @@ SCAN_HISTORY_COLUMNS = (
     "scan_options_json",
     "result_summary",
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -109,6 +112,7 @@ def ensure_scan_submission_table(database):
         session.commit()
     except Exception:
         session.rollback()
+        logger.warning("Could not prepare the scheduler scan submission table.", exc_info=True)
     finally:
         session.close()
 

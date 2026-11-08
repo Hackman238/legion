@@ -11,6 +11,10 @@ from app.scheduler.insights import delete_host_ai_state
 from app.scheduler.state import upsert_target_state as store_target_state
 from app.web import runtime_workspace_entries as web_runtime_workspace_entries
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 create_script_entry = web_runtime_workspace_entries.create_script_entry
 delete_script_entry = web_runtime_workspace_entries.delete_script_entry
@@ -249,6 +253,13 @@ def delete_host_workspace(runtime, host_id: int) -> Dict[str, Any]:
             session.close()
 
         deleted_counts["ai_analysis"] = int(delete_host_ai_state(project.database, int(host_id_text)) or 0)
+        try:
+            from app.scheduler.graph import delete_host_from_evidence_graph
+            deleted_counts["graph_nodes"] = int(delete_host_from_evidence_graph(
+                project.database, host_id=int(host_id_text), host_ip=str(target_host_ip or ""),
+            ) or 0)
+        except Exception:
+            logger.warning("Could not remove host %s from the evidence graph.", host_id_text, exc_info=True)
 
         deleted_screenshots = 0
         screenshot_dir = os.path.join(project.properties.outputFolder, "screenshots")

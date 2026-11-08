@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import zipfile
 from typing import Any, Dict, Tuple
+from app.core.common import getTempFolder
 
 
 def extract_project_bundle_zip(zip_path: str) -> Dict[str, Any]:
@@ -39,7 +40,7 @@ def extract_project_bundle_zip(zip_path: str) -> Dict[str, Any]:
             project_file_name = f"{project_file_name}.legion"
         project_stem = os.path.splitext(project_file_name)[0]
 
-        restore_root = tempfile.mkdtemp(prefix="legion-restore-")
+        restore_root = tempfile.mkdtemp(prefix="legion-restore-", dir=getTempFolder())
         project_path = os.path.join(restore_root, project_file_name)
         output_folder = os.path.join(restore_root, f"{project_stem}-tool-output")
         running_folder = os.path.join(restore_root, f"{project_stem}-running")
@@ -95,7 +96,7 @@ def extract_legacy_project_zip(archive: zipfile.ZipFile) -> Dict[str, Any]:
         project_file_name = f"{project_file_name}.legion"
     project_stem = os.path.splitext(project_file_name)[0]
 
-    restore_root = tempfile.mkdtemp(prefix="legion-restore-")
+    restore_root = tempfile.mkdtemp(prefix="legion-restore-", dir=getTempFolder())
     project_path = os.path.join(restore_root, project_file_name)
     output_folder = os.path.join(restore_root, f"{project_stem}-tool-output")
     running_folder = os.path.join(restore_root, f"{project_stem}-running")

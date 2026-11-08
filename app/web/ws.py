@@ -1,11 +1,17 @@
 import json
 
-from flask import current_app
+from flask import current_app, request
 
 
 def register_websocket_routes(sock):
     @sock.route("/ws/snapshot")
     def snapshot_feed(ws):
+        # The browser sends Origin on every WebSocket handshake: refuse other sites' pages.
+        origin = str(request.headers.get("Origin", "") or "").strip().lower()
+        if origin:
+            origin_host = origin.split("://", 1)[-1].split("/", 1)[0]
+            if origin_host != str(request.host or "").strip().lower():
+                return
         runtime = current_app.extensions["legion_runtime"]
         cursor = 0
         timeout_seconds = float(current_app.config.get("LEGION_WS_EVENT_HEARTBEAT_SECONDS", 30.0))

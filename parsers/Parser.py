@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 '''this module used to parse nmap xml report'''
 
@@ -100,7 +100,7 @@ class Parser:
     def getAllHosts(self, status=None):
         '''get a list of Host object'''
         if status is None:
-            return self.__hosts.values()
+            return list(self.__hosts.values())
 
         else:
             __tmp_hosts = []

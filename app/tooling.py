@@ -208,9 +208,8 @@ def _normalize_install_command(command: str) -> str:
         return f"sudo -n apt-get install -y {package_expr}"
 
     rewritten = re.sub(r"(?i)\bsudo\s+apt\s+install\s+(.+?)(?=(?:\s*\|\||\s*&&|$))", _rewrite_apt, text)
-    if rewritten != text:
-        return rewritten
-    return text
+    # Never let an install step block on a sudo password prompt (output is piped, nobody can answer).
+    return re.sub(r"(?<![\w-])sudo\s+(?!-n\b)", "sudo -n ", rewritten)
 
 
 def build_tool_install_plan(
@@ -404,7 +403,7 @@ def execute_tool_install_plan(
             continue
 
         process = subprocess.Popen(
-            ["bash", "-lc", command],
+            ["bash", "-c", command],  # not a login shell: /etc/profile would reset the PATH built above
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

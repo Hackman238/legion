@@ -37,6 +37,10 @@ RISK_TAG_PATTERNS = {
         r"\bncrack\b",
         r"\bpatator\b",
         r"\bbruteforce\b",
+        r"(?<!dns-)\bbrute\b",  # nmap *-brute.nse password guessing (dns-brute only enumerates names)
+        r"\bcrackmapexec\b",
+        r"\bnxc\b",
+        r"\bnetexec\b",
         r"\bdefault(?:[-_\s]credentials|[-_\s]login|[-_\s]passwords?)\b",
         r"\b(default|defaults)\b",
     ],
@@ -53,6 +57,7 @@ RISK_TAG_PATTERNS = {
         r"\bfuzz(?:ing)?\b",
         r"\boverflow\b",
         r"\bslowloris\b",
+        r"script-args=[^\s]*unsafe=1",  # nmap scripts that may crash or lock out the service
     ],
     "network_flooding": [
         r"\bflood\b",

@@ -3,7 +3,7 @@ from typing import Dict
 
 from sqlalchemy import text
 
-from app.scheduler.schema_cache import ensure_schema_once, ensure_column
+from app.scheduler.schema_cache import ensure_schema_once, ensure_column, index_exists
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,10 @@ _ensure_column = ensure_column
 
 
 def _ensure_table(session):
-    ensure_schema_once(session, "decision_log", _ensure_table_uncached, ["scheduler_decision_log"])
+    ensure_schema_once(
+        session, "decision_log", _ensure_table_uncached, ["scheduler_decision_log"],
+        is_complete=lambda current: index_exists(current, "ix_scheduler_decision_log_approval_id"),
+    )
 
 
 def _ensure_table_uncached(session):
@@ -74,6 +77,8 @@ def _ensure_table_uncached(session):
         "approval_id TEXT"
         ")"
     ))
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_decision_log_host_ip ON scheduler_decision_log (host_ip)"))
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_decision_log_approval_id ON scheduler_decision_log (approval_id)"))
     _ensure_column(session, "scheduler_decision_log", "approval_id", "TEXT")
     _ensure_column(session, "scheduler_decision_log", "engagement_preset", "TEXT")
     _ensure_column(session, "scheduler_decision_log", "risk_tags", "TEXT")
@@ -139,6 +144,7 @@ def ensure_scheduler_audit_table(database):
         session.commit()
     except Exception:
         session.rollback()
+        logger.warning("Could not prepare the scheduler audit table.", exc_info=True)
     finally:
         session.close()
 

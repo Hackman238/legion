@@ -9,6 +9,7 @@ from app.scheduler.approvals import (
 )
 from app.scheduler.audit import update_scheduler_decision_for_approval
 from app.scheduler.planner import ScheduledAction
+from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
 from app.web import runtime_scheduler_decision_execution as web_runtime_scheduler_decision_execution
 
 
@@ -144,6 +145,8 @@ def reject_scheduler_approval(
         item = get_pending_approval_fn(project.database, int(approval_id))
         if item is None:
             raise KeyError(f"Unknown approval id: {approval_id}")
+        if str(item.get("status", "")).strip().lower() in {"running", "executed", "failed"}:
+            return item  # already executed (or executing): the decision log must keep saying so
         resolved_family_action = str(family_action or "").strip().lower()
         if resolved_family_action not in {"", "approval_required", "suppressed", "blocked"}:
             resolved_family_action = ""
@@ -183,6 +186,26 @@ def execute_approved_scheduler_item(
             raise KeyError(f"Unknown approval id: {approval_id}")
         if str(item.get("status", "")).strip().lower() not in {"approved", "pending"}:
             return {"approval_id": int(approval_id), "status": item.get("status", "")}
+        family_id = str(item.get("command_family_id", "") or "").strip()
+        current_family_state = runtime.scheduler_config.get_family_policy_state(family_id) if family_id else ""
+        policy_now = evaluate_policy_for_risk_tags(
+            runtime._split_csv(str(item.get("risk_tags", "") or item.get("danger_categories", ""))),
+            runtime._load_engagement_policy_locked(persist_if_missing=True),
+            family_policy_state=current_family_state,
+        )
+        if policy_now.is_blocked:
+            blocked_reason = f"blocked by current policy at execution time: {policy_now.reason}".strip()
+            update_pending_approval_fn(
+                project.database,
+                int(approval_id),
+                status="rejected",
+                decision_reason=blocked_reason,
+                family_policy_state=current_family_state or str(item.get("family_policy_state", "")),
+            )
+            update_scheduler_decision_for_approval_fn(
+                project.database, int(approval_id), approved=False, executed=False, reason=blocked_reason,
+            )
+            return {"approval_id": int(approval_id), "executed": False, "reason": blocked_reason, "process_id": 0}
         if runtime._runner_type_for_approval_item(item) == "manual":
             manual_reason = "approved for operator execution"
             update_pending_approval_fn(

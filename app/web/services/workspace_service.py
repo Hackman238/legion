@@ -5,7 +5,7 @@ import datetime
 import io
 import json
 import re
-from typing import Dict
+from typing import Any, Dict
 
 from app.web.workspace_schema import (
     WorkspaceFindingsQuery,

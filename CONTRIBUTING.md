@@ -34,12 +34,12 @@ making contributions to the project. We ask that you also follow our contributor
 #### Working on the code
 
 * Set up a virtualenv and install the dependencies: `python3 -m venv .venv && source .venv/bin/activate &&
-  pip install -r requirements.txt`. PyQt6 is only needed for the desktop UI and its tests.
-* Run the whole suite before opening a PR: `python3 -m unittest` (or `python3 -m pytest tests`). It runs headless;
-  the Qt tests set `QT_QPA_PLATFORM=offscreen` themselves. Check the exit code, not just the summary line.
+  pip install -r requirements.txt`. No Qt or display server is needed.
+* Run the whole suite before opening a PR: `python3 -m unittest` (or `python3 -m pytest tests`). Check the exit
+  code, not just the summary line.
 * Add a regression test with every bug fix, next to the existing tests for that module under `tests/`.
 * Keep changes minimal and in the style of the surrounding code; the web runtime (`app/web/`), scheduler
-  (`app/scheduler/`), importers and the Qt controller each have their own tests you can run on their own.
+  (`app/scheduler/`), importers and the MCP server each have their own tests you can run on their own.
 * Test fixtures under `tests/` may be XML; they are deliberately exempt from the repository's `*.xml` ignore rule.
 
 #### Do you have a general question?

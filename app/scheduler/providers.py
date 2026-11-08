@@ -2329,6 +2329,8 @@ def _post_openai_compatible_chat_detailed(
     except Exception as exc:
         raise ProviderError(f"{provider_name} API returned non-JSON response: {exc}") from exc
 
+    if not isinstance(data, dict):
+        raise ProviderError(f"{provider_name} response is not a JSON object.")
     choices = data.get("choices", [])
     if not choices:
         raise ProviderError(f"{provider_name} response has no choices.")
@@ -2529,6 +2531,8 @@ def _post_lmstudio_native_chat(
     except Exception as exc:
         raise ProviderError(f"lm_studio API returned non-JSON response: {exc}") from exc
 
+    if not isinstance(data, dict):
+        raise ProviderError("lm_studio response is not a JSON object.")
     output = data.get("output", [])
     if isinstance(output, str):
         return output

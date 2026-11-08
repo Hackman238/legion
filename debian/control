@@ -15,9 +15,6 @@ Architecture: all
 Depends: ${misc:Depends},
          python3,
          python3-pip,
-         python3-pyqt6,
-         python3-pyqt6.qtsvg,
-         python3-qasync,
          python3-flask,
          python3-sqlalchemy,
          python3-psutil,
@@ -57,11 +54,7 @@ Depends: ${misc:Depends},
          git,
          ruby,
          perl,
-         xvfb,
-         x11-apps,
-         imagemagick,
-         featherpad,
-         eog
+         imagemagick
 Recommends: eyewitness,
             firefox-esr | chromium
 Description: operator-guided reconnaissance and penetration testing platform
@@ -69,4 +62,4 @@ Description: operator-guided reconnaissance and penetration testing platform
  what it learns about each host in a local evidence graph, and runs
  follow-up tooling through a governed scheduler with approval gates and an
  audit log. It provides a web interface (the primary surface), a headless
- CLI for automation, an MCP server for AI agents, and a legacy Qt desktop UI.
+ CLI for automation and an MCP server for AI agents.

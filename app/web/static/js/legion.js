@@ -333,6 +333,68 @@ const ribbonMenuState = {
 
 const STARTUP_WIZARD_SESSION_KEY = "legion_startup_wizard_done";
 
+const modalFocusReturnTargets = {};
+const MODAL_FOCUSABLE_SELECTOR = [
+    "button:not([disabled])", "[href]", "input:not([disabled]):not([type=hidden])", "select:not([disabled])",
+    "textarea:not([disabled])", "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+function modalFocusableElements(modal) {
+    return Array.from(modal.querySelectorAll(MODAL_FOCUSABLE_SELECTOR))
+        .filter((element) => element.offsetParent !== null || element === document.activeElement);
+}
+
+function applyModalFocus(modal, open) {
+    if (!modal || !modal.id) {
+        return;
+    }
+    if (open) {
+        if (!modal.contains(document.activeElement)) {
+            modalFocusReturnTargets[modal.id] = document.activeElement;
+        }
+        window.setTimeout(() => {
+            if (!modal.classList.contains("is-open") || modal.contains(document.activeElement)) {
+                return;
+            }
+            const target = modal.querySelector("[data-modal-initial-focus]") || modalFocusableElements(modal)[0];
+            if (target && typeof target.focus === "function") {
+                target.focus();
+            }
+        }, 0);
+        return;
+    }
+    const returnTarget = modalFocusReturnTargets[modal.id];
+    delete modalFocusReturnTargets[modal.id];
+    if (returnTarget && typeof returnTarget.focus === "function" && document.contains(returnTarget)) {
+        returnTarget.focus();
+    }
+}
+
+document.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") {
+        return;
+    }
+    const openModals = Array.from(document.querySelectorAll(".legion-modal-overlay.is-open, .startup-wizard-overlay.is-open"));
+    const modal = openModals[openModals.length - 1];
+    if (!modal) {
+        return;
+    }
+    const focusable = modalFocusableElements(modal);
+    if (!focusable.length) {
+        event.preventDefault();
+        return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+    }
+});
+
 function updateBodyModalState() {
     const anyModalOpen = Boolean(
         processOutputState.modalOpen
@@ -1390,9 +1452,14 @@ function clearHostDetailView({resetForms = true} = {}) {
 
 function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {}) {
     workspaceState.hosts = [];
+    workspaceState.hostsHydrated = false;
+    workspaceState.lastSnapshotSummaryKey = "";
     workspaceState.hostFilter = "hide_down";
     workspaceState.hostServiceFilter = "";
+    workspaceState.hostServiceFilters = [];
     workspaceState.hostCategoryFilter = "";
+    workspaceState.manualToolTargets = [];
+    workspaceState.manualToolOptions = [];
     workspaceState.servicesHostFilterId = 0;
     workspaceState.servicesHostFilterLabel = "";
     workspaceState.servicesCategoryFilter = "";
@@ -1425,6 +1492,7 @@ function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {})
         finished_processes: 0,
     });
     renderDecisionRationaleFeed([]);
+    syncHostFilterControls();
     renderHosts([]);
     renderServices([]);
     renderTools([]);
@@ -2170,6 +2238,7 @@ function setStartupWizardOpen(open) {
     startupWizardState.open = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2464,6 +2533,7 @@ function setNmapScanModalOpen(open) {
     uiModalState.nmapScanOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2475,6 +2545,7 @@ function setManualScanModalOpen(open) {
     uiModalState.manualScanOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2486,6 +2557,7 @@ function setHostSelectionModalOpen(open) {
     uiModalState.hostSelectionOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2497,6 +2569,7 @@ function setScriptCveModalOpen(open) {
     uiModalState.scriptCveOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2509,6 +2582,7 @@ function setProviderLogsModalOpen(open) {
     providerLogsState.modalOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2520,6 +2594,7 @@ function setJobsModalOpen(open) {
     uiModalState.jobsOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2531,6 +2606,7 @@ function setSubmittedScansModalOpen(open) {
     uiModalState.submittedScansOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2542,6 +2618,7 @@ function setSchedulerDecisionsModalOpen(open) {
     uiModalState.schedulerDecisionsOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2554,6 +2631,7 @@ function setHostRemoveModalOpen(open) {
     hostRemoveState.modalOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2565,6 +2643,7 @@ function setGraphNoteModalOpen(open) {
     uiModalState.graphNoteOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
     if (open) {
         window.requestAnimationFrame(() => {
@@ -2988,6 +3067,7 @@ function setSchedulerModalOpen(open) {
     uiModalState.schedulerOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -2999,6 +3079,7 @@ function setDeviceCategorySettingsModalOpen(open) {
     uiModalState.deviceCategorySettingsOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -3010,6 +3091,7 @@ function setReportProviderModalOpen(open) {
     uiModalState.reportProviderOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -3021,6 +3103,7 @@ function setAppSettingsModalOpen(open) {
     uiModalState.settingsOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -3813,6 +3896,7 @@ function setInterfaceSettingsModalOpen(open) {
     uiModalState.interfaceSettingsOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -3903,6 +3987,7 @@ function setWorkspaceSwitchGuardModalOpen(open) {
     uiModalState.workspaceSwitchGuardOpen = Boolean(open);
     overlay.classList.toggle("is-open", Boolean(open));
     overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
     updateBodyModalState();
 }
 
@@ -4041,6 +4126,7 @@ function setProcessOutputModalOpen(open) {
     processOutputState.modalOpen = Boolean(open);
     modal.classList.toggle("is-open", Boolean(open));
     modal.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(modal, Boolean(open));
     updateBodyModalState();
 }
 
@@ -4052,6 +4138,7 @@ function setScriptOutputModalOpen(open) {
     scriptOutputState.modalOpen = Boolean(open);
     modal.classList.toggle("is-open", Boolean(open));
     modal.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(modal, Boolean(open));
     updateBodyModalState();
 }
 
@@ -4063,6 +4150,7 @@ function setScreenshotModalOpen(open) {
     screenshotModalState.modalOpen = Boolean(open);
     modal.classList.toggle("is-open", Boolean(open));
     modal.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(modal, Boolean(open));
     updateBodyModalState();
 }
 
@@ -4075,6 +4163,7 @@ function setCredentialsModalOpen(open) {
     uiModalState.credentialsOpen = Boolean(open);
     modal.classList.toggle("is-open", Boolean(open));
     modal.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(modal, Boolean(open));
     updateBodyModalState();
 }
 
@@ -4087,6 +4176,7 @@ function setCredentialCaptureConfigModalOpen(open) {
     uiModalState.credentialCaptureConfigOpen = Boolean(open);
     modal.classList.toggle("is-open", Boolean(open));
     modal.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(modal, Boolean(open));
     updateBodyModalState();
 }
 
@@ -4489,6 +4579,10 @@ function downloadProviderLogsAction() {
 }
 
 async function rescanHostAction(hostId) {
+    return runExclusiveAction("rescanHostAction", () => rescanHostActionImpl(hostId));
+}
+
+async function rescanHostActionImpl(hostId) {
     const id = parseInt(hostId, 10);
     if (!id) {
         return;
@@ -4729,6 +4823,10 @@ async function killProcessAction(processId) {
 }
 
 async function retryProcessAction(processId) {
+    return runExclusiveAction("retryProcessAction", () => retryProcessActionImpl(processId));
+}
+
+async function retryProcessActionImpl(processId) {
     try {
         const body = await postJson(`/api/processes/${processId}/retry`, {});
         setWorkspaceStatus(`Retry queued for process ${processId} (job ${body?.job?.id || "?"})`);
@@ -10206,6 +10304,21 @@ function bindGraphWorkspaceEvents() {
     graphRenderLayoutOptions();
 }
 
+const inFlightExclusiveActions = new Set();
+
+async function runExclusiveAction(key, fn) {
+    // Double-clicking an action button must not queue the same job twice.
+    if (inFlightExclusiveActions.has(key)) {
+        return undefined;
+    }
+    inFlightExclusiveActions.add(key);
+    try {
+        return await fn();
+    } finally {
+        inFlightExclusiveActions.delete(key);
+    }
+}
+
 function sleepMs(ms) {
     return new Promise((resolve) => {
         window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
@@ -10220,24 +10333,29 @@ async function waitForJobCompletion(jobId, timeoutMs = 120000, pollIntervalMs = 
 
     const started = Date.now();
     while ((Date.now() - started) < timeoutMs) {
+        // Register for the next "jobs" event before reading the job: an event that fires between the read and
+        // the wait would otherwise be missed and the loop would sleep for the full wait window.
+        const remainingBefore = timeoutMs - (Date.now() - started);
+        const nextJobsEvent = window.LEGION_WS_ENABLED
+            ? waitForWorkspaceInvalidation(["jobs"], Math.min(Math.max(remainingBefore, 1), 30000)).catch(() => null)
+            : null;
         const job = await fetchJson(`/api/jobs/${id}`);
         const status = String(job.status || "").toLowerCase();
         if (status === "completed") {
             return job;
         }
         if (status === "failed") {
-            throw new Error(String(job.error || "Save job failed."));
+            throw new Error(String(job.error || "Job failed."));
         }
-        if (window.LEGION_WS_ENABLED) {
+        if (status === "cancelled") {
+            throw new Error(String(job.cancel_reason || job.error || "Job was cancelled."));
+        }
+        if (nextJobsEvent) {
             const remaining = timeoutMs - (Date.now() - started);
             if (remaining <= 0) {
                 break;
             }
-            try {
-                await waitForWorkspaceInvalidation(["jobs"], Math.min(Math.max(remaining, 1), 30000));
-            } catch (_err) {
-                await sleepMs(pollIntervalMs);
-            }
+            await Promise.race([nextJobsEvent, sleepMs(Math.min(remaining, 30000))]);
         } else {
             await sleepMs(pollIntervalMs);
         }
@@ -10261,6 +10379,7 @@ async function loadWorkspaceHosts() {
     syncHostFilterControls();
     renderServices(workspaceState.services);
     renderHosts(body.hosts || []);
+    workspaceState.hostsHydrated = true;
     const scopedHostId = parseInt(workspaceState.servicesHostFilterId, 10);
     const hosts = Array.isArray(body.hosts) ? body.hosts : [];
     const scopeStillVisible = hosts.some((host) => String(host?.id || "") === String(scopedHostId || ""));
@@ -10409,6 +10528,10 @@ async function runManualTool() {
 }
 
 async function runSchedulerNow() {
+    return runExclusiveAction("runSchedulerNow", () => runSchedulerNowImpl());
+}
+
+async function runSchedulerNowImpl() {
     if (uiModalState.manualScanOpen) {
         dismissManualScanModalAction();
     }
@@ -10542,6 +10665,28 @@ async function rejectApproval(approvalId, familyAction = "") {
     }
 }
 
+function scheduleSnapshotTableRefresh(summary) {
+    if (window.LEGION_WS_ENABLED) {
+        return; // invalidation events refresh the paginated tables
+    }
+    const key = JSON.stringify([
+        summary?.hosts ?? null,
+        summary?.services ?? null,
+        summary?.open_ports ?? null,
+        summary?.cves ?? null,
+    ]);
+    if (key === workspaceState.lastSnapshotSummaryKey || workspaceState.snapshotTableRefreshInFlight) {
+        return;
+    }
+    workspaceState.lastSnapshotSummaryKey = key;
+    workspaceState.snapshotTableRefreshInFlight = true;
+    Promise.all([loadWorkspaceHosts(), loadWorkspaceServices()])
+        .catch(() => {})
+        .finally(() => {
+            workspaceState.snapshotTableRefreshInFlight = false;
+        });
+}
+
 function renderSnapshot(snapshot) {
     if (!snapshot) {
         return;
@@ -10553,21 +10698,27 @@ function renderSnapshot(snapshot) {
         renderSummary(snapshot.summary);
     }
     syncHostFilterControls();
-    if (Array.isArray(snapshot.hosts)) {
-        const hostFilter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
-            ? "show_all"
-            : "hide_down";
-        const serviceFilter = selectedHostServiceFilters();
-        if (hostFilter !== "show_all") {
-            const filteredHosts = serviceFilter.length
-                ? snapshot.hosts.filter((host) => hostMatchesServiceFilter(host, serviceFilter))
-                : snapshot.hosts;
-            renderHosts(filteredHosts);
+    if (workspaceState.hostsHydrated) {
+        // The snapshot carries at most a few dozen unfiltered rows; the paginated, filtered loaders own the
+        // tables now. In polling mode re-run them when the summary counts change (WS mode gets invalidations).
+        scheduleSnapshotTableRefresh(snapshot.summary);
+    } else {
+        if (Array.isArray(snapshot.hosts)) {
+            const hostFilter = String(workspaceState.hostFilter || "hide_down").trim().toLowerCase() === "show_all"
+                ? "show_all"
+                : "hide_down";
+            const serviceFilter = selectedHostServiceFilters();
+            if (hostFilter !== "show_all") {
+                const filteredHosts = serviceFilter.length
+                    ? snapshot.hosts.filter((host) => hostMatchesServiceFilter(host, serviceFilter))
+                    : snapshot.hosts;
+                renderHosts(filteredHosts);
+            }
         }
-    }
-    if (Array.isArray(snapshot.services)) {
-        if (!(parseInt(workspaceState.servicesHostFilterId, 10) > 0)) {
-            renderServices(snapshot.services);
+        if (Array.isArray(snapshot.services)) {
+            if (!(parseInt(workspaceState.servicesHostFilterId, 10) > 0)) {
+                renderServices(snapshot.services);
+            }
         }
     }
     if (Array.isArray(snapshot.tools) && !workspaceState.toolsHydrated) {
@@ -10711,8 +10862,11 @@ async function handleWorkspaceInvalidation(channels) {
     if (requested.has("scan_history")) {
         tasks.push(loadScanHistory());
     }
-    if (requested.has("tools") && workspaceState.toolsHydrated) {
+    if ((requested.has("tools") || requested.has("processes")) && workspaceState.toolsHydrated) {
         tasks.push(loadWorkspaceTools({force: true}));
+    }
+    if (requested.has("credential_capture")) {
+        tasks.push(loadCredentialCaptureStateAction());
     }
     if (requested.has("graph")) {
         tasks.push(graphLoadSnapshot({background: true}));
@@ -10754,10 +10908,44 @@ function queueWorkspaceInvalidation(channels) {
     }, 60);
 }
 
+const snapshotSocketState = {
+    attempts: 0,
+    everConnected: false,
+    lastMessageAt: 0,
+    watchdog: null,
+};
+const SNAPSHOT_WS_HEARTBEAT_MS = 30000; // server heartbeat interval (LEGION_WS_EVENT_HEARTBEAT_SECONDS)
+
 function connectSnapshotWebSocket() {
     const socket = new WebSocket(wsUrl("/ws/snapshot"));
-    socket.onopen = () => setLiveChip("Live", false);
+    snapshotSocketState.lastMessageAt = Date.now();
+    socket.onopen = () => {
+        setLiveChip("Live", false);
+        snapshotSocketState.attempts = 0;
+        snapshotSocketState.lastMessageAt = Date.now();
+        if (snapshotSocketState.everConnected) {
+            // Events emitted while the socket was down are gone (the server replays nothing): reload everything.
+            refreshWorkspace().catch(() => {});
+            pollSnapshot();
+        }
+        snapshotSocketState.everConnected = true;
+        if (snapshotSocketState.watchdog) {
+            window.clearInterval(snapshotSocketState.watchdog);
+        }
+        snapshotSocketState.watchdog = window.setInterval(() => {
+            // A socket that stopped delivering heartbeats (sleep/resume, server restart) looks "Live" forever.
+            if ((Date.now() - snapshotSocketState.lastMessageAt) > (SNAPSHOT_WS_HEARTBEAT_MS * 2) + 5000) {
+                window.clearInterval(snapshotSocketState.watchdog);
+                snapshotSocketState.watchdog = null;
+                try {
+                    socket.close();
+                } catch (_err) {
+                }
+            }
+        }, 5000);
+    };
     socket.onmessage = (event) => {
+        snapshotSocketState.lastMessageAt = Date.now();
         try {
             const payload = JSON.parse(event.data);
             if (payload && payload.type === "invalidate") {
@@ -10775,8 +10963,14 @@ function connectSnapshotWebSocket() {
     };
     socket.onerror = () => setLiveChip("Socket Error", true);
     socket.onclose = () => {
+        if (snapshotSocketState.watchdog) {
+            window.clearInterval(snapshotSocketState.watchdog);
+            snapshotSocketState.watchdog = null;
+        }
         setLiveChip("Reconnecting", true);
-        window.setTimeout(connectSnapshotWebSocket, 1500);
+        snapshotSocketState.attempts += 1;
+        const delay = Math.min(30000, 1500 * (2 ** Math.min(snapshotSocketState.attempts - 1, 4)));
+        window.setTimeout(connectSnapshotWebSocket, delay);
     };
 }
 
@@ -10796,7 +10990,7 @@ async function pollSnapshot() {
 
 async function loadSchedulerPreferences() {
     try {
-        const response = await fetch("/api/scheduler/preferences");
+        const response = await fetch("/api/scheduler/preferences", {cache: "no-store"});
         if (!response.ok) {
             return;
         }
@@ -11010,6 +11204,10 @@ async function openProject() {
 }
 
 async function saveProjectAs() {
+    return runExclusiveAction("saveProjectAs", () => saveProjectAsImpl());
+}
+
+async function saveProjectAsImpl() {
     const path = getValue("project-save-path").trim();
     if (!path) {
         setActionStatus("Save failed: destination path is required", true);
@@ -11586,6 +11784,10 @@ function refreshNmapModeOptions() {
 }
 
 async function runNmapScan() {
+    return runExclusiveAction("runNmapScan", () => runNmapScanImpl());
+}
+
+async function runNmapScanImpl() {
     if (nmapWizardState.postSubmitLock) {
         setActionStatus("Scan failed: enter scan inputs before starting a job.", true);
         refreshNmapScanButtonState();

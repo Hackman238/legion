@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import configparser
+import logging
 from typing import Any, Dict
 
 from app.settings import AppSettings, Settings
@@ -42,7 +44,17 @@ def _refresh_runtime_settings(runtime) -> None:
         runtime.settings_file = AppSettings()
         runtime.settings = Settings(runtime.settings_file)
     except Exception:
-        pass
+        logging.getLogger("legion.web.settings").warning("Settings saved but could not be reloaded.", exc_info=True)
+
+
+def _validate_legion_conf_text(text_value: str) -> None:
+    """Raise ValueError when the submitted INI text cannot be parsed the way Legion will parse it."""
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str
+    try:
+        parser.read_string(str(text_value or ""), source="legion.conf")
+    except configparser.Error as exc:
+        raise ValueError(f"legion.conf is not valid: {exc}") from exc
 
 
 class SettingsService:
@@ -66,8 +78,15 @@ class SettingsService:
         conf_path = str(settings.actions.fileName() or "")
         if not conf_path:
             raise RuntimeError("Unable to resolve legion.conf path.")
-        with open(conf_path, "w", encoding="utf-8") as handle:
-            handle.write(request.text_value)
+        _validate_legion_conf_text(request.text_value)
+        temp_path = f"{conf_path}.tmp-{os.getpid()}"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                handle.write(request.text_value)
+            os.replace(temp_path, conf_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
         _refresh_runtime_settings(self.runtime)
         return {"status": "ok", "path": conf_path}
 

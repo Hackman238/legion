@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 __author__ =  'yunshu(wustyunshu@hotmail.com)'
 __version__=  '0.2'
@@ -15,6 +15,7 @@ class Host:
     macaddr = ''
     status = None
     hostname = ''
+    ip = ''
     vendor = ''
     uptime = ''
     lastboot = ''
@@ -141,13 +142,6 @@ class Host:
         seen = set()
 
         for hostNode in getattr(self, 'hostNodes', [self.hostNode]):
-            for osNode in hostNode.getElementsByTagName('osfamily'):
-                os = OS.OS(osNode)
-                key = (os.name, os.family, os.generation, os.osType, os.vendor, os.accuracy)
-                if key not in seen:
-                    seen.add(key)
-                    oss.append(os)
-
             for osNode in hostNode.getElementsByTagName('osclass'):
                 os = OS.OS(osNode)
                 key = (os.name, os.family, os.generation, os.osType, os.vendor, os.accuracy)

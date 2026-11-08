@@ -213,7 +213,7 @@ def save_project_as_impl(runtime, project_path: str, replace: bool = True) -> Di
         source_project = require_active_project(runtime)
         running_count = count_running_or_waiting_processes(source_project)
         active_subprocess_count = len(runtime._active_processes)
-        active_jobs = count_running_scan_jobs(runtime, include_queued=False)
+        active_jobs = count_running_scan_jobs(runtime, include_queued=False, scan_jobs_only=True)
         if running_count > 0 or active_subprocess_count > 0 or active_jobs > 0:
             raise RuntimeError(
                 "Cannot save while scans/tools are still active "
@@ -275,17 +275,27 @@ def count_other_running_jobs(runtime, *, exclude_types=frozenset()) -> int:
     return count
 
 
-def count_running_scan_jobs(runtime, include_queued: bool = True) -> int:
-    running_types = {
-        "nmap-scan",
-        "import-nmap-xml",
-        "scheduler-run",
-        "scheduler-approval-execute",
-        "scheduler-dig-deeper",
-        "tool-run",
-        "import-targets",
-        "process-retry",
-    }
+SCAN_JOB_TYPES = frozenset({
+    "nmap-scan",
+    "import-nmap-xml",
+    "scheduler-run",
+    "scheduler-approval-execute",
+    "scheduler-dig-deeper",
+    "tool-run",
+    "import-targets",
+    "process-retry",
+})
+
+
+def count_running_scan_jobs(runtime, include_queued: bool = True, *, scan_jobs_only: bool = False) -> int:
+    """Jobs that must finish before the active project may be swapped out.
+
+    Every job type works against the active project (screenshot refreshes, httpx bootstraps, captures, restores,
+    tool installs included), so by default all of them count; only the autosave, which copies the project, is
+    exempt. scan_jobs_only restricts the count to SCAN_JOB_TYPES (Save As keeps the old database alive for the
+    other jobs, so it only has to wait for the scan-type ones).
+    """
+    exempt_types = {"project-autosave", "project-save-as"}
     jobs = runtime.jobs.list_jobs(limit=200)
     count = 0
     for job in jobs:
@@ -296,7 +306,10 @@ def count_running_scan_jobs(runtime, include_queued: bool = True) -> int:
         if status not in valid_statuses:
             continue
         job_type = str(job.get("type", "") or "").strip()
-        if job_type in running_types:
+        if scan_jobs_only:
+            if job_type in SCAN_JOB_TYPES:
+                count += 1
+        elif job_type not in exempt_types:
             count += 1
     return count
 

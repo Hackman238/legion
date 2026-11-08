@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,8 @@ from app.scheduler.execution import (
 )
 from app.scheduler.models import ExecutionRecord
 from app.scheduler.planner import ScheduledAction
+
+logger = logging.getLogger(__name__)
 
 
 def get_scheduler_execution_records(
@@ -167,4 +170,5 @@ def persist_scheduler_execution_record(
                 service=service_name,
             )
         except Exception:
+            logger.warning("Execution record for %s on %s was not stored.", getattr(decision, "tool_id", ""), host_ip, exc_info=True)
             return None

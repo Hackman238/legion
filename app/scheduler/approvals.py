@@ -1,9 +1,10 @@
+import logging
 import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
-from app.scheduler.schema_cache import ensure_schema_once, ensure_column
+from app.scheduler.schema_cache import ensure_schema_once, ensure_column, index_exists
 
 
 APPROVAL_COLUMNS = (
@@ -35,6 +36,8 @@ APPROVAL_COLUMNS = (
     "execution_job_id",
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -44,7 +47,10 @@ _ensure_column = ensure_column
 
 
 def _ensure_table(session):
-    ensure_schema_once(session, "pending_approval", _ensure_table_uncached, ["scheduler_pending_approval"])
+    ensure_schema_once(
+        session, "pending_approval", _ensure_table_uncached, ["scheduler_pending_approval"],
+        is_complete=lambda current: index_exists(current, "ix_scheduler_pending_approval_status"),
+    )
 
 
 def _ensure_table_uncached(session):
@@ -78,6 +84,8 @@ def _ensure_table_uncached(session):
         "execution_job_id TEXT"
         ")"
     ))
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_pending_approval_host_ip ON scheduler_pending_approval (host_ip)"))
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_pending_approval_status ON scheduler_pending_approval (status)"))
     _ensure_column(session, "scheduler_pending_approval", "risk_tags", "TEXT")
     _ensure_column(session, "scheduler_pending_approval", "engagement_preset", "TEXT")
     _ensure_column(session, "scheduler_pending_approval", "policy_decision", "TEXT")
@@ -104,6 +112,7 @@ def ensure_scheduler_approval_table(database):
         session.commit()
     except Exception:
         session.rollback()
+        logger.warning("Could not prepare the scheduler approval table.", exc_info=True)
     finally:
         session.close()
 
