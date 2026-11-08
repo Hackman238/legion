@@ -24,8 +24,9 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from PyQt6 import QtCore
 
 from app.logging.legionLog import getAppLogger
-from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
+from app.eyewitness import capture_tooling_unavailable, run_eyewitness_capture, summarize_eyewitness_failure
 from app.httputil.isHttps import isHttps
+from app.screenshot_targets import resolve_deferred_target
 from app.timing import getTimestamp
 
 logger = getAppLogger()
@@ -58,17 +59,20 @@ class Screenshooter(QtCore.QThread):
         self.processing = True
 
         for i in range(0, len(self.queue)):
+            ip, port = "", ""
             try:
                 queueItem = self.queue.pop(0)
                 ip = queueItem[0]
                 port = queueItem[1]
                 url = queueItem[2]
+                url = resolve_deferred_target(url)
                 outputfile = getTimestamp() + '-screenshot-' + url.replace(':', '-') + '.png'
                 self.save(url, ip, port, outputfile)
 
             except Exception as e:
                 self.tsLog('Unable to take the screenshot. Error follows.')
                 self.tsLog(e)
+                self.done.emit(str(ip), str(port), "")
                 continue
 
         self.processing = False
@@ -83,7 +87,12 @@ class Screenshooter(QtCore.QThread):
             host_for_https = host_for_https.split('://', 1)[1]
         host_for_https = host_for_https.split(':', 1)[0]
 
-        prefer_https = bool(isHttps(host_for_https, port))
+        try:
+            prefer_https = bool(isHttps(host_for_https, port))
+        except Exception as e:
+            # Never let the probe abort the capture: done must always be emitted for this item.
+            self.tsLog(f"HTTPS probe failed for {host_for_https}:{port}: {e}")
+            prefer_https = False
         host_port = str(url)
         url_candidates = [
             'https://{0}'.format(host_port),
@@ -108,16 +117,19 @@ class Screenshooter(QtCore.QThread):
                 if current_capture.get("ok"):
                     capture = current_capture
                     break
+                # Without EyeWitness the selenium/browser fallbacks still run per URL, so keep trying the
+                # other scheme unless nothing at all can take a screenshot.
                 failure_capture = current_capture
-                if str(current_capture.get("reason", "") or "") == "eyewitness missing":
+                if capture_tooling_unavailable(current_capture):
                     break
 
             if not capture:
                 failed = failure_capture or {}
                 reason = str(failed.get("reason", "") or "")
-                if reason == "eyewitness missing":
-                    raise FileNotFoundError("EyeWitness executable was not found.")
                 detail = summarize_eyewitness_failure(failed.get("attempts", []))
+                if reason == "eyewitness missing":
+                    suffix = f" Fallback capture also failed: {detail}" if detail else ""
+                    raise FileNotFoundError(f"EyeWitness executable was not found.{suffix}")
                 if detail:
                     raise FileNotFoundError(
                         f"No screenshot PNG found in EyeWitness output. Last error: {detail}"

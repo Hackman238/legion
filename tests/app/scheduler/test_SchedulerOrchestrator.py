@@ -665,6 +665,78 @@ class SchedulerOrchestratorTest(unittest.TestCase):
         self.assertEqual([["whatweb-http"], ["tool-b"], ["tool-d"]], executed_batches)
         self.assertEqual(3, summary["executed"])
 
+    def test_run_targets_reuses_post_round_context_and_counts_rounds_past_history_window(self):
+        from app.scheduler.models import PlanStep
+        from app.scheduler.orchestrator import SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget
+
+        rounds = 11
+        steps = [
+            [PlanStep.from_legacy_fields(
+                tool_id=f"tool-{index}",
+                label=f"Tool {index}",
+                command_template=f"tool{chr(97 + index)} --probe [IP]",
+                protocol="tcp",
+                score=1,
+                rationale="round",
+                mode="ai",
+                goal_profile="internal_asset_discovery",
+                family_id=f"fam-{index}",
+            )]
+            for index in range(rounds)
+        ]
+        recorded_round_numbers = []
+
+        class _RecordingOrchestrator(SchedulerOrchestrator):
+            @classmethod
+            def _build_round_snapshot(cls, **kwargs):
+                recorded_round_numbers.append(kwargs.get("round_number"))
+                return super()._build_round_snapshot(**kwargs)
+
+        orchestrator = _RecordingOrchestrator(_ConfigStub(), planner=_PlannerStub(steps))
+        target = SchedulerTarget(host_id=7, host_ip="10.0.0.7", hostname="h", port="22", protocol="tcp", service_name="ssh")
+        build_calls = []
+
+        def build_context(**kwargs):
+            build_calls.append(sorted(kwargs.get("attempted_tool_ids", set())))
+            return {"coverage": {"stage": "baseline", "missing": []}, "signals": {}}
+
+        def execute_batch(tasks, max_concurrency):
+            _ = max_concurrency
+            return [
+                {
+                    "decision": task.decision,
+                    "tool_id": task.tool_id,
+                    "executed": True,
+                    "reason": "queued",
+                    "process_id": 0,
+                    "execution_record": None,
+                    "approval_id": 0,
+                }
+                for task in tasks
+            ]
+
+        summary = orchestrator.run_targets(
+            settings=SimpleNamespace(portActions=[]),
+            targets=[target],
+            engagement_policy={"preset": "internal_recon"},
+            options=SchedulerRunOptions(
+                scheduler_mode="ai",
+                scheduler_concurrency=1,
+                ai_feedback_enabled=True,
+                max_rounds=rounds,
+                max_actions_per_round=1,
+                recent_output_chars=900,
+                reflection_enabled=False,
+            ),
+            build_context=build_context,
+            execute_batch=execute_batch,
+        )
+
+        self.assertEqual(rounds, summary["executed"])
+        self.assertEqual(list(range(1, rounds + 1)), recorded_round_numbers)
+        # One initial build plus one post-round build per round; the next round reuses the post-round context.
+        self.assertEqual(rounds + 1, len(build_calls))
+
     def test_run_targets_executes_only_safe_web_followup_wave_tools(self):
         from app.scheduler.models import PlanStep
         from app.scheduler.orchestrator import SchedulerExecutionTask, SchedulerOrchestrator, SchedulerRunOptions, SchedulerTarget

@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
+from app.scheduler.schema_cache import ensure_schema_once, ensure_column
+
 
 SCAN_HISTORY_COLUMNS = (
     "id",
@@ -31,15 +33,14 @@ def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def _ensure_column(session, table_name: str, column_name: str, column_type: str):
-    rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-    existing = {str(row[1]) for row in rows if len(row) > 1}
-    if str(column_name) in existing:
-        return
-    session.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+_ensure_column = ensure_column
 
 
 def _ensure_table(session):
+    ensure_schema_once(session, "scan_submission", _ensure_table_uncached, ["scheduler_scan_submission"])
+
+
+def _ensure_table_uncached(session):
     session.execute(text(
         "CREATE TABLE IF NOT EXISTS scheduler_scan_submission ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"

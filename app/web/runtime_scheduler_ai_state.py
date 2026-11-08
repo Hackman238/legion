@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 from app.scheduler.insights import ensure_scheduler_ai_state_table, get_host_ai_state, upsert_host_ai_state
 from app.timing import getTimestamp
 from app.web import runtime_scheduler_ai_host_updates as web_runtime_scheduler_ai_host_updates
+from app.web import runtime_scheduler_host_inference as web_runtime_scheduler_host_inference
 
 
 AI_HOST_UPDATE_MIN_CONFIDENCE = web_runtime_scheduler_ai_host_updates.AI_HOST_UPDATE_MIN_CONFIDENCE
@@ -49,17 +50,18 @@ def persist_scheduler_ai_analysis(
             host_cves_raw = runtime._load_cves_for_host(project, int(host_id or 0))
         except Exception:
             host_cves_raw = []
-        inferred_technologies = runtime._infer_host_technologies(project, int(host_id), str(host_ip or ""))
+        with web_runtime_scheduler_host_inference.host_observation_cache():
+            inferred_technologies = runtime._infer_host_technologies(project, int(host_id), str(host_ip or ""))
+            inferred_findings = runtime._infer_host_findings(
+                project,
+                host_id=int(host_id),
+                host_ip=str(host_ip or ""),
+                host_cves_raw=host_cves_raw,
+            )
         technologies = runtime._merge_technologies(
             existing=inferred_technologies,
             incoming=provider_technologies,
             limit=220,
-        )
-        inferred_findings = runtime._infer_host_findings(
-            project,
-            host_id=int(host_id),
-            host_ip=str(host_ip or ""),
-            host_cves_raw=host_cves_raw,
         )
         findings_combined = runtime._merge_ai_items(
             existing=inferred_findings,

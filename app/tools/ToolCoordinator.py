@@ -41,18 +41,21 @@ class ToolCoordinator:
 
     # this function moves the specified tool output file from the temporary 'running' folder
     # to the 'tool output' folder
-    def saveToolOutput(self, projectOutputFolder: str, outputFileName: str) -> None:
+    @staticmethod
+    def savedOutputFolder(projectOutputFolder: str, outputFileName: str) -> str:
+        """Folder saveToolOutput() moves outputFileName (and its sibling nmap files) into.
+
+        A file written under an "nmap" parent folder keeps that folder; anything else goes straight into the
+        project's output folder. This depends only on the file's name, not on which running folder it was
+        written to, so callers can locate a moved file after a Save As changed the project's folders.
+        """
         import os
-        # Determine the correct output folder for the scan output
-        # If outputFileName is inside a subdirectory (e.g., .../nmap/...), preserve it in the output folder
-        # Otherwise, move directly to the output folder
-        running_dir = os.path.dirname(outputFileName)
-        base_running = os.path.basename(running_dir)
-        # If the parent directory is "nmap", preserve it; otherwise, use the output folder directly
-        if base_running == "nmap":
-            toolOutputFolder = os.path.join(projectOutputFolder, "nmap")
-        else:
-            toolOutputFolder = projectOutputFolder
+        if os.path.basename(os.path.dirname(str(outputFileName or ""))) == "nmap":
+            return os.path.join(projectOutputFolder, "nmap")
+        return projectOutputFolder
+
+    def saveToolOutput(self, projectOutputFolder: str, outputFileName: str) -> None:
+        toolOutputFolder = self.savedOutputFolder(projectOutputFolder, outputFileName)
         self.__createToolOutputFolderIfNotExists(toolOutputFolder)
         self.__determineToolOutputFiles(outputFileName, toolOutputFolder)
 

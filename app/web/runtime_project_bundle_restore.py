@@ -16,7 +16,17 @@ def start_restore_project_zip_job(runtime, path: str) -> Dict[str, Any]:
         payload={"path": zip_path},
         queue_front=True,
         exclusive=True,
+        # The runner removes the uploaded ZIP; this covers a job cancelled before it runs.
+        on_discard=lambda: _remove_source_file(zip_path),
     )
+
+
+def _remove_source_file(path: str):
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 
 def restore_project_bundle_zip(runtime, path: str) -> Dict[str, Any]:
@@ -46,42 +56,51 @@ def restore_project_bundle_zip_impl(runtime, zip_path: str) -> Dict[str, Any]:
     output_folder = str(restored.get("output_folder", "") or "")
     running_folder = str(restored.get("running_folder", "") or "")
 
-    web_runtime_project_bundle_rebase.rebase_restored_project_paths(
-        project_path=project_path,
-        manifest=manifest,
-        output_folder=output_folder,
-        running_folder=running_folder,
-    )
+    activated = False
+    try:
+        web_runtime_project_bundle_rebase.rebase_restored_project_paths(
+            project_path=project_path,
+            manifest=manifest,
+            output_folder=output_folder,
+            running_folder=running_folder,
+        )
 
-    with runtime._lock:
-        if runtime._save_in_progress:
-            raise RuntimeError("Project save is in progress. Try again when it finishes.")
-        previous_project = getattr(runtime.logic, "activeProject", None)
-        restored_project = None
-        try:
-            project_manager = getattr(runtime.logic, "projectManager", None)
-            if project_manager is not None and hasattr(project_manager, "openExistingProject"):
-                restored_project = project_manager.openExistingProject(project_path, projectType="legion")
-            else:
-                runtime.logic.openExistingProject(project_path, projectType="legion")
-                restored_project = getattr(runtime.logic, "activeProject", None)
-            if restored_project is None:
-                raise RuntimeError("Restored project could not be opened.")
+        with runtime._lock:
+            if runtime._save_in_progress:
+                raise RuntimeError("Project save is in progress. Try again when it finishes.")
+            previous_project = getattr(runtime.logic, "activeProject", None)
+            restored_project = None
+            try:
+                project_manager = getattr(runtime.logic, "projectManager", None)
+                if project_manager is not None and hasattr(project_manager, "openExistingProject"):
+                    restored_project = project_manager.openExistingProject(project_path, projectType="legion")
+                else:
+                    runtime.logic.openExistingProject(project_path, projectType="legion")
+                    restored_project = getattr(runtime.logic, "activeProject", None)
+                if restored_project is None:
+                    raise RuntimeError("Restored project could not be opened.")
 
-            runtime.logic.activeProject = restored_project
-            attach_restored_running_folder_locked(runtime, running_folder)
-            runtime._ensure_scheduler_table()
-            runtime._ensure_scheduler_approval_store()
-            runtime._ensure_process_tables()
-            details = runtime.get_project_details()
-        except Exception:
-            runtime.logic.activeProject = previous_project
-            if restored_project is not None and restored_project is not previous_project:
-                close_project_instance(runtime, restored_project)
-            raise
+                runtime.logic.activeProject = restored_project
+                attach_restored_running_folder_locked(runtime, running_folder)
+                runtime._ensure_scheduler_table()
+                runtime._ensure_scheduler_approval_store()
+                runtime._ensure_process_tables()
+                details = runtime.get_project_details()
+            except Exception:
+                runtime.logic.activeProject = previous_project
+                if restored_project is not None and restored_project is not previous_project:
+                    close_project_instance(runtime, restored_project)
+                raise
+            activated = True
 
-        if previous_project is not None and previous_project is not restored_project:
-            close_project_instance(runtime, previous_project)
+            if previous_project is not None and previous_project is not restored_project:
+                close_project_instance(runtime, previous_project)
+    except Exception:
+        # The extracted DB and tool output are only reachable through the restored project; once it
+        # failed to become active nothing would ever remove them.
+        if not activated and restore_root:
+            shutil.rmtree(restore_root, ignore_errors=True)
+        raise
 
     return {
         "project": details,

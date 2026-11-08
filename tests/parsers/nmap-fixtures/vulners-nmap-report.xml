@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV --script vulners -oX out.xml 10.0.0.5"
+         start="1700000000" startstr="Tue Nov 14 22:13:20 2023" version="7.94" xmloutputversion="1.05">
+    <taskprogress task="Service scan" time="1700000001" percent="42.50" remaining="10" etc="1700000011"/>
+    <taskprogress task="Service scan" time="1700000002" percent="87.25" remaining="2" etc="1700000004"/>
+    <host starttime="1700000000" endtime="1700000010">
+        <status state="up" reason="arp-response" reason_ttl="0"/>
+        <address addr="10.0.0.5" addrtype="ipv4"/>
+        <address addr="AA:BB:CC:DD:EE:FF" addrtype="mac" vendor="Acme"/>
+        <hostnames>
+            <hostname name="vulnhost" type="PTR"/>
+        </hostnames>
+        <ports>
+            <port protocol="tcp" portid="22">
+                <state state="open" reason="syn-ack" reason_ttl="64"/>
+                <service name="ssh" product="OpenSSH" version="8.4p1" method="probed" conf="10"/>
+                <script id="vulners" output="&#xa;  cpe:/a:openbsd:openssh:8.4p1: &#xa;    &#9;PACKETSTORM:173661&#9;9.8&#9;https://vulners.com/packetstorm/PACKETSTORM:173661&#9;*EXPLOIT*&#xa;    &#9;CVE-2023-38408&#9;9.8&#9;https://vulners.com/cve/CVE-2023-38408&#xa;    &#9;CVE-2021-41617&#9;7.0&#9;https://vulners.com/cve/CVE-2021-41617&#xa;"/>
+            </port>
+        </ports>
+        <distance value="1"/>
+    </host>
+    <runstats>
+        <finished time="1700000010" timestr="Tue Nov 14 22:13:30 2023" summary="Nmap done"/>
+        <hosts up="1" down="0" total="1"/>
+    </runstats>
+</nmaprun>

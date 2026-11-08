@@ -51,6 +51,9 @@ class Logic:
         self.activeProject: Project = None
         self.toolCoordinator = toolCoordinator
         self.shell = shell
+        # Databases replaced by Save As. Work started earlier may still hold their repositories, so they
+        # are disposed later (disposeRetiredDatabases) once the caller knows nothing is using them.
+        self._retiredDatabases = []
 
     def run_scripted_actions(self):
         """
@@ -1371,8 +1374,30 @@ class Logic:
         self.activeProject = self.projectManager.openExistingProject(projectName=filename, projectType=projectType)
 
     def saveProjectAs(self, filename, replace=0, projectType='legion') -> bool:
+        previous = self.activeProject
         project = self.projectManager.saveProjectAs(self.activeProject, filename, replace, projectType)
         if project:
+            previous_database = getattr(previous, "database", None)
+            if previous_database is not None and previous_database is not getattr(project, "database", None):
+                self._retiredDatabases.append(previous_database)
             self.activeProject = project
             return True
         return False
+
+    def retireDatabase(self, database) -> None:
+        """Queue a database that may still be in use for disposeRetiredDatabases()."""
+        if database is not None and all(database is not item for item in self._retiredDatabases):
+            self._retiredDatabases.append(database)
+
+    def hasRetiredDatabases(self) -> bool:
+        return bool(self._retiredDatabases)
+
+    def disposeRetiredDatabases(self) -> int:
+        """Dispose databases replaced by Save As; call only when no work can still be using them."""
+        retired, self._retiredDatabases = self._retiredDatabases, []
+        for database in retired:
+            try:
+                database.dispose()
+            except Exception:
+                log.exception("Failed to dispose a database replaced by Save As")
+        return len(retired)

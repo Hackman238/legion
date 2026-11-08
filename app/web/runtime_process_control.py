@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy import text
 
+from app.scheduler.schema_cache import ensure_column, ensure_schema_once, is_schema_ensured
+
 from app.web.runtime_process_jobs import (
     get_job,
     job_active_process_ids,
@@ -62,34 +64,44 @@ def signal_process_tree(proc: Optional[subprocess.Popen], *, force: bool = False
 def kill_process(runtime, process_id: int) -> Dict[str, Any]:
     process_key = int(process_id)
     with runtime._process_runtime_lock:
-        runtime._kill_requests.add(process_key)
         proc = runtime._active_processes.get(process_key)
 
     had_live_handle = proc is not None
-    if proc is not None and proc.poll() is None:
-        runtime._signal_process_tree(proc, force=False)
-        try:
-            proc.wait(timeout=2)
-        except Exception:
-            runtime._signal_process_tree(proc, force=True)
+    killed = False
+    if proc is not None:
+        if proc.poll() is None:
+            # Recorded only for a process that is still running: the runner reads it to report the exit as
+            # "killed" whatever exit code the tool chooses (it may handle SIGTERM and exit 0). The runner
+            # discards the entry when it unregisters the process.
+            with runtime._process_runtime_lock:
+                runtime._kill_requests.add(process_key)
+            runtime._signal_process_tree(proc, force=False)
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                runtime._signal_process_tree(proc, force=True)
+            killed = True
+        if killed:
+            with runtime._lock:
+                project = runtime._require_active_project()
+                process_repo = project.repositoryContainer.processRepository
+                process_repo.storeProcessKillStatus(str(process_key))
     else:
         with runtime._lock:
             project = runtime._require_active_project()
             process_repo = project.repositoryContainer.processRepository
-            pid = process_repo.getPIDByProcessId(str(process_key))
-        try:
-            if pid not in (None, "", "-1"):
-                os.kill(int(pid), signal.SIGTERM)
-        except Exception:
-            pass
-
-    with runtime._lock:
-        project = runtime._require_active_project()
-        process_repo = project.repositoryContainer.processRepository
-        process_repo.storeProcessKillStatus(str(process_key))
+            status = str(process_repo.getStatusByProcessId(str(process_key)) or "")
+            # Without a live handle this process was not started by this session (a stale row left by a
+            # crash/restart or a reopened/restored project), so its stored PID may now belong to an
+            # unrelated process: never signal it, only record the kill.
+            if status in {"Running", "Waiting"}:
+                process_repo.storeProcessKillStatus(str(process_key))
+                killed = True
+                # A "Waiting" process is not started by its runner once marked Killed
+                # (run_command_with_tracking checks the status right before launching).
 
     result = {
-        "killed": True,
+        "killed": killed,
         "process_id": process_key,
         "had_live_handle": had_live_handle,
     }
@@ -129,7 +141,48 @@ def close_process(runtime, process_id: int) -> Dict[str, Any]:
     return result
 
 
+def get_process_output_tail(runtime, process_id: int, max_chars: int = 4000) -> str:
+    """Return only the last max_chars of a process's stored output (sliced in SQL, not in Python)."""
+    tail_chars = max(0, min(int(max_chars or 0), 200000))
+    if tail_chars <= 0:
+        return ""
+    with runtime._lock:
+        runtime._ensure_process_tables()
+        project = runtime._require_active_project()
+        session = project.database.session()
+        try:
+            row = session.execute(text(
+                "SELECT substr(COALESCE(output, ''), -:tail_chars), "
+                "instr(CAST(COALESCE(output, '') AS BLOB), X'00') FROM process_output "
+                "WHERE processId = :id LIMIT 1"
+            ), {"id": int(process_id), "tail_chars": tail_chars}).fetchone()
+        finally:
+            session.close()
+    if row is None:
+        return ""
+    if int(row[1] or 0) > 0:
+        # SQLite's text functions stop at an embedded NUL; slice such (rare) output in Python instead.
+        return get_process_output_text(runtime, process_id)[-tail_chars:]
+    return str(row[0] or "")
+
+
+def get_process_output_text(runtime, process_id: int) -> str:
+    """Return a process's complete stored output, for callers that parse all of it (not for UI polling)."""
+    with runtime._lock:
+        runtime._ensure_process_tables()
+        project = runtime._require_active_project()
+        session = project.database.session()
+        try:
+            row = session.execute(text(
+                "SELECT COALESCE(output, '') FROM process_output WHERE processId = :id LIMIT 1"
+            ), {"id": int(process_id)}).fetchone()
+        finally:
+            session.close()
+    return str(row[0] or "") if row is not None else ""
+
+
 def get_process_output(runtime, process_id: int, offset: int = 0, max_chars: int = 12000) -> Dict[str, Any]:
+    """Return process metadata plus one output chunk; the full output is never loaded (it can be many MB)."""
     offset_value = max(0, int(offset or 0))
     max_len = max(256, min(int(max_chars or 12000), 50000))
     with runtime._lock:
@@ -145,11 +198,13 @@ def get_process_output(runtime, process_id: int, offset: int = 0, max_chars: int
                 "COALESCE(p.progressMessage, '') AS progressMessage, "
                 "COALESCE(p.progressSource, '') AS progressSource, "
                 "COALESCE(p.progressUpdatedAt, '') AS progressUpdatedAt, "
-                "COALESCE(o.output, '') AS output "
+                "length(COALESCE(o.output, '')) AS output_length, "
+                "substr(COALESCE(o.output, ''), :chunk_start, :chunk_len) AS output_chunk, "
+                "instr(CAST(COALESCE(o.output, '') AS BLOB), X'00') AS output_nul_at "
                 "FROM process AS p "
                 "LEFT JOIN process_output AS o ON o.processId = p.id "
                 "WHERE p.id = :id LIMIT 1"
-            ), {"id": int(process_id)})
+            ), {"id": int(process_id), "chunk_start": offset_value + 1, "chunk_len": max_len})
             row = result.fetchone()
             if row is None:
                 raise KeyError(f"Unknown process id: {process_id}")
@@ -158,10 +213,12 @@ def get_process_output(runtime, process_id: int, offset: int = 0, max_chars: int
         finally:
             session.close()
 
-    full_output = str(data.get("output", "") or "")
-    output_length = len(full_output)
-    chunk = ""
-    if offset_value < output_length:
+    output_length = int(data.pop("output_length", 0) or 0)
+    chunk = str(data.pop("output_chunk", "") or "")
+    if int(data.pop("output_nul_at", 0) or 0) > 0:
+        # SQLite's text functions stop at an embedded NUL; slice such (rare) output in Python instead.
+        full_output = get_process_output_text(runtime, process_id)
+        output_length = len(full_output)
         chunk = full_output[offset_value:offset_value + max_len]
     next_offset = offset_value + len(chunk)
     status = str(data.get("status", "") or "")
@@ -226,56 +283,73 @@ def resolve_process_timeout_policy(runtime, tool_name: Any, requested_timeout: A
     }
 
 
+_PROCESS_TABLES_SCHEMA_KEY = "web_process_tables"
+
+
+def _ensure_process_tables_uncached(session):
+    session.execute(text(
+        "CREATE TABLE IF NOT EXISTS process ("
+        "pid TEXT,"
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "display TEXT,"
+        "name TEXT,"
+        "tabTitle TEXT,"
+        "hostIp TEXT,"
+        "port TEXT,"
+        "protocol TEXT,"
+        "command TEXT,"
+        "startTime TEXT,"
+        "endTime TEXT,"
+        "estimatedRemaining INTEGER,"
+        "elapsed INTEGER,"
+        "outputfile TEXT,"
+        "status TEXT,"
+        "closed TEXT,"
+        "percent TEXT,"
+        "progressMessage TEXT,"
+        "progressSource TEXT,"
+        "progressUpdatedAt TEXT"
+        ")"
+    ))
+    session.execute(text(
+        "CREATE TABLE IF NOT EXISTS process_output ("
+        "processId INTEGER,"
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "output TEXT"
+        ")"
+    ))
+    for column_name, column_type in (
+            ("progressMessage", "TEXT"),
+            ("progressSource", "TEXT"),
+            ("progressUpdatedAt", "TEXT"),
+    ):
+        ensure_column(session, "process", column_name, column_type)
+    session.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_process_output_processId ON process_output (processId)"
+    ))
+
+
+def _process_output_index_exists(session) -> bool:
+    rows = session.execute(text("PRAGMA index_list(process_output)")).fetchall()
+    return any(len(row) > 1 and str(row[1]) == "ix_process_output_processId" for row in rows)
+
+
 def ensure_process_tables(runtime):
     project = getattr(runtime.logic, "activeProject", None)
     if not project:
         return
+    if is_schema_ensured(getattr(project.database, "engine", None), _PROCESS_TABLES_SCHEMA_KEY):
+        return
     session = project.database.session()
     try:
-        def _ensure_column(table_name: str, column_name: str, column_type: str):
-            rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-            existing = {str(row[1]) for row in rows if len(row) > 1}
-            if str(column_name) in existing:
-                return
-            session.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
-
-        session.execute(text(
-            "CREATE TABLE IF NOT EXISTS process ("
-            "pid TEXT,"
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "display TEXT,"
-            "name TEXT,"
-            "tabTitle TEXT,"
-            "hostIp TEXT,"
-            "port TEXT,"
-            "protocol TEXT,"
-            "command TEXT,"
-            "startTime TEXT,"
-            "endTime TEXT,"
-            "estimatedRemaining INTEGER,"
-            "elapsed INTEGER,"
-            "outputfile TEXT,"
-            "status TEXT,"
-            "closed TEXT,"
-            "percent TEXT,"
-            "progressMessage TEXT,"
-            "progressSource TEXT,"
-            "progressUpdatedAt TEXT"
-            ")"
-        ))
-        session.execute(text(
-            "CREATE TABLE IF NOT EXISTS process_output ("
-            "processId INTEGER,"
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "output TEXT"
-            ")"
-        ))
-        for column_name, column_type in (
-                ("progressMessage", "TEXT"),
-                ("progressSource", "TEXT"),
-                ("progressUpdatedAt", "TEXT"),
-        ):
-            _ensure_column("process", column_name, column_type)
+        # Runs the CREATE/PRAGMA/ALTER pass once per database engine (shared scheduler schema cache).
+        ensure_schema_once(
+            session,
+            _PROCESS_TABLES_SCHEMA_KEY,
+            _ensure_process_tables_uncached,
+            ["process", "process_output"],
+            is_complete=_process_output_index_exists,
+        )
         session.commit()
     except Exception:
         session.rollback()

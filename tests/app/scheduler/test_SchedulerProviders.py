@@ -4,9 +4,17 @@ from unittest.mock import MagicMock, patch
 
 class SchedulerProvidersTest(unittest.TestCase):
     def setUp(self):
-        from app.scheduler.providers import clear_provider_logs
+        from app.scheduler.providers import clear_lmstudio_model_cache, clear_provider_logs
 
         clear_provider_logs()
+        # Clear here (not only via the pytest conftest) so plain unittest runs do not leak
+        # auto-discovered LM Studio models between tests.
+        clear_lmstudio_model_cache()
+
+    def tearDown(self):
+        from app.scheduler.providers import clear_lmstudio_model_cache
+
+        clear_lmstudio_model_cache()
 
     def test_rank_actions_returns_empty_when_provider_disabled(self):
         from app.scheduler.providers import rank_actions_with_provider
@@ -1052,6 +1060,199 @@ class SchedulerProvidersTest(unittest.TestCase):
         self.assertIn("system", payload)
         self.assertIn("Rank only the supplied candidates", payload["system"])
         self.assertIn("Prompt profile: web", payload["messages"][0]["content"])
+
+    @patch("app.scheduler.providers.requests.post")
+    def test_claude_non_json_success_response_raises_provider_error(self, mock_post):
+        from app.scheduler.providers import ProviderError, _request_claude_content
+
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "<html>gateway</html>"
+        response.json.side_effect = ValueError("Expecting value")
+        mock_post.return_value = response
+
+        with self.assertRaises(ProviderError):
+            _request_claude_content(
+                {"base_url": "https://api.anthropic.com", "model": "claude-x", "api_key": "x"},
+                {"system_prompt": "s", "user_prompt": "u", "metadata": {"prompt_type": "ranking"}},
+                max_tokens=1000,
+                temperature=0.2,
+            )
+
+    @patch("app.scheduler.providers.requests.post")
+    def test_claude_retries_with_larger_budget_on_max_tokens_stop(self, mock_post):
+        from app.scheduler.providers import MAX_PROVIDER_OPENAI_RETRY_TOKENS, _request_claude_content
+
+        truncated = MagicMock()
+        truncated.status_code = 200
+        truncated.json.return_value = {
+            "content": [{"type": "text", "text": '{"actions":[{"tool_id":"nikto","sco'}],
+            "stop_reason": "max_tokens",
+        }
+        complete = MagicMock()
+        complete.status_code = 200
+        complete.json.return_value = {
+            "content": [{"type": "text", "text": '{"actions":[]}'}],
+            "stop_reason": "end_turn",
+        }
+        sent_limits = []
+
+        def post_side_effect(url, headers=None, json=None, timeout=0):
+            sent_limits.append(json["max_tokens"])
+            return truncated if len(sent_limits) == 1 else complete
+
+        mock_post.side_effect = post_side_effect
+
+        content = _request_claude_content(
+            {"base_url": "https://api.anthropic.com", "model": "claude-x", "api_key": "x"},
+            {"system_prompt": "s", "user_prompt": "u", "metadata": {"prompt_type": "ranking"}},
+            max_tokens=1000,
+            temperature=0.2,
+        )
+        self.assertEqual('{"actions":[]}', content)
+        self.assertEqual([1000, MAX_PROVIDER_OPENAI_RETRY_TOKENS], sent_limits)
+
+    def test_retry_instruction_does_not_mutate_previously_logged_payloads(self):
+        from app.scheduler.providers import _append_retry_instruction
+
+        payload = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]}
+        logged_copy = dict(payload)  # provider logs keep shallow copies of each attempt
+        _append_retry_instruction(payload)
+
+        self.assertEqual("u", logged_copy["messages"][1]["content"])
+        self.assertIn("IMPORTANT RETRY:", payload["messages"][1]["content"])
+
+    @patch("app.scheduler.providers.requests.post")
+    def test_lm_studio_native_chat_ignores_reasoning_output_items(self, mock_post):
+        from app.scheduler.providers import _post_lmstudio_native_chat
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "output": [
+                {"type": "reasoning", "content": "thinking about {braces}"},
+                {"type": "message", "content": '{"actions":[]}'},
+            ]
+        }
+        mock_post.return_value = response
+
+        content = _post_lmstudio_native_chat("http://127.0.0.1:1234/api/v1/chat", {}, {"model": "m"})
+        self.assertEqual('{"actions":[]}', content)
+
+    @patch("app.scheduler.providers.requests.post")
+    def test_lm_studio_native_chat_keeps_non_message_items_without_message(self, mock_post):
+        from app.scheduler.providers import _post_lmstudio_native_chat
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "output": [
+                {"type": "reasoning", "content": "thinking"},
+                {"type": "output_text", "content": '{"actions":[]}'},
+            ]
+        }
+        mock_post.return_value = response
+
+        content = _post_lmstudio_native_chat("http://127.0.0.1:1234/api/v1/chat", {}, {"model": "m"})
+        self.assertEqual('{"actions":[]}', content)
+
+    @patch("app.scheduler.providers.requests.get")
+    def test_lm_studio_model_discovery_is_cached_per_base_url(self, mock_get):
+        from app.scheduler.providers import _resolve_openai_compatible_model
+
+        models_response = MagicMock()
+        models_response.status_code = 200
+        models_response.json.return_value = {"data": [{"id": "o3-7b-instruct"}]}
+        mock_get.return_value = models_response
+
+        cfg = {"base_url": "http://127.0.0.1:1234/v1", "model": ""}
+        first = _resolve_openai_compatible_model("lm_studio", cfg, "http://127.0.0.1:1234/v1", {})
+        call_count = mock_get.call_count
+        second = _resolve_openai_compatible_model("lm_studio", cfg, "http://127.0.0.1:1234/v1", {})
+        self.assertEqual(first[0], second[0])
+        self.assertEqual(call_count, mock_get.call_count)
+        _resolve_openai_compatible_model("lm_studio", cfg, "http://127.0.0.1:1234/v1", {}, use_cache=False)
+        self.assertGreater(mock_get.call_count, call_count)
+
+    @patch("app.scheduler.providers.requests.get")
+    def test_lm_studio_discovery_failure_cache_expiry_starts_after_slow_fetch(self, mock_get):
+        from app.scheduler import providers
+
+        clock = {"now": 1000.0}
+
+        def slow_failing_get(*_args, **_kwargs):
+            # Each endpoint attempt burns the full discovery timeout.
+            clock["now"] += 15.0
+            raise ConnectionError("connection refused")
+
+        mock_get.side_effect = slow_failing_get
+        with patch("app.scheduler.providers.time.monotonic", side_effect=lambda: clock["now"]):
+            with self.assertRaises(providers.ProviderError):
+                providers._resolve_openai_compatible_model(
+                    "lm_studio", {"model": ""}, "http://127.0.0.1:1234/v1", {}
+                )
+            call_count = mock_get.call_count
+            clock["now"] += 1.0
+            with self.assertRaises(providers.ProviderError):
+                providers._resolve_openai_compatible_model(
+                    "lm_studio", {"model": ""}, "http://127.0.0.1:1234/v1", {}
+                )
+            self.assertEqual(call_count, mock_get.call_count)
+            clock["now"] += providers.LMSTUDIO_MODEL_FAILURE_CACHE_TTL_SECONDS
+            with self.assertRaises(providers.ProviderError):
+                providers._resolve_openai_compatible_model(
+                    "lm_studio", {"model": ""}, "http://127.0.0.1:1234/v1", {}
+                )
+            self.assertGreater(mock_get.call_count, call_count)
+
+    @patch("app.scheduler.providers.requests.post")
+    @patch("app.scheduler.providers.requests.get")
+    def test_lm_studio_failed_chat_invalidates_auto_discovered_model(self, mock_get, mock_post):
+        from app.scheduler.providers import ProviderError, rank_actions_with_provider
+
+        first_models = MagicMock()
+        first_models.status_code = 200
+        first_models.json.return_value = {"data": [{"id": "old-7b-instruct"}]}
+        second_models = MagicMock()
+        second_models.status_code = 200
+        second_models.json.return_value = {"data": [{"id": "new-7b-instruct"}]}
+        mock_get.side_effect = [first_models, second_models]
+
+        failed = MagicMock()
+        failed.status_code = 404
+        failed.text = "model not loaded"
+        failed.json.return_value = {"error": "model not loaded"}
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            "choices": [{"message": {"content": '{"actions":[{"tool_id":"whatweb","score":80,"rationale":"ok"}]}'}}]
+        }
+        posted_models = []
+
+        def post(*_args, **kwargs):
+            model = kwargs["json"]["model"]
+            posted_models.append(model)
+            return ok if model == "new-7b-instruct" else failed
+
+        mock_post.side_effect = post
+        config = {
+            "provider": "lm_studio",
+            "providers": {
+                "lm_studio": {"enabled": True, "base_url": "http://127.0.0.1:1234/v1", "model": "", "api_key": ""}
+            },
+        }
+        candidates = [{"tool_id": "whatweb", "label": "whatweb", "command_template": "whatweb [IP]", "service_scope": "http"}]
+        try:
+            rank_actions_with_provider(config, "external_pentest", "http", "tcp", candidates)
+        except ProviderError:
+            pass
+        self.assertIn("old-7b-instruct", posted_models)
+        self.assertNotIn("new-7b-instruct", posted_models)
+
+        ranked = rank_actions_with_provider(config, "external_pentest", "http", "tcp", candidates)
+        self.assertEqual(2, mock_get.call_count)
+        self.assertEqual("new-7b-instruct", posted_models[-1])
+        self.assertEqual("whatweb", ranked[0]["tool_id"])
 
     @patch("app.scheduler.providers.requests.post")
     def test_openai_reflection_provider_parses_response(self, mock_post):

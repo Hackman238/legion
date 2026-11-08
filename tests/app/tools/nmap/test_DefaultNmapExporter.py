@@ -26,18 +26,47 @@ class DefaultNmapExporterTest(unittest.TestCase):
         self.mockShell = MagicMock()
         self.nmapExporter = DefaultNmapExporter(self.mockShell, self.log)
 
-    @patch("subprocess.Popen")
-    def test_exportOutputToHtml_WhenProvidedFileNameAndOutputFolder_ExportsOutputSuccessfully(self, processOpen):
-        exportCommand = "xsltproc -o some-file.html /usr/share/nmap/nmap.xsl some-file.xml"
-        self.nmapExporter.exportOutputToHtml("some-file", "some-folder/")
-        processOpen.assert_called_once_with(exportCommand, shell=True)
-        self.mockShell.move.assert_called_once_with("some-file.html", "some-folder/")
+    EXPECTED_ARGV = ["xsltproc", "-o", "some file.html", "/usr/share/nmap/nmap.xsl", "some file.xml"]
 
-    @patch("subprocess.Popen")
-    def test_exportOutputToHtml_WhenExportFailsDueToProcessError_DoesNotMoveAnyFilesToOutputFolder(self, processOpen):
-        exportCommand = "xsltproc -o some-bad-file.html /usr/share/nmap/nmap.xsl some-bad-file.xml"
-        processOpen.side_effect = Exception("something went wrong")
-        self.nmapExporter.exportOutputToHtml("some-bad-file", "some-folder/")
-        processOpen.assert_called_once_with(exportCommand, shell=True)
+    @patch("subprocess.run")
+    def test_exportOutputToHtml_WhenProvidedFileNameAndOutputFolder_ExportsOutputSuccessfully(self, processRun):
+        self.nmapExporter.exportOutputToHtml("some file", "some-folder/")
+        args, kwargs = processRun.call_args
+        self.assertEqual(self.EXPECTED_ARGV, args[0])
+        self.assertNotIn("shell", kwargs)
+        self.assertTrue(kwargs["check"])
+        self.assertGreater(kwargs["timeout"], 0)
+        self.mockShell.move.assert_called_once_with("some file.html", "some-folder/")
+
+    @patch("subprocess.run")
+    def test_exportOutputToHtml_WhenExportFailsWithoutReport_DoesNotMoveAnyFilesToOutputFolder(self, processRun):
+        import subprocess
+        processRun.side_effect = subprocess.CalledProcessError(1, self.EXPECTED_ARGV, stderr=b"bad xml")
+        self.mockShell.isFile.return_value = False
+        self.nmapExporter.exportOutputToHtml("some file", "some-folder/")
+        self.mockShell.move.assert_not_called()
+        self.log.error.assert_called()
+
+    @patch("subprocess.run")
+    def test_exportOutputToHtml_WhenExportReportsErrorsButWritesReport_MovesIt(self, processRun):
+        import subprocess
+        processRun.side_effect = subprocess.CalledProcessError(1, self.EXPECTED_ARGV, stderr=b"partial xml")
+        self.mockShell.isFile.return_value = True
+        self.nmapExporter.exportOutputToHtml("some file", "some-folder/")
+        self.mockShell.move.assert_called_once_with("some file.html", "some-folder/")
+        self.log.error.assert_called()
+
+    @patch("subprocess.run")
+    def test_exportOutputToHtml_WhenExportTimesOut_LogsAndDoesNotMove(self, processRun):
+        import subprocess
+        processRun.side_effect = subprocess.TimeoutExpired(self.EXPECTED_ARGV, 60)
+        self.nmapExporter.exportOutputToHtml("some file", "some-folder/")
+        self.mockShell.move.assert_not_called()
+        self.log.error.assert_called()
+
+    @patch("subprocess.run")
+    def test_exportOutputToHtml_WhenXsltprocMissing_LogsAndDoesNotMove(self, processRun):
+        processRun.side_effect = FileNotFoundError("xsltproc")
+        self.nmapExporter.exportOutputToHtml("some file", "some-folder/")
         self.mockShell.move.assert_not_called()
         self.log.error.assert_called()

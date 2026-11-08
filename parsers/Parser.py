@@ -15,7 +15,7 @@ import parsers.Session as Session
 import parsers.Host as Host
 
 
-class MalformedXmlDocumentException(BaseException):
+class MalformedXmlDocumentException(Exception):
     pass
 
 

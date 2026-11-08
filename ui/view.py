@@ -20,6 +20,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 
 import ntpath  # for file operations, to kill processes and for regex
 import os
+import shlex
 import shutil
 import time
 from collections import OrderedDict
@@ -106,10 +107,8 @@ class View(QtCore.QObject):
         self.ui.statusbar.addPermanentWidget(self.importProgressBar)
         self.ui.statusbar.addPermanentWidget(self.cancelImportButton)
         self.importInProgress = False  # Track import state
-        # Connect NmapImporter progressUpdated signal to UI slot
-        if hasattr(self, "controller") and hasattr(self.controller, "nmapImporter"):
-            self.controller.nmapImporter.progressUpdated.connect(self.updateImportProgress)
-            self.controller.nmapImporter.done.connect(self.importFinished)
+        # NmapImporter's progressUpdated/done are connected to updateImportProgress/importFinished by
+        # Controller.initNmapImporter(): the importer does not exist yet when startOnce() runs.
         self.adddialog = AddHostsDialog(self.ui.centralwidget)
         self.settingsWidget = AddSettingsDialog(self.shell, self.ui.centralwidget)
         self.helpDialog = HelpDialog(applicationInfo["name"], applicationInfo["author"], applicationInfo["copyright"],
@@ -529,35 +528,45 @@ class View(QtCore.QObject):
     def connectSaveProject(self):
         self.ui.actionSave.triggered.connect(self.saveProject)
     
+    # returns True only if the project was actually saved
     def saveProject(self):
         self.ui.statusbar.showMessage('Saving..')
         if self.viewState.firstSave:
-            self.saveProjectAs()
+            return self.saveProjectAs()
         else:
             log.info('Saving project..')
             if not self.controller.saveProject(self.viewState.lastHostIdClicked, self.ui.NotesTextEdit.toPlainText()):
                 self.ui.statusbar.showMessage('Save failed: database unavailable', msecs=3000)
-                return
+                return False
 
             self.setDirty(False)
             self.ui.statusbar.showMessage('Saved!', msecs=1000)
             log.info('Saved!')
+            return True
 
     def connectSaveProjectAs(self):
         self.ui.actionSaveAs.triggered.connect(self.saveProjectAs)
 
+    # returns True only if the project was actually saved (False if refused, failed or cancelled)
     def saveProjectAs(self):
+        if self.controller.isImportRunning():
+            # Rows written after the copy would land in the old database, which Save As replaces.
+            QtWidgets.QMessageBox.information(
+                self.ui.centralwidget, 'Import in progress',
+                'An import is still writing to this project. Save again once it has finished.')
+            return False
         self.ui.statusbar.showMessage('Saving..')
         log.info('Saving project..')
         if not self._autoSaveNotesIfDirty(force=True):
             self.ui.statusbar.showMessage('Save failed: database unavailable', msecs=3000)
-            return
+            return False
 
         dialog_dir = self.controller.getFileDialogDefaultDirectory(self.controller.getCWD())
         filename = QtWidgets.QFileDialog.getSaveFileName(self.ui.centralwidget, 'Save project as',
                                                          dialog_dir, filter='Legion session (*.legion)',
                                                          options=QtWidgets.QFileDialog.Option.DontConfirmOverwrite)[0]
-            
+        saved = False
+
         while not filename =='':
             if not os.access(ntpath.dirname(str(filename)), os.R_OK) or not os.access(
                     ntpath.dirname(str(filename)), os.W_OK):
@@ -566,33 +575,57 @@ class View(QtCore.QObject):
                                                       "You don't have the necessary permissions on this folder.")
                 
             else:
-                if self.controller.saveProjectAs(filename):
+                if self.controller.isImportRunning():
+                    # An import may have started while the file dialog was open.
+                    QtWidgets.QMessageBox.information(
+                        self.ui.centralwidget, 'Import in progress',
+                        'An import is still writing to this project. Save again once it has finished.')
+                    filename = ''
                     break
-                    
-                if not str(filename).endswith('.legion'):
-                    filename = str(filename) + '.legion'
-                msgBox = QtWidgets.QMessageBox()
-                reply = msgBox.question(self.ui.centralwidget, 'Confirm',
+                target = str(filename) if str(filename).endswith('.legion') else str(filename) + '.legion'
+                if not self._isExistingOtherProjectFile(target):
+                    # Nothing to overwrite: any failure (e.g. an integrity error) was already reported by the
+                    # controller, so don't misreport it as "file already exists".
+                    saved = bool(self.controller.saveProjectAs(filename))
+                    break
+
+                filename = target
+                reply = QtWidgets.QMessageBox.question(self.ui.centralwidget, 'Confirm',
                                         "A file named \""+ntpath.basename(str(filename))+"\" already exists.  " +
                                         "Do you want to replace it?",
                                         QtWidgets.QMessageBox.StandardButton.Abort | QtWidgets.QMessageBox.StandardButton.Save)
             
                 if reply == QtWidgets.QMessageBox.StandardButton.Save:
-                    self.controller.saveProjectAs(filename, 1)          # replace
+                    saved = bool(self.controller.saveProjectAs(filename, 1))          # replace
                     break
 
             filename = QtWidgets.QFileDialog.getSaveFileName(self.ui.centralwidget, 'Save project as', dialog_dir,
                                                              filter='Legion session (*.legion)',
                                                              options=QtWidgets.QFileDialog.Option.DontConfirmOverwrite)[0]
 
-        if not filename == '':
+        if saved:
             self.setDirty(False)
             self.viewState.firstSave = False
             self.ui.statusbar.showMessage('Saved!', msecs=1000)
             self.controller.updateOutputFolder()
             log.info('Saved!')
+        elif not filename == '':
+            # The controller already reported why (e.g. an integrity error); keep the project dirty.
+            self.ui.statusbar.showMessage('Save failed', msecs=3000)
+            log.info('Save failed.')
         else:
             log.info('No file chosen..')
+        return saved
+
+    def _isExistingOtherProjectFile(self, path):
+        """True if path exists and is not the open project's own database file."""
+        if not os.path.exists(path):
+            return False
+        try:
+            current = self.controller.logic.activeProject.properties.projectName
+            return not os.path.samefile(path, current)
+        except Exception:
+            return True
 
     def saveOrDiscard(self):
         reply = QtWidgets.QMessageBox.question(
@@ -601,8 +634,9 @@ class View(QtCore.QObject):
             QtWidgets.QMessageBox.StandardButton.Save)
         
         if reply == QtWidgets.QMessageBox.StandardButton.Save:
-            self.saveProject()
-            return True
+            # If the save did not happen (refused during an import, failed, or the file dialog was cancelled),
+            # treat it as Cancel: proceeding would discard the unsaved (possibly temporary) project.
+            return bool(self.saveProject())
         elif reply == QtWidgets.QMessageBox.StandardButton.Discard:
             return True
         else:
@@ -764,23 +798,23 @@ class View(QtCore.QObject):
                                                       "Ok")
                 return
 
-            self.controller.nmapImporter.setFilename(str(filename))
-            self.importProgressBar.setValue(0)
-            log.debug(f"importNmap: setVisible(True) called, importProgressBar id={id(self.importProgressBar)}, \
-                       parent={self.importProgressBar.parent()}")
-            self.importProgressBar.setVisible(True)
-            self.cancelImportButton.setVisible(True)
-            self.importInProgress = True
-            self.controller.nmapImporter.start()
+            # Queued if another import is still running (the importer thread is shared).
+            self.controller.queueNmapImport(str(filename))
             self.controller.copyNmapXMLToOutputFolder(str(filename))
         else:
             log.info('No file chosen..')
+
+    def showImportProgress(self):
+        self.importProgressBar.setValue(0)
+        self.importProgressBar.setVisible(True)
+        self.cancelImportButton.setVisible(True)
+        self.importInProgress = True
 
     def cancelImportNmap(self):
         try:
             if hasattr(self.controller, "nmapImporter"):
                 log.info("Canceling Nmap import at user request.")
-                self.controller.nmapImporter.cancel()
+                self.controller.cancelNmapImports()
         except Exception as e:
             log.info(f"Error canceling Nmap import: {e}")
 
@@ -829,6 +863,8 @@ class View(QtCore.QObject):
         # Delayed hide as failsafe
         from PyQt6.QtCore import QTimer
         def delayed_hide():
+            if getattr(self, "importInProgress", False):
+                return  # a queued import has started since; keep its progress bar and cancel button
             log.debug("Delayed hide of progress bar and cancel button")
             log.debug(f"delayed_hide: importProgressBar id={id(self.importProgressBar)}, \
                       parent={self.importProgressBar.parent()}")
@@ -2593,18 +2629,22 @@ class View(QtCore.QObject):
         bWidget.runButton.clicked.disconnect()
         bWidget.runButton.clicked.connect(lambda: self.callHydra(bWidget))
 
-    def findFinishedBruteTab(self, pid):
+    def findFinishedBruteTab(self, dbId):
+        """Reset the brute tab whose running process has the given DB process id."""
+        target = str(dbId)
         for i in range(0, self.ui.BruteTabWidget.count()):
-            if str(self.ui.BruteTabWidget.widget(i)) == pid:
-                self.bruteProcessFinished(self.ui.BruteTabWidget.widget(i))
-                return
+            bWidget = self.ui.BruteTabWidget.widget(i)
+            display = getattr(bWidget, 'display', None)
+            if display is None or str(display.property('dbId')) != target:
+                continue
+            # pid is -1 once the tab was already reset (e.g. the user pressed Stop)
+            if getattr(bWidget, 'pid', -1) != -1:
+                self.bruteProcessFinished(bWidget)
+            return
 
-    def findFinishedServiceTab(self, pid):
-        for i in range(0, self.ui.ServicesTabWidget.count()):
-            if str(self.ui.ServicesTabWidget.widget(i)) == pid:
-                self.bruteProcessFinished(self.ui.BruteTabWidget.widget(i))
-                log.info("Close Tab: {0}".format(str(i)))
-                return
+    def findFinishedServiceTab(self, dbId):
+        # Only brute tabs carry run state that needs resetting when a process ends.
+        self.findFinishedBruteTab(dbId)
 
     def blinkBruteTab(self, bWidget):
         self.ui.MainTabWidget.tabBar().setTabTextColor(1, QtGui.QColor('red'))
@@ -2616,11 +2656,19 @@ class View(QtCore.QObject):
     def _tool_executable_exists(self, executable: str, friendly_name: str) -> bool:
         if not executable:
             return False
+        # The configured command may carry arguments (e.g. "python3 /opt/Responder/Responder.py"):
+        # only its first token is the program to look up.
+        try:
+            program = (shlex.split(executable) or [""])[0]
+        except ValueError:
+            program = executable.split()[0]
+        if not program:
+            return False
         exists = False
-        if os.path.isabs(executable):
-            exists = os.path.isfile(executable) and os.access(executable, os.X_OK)
+        if os.path.isabs(program):
+            exists = os.path.isfile(program) and os.access(program, os.X_OK)
         else:
-            exists = shutil.which(executable) is not None
+            exists = shutil.which(program) is not None
 
         if not exists:
             QtWidgets.QMessageBox.warning(

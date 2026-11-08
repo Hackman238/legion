@@ -16,25 +16,30 @@ Copyright (c) 2025 Shane William Scott
 
 """
 
+import collections
 import signal  # for file operations, to kill processes, for regex, for subprocesses
 import subprocess
-import tempfile
 import os
 import socket
 import re
 import ipaddress
 import xml.etree.ElementTree as ET
+from typing import Callable
 from urllib.parse import urlparse
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
-from PyQt6 import sip, QtWidgets
+from PyQt6 import sip, QtWidgets, QtCore
+from PyQt6.QtWidgets import QMenu, QMessageBox
 
 from app.ApplicationInfo import applicationInfo
 from app.Screenshooter import Screenshooter
+from app.tools.ToolCoordinator import ToolCoordinator
 from app.actions.updateProgress.UpdateProgressObservable import UpdateProgressObservable
 from app.importers.NmapImporter import NmapImporter
 from app.importers.PythonImporter import PythonImporter
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
-from app.auxiliary import unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl
+from app.auxiliary import (
+    unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl, BrowserOpener, MyQProcess,
+)
 from app.timing import getTimestamp, timing
 from app.scheduler.approvals import ensure_scheduler_approval_table, queue_pending_approval, update_pending_approval
 from app.scheduler.audit import log_scheduler_decision
@@ -46,11 +51,7 @@ from app.screenshot_targets import apply_preferred_target_placeholders, choose_p
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
 import os
 
-try:
-    import queue
-except Exception:
-    log.exception("Failed to import queue module")
-    import Queue as queue
+import queue
 from app.logic import *
 from app.settings import *
 from db.entities.port import portObj
@@ -317,17 +318,22 @@ class Controller:
         self.processTimers = {}
         self.processMeasurements = {}
 
+    def _bindImportersToActiveProject(self):
+        # Importers must follow the active project, including after Save As reopens it at a new path.
+        activeProject = self.logic.activeProject
+        self.nmapImporter.setDB(activeProject.database)
+        self.nmapImporter.setHostRepository(activeProject.repositoryContainer.hostRepository)
+        self.pythonImporter.setDB(activeProject.database)
+
     # initialisations that will happen everytime we create/open a project - can happen several times in the
     # program's lifetime
     def start(self, title='*untitled'):
+        self._discardQueuedProcesses()
         self.processes = []                    # to store all the processes we run (nmaps, niktos, etc)
         self.fastProcessQueue = queue.Queue()  # to manage fast processes (banner, snmpenum, etc)
         self.fastProcessesRunning = 0          # counts the number of fast processes currently running
         self.slowProcessesRunning = 0          # counts the number of slow processes currently running
-        activeProject = self.logic.activeProject
-        self.nmapImporter.setDB(activeProject.database)  # tell nmap importer which db to use
-        self.nmapImporter.setHostRepository(activeProject.repositoryContainer.hostRepository)
-        self.pythonImporter.setDB(activeProject.database)
+        self._bindImportersToActiveProject()
         self.updateOutputFolder()                                       # tell screenshooter where the output folder is
         self.view.start(title)
         # Timers are initialised once at app startup, but may be stopped during project teardown.
@@ -339,10 +345,27 @@ class Controller:
         except Exception:
             pass
 
+    def _discardQueuedProcesses(self):
+        # Queued processes of the project being left never start, so nothing stops their elapsed timers
+        # (killRunningProcesses only handles self.processes): drain the queue and stop every remaining timer.
+        if getattr(self, "fastProcessQueue", None) is not None:
+            try:
+                self._drainProcessQueue()
+            except Exception:
+                log.exception("Failed to drain the process queue")
+        for processId in list(getattr(self, "processTimers", None) or {}):
+            self._stopProcessTimer(processId)
+
     def initNmapImporter(self, updateProgressObservable: UpdateProgressObservable):
         self.nmapImporter = NmapImporter(updateProgressObservable,
                                          self.logic.activeProject.repositoryContainer.hostRepository)
         self.nmapImporter.done.connect(self.importFinished)
+        self.nmapImporter.failed.connect(self._nmapImportFailed)
+        # The importer thread is reused: start the next queued import once the current run has ended.
+        self.nmapImporter.finished.connect(lambda: self._startNextNmapImport(from_finished=True))
+        # An import may be the last thing keeping a database replaced by Save As in use.
+        self.nmapImporter.finished.connect(self._onImporterFinished)
+        self._pendingNmapImports = collections.deque()
         self.nmapImporter.done.connect(self.view.updateInterface)
         self.nmapImporter.done.connect(self.view.updateToolsTableView)
         self.nmapImporter.done.connect(self.view.updateProcessesTableView)
@@ -350,10 +373,15 @@ class Controller:
         self.nmapImporter.log.connect(self.view.ui.LogOutputTextView.append)
         # Connect progressUpdated signal to view's progress bar update slot
         self.nmapImporter.progressUpdated.connect(self.view.updateImportProgress)
+        # Hide the progress bar / cancel button and clear the view's importInProgress flag when an import ends.
+        # Connected here (not in view.startOnce(), which runs before the importer exists).
+        self.nmapImporter.done.connect(self.view.importFinished)
+        self.nmapImporter.failed.connect(lambda _message: self.view.importFinished())
 
     def initPythonImporter(self):
         self.pythonImporter = PythonImporter()
         self.pythonImporter.done.connect(self.importFinished)
+        self.pythonImporter.finished.connect(self._onImporterFinished)
         self.pythonImporter.done.connect(self.view.updateInterface)
         self.pythonImporter.done.connect(self.view.updateToolsTableView)
         self.pythonImporter.done.connect(self.view.updateProcessesTableView)
@@ -371,11 +399,14 @@ class Controller:
         self.browser.log.connect(self.view.ui.LogOutputTextView.append)
 
     @staticmethod
-    def _host_for_url(display_host: str, resolved_ip: str) -> str:
+    def _deferred_target_url(display_host: str, resolved_ip: str, port) -> "Callable[[], str]":
         """
-        Prefer a resolvable hostname; otherwise fall back to IP.
+        Return a callable building 'host:port' for a URL. Choosing the host may do a DNS lookup, so the
+        callable is handed to a worker thread (Screenshooter/BrowserOpener) and evaluated there, never on the UI thread.
         """
-        return choose_preferred_host(display_host, resolved_ip)
+        def _build() -> str:
+            return f"{choose_preferred_host(display_host, resolved_ip)}:{port}"
+        return _build
 
     def _apply_target_placeholders(
             self,
@@ -399,6 +430,8 @@ class Controller:
     def initTimers(self):
         self.updateUITimer = QTimer()
         self.updateUITimer.setSingleShot(True)
+        # Debounced refresh of the process/tool tables after a process is queued, cancelled or finishes.
+        self.updateUITimer.timeout.connect(self._refreshProcessViews)
 
         self.updateUI2Timer = QTimer()
         self.updateUI2Timer.setSingleShot(True)
@@ -406,6 +439,18 @@ class Controller:
         self.processTableUiUpdateTimer = QTimer()
         self.processTableUiUpdateTimer.timeout.connect(self.view.updateProcessesTableView)
         self.processTableUiUpdateTimer.start(500) # Faster than this doesn't make anything smoother
+
+    def _refreshProcessViews(self):
+        try:
+            self.view.updateProcessesTableView()
+        except Exception:
+            log.exception("Failed to refresh processes table")
+        # Only flag the tools table as stale: updateToolsTableView re-selects a row and reloads its panel,
+        # which would yank the user's view around on every process event.
+        try:
+            self.view.viewState.lazy_update_tools = True
+        except AttributeError:
+            pass
 
     # this function fetches all the settings from the conf file. Among other things it populates the actions lists
     # that will be used in the context menus.
@@ -462,6 +507,59 @@ class Controller:
     def updateOutputFolder(self):
         self.screenshooter.updateOutputFolder(
             self.logic.activeProject.properties.outputFolder + '/screenshots')  # update screenshot folder
+
+    NMAP_IMPORT_RETRY_MS = 50
+
+    def queueNmapImport(self, filename, output='', interactive=True):
+        """Import an nmap XML file; queued (FIFO) if another import is still running on the importer thread.
+
+        interactive imports (chosen by the user) show the progress bar and can be cancelled; background ones
+        (automatic imports after each staged-nmap stage) run without that UI and are not dropped by Cancel.
+        """
+        if not hasattr(self, "_pendingNmapImports"):
+            self._pendingNmapImports = collections.deque()
+        self._pendingNmapImports.append((str(filename), str(output or ''), bool(interactive)))
+        self._startNextNmapImport()
+
+    def _startNextNmapImport(self, from_finished=False):
+        importer = self.nmapImporter
+        if importer.isRunning():
+            # Never block the UI thread waiting for the importer. QThread.finished can be delivered just before
+            # the thread has fully stopped, so that path re-checks shortly; otherwise the running import's own
+            # finished signal starts the next queued one.
+            if from_finished:
+                QTimer.singleShot(self.NMAP_IMPORT_RETRY_MS, lambda: self._startNextNmapImport(from_finished=True))
+            return
+        pending = getattr(self, "_pendingNmapImports", None)
+        if not pending:
+            return
+        filename, output, interactive = pending.popleft()
+        importer.setFilename(filename)
+        importer.setOutput(output)  # '' for file imports, so a previous scan's terminal output is not reused
+        importer.resetCancel()      # a Cancel for an earlier import must not abort this one
+        if interactive:
+            try:
+                self.view.showImportProgress()
+            except AttributeError:
+                pass
+        importer.start()
+
+    def cancelNmapImports(self):
+        """Cancel the running import and drop queued user imports (background stage imports are kept)."""
+        pending = getattr(self, "_pendingNmapImports", None)
+        if pending:
+            kept = [item for item in pending if not item[2]]
+            pending.clear()
+            pending.extend(kept)
+        self.nmapImporter.cancel()
+
+    def _nmapImportFailed(self, message):
+        log.error(message)
+        try:
+            self.view.ui.LogOutputTextView.append(str(message))
+            self.view.ui.statusbar.showMessage('Nmap import failed - see the log', msecs=5000)
+        except Exception:
+            log.exception("Failed to report an nmap import failure in the UI")
 
     def copyNmapXMLToOutputFolder(self, filename):
         self.logic.copyNmapXMLToOutputFolder(filename)
@@ -541,7 +639,19 @@ class Controller:
             log.exception(f"Failed to store notes for host id {lastHostIdClicked}")
             return False
 
+    def isImportRunning(self) -> bool:
+        for importer in (getattr(self, "nmapImporter", None), getattr(self, "pythonImporter", None)):
+            try:
+                if importer is not None and importer.isRunning():
+                    return True
+            except RuntimeError:  # the underlying QThread was already deleted
+                continue
+        return False
+
     def saveProjectAs(self, filename, replace=0):
+        if self.isImportRunning():
+            log.warning("Refusing Save As while an import is still writing to the current project.")
+            return False
         try:
             success = self.logic.saveProjectAs(filename, replace)
         except DatabaseIntegrityError as exc:
@@ -562,11 +672,31 @@ class Controller:
             )
             return False
         if success:
-            self.nmapImporter.setDB(self.logic.activeProject.database) # tell nmap importer which db to use
+            self._bindImportersToActiveProject()
+            self._disposeRetiredDatabasesIfIdle()
         return success
 
+    def _onImporterFinished(self):
+        # Deferred: QThread.finished can arrive while isRunning() is still True for a moment.
+        if getattr(self.logic, "hasRetiredDatabases", lambda: False)():
+            QTimer.singleShot(0, self._disposeRetiredDatabasesIfIdle)
+
+    def _disposeRetiredDatabasesIfIdle(self):
+        # Databases replaced by Save As are released once no process, queued job or import can still use them.
+        logic = getattr(self, "logic", None)
+        if logic is None or not getattr(logic, "hasRetiredDatabases", lambda: False)():
+            return
+        if self.processes or not self.fastProcessQueue.empty() or self.isImportRunning():
+            return
+        logic.disposeRetiredDatabases()
+
     def closeProject(self):
+        # Queued imports belong to the project being closed: never let them run against the next one.
+        pending = getattr(self, "_pendingNmapImports", None)
+        if pending:
+            pending.clear()
         self.saveSettings() # backup and save config file, if necessary
+        self._discardQueuedProcesses()
         # Stop timers that might try to refresh UI from a DB that is being torn down.
         for timer in (getattr(self, "updateUITimer", None),
                       getattr(self, "updateUI2Timer", None),
@@ -602,6 +732,10 @@ class Controller:
             log.exception("Failed to dispose project database during closeProject()")
 
         self.logic.projectManager.closeProject(self.logic.activeProject)
+        try:
+            self.logic.disposeRetiredDatabases()  # nothing from the closed project can still be running
+        except Exception:
+            log.exception("Failed to dispose databases replaced by Save As")
 
     def copyToClipboard(self, data):
         clipboard = QtWidgets.QApplication.clipboard()
@@ -659,6 +793,30 @@ class Controller:
                 seen.add(candidate)
                 targets.append(str(ipaddress.ip_address(candidate)))
         return targets
+
+    @staticmethod
+    def _savedToolOutputBase(outputFolder, outputfile):
+        """Path (without extension) that ToolCoordinator.saveToolOutput() moves <outputfile>.* to.
+
+        saveToolOutput() keeps an 'nmap' parent folder and otherwise moves the files straight into the output
+        folder, so this depends only on the output folder and the file's name - not on which project's running
+        folder the tool wrote to (after a Save As the process still writes to the old running folder).
+        """
+        outputfile = str(outputfile or '')
+        folder = ToolCoordinator.savedOutputFolder(str(outputFolder or ''), outputfile)
+        return normalize_path(os.path.join(folder, os.path.basename(outputfile)))
+
+    def _locateToolOutputXml(self, outputfile, outputFolder=None):
+        """Return where <outputfile>.xml is now: the output folder if saveToolOutput() moved it there, otherwise
+        the original path (e.g. the move failed or was skipped). Defaults to the moved location if neither exists."""
+        if outputFolder is None:
+            outputFolder = self.logic.activeProject.properties.outputFolder
+        moved = self._savedToolOutputBase(outputFolder, outputfile) + '.xml'
+        original = f"{outputfile}.xml"
+        for candidate in (moved, original):
+            if os.path.isfile(candidate):
+                return candidate
+        return moved
 
     @staticmethod
     def _extract_up_ips_from_nmap_xml(xml_path: str):
@@ -953,7 +1111,8 @@ class Controller:
                 pass
 
             def on_canary_finished(proc, *_args, chunk_file=target_file, next_index=index + 1):
-                xml_path = f"{proc.outputfile}.xml"
+                # processFinished (connected before this handler) has usually moved the XML to the output folder.
+                xml_path = self._locateToolOutputXml(winPath2Unix(str(proc.outputfile or '')))
                 for up_ip in self._extract_up_ips_from_nmap_xml(xml_path):
                     subnet = map_ip_to_unit(up_ip)
                     if subnet is not None:
@@ -1280,7 +1439,7 @@ class Controller:
                 host_value = str(target[0])
                 port_value = str(target[1])
                 display_host, resolved_ip = self._resolve_host_and_ip(host_value)
-                url = f"{self._host_for_url(display_host, resolved_ip)}:{port_value}"
+                url = self._deferred_target_url(display_host, resolved_ip, port_value)
                 self.screenshooter.addToQueue(resolved_ip, port_value, url)
             self.screenshooter.start()
             return
@@ -1290,7 +1449,7 @@ class Controller:
                 host_value = str(target[0])
                 port_value = str(target[1])
                 display_host, resolved_ip = self._resolve_host_and_ip(host_value)
-                url = f"{self._host_for_url(display_host, resolved_ip)}:{port_value}"
+                url = self._deferred_target_url(display_host, resolved_ip, port_value)
                 self.browser.addToQueue(url)
             self.browser.start()
             return
@@ -1409,7 +1568,7 @@ class Controller:
                 host_value = str(target[0])
                 port_value = str(target[1])
                 display_host, resolved_ip = self._resolve_host_and_ip(host_value)
-                url = f"{self._host_for_url(display_host, resolved_ip)}:{port_value}"
+                url = self._deferred_target_url(display_host, resolved_ip, port_value)
                 self.screenshooter.addToQueue(resolved_ip, port_value, url)
             self.screenshooter.start()
             return
@@ -1459,18 +1618,21 @@ class Controller:
     def handleProcessAction(self, selectedProcesses, action):
         if action.text() == 'Kill':
             if self.view.killProcessConfirmation():
-                for p in selectedProcesses:
-                    if p[1] != "Running":
-                        if p[1] == "Waiting":
-                            if str(self.logic.activeProject.repositoryContainer.processRepository.getStatusByProcessId(
-                                    p[2])) == 'Running':
-                                self.killProcess(self.view.ProcessesTableModel.getProcessPidForId(p[2]), p[2])
-                            self.logic.activeProject.repositoryContainer.processRepository.storeProcessCancelStatus(
-                                str(p[2]))
+                processRepository = self.logic.activeProject.repositoryContainer.processRepository
+                for pid, status, dbId in selectedProcesses:
+                    if status == "Running":
+                        self._killProcessById(dbId, pid)
+                    elif status == "Waiting":
+                        # The table may be stale: the row may have started, or ended, since it was drawn.
+                        current = str(processRepository.getStatusByProcessId(dbId) or "")
+                        if current == 'Running':
+                            self._killProcessById(dbId, pid)
+                        elif current == 'Waiting':
+                            self.cancelProcess(dbId)  # marks it Cancelled and drops it from the queue
                         else:
-                            log.info("This process has already been terminated. Skipping.")
+                            log.info(f"Process {dbId} already ended ({current}); leaving its status alone.")
                     else:
-                        self.killProcess(p[0], p[2])
+                        log.info("This process has already been terminated. Skipping.")
                 self.view.updateProcessesTableView()
             return
 
@@ -1736,80 +1898,236 @@ class Controller:
 
     #################### PROCESSES ####################
 
+    @staticmethod
+    def _isScanProcess(proc) -> bool:
+        return "nmap" in str(getattr(proc, "name", "") or "").lower()
+
+    @staticmethod
+    def _isValidPid(pid) -> bool:
+        # pid 0 (never started) or negative values would signal Legion's own process group via os.kill.
+        try:
+            return int(pid) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _partitionQueuedProcesses(pending, *, running, running_scans, max_processes, max_scans,
+                                  is_cancelled, is_scan):
+        """
+        Split queued processes (in FIFO order) into (to_start, cancelled, waiting).
+        max_processes caps all running jobs; max_scans caps only scan jobs, so a scan waiting on the scan cap
+        does not block non-scan jobs queued behind it.
+        """
+        to_start, cancelled, waiting = [], [], []
+        for proc in pending:
+            if running >= max_processes:
+                waiting.append(proc)
+                continue
+            scan = bool(is_scan(proc))
+            if scan and running_scans >= max_scans:
+                waiting.append(proc)
+                continue
+            if is_cancelled(proc):
+                cancelled.append(proc)
+                continue
+            to_start.append(proc)
+            running += 1
+            if scan:
+                running_scans += 1
+        return to_start, cancelled, waiting
+
+    def _drainProcessQueue(self):
+        pending = []
+        while True:
+            try:
+                pending.append(self.fastProcessQueue.get_nowait())
+            except queue.Empty:
+                return pending
+
+    def _stopProcessTimer(self, processId):
+        timer = self.processTimers.pop(processId, None) if hasattr(self, "processTimers") else None
+        if timer is None:
+            return
+        try:
+            timer.stop()
+            timer.deleteLater()
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _releaseProcessSlot(self, qProcess) -> bool:
+        # Idempotent: finished and errorOccurred(FailedToStart) may both reach here for the same process.
+        if qProcess not in self.processes:
+            return False
+        self.processes.remove(qProcess)
+        self.fastProcessesRunning = max(0, self.fastProcessesRunning - 1)
+        return True
+
+    def _syncProcessTableTimer(self):
+        timer = getattr(self, "processTableUiUpdateTimer", None)
+        if timer is None:
+            return
+        active = bool(self.processes) or not self.fastProcessQueue.empty()
+        if active:
+            if not timer.isActive():
+                timer.start(500)  # keep in sync with initTimers()
+        elif timer.isActive():
+            log.info("Halting process panel update timer as all processes are finished.")
+            timer.stop()
+        if not active and getattr(self.logic, "hasRetiredDatabases", lambda: False)():
+            # Deferred to the next event-loop turn: this can run inside processFinished, and other slots on the
+            # same finished signal (completion handlers, staged-nmap chaining) have not run yet.
+            QTimer.singleShot(0, self._disposeRetiredDatabasesIfIdle)
+
     def checkProcessQueue(self):
-        # New: User-configurable max concurrent scans (not just fast processes)
+        # User-configurable max concurrent scans (applies to scan jobs only) and max processes (applies to all).
         max_concurrent_scans = getattr(self.settings, "general_max_concurrent_scans", 3)
         try:
             max_concurrent_scans = int(max_concurrent_scans)
         except Exception:
             max_concurrent_scans = 3
+        max_processes = int(self.settings.general_max_fast_processes)
 
         log.debug(f'Queue maximum concurrent scans: {str(max_concurrent_scans)}')
-        log.debug(f'Queue maximum concurrent processes: {str(self.settings.general_max_fast_processes)}')
+        log.debug(f'Queue maximum concurrent processes: {str(max_processes)}')
         log.debug(f'Queue processes running: {str(self.fastProcessesRunning)}')
         log.debug(f'Queue processes waiting: {str(self.fastProcessQueue.qsize())}')
 
-        # Count running nmap (or other scan) processes
-        running_scans = sum(1 for p in self.processes if hasattr(p, "name") and "nmap" in str(p.name).lower())
+        processRepository = self.logic.activeProject.repositoryContainer.processRepository
+        pending = self._drainProcessQueue()
+        running_scans = sum(1 for p in self.processes if self._isScanProcess(p))
+        to_start, cancelled, waiting = self._partitionQueuedProcesses(
+            pending,
+            running=self.fastProcessesRunning,
+            running_scans=running_scans,
+            max_processes=max_processes,
+            max_scans=max_concurrent_scans,
+            # A queued process the user stopped is marked Cancelled or Killed (killProcess on pid 0).
+            is_cancelled=lambda proc: self._isQueuedProcessStopped(processRepository, proc),
+            is_scan=self._isScanProcess,
+        )
+        # Re-queue first so the queue is consistent even if a start below re-enters this method.
+        for proc in waiting:
+            self.fastProcessQueue.put(proc)
+        for proc in cancelled:
+            log.debug(f'Process {proc.id} was canceled, dropping it from the queue.')
+            self._stopProcessTimer(proc.id)
 
-        if not self.fastProcessQueue.empty():
-            self.processTableUiUpdateTimer.start(1000)
-            # Allow up to max_concurrent_scans nmap (or other scan) processes, and up to max_fast_processes for others
-            while (self.fastProcessesRunning < int(self.settings.general_max_fast_processes) and
-                   (running_scans < max_concurrent_scans or self.fastProcessQueue.empty())):
-                if self.fastProcessQueue.empty():
-                    break
-                next_proc = self.fastProcessQueue.get()
-                # If this is a scan, check scan concurrency
-                is_scan = hasattr(next_proc, "name") and "nmap" in str(next_proc.name).lower()
-                if is_scan and running_scans >= max_concurrent_scans:
-                    # Put back and break
-                    self.fastProcessQueue.put(next_proc)
-                    break
-                if not self.logic.activeProject.repositoryContainer.processRepository.isCancelledProcess(
-                        str(next_proc.id)):
-                    log.info('Running: ' + str(next_proc.command))
-                    next_proc.display.clear()
-                    self.processes.append(next_proc)
-                    self.fastProcessesRunning += 1
-                    if is_scan:
-                        running_scans += 1
-                    # Add Timeout
-                    next_proc.waitForFinished(10)
-                    formattedCommand = formatCommandQProcess(next_proc.command)
-                    log.debug(f'Up next: {formattedCommand[0]}, {formattedCommand[1]}')
-                    next_proc.start(formattedCommand[0], formattedCommand[1])
-                    self.logic.activeProject.repositoryContainer.processRepository.storeProcessRunningStatus(
-                        next_proc.id, getPid(next_proc))
-                elif not self.fastProcessQueue.empty():
-                    log.debug('Process was canceled, checking queue again..')
-                    continue
-        else:
-            log.info("Halting process panel update timer as all processes are finished.")
-            self.processTableUiUpdateTimer.stop()
+        for next_proc in to_start:
+            # One failing start must not drop the rest of to_start (they are already off the queue).
+            try:
+                self._startQueuedProcess(next_proc, processRepository)
+            except Exception:
+                log.exception(f"Failed to start queued process {getattr(next_proc, 'id', '?')}")
+                self._releaseProcessSlot(next_proc)
+                self._stopProcessTimer(getattr(next_proc, "id", None))
+                try:
+                    processRepository.storeProcessCrashStatus(str(next_proc.id))
+                except Exception:
+                    log.exception("Failed to record crash status for a process that could not start")
+
+        self._syncProcessTableTimer()
+
+    @staticmethod
+    def _isQueuedProcessStopped(processRepository, proc) -> bool:
+        try:
+            status = str(processRepository.getStatusByProcessId(str(proc.id)) or "")
+        except Exception:
+            # e.g. "database is locked" during an import: keep the process queued rather than lose it.
+            log.exception(f"Could not read status of queued process {getattr(proc, 'id', '?')}")
+            return False
+        return status in {"Cancelled", "Killed"}
+
+    def _startQueuedProcess(self, next_proc, processRepository):
+        log.info('Running: ' + str(next_proc.command))
+        next_proc.display.clear()
+        self.processes.append(next_proc)
+        self.fastProcessesRunning += 1
+        # Add Timeout
+        next_proc.waitForFinished(10)
+        formattedCommand = formatCommandQProcess(next_proc.command)
+        log.debug(f'Up next: {formattedCommand[0]}, {formattedCommand[1]}')
+        next_proc.start(formattedCommand[0], formattedCommand[1])
+        if next_proc not in self.processes:
+            # errorOccurred(FailedToStart) fired inside start(); processCrashed already recorded it.
+            return
+        processRepository.storeProcessRunningStatus(next_proc.id, getPid(next_proc))
 
     def cancelProcess(self, dbId):
         log.info('Canceling process: ' + str(dbId))
         self.logic.activeProject.repositoryContainer.processRepository.storeProcessCancelStatus(
             str(dbId))  # mark it as cancelled
+        self._dropQueuedProcess(dbId)
         self.updateUITimer.stop()
         self.updateUITimer.start(1500)                                  # update the interface soon
+
+    def _dropQueuedProcess(self, dbId):
+        # Queued processes never emit finished, so drop them now and stop their elapsed timers.
+        remaining = []
+        for proc in self._drainProcessQueue():
+            if str(proc.id) == str(dbId):
+                self._stopProcessTimer(proc.id)
+            else:
+                remaining.append(proc)
+        for proc in remaining:
+            self.fastProcessQueue.put(proc)
+        self._syncProcessTableTimer()
+
+    def _killProcessById(self, dbId, table_pid=None):
+        # The pid shown in the table can be stale (0 for a row that started after the table was drawn), so
+        # prefer the live QProcess, then the repository, and fall back to the table's value.
+        pid = None
+        for proc in list(self.processes):
+            if str(getattr(proc, "id", None)) == str(dbId):
+                pid = getPid(proc)
+                break
+        if not self._isValidPid(pid):
+            try:
+                pid = self.logic.activeProject.repositoryContainer.processRepository.getPIDByProcessId(str(dbId))
+            except Exception:
+                log.exception(f"Failed to look up the pid of process {dbId}")
+                pid = None
+        if not self._isValidPid(pid):
+            pid = table_pid
+        self.killProcess(pid, dbId)
 
     def killProcess(self, pid, dbId):
         log.info('Killing process: ' + str(pid))
         self.logic.activeProject.repositoryContainer.processRepository.storeProcessKillStatus(str(dbId))
+        if not self._isValidPid(pid):
+            # Still queued (or never started): make sure it can't be launched later.
+            log.info(f'Not signalling process {dbId}: it has no valid pid ({pid}).')
+            self._dropQueuedProcess(dbId)
+            return
         try:
             os.kill(int(pid), signal.SIGTERM)
         except OSError:
             log.info('This process has already been terminated.')
-        except:
-            log.info("Unexpected error:", sys.exc_info()[0])
+        except Exception:
+            log.exception(f"Unexpected error while killing process {pid}")
+
+    # signals whose slots (connected in runCommand) write to the active project's database or touch its tabs
+    _PROCESS_SIGNALS_DETACHED_ON_KILL = ("finished", "errorOccurred", "readyReadStandardOutput", "sigHydra")
 
     def killRunningProcesses(self):
         log.info('Killing running processes!')
-        for p in self.processes:
-            p.finished.disconnect()                 # experimental
-            self.killProcess(int(getPid(p)), p.id)
+        for p in list(self.processes):
+            # The SIGTERM below makes the process emit errorOccurred(Crashed), output and finished later -
+            # typically once the next project is active - so detach every per-process slot, not just finished.
+            for signal_name in self._PROCESS_SIGNALS_DETACHED_ON_KILL:
+                try:
+                    getattr(p, signal_name).disconnect()
+                except (TypeError, RuntimeError, AttributeError):
+                    pass
+            try:
+                # Free the QProcess once it has exited (processFinished, which normally does it, is detached).
+                # The lambda keeps the Python wrapper alive until then: destroying a running QProcess blocks.
+                p.finished.connect(lambda *_args, proc=p: proc.deleteLater())
+            except (TypeError, RuntimeError, AttributeError):
+                pass
+            # processFinished no longer runs for it: stop its elapsed timer and release its slot here.
+            self._stopProcessTimer(p.id)
+            self._releaseProcessSlot(p)
+            self.killProcess(getPid(p), p.id)
 
     # this function creates a new process, runs the command and takes care of displaying the ouput. returns the PID
     # the last 3 parameters are only used when the command is a staged nmap
@@ -1826,19 +2144,11 @@ class Controller:
         completion_handler=None,
     ):
         def handleProcStop(*vargs):
+            self._stopProcessTimer(qProcess.id)
             try:
                 updateElapsed.stop()
-            except Exception:
+            except RuntimeError:
                 pass
-            try:
-                updateElapsed.deleteLater()
-            except Exception:
-                pass
-            try:
-                self.processTimers.pop(qProcess.id, None)
-            except Exception:
-                # Best-effort fallback; avoid crashing during shutdown paths.
-                self.processTimers[qProcess.id] = None
             procTime = timer.elapsed() / 1000
             qProcess.elapsed = procTime
             self.logic.activeProject.repositoryContainer.processRepository.storeProcessRunningElapsedTime(qProcess.id,
@@ -1863,11 +2173,8 @@ class Controller:
         if 'python-script' in name:
             log.info(f'Running python script {name}')
             # Determine which script to run and the argument
-            import subprocess
-            import shlex
             script_path = None
             arg = None
-            output = ""
             if "macvendors" in name.lower():
                 script_path = "scripts/python/macvendors.py"
                 # Try to get MAC address from hostIp or port (hostIp is used for IP, but we need MAC)
@@ -1885,18 +2192,10 @@ class Controller:
                 script_path = "scripts/python/pyShodan.py"
                 arg = hostIp
             if script_path and arg:
-                try:
-                    cmd = f"python3 {shlex.quote(script_path)} {shlex.quote(str(arg))}"
-                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-                    output = result.stdout + ("\n" + result.stderr if result.stderr else "")
-                except Exception as e:
-                    log.exception(f"Error running script: {script_path} with arg: {arg}")
-                    output = f"Error running script: {e}"
-            else:
-                output = "No valid script or argument found."
-            # Display output in the tab
-            if textbox:
-                textbox.setPlainText(output)
+                # Run asynchronously: the result is delivered to the tab via QProcess.finished.
+                self._runPythonScriptAsync(script_path, str(arg), textbox)
+            elif textbox:
+                textbox.setPlainText("No valid script or argument found.")
             return 0
 
         self.logic.createFolderForTool(name)
@@ -1910,16 +2209,6 @@ class Controller:
         updateElapsed.start(1000)
         self.processTimers[qProcess.id] = updateElapsed
         self.processMeasurements[getPid(qProcess)] = 0
-
-        log.info('Queuing: ' + str(command))
-        self.fastProcessQueue.put(qProcess)
-
-        self.checkProcessQueue()
-
-        # update the processes table
-        self.updateUITimer.stop()
-        # while the process is running, when there's output to read, display it in the GUI
-        self.updateUITimer.start(900)
 
         qProcess.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
         qProcess.readyReadStandardOutput.connect(lambda: qProcess.display.appendPlainText(
@@ -1952,7 +2241,9 @@ class Controller:
                     host,
                     discovery=discovery_flag,
                     stage=next_stage,
-                    stop=processRepository.isKilledProcess(str(process_id)),
+                    # Look the repository up when the stage finishes: a Save As may have replaced the project.
+                    stop=self.logic.activeProject.repositoryContainer.processRepository.isKilledProcess(
+                        str(process_id)),
                     enable_ipv6=enable_ipv6_flag,
                     stealth=stealth_flag,
                     include_udp=include_udp_flag,
@@ -1960,37 +2251,65 @@ class Controller:
                 )
             )
 
-        return getPid(qProcess)  # return the pid so that we can kill the process if needed
-
-    def runPython(self):
-        textbox = self.view.createNewConsole("python")
-        name = 'python'
-        tabTitle = name
-        hostIp = '127.0.0.1'
-        port = '22'
-        protocol = 'tcp'
-        command = 'python3 --version'
-        startTime = getTimestamp(True)
-        outputfile = tempfile.NamedTemporaryFile(delete=False).name
-        qProcess = MyQProcess(name, tabTitle, hostIp, port, protocol, command, startTime, outputfile, textbox)
-
-        processRepository = self.logic.activeProject.repositoryContainer.processRepository
-        textbox.setProperty('dbId', str(processRepository.storeProcess(qProcess)))
-
+        # Queue only after every signal is connected: checkProcessQueue may start the process right away,
+        # and a synchronous errorOccurred(FailedToStart) must reach processCrashed.
         log.info('Queuing: ' + str(command))
         self.fastProcessQueue.put(qProcess)
-
         self.checkProcessQueue()
 
-        qProcess.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
-        qProcess.readyReadStandardOutput.connect(lambda: qProcess.display.appendPlainText(
-            str(qProcess.readAllStandardOutput().data().decode('ISO-8859-1'))))
+        # update the processes table soon
+        self.updateUITimer.stop()
+        self.updateUITimer.start(900)
 
-        qProcess.sigHydra.connect(self.handleHydraFindings)
-        qProcess.finished.connect(lambda: self.processFinished(qProcess))
-        qProcess.error.connect(lambda: self.processCrashed(qProcess))
+        return getPid(qProcess)  # return the pid so that we can kill the process if needed
 
-        return getPid(qProcess)
+    PYTHON_SCRIPT_TIMEOUT_MS = 30000
+
+    def _runPythonScriptAsync(self, script_path, arg, textbox, timeout_ms=None):
+        proc = QtCore.QProcess()
+        proc.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
+        if not hasattr(self, "_scriptProcesses"):
+            self._scriptProcesses = set()
+        self._scriptProcesses.add(proc)  # keep a reference until the script completes
+        killTimer = QTimer()
+        killTimer.setSingleShot(True)
+        state = {"done": False, "timed_out": False}
+
+        def _deliver(output):
+            if state["done"]:
+                return
+            state["done"] = True
+            killTimer.stop()
+            self._scriptProcesses.discard(proc)
+            if textbox is not None and not sip.isdeleted(textbox):
+                textbox.setPlainText(output)
+            proc.deleteLater()
+
+        def _onFinished(*_args):
+            output = bytes(proc.readAllStandardOutput().data()).decode('utf-8', errors='replace')
+            if state["timed_out"]:
+                output += f"\nError running script: timed out after {int(timeout_ms_value / 1000)}s"
+            _deliver(output)
+
+        def _onError(error):
+            if error == QtCore.QProcess.ProcessError.FailedToStart:
+                log.error(f"Error running script: {script_path} with arg: {arg}: {proc.errorString()}")
+                _deliver(f"Error running script: {proc.errorString()}")
+
+        def _onTimeout():
+            if state["done"]:
+                return
+            state["timed_out"] = True
+            proc.kill()  # finished fires afterwards and delivers the output
+
+        timeout_ms_value = int(timeout_ms or self.PYTHON_SCRIPT_TIMEOUT_MS)
+        proc.finished.connect(_onFinished)
+        proc.errorOccurred.connect(_onError)
+        killTimer.timeout.connect(_onTimeout)
+        # Arm the timer first: FailedToStart may be delivered inside start(), and _deliver stops it.
+        killTimer.start(timeout_ms_value)
+        proc.start("python3", [script_path, arg])
+        return proc
 
     # recursive function used to run nmap in different stages for quick results
     def runStagedNmap(
@@ -2019,8 +2338,23 @@ class Controller:
             session_dir = runningFolder
         # Use the tool output directory directly, not a subdirectory
         tool_output_dir = session_dir
+        def _advance_to_next_stage():
+            # Stages normally chain via the previous stage's finished signal; a skipped stage never runs, so
+            # chain directly to keep later stages running.
+            if stage >= 6:
+                return
+            self.runStagedNmap(
+                host_arg,
+                discovery=discovery,
+                stage=stage + 1,
+                stop=stop,
+                enable_ipv6=enable_ipv6,
+                stealth=stealth,
+                include_udp=include_udp,
+                version_light=version_light,
+            )
+
         if not stop:
-            textbox = self.view.createNewTabForHost(host_arg, 'nmap (stage ' + str(stage) + ')', True)
             outputfile = os.path.join(tool_output_dir, f"{getTimestamp()}-nmapstage{str(stage)}")
 
             if stage == 1:
@@ -2043,6 +2377,7 @@ class Controller:
 
             if stageOp == "" or stageOp == "NOOP" or stageOp == "SKIP":
                 log.debug(f"Skipping stage {str(stage)} as stageOp is {str(stageOp)}")
+                _advance_to_next_stage()
                 return
 
             def _tcp_only_port_spec(port_spec: str) -> str:
@@ -2120,6 +2455,7 @@ class Controller:
                         port_values = _tcp_only_port_spec(port_values)
                         if not port_values:
                             log.info(f"Skipping stage {stage} for {host_arg}: UDP disabled and no TCP ports remain.")
+                            _advance_to_next_stage()
                             return
                     stage_command_tokens.extend(["-p", port_values])
                 stage_command_tokens.extend(["-vvvv", host_arg, "--stats-every", "10s", "-oA", outputfile])
@@ -2145,6 +2481,7 @@ class Controller:
             command = ' '.join(token for token in stage_command_tokens if token)
             log.debug(f"Stage {str(stage)} command: {str(command)}")
 
+            textbox = self.view.createNewTabForHost(host_arg, 'nmap (stage ' + str(stage) + ')', True)
             self.runCommand(
                 'nmap',
                 'nmap (stage ' + str(stage) + ')',
@@ -2181,6 +2518,10 @@ class Controller:
 
     def screenshotFinished(self, ip, port, filename):
         log.info("---------------Screenshoot done. Args %s, %s, %s" % (str(ip), str(port), str(filename)))
+        if not str(filename or "").strip():
+            # Screenshooter emits an empty filename when the capture failed; don't store or display it.
+            log.info(f"Screenshot for {ip}:{port} failed; nothing to store.")
+            return
         outputFolder = self.logic.activeProject.properties.outputFolder
         dbId = self.logic.activeProject.repositoryContainer.processRepository.storeScreenshot(str(ip), str(port),
                                                                                               str(filename))
@@ -2192,13 +2533,40 @@ class Controller:
         #self.updateUITimer.stop()  # update the processes table
         #self.updateUITimer.start(900)
 
+    def _isTrackedProcess(self, proc) -> bool:
+        """True if proc is running or queued in the current project (not e.g. killed by killRunningProcesses)."""
+        if any(p is proc for p in getattr(self, "processes", None) or []):
+            return True
+        process_queue = getattr(self, "fastProcessQueue", None)
+        try:
+            return process_queue is not None and any(p is proc for p in list(process_queue.queue))
+        except Exception:
+            return False
+
     def processCrashed(self, proc, error=None):
         if proc is None or sip.isdeleted(proc):
             log.warning("Received crash notification for a destroyed process object.")
             return
+        if not self._isTrackedProcess(proc):
+            # Its id belongs to a project that is no longer active (or it was already handled): don't record a
+            # crash for it in the current project's database, reset its tabs or show a dialog.
+            log.info(f"Ignoring crash notification for process {getattr(proc, 'id', '?')}: no longer tracked.")
+            return
         processRepository = self.logic.activeProject.repositoryContainer.processRepository
-        processRepository.storeProcessCrashStatus(str(proc.id))
-        log.info(f'Process {proc.id} Crashed!')
+        # A user-initiated kill (SIGTERM) makes QProcess emit errorOccurred(Crashed) too: that's not a crash.
+        try:
+            user_terminated = str(processRepository.getStatusByProcessId(str(proc.id))) in ("Killed", "Cancelled")
+        except Exception:
+            log.exception(f"Failed to look up the status of process {proc.id}")
+            user_terminated = False
+        if user_terminated:
+            log.info(f'Process {proc.id} was terminated by the user; not reporting it as crashed.')
+        else:
+            try:
+                processRepository.storeProcessCrashStatus(str(proc.id))
+            except Exception:
+                log.exception(f"Failed to record crash status for process {proc.id}")
+            log.info(f'Process {proc.id} Crashed!')
         qProcessOutput = ""
         if hasattr(proc, "display") and not sip.isdeleted(proc.display):
             try:
@@ -2206,7 +2574,7 @@ class Controller:
             except Exception:
                 qProcessOutput = ""
         # self.view.closeHostToolTab(self, index))
-        self.view.findFinishedServiceTab(str(processRepository.getPIDByProcessId(str(proc.id))))
+        self.view.findFinishedServiceTab(str(proc.id))
         log.info(f'Process {proc.id} Output: {qProcessOutput}')
         error_string = ""
         try:
@@ -2214,17 +2582,40 @@ class Controller:
         except Exception:
             error_string = str(error) if error else ""
         log.info(f'Process {proc.id} Crash Output: {error_string}')
-        # --- User notification for scan crash ---
-        from PyQt6.QtWidgets import QMessageBox
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Icon.Critical)
-        msg.setWindowTitle("Scan Crashed")
-        msg.setText(
+        if error == QtCore.QProcess.ProcessError.FailedToStart:
+            # finished is never emitted for a process that failed to start: release its slot, stop its elapsed
+            # timer and let the queue advance (deferred, since this can fire from inside checkProcessQueue).
+            self._stopProcessTimer(proc.id)
+            if self._releaseProcessSlot(proc):
+                QTimer.singleShot(0, self.checkProcessQueue)
+            try:
+                self.updateUITimer.stop()
+                self.updateUITimer.start(1000)
+            except (AttributeError, RuntimeError):
+                pass
+        if not user_terminated:
+            self._notifyProcessCrashed(proc, error_string)
+
+    def _notifyProcessCrashed(self, proc, error_string):
+        # Non-blocking, single reusable dialog so repeated failures don't stack nested modal event loops.
+        text = (
             f"Scan process '{proc.name}' crashed!\n\nCommand: {proc.command}\n\nError: {error_string}\n\n"
             "Check the log for more details."
         )
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        msg.exec()
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+            msg = getattr(self, "_crashMessageBox", None)
+            if msg is None or sip.isdeleted(msg):
+                msg = QMessageBox(self.view.ui.centralwidget if hasattr(self.view, "ui") else None)
+                msg.setIcon(QMessageBox.Icon.Critical)
+                msg.setWindowTitle("Scan Crashed")
+                msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                msg.setModal(False)
+                self._crashMessageBox = msg
+            msg.setText(text)
+            msg.show()
+        except Exception:
+            log.exception("Failed to show process crash notification")
 
     # this function handles everything after a process ends
     # def processFinished(self, qProcess, crashed=False):
@@ -2239,33 +2630,23 @@ class Controller:
                 )
                 if not qProcess.outputfile == '':
                     outputfile = winPath2Unix(qProcess.outputfile)
+                    outputFolder = self.logic.activeProject.properties.outputFolder
                     try:
-                        self.logic.toolCoordinator.saveToolOutput(
-                            self.logic.activeProject.properties.outputFolder, outputfile
-                        )
+                        self.logic.toolCoordinator.saveToolOutput(outputFolder, outputfile)
                     except Exception:
                         log.exception(f"Error saving tool output: {outputfile}")
                     if 'nmap' in qProcess.command:
                         if qProcess.exitCode() == 0:
                             log.debug(f"qProcess.outputfile {str(outputfile)}")
-                            log.debug(
-                                f"self.logic.activeProject.properties.runningFolder "
-                                f"{str(self.logic.activeProject.properties.runningFolder)}"
-                            )
-                            log.debug(
-                                f"self.logic.activeProject.properties.outputFolder "
-                                f"{str(self.logic.activeProject.properties.outputFolder)}"
-                            )
-                            newoutputfile = outputfile.replace(
-                                self.logic.activeProject.properties.runningFolder,
-                                self.logic.activeProject.properties.outputFolder
-                            )
+                            log.debug(f"self.logic.activeProject.properties.outputFolder {str(outputFolder)}")
+                            # Import the XML from where saveToolOutput() put it. Don't derive it by replacing the
+                            # active project's running folder: after a Save As the process ran in the old one.
+                            xml_path = self._locateToolOutputXml(outputfile, outputFolder)
                             try:
-                                self.nmapImporter.setFilename(str(newoutputfile) + '.xml')
-                                self.nmapImporter.setOutput(str(qProcess.display.toPlainText()))
-                                self.nmapImporter.start()
+                                self.queueNmapImport(
+                                    str(xml_path), str(qProcess.display.toPlainText()), interactive=False)
                             except Exception:
-                                log.exception(f"Error starting nmapImporter for {newoutputfile}")
+                                log.exception(f"Error starting nmapImporter for {xml_path}")
                     elif 'PythonScript' in qProcess.command:
                         pythonScript = str(qProcess.command).split(' ')[2]
                         print(f'PythonImporter running for script: {pythonScript}')
@@ -2302,23 +2683,21 @@ class Controller:
 
             if 'hydra' in qProcess.name:
                 try:
-                    self.view.findFinishedBruteTab(
-                        str(processRepository.getPIDByProcessId(str(qProcess.id)))
-                    )
+                    self.view.findFinishedBruteTab(str(qProcess.id))
                 except Exception:
                     log.exception(f"Error updating brute tab for process {qProcess.id}")
 
             try:
-                self.fastProcessesRunning -= 1
+                # Release the slot before re-checking the queue so the finished job no longer counts as running.
+                self._releaseProcessSlot(qProcess)
                 self.checkProcessQueue()
-                self.processes.remove(qProcess)
                 self.updateUITimer.stop()
                 self.updateUITimer.start(1000)
             except Exception:
                 log.exception("Process Finished Cleanup Exception")
         except Exception:
+            # Never re-raise from a Qt slot: under PyQt6 an exception escaping a slot aborts the application.
             log.exception("Process Finished Exception")
-            raise
         finally:
             # QProcess instances are not parented; without explicit cleanup they can keep OS pipes open
             # and eventually hit "Too many open files" (seen as GWakeup pipe creation failures).
@@ -2752,7 +3131,7 @@ class Controller:
 
                         if decision.tool_id == "screenshooter":
                             display_host, resolved_ip = self._resolve_host_and_ip(hostname or ip)
-                            url = f"{self._host_for_url(display_host, resolved_ip)}:{port}"
+                            url = self._deferred_target_url(display_host, resolved_ip, port)
                             screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
                             deterministic_screenshot = f"{resolved_ip}-{port}-screenshot.png"
                             screenshot_exists = False
@@ -2763,7 +3142,7 @@ class Controller:
                                 log.info(f"Skipping screenshot for {resolved_ip}:{port} (already exists)")
                                 reason = "skipped: screenshot already exists"
                             else:
-                                log.info("Screenshooter of URL: %s" % str(url))
+                                log.info(f"Screenshooter queued for {display_host} ({resolved_ip}):{port}")
                                 self.screenshooter.addToQueue(resolved_ip, port, url)
                                 self.screenshooter.start()
                                 executed = True
@@ -3058,7 +3437,7 @@ class Controller:
 
             if decision.tool_id == "screenshooter":
                 display_host, resolved_ip = self._resolve_host_and_ip(hostname or ip)
-                url = f"{self._host_for_url(display_host, resolved_ip)}:{port}"
+                url = self._deferred_target_url(display_host, resolved_ip, port)
                 screenshots_dir = os.path.join(self.logic.activeProject.properties.outputFolder, "screenshots")
                 deterministic_screenshot = f"{resolved_ip}-{port}-screenshot.png"
                 screenshot_exists = False
@@ -3072,7 +3451,7 @@ class Controller:
                         reason="skipped: screenshot already exists"
                     )
                 else:
-                    log.info("Screenshooter of URL: %s" % str(url))
+                    log.info(f"Screenshooter queued for {display_host} ({resolved_ip}):{port}")
                     self.screenshooter.addToQueue(resolved_ip, port, url)
                     self.screenshooter.start()
                     self._recordScheduledDecision(

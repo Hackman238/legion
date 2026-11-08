@@ -2,13 +2,18 @@ import datetime
 import hashlib
 import ipaddress
 import json
+import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from xml.sax.saxutils import escape as xml_escape
 
 from app.device_categories import category_names
 from sqlalchemy import text
 
+from app.scheduler.schema_cache import ensure_schema_once, ensure_column
+
 from app.url_normalization import normalize_discovered_url
+
+logger = logging.getLogger(__name__)
 
 
 GRAPH_SOURCE_KINDS = {"observed", "inferred", "ai_suggested", "user_entered"}
@@ -63,12 +68,50 @@ def _graph_should_hide_artifact_node(item: Dict[str, Any], *, hide_nmap_xml_arti
     return any("nmap" in token for token in signals if token)
 
 
-def _ensure_column(session, table_name: str, column_name: str, column_type: str):
-    rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-    existing = {str(row[1]) for row in rows if len(row) > 1}
-    if str(column_name) in existing:
+def _has_index_on(session, table_name: str, column_names: List[str], *, unique: bool = False) -> bool:
+    for index_row in session.execute(text(f"PRAGMA index_list({table_name})")).fetchall():
+        # index_list columns: seq, name, unique, origin, partial
+        if len(index_row) < 3 or (unique and not int(index_row[2] or 0)):
+            continue
+        index_name = str(index_row[1]).replace('"', '""')
+        columns = [
+            str(info_row[2])
+            for info_row in session.execute(text(f'PRAGMA index_info("{index_name}")')).fetchall()
+            if len(info_row) > 2
+        ]
+        if columns == list(column_names):
+            return True
+    return False
+
+
+def _has_unique_index_on(session, table_name: str, column_name: str) -> bool:
+    return _has_index_on(session, table_name, [column_name], unique=True)
+
+
+# _attach_evidence_refs looks refs up by all three columns for every node/edge upsert.
+_GRAPH_EVIDENCE_REF_INDEX_COLUMNS = ["owner_kind", "owner_id", "evidence_ref"]
+
+
+def _ensure_unique_index(session, table_name: str, column_name: str, index_name: str):
+    if _has_unique_index_on(session, table_name, column_name):
         return
-    session.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+    duplicate = session.execute(text(
+        f"SELECT {column_name} FROM {table_name} WHERE {column_name} IS NOT NULL "
+        f"GROUP BY {column_name} HAVING COUNT(*) > 1 LIMIT 1"
+    )).fetchone()
+    if duplicate is not None:
+        # Node/edge ids are derived from their keys (_stable_id), so duplicate rows describe the same
+        # entity under the same id and nothing references one copy specifically. Keep the newest row.
+        removed = session.execute(text(
+            f"DELETE FROM {table_name} WHERE {column_name} IS NOT NULL AND id NOT IN ("
+            f"SELECT MAX(id) FROM {table_name} WHERE {column_name} IS NOT NULL GROUP BY {column_name})"
+        )).rowcount
+        logger.warning("Removed %s duplicate %s rows before adding a unique index on %s.",
+                       removed, table_name, column_name)
+    session.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table_name}({column_name})"))
+
+
+_ensure_column = ensure_column
 
 
 def _stable_id(prefix: str, payload: Dict[str, Any]) -> str:
@@ -78,6 +121,21 @@ def _stable_id(prefix: str, payload: Dict[str, Any]) -> str:
 
 
 def _ensure_tables(session):
+    ensure_schema_once(
+        session,
+        "graph",
+        _ensure_tables_uncached,
+        ["graph_node", "graph_edge", "graph_evidence_ref", "graph_layout_state", "graph_annotation"],
+        # Only cache once the unique key indexes exist outside this (possibly rolled back) transaction.
+        is_complete=lambda s: (
+            _has_unique_index_on(s, "graph_node", "node_key")
+            and _has_unique_index_on(s, "graph_edge", "edge_key")
+            and _has_index_on(s, "graph_evidence_ref", _GRAPH_EVIDENCE_REF_INDEX_COLUMNS)
+        ),
+    )
+
+
+def _ensure_tables_uncached(session):
     session.execute(text(
         "CREATE TABLE IF NOT EXISTS graph_node ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -168,6 +226,10 @@ def _ensure_tables(session):
             ("properties_json", "TEXT"),
     ):
         _ensure_column(session, "graph_edge", column_name, column_type)
+    # Tables that predate node_key/edge_key got those columns via ALTER TABLE, which cannot add
+    # UNIQUE; the upserts rely on it (ON CONFLICT DO NOTHING) to be race-safe.
+    _ensure_unique_index(session, "graph_node", "node_key", "ux_graph_node_node_key")
+    _ensure_unique_index(session, "graph_edge", "edge_key", "ux_graph_edge_edge_key")
     for column_name, column_type in (
             ("owner_kind", "TEXT"),
             ("owner_id", "TEXT"),
@@ -175,6 +237,10 @@ def _ensure_tables(session):
             ("created_at", "TEXT"),
     ):
         _ensure_column(session, "graph_evidence_ref", column_name, column_type)
+    session.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_graph_evidence_ref_owner_ref "
+        f"ON graph_evidence_ref({', '.join(_GRAPH_EVIDENCE_REF_INDEX_COLUMNS)})"
+    ))
     for column_name, column_type in (
             ("layout_id", "TEXT"),
             ("view_id", "TEXT"),
@@ -211,6 +277,30 @@ def _to_json(value: Any, fallback: Any) -> str:
         return json.dumps(value if value is not None else fallback, ensure_ascii=False)
     except Exception:
         return json.dumps(fallback, ensure_ascii=False)
+
+
+def _canonical_json(value: Any) -> str:
+    # Order-insensitive rendering used to decide whether merged properties actually changed.
+    def _canonical(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {str(key): _canonical(val) for key, val in item.items()}
+        if isinstance(item, (list, tuple)):
+            rendered = [_canonical(val) for val in item]
+            return sorted(rendered, key=lambda val: json.dumps(val, sort_keys=True, default=str))
+        return item
+
+    try:
+        return json.dumps(_canonical(value), sort_keys=True, default=str)
+    except Exception:
+        return _to_json(value, {})
+
+
+def _props_changed(merged_props: Any, existing_props: Any) -> bool:
+    existing = existing_props if isinstance(existing_props, dict) else {}
+    if merged_props == existing:  # common case: plain equality, no serialization needed
+        return False
+    # Fall back to an order-insensitive comparison (e.g. the same list items in another order).
+    return _canonical_json(merged_props) != _canonical_json(existing)
 
 
 def _sql_in_clause(prefix: str, values: Iterable[str]) -> Tuple[str, Dict[str, Any]]:
@@ -263,19 +353,40 @@ def _delete_url_nodes(session, node_ids: List[str]):
     ), node_params)
 
 
-def _delete_stale_host_url_nodes(session, *, host_id: int, keep_node_keys: Iterable[str]):
+# Node kinds whose "<type>:<host_id>:..." nodes are derived only from the host's target state, so a sync
+# may prune the ones the state no longer lists. Execution-record artifacts are keyed by host IP, not id.
+_HOST_STATE_DERIVED_NODE_TYPES = ("url", "screenshot", "artifact", "session")
+
+
+def _delete_stale_host_nodes(
+        session,
+        *,
+        host_id: int,
+        node_type: str,
+        keep_node_keys: Iterable[str],
+) -> List[str]:
+    """Delete this host's ``<node_type>:<host_id>:*`` nodes (with their edges, evidence refs and
+    annotations) whose node_key is not in keep_node_keys. Returns the deleted node ids."""
     resolved_host_id = int(host_id or 0)
+    resolved_type = _clean_text(node_type, limit=80, lower=True, allow_unknown=True)
+    if resolved_type not in _HOST_STATE_DERIVED_NODE_TYPES:
+        return []
     keep = {str(item or "").strip() for item in list(keep_node_keys or []) if str(item or "").strip()}
     rows = session.execute(text(
         "SELECT node_id, node_key FROM graph_node "
-        "WHERE type = 'url' AND node_key LIKE :prefix"
-    ), {"prefix": f"url:{resolved_host_id}:%"}).fetchall()
+        "WHERE type = :node_type AND node_key LIKE :prefix"
+    ), {"node_type": resolved_type, "prefix": f"{resolved_type}:{resolved_host_id}:%"}).fetchall()
     stale_node_ids = [
         str(row[0] or "").strip()
         for row in rows
         if row and str(row[0] or "").strip() and str(row[1] or "").strip() not in keep
     ]
     _delete_url_nodes(session, stale_node_ids)
+    return stale_node_ids
+
+
+def _delete_stale_host_url_nodes(session, *, host_id: int, keep_node_keys: Iterable[str]) -> List[str]:
+    return _delete_stale_host_nodes(session, host_id=host_id, node_type="url", keep_node_keys=keep_node_keys)
 
 
 def _safe_float(value: Any, default: float = 0.0, minimum: float = 0.0, maximum: float = 100.0) -> float:
@@ -308,6 +419,36 @@ def _choose_source_kind(existing: Any, incoming: Any) -> str:
     existing_token = _normalize_source_kind(existing, "observed")
     incoming_token = _normalize_source_kind(incoming, "observed")
     if _SOURCE_PRIORITY.get(incoming_token, 0) >= _SOURCE_PRIORITY.get(existing_token, 0):
+        return incoming_token
+    return existing_token
+
+
+def _resolve_source_ref(
+        *,
+        existing_kind: Any,
+        existing_ref: Any,
+        incoming_kind: Any,
+        incoming_ref: Any,
+        content_changed: bool,
+) -> str:
+    """Pick the source_ref an upsert stores for an existing node or edge.
+
+    A higher-priority source takes the ref over. On equal priority the ref is only replaced when the
+    upsert changes something else: shared nodes (subnets, CVE-backed exploits) are re-synced by every
+    host that touches them, and a no-op resync of one host must not flip the ref written by another and
+    report that as a graph mutation.
+    """
+    existing_token = _clean_text(existing_ref, limit=320, allow_unknown=True)
+    incoming_token = _clean_text(incoming_ref, limit=320, allow_unknown=True)
+    if not incoming_token:
+        return existing_token
+    if not existing_token:
+        return incoming_token
+    existing_priority = _SOURCE_PRIORITY.get(_normalize_source_kind(existing_kind, "observed"), 0)
+    incoming_priority = _SOURCE_PRIORITY.get(_normalize_source_kind(incoming_kind, "observed"), 0)
+    if incoming_priority > existing_priority:
+        return incoming_token
+    if incoming_priority == existing_priority and content_changed:
         return incoming_token
     return existing_token
 
@@ -416,19 +557,21 @@ def _upsert_node(
     if not key:
         return "", False
     node_id = _stable_id("graph-node", {"node_key": key})
-    result = session.execute(text(
-        "SELECT node_id, label, confidence, source_kind, source_ref, first_seen, properties_json "
+    select_sql = text(
+        "SELECT node_id, label, confidence, source_kind, source_ref, first_seen, properties_json, type "
         "FROM graph_node WHERE node_key = :node_key LIMIT 1"
-    ), {"node_key": key}).fetchone()
+    )
+    result = session.execute(select_sql, {"node_key": key}).fetchone()
     changed = False
     incoming_props = dict(properties or {})
     if result is None:
-        session.execute(text(
+        # Shared nodes (scope, subnet) are upserted concurrently by host threads; tolerate a racing insert.
+        inserted = session.execute(text(
             "INSERT INTO graph_node ("
             "node_id, node_key, type, label, confidence, source_kind, source_ref, first_seen, last_seen, properties_json"
             ") VALUES ("
             ":node_id, :node_key, :type, :label, :confidence, :source_kind, :source_ref, :first_seen, :last_seen, :properties_json"
-            ")"
+            ") ON CONFLICT DO NOTHING"
         ), {
             "node_id": node_id,
             "node_key": key,
@@ -441,36 +584,53 @@ def _upsert_node(
             "last_seen": now,
             "properties_json": _to_json(incoming_props, {}),
         })
-        changed = True
-    else:
+        if int(getattr(inserted, "rowcount", 1) or 0) > 0:
+            changed = True
+        else:
+            result = session.execute(select_sql, {"node_key": key}).fetchone()
+    if result is not None:
         existing_props = _from_json(result[6], {})
         merged_props = _merge_values(existing_props if isinstance(existing_props, dict) else {}, incoming_props)
         resolved_label = _clean_text(label, limit=240, allow_unknown=True) or _clean_text(result[1], limit=240, allow_unknown=True)
         resolved_kind = _choose_source_kind(result[3], source_kind)
-        resolved_ref = (
-            _clean_text(source_ref, limit=320, allow_unknown=True)
-            if _SOURCE_PRIORITY.get(resolved_kind, 0) >= _SOURCE_PRIORITY.get(_normalize_source_kind(result[3], "observed"), 0)
-            and _clean_text(source_ref, limit=320, allow_unknown=True)
-            else _clean_text(result[4], limit=320, allow_unknown=True)
-        )
         resolved_conf = max(_safe_float(result[2]), _safe_float(confidence))
+        resolved_type = _clean_text(node_type, limit=80, lower=True, allow_unknown=True)
+        # Everything but source_ref; decides whether an equal-priority source may take over the ref.
+        content_changed = (
+            resolved_type != str(result[7] or "")
+            or resolved_label != str(result[1] or "")
+            or resolved_conf != _safe_float(result[2])
+            or resolved_kind != str(result[3] or "")
+            or _props_changed(merged_props, existing_props)
+        )
+        resolved_ref = _resolve_source_ref(
+            existing_kind=result[3],
+            existing_ref=result[4],
+            incoming_kind=source_kind,
+            incoming_ref=source_ref,
+            content_changed=content_changed,
+        )
+        merged_props_json = _to_json(merged_props, {})
         session.execute(text(
             "UPDATE graph_node SET "
             "type = :type, label = :label, confidence = :confidence, source_kind = :source_kind, "
             "source_ref = :source_ref, last_seen = :last_seen, properties_json = :properties_json "
             "WHERE node_key = :node_key"
         ), {
-            "type": _clean_text(node_type, limit=80, lower=True, allow_unknown=True),
+            "type": resolved_type,
             "label": resolved_label,
             "confidence": resolved_conf,
             "source_kind": resolved_kind,
             "source_ref": resolved_ref,
             "last_seen": now,
-            "properties_json": _to_json(merged_props, {}),
+            "properties_json": merged_props_json,
             "node_key": key,
         })
+        # A refresh that only bumps last_seen is not a graph change.
+        changed = content_changed or resolved_ref != str(result[4] or "")
+    # New evidence on an otherwise unchanged node still counts as a mutation of that node.
+    if _attach_evidence_refs(session, "node", node_id, evidence_refs or []):
         changed = True
-    _attach_evidence_refs(session, "node", node_id, evidence_refs or [])
     return node_id, changed
 
 
@@ -494,19 +654,20 @@ def _upsert_edge(
     edge_key = f"{edge_kind}:{from_ref}:{to_ref}"
     edge_id = _stable_id("graph-edge", {"edge_key": edge_key})
     now = _utc_now()
-    result = session.execute(text(
+    select_sql = text(
         "SELECT edge_id, confidence, source_kind, source_ref, properties_json "
         "FROM graph_edge WHERE edge_key = :edge_key LIMIT 1"
-    ), {"edge_key": edge_key}).fetchone()
+    )
+    result = session.execute(select_sql, {"edge_key": edge_key}).fetchone()
     changed = False
     incoming_props = dict(properties or {})
     if result is None:
-        session.execute(text(
+        inserted = session.execute(text(
             "INSERT INTO graph_edge ("
             "edge_id, edge_key, type, from_node_id, to_node_id, confidence, source_kind, source_ref, first_seen, last_seen, properties_json"
             ") VALUES ("
             ":edge_id, :edge_key, :type, :from_node_id, :to_node_id, :confidence, :source_kind, :source_ref, :first_seen, :last_seen, :properties_json"
-            ")"
+            ") ON CONFLICT DO NOTHING"
         ), {
             "edge_id": edge_id,
             "edge_key": edge_key,
@@ -520,18 +681,28 @@ def _upsert_edge(
             "last_seen": now,
             "properties_json": _to_json(incoming_props, {}),
         })
-        changed = True
-    else:
+        if int(getattr(inserted, "rowcount", 1) or 0) > 0:
+            changed = True
+        else:
+            result = session.execute(select_sql, {"edge_key": edge_key}).fetchone()
+    if result is not None:
         existing_props = _from_json(result[4], {})
         merged_props = _merge_values(existing_props if isinstance(existing_props, dict) else {}, incoming_props)
         resolved_kind = _choose_source_kind(result[2], source_kind)
-        resolved_ref = (
-            _clean_text(source_ref, limit=320, allow_unknown=True)
-            if _SOURCE_PRIORITY.get(resolved_kind, 0) >= _SOURCE_PRIORITY.get(_normalize_source_kind(result[2], "observed"), 0)
-            and _clean_text(source_ref, limit=320, allow_unknown=True)
-            else _clean_text(result[3], limit=320, allow_unknown=True)
-        )
         resolved_conf = max(_safe_float(result[1]), _safe_float(confidence))
+        content_changed = (
+            resolved_conf != _safe_float(result[1])
+            or resolved_kind != str(result[2] or "")
+            or _props_changed(merged_props, existing_props)
+        )
+        resolved_ref = _resolve_source_ref(
+            existing_kind=result[2],
+            existing_ref=result[3],
+            incoming_kind=source_kind,
+            incoming_ref=source_ref,
+            content_changed=content_changed,
+        )
+        merged_props_json = _to_json(merged_props, {})
         session.execute(text(
             "UPDATE graph_edge SET "
             "confidence = :confidence, source_kind = :source_kind, source_ref = :source_ref, "
@@ -542,16 +713,20 @@ def _upsert_edge(
             "source_kind": resolved_kind,
             "source_ref": resolved_ref,
             "last_seen": now,
-            "properties_json": _to_json(merged_props, {}),
+            "properties_json": merged_props_json,
             "edge_key": edge_key,
         })
+        # A refresh that only bumps last_seen is not a graph change.
+        changed = content_changed or resolved_ref != str(result[3] or "")
+    if _attach_evidence_refs(session, "edge", edge_id, evidence_refs or []):
         changed = True
-    _attach_evidence_refs(session, "edge", edge_id, evidence_refs or [])
     return edge_id, changed
 
 
-def _attach_evidence_refs(session, owner_kind: str, owner_id: str, evidence_refs: List[str]):
+def _attach_evidence_refs(session, owner_kind: str, owner_id: str, evidence_refs: List[str]) -> bool:
+    """Attach new evidence refs; returns True when at least one ref was added."""
     now = _utc_now()
+    added = False
     for token in _dedupe_tokens(evidence_refs, limit=32, token_limit=320):
         existing = session.execute(text(
             "SELECT id FROM graph_evidence_ref "
@@ -572,6 +747,8 @@ def _attach_evidence_refs(session, owner_kind: str, owner_id: str, evidence_refs
             "evidence_ref": token,
             "created_at": now,
         })
+        added = True
+    return added
 
 
 def ensure_scheduler_graph_tables(database):
@@ -599,7 +776,25 @@ def _subnet_for_host(host_ip: str) -> str:
     return str(ipaddress.ip_network(f"{token}/64", strict=False))
 
 
-def _load_host_context(database, host_id: int) -> Dict[str, Any]:
+# Target-state keys a host sync prunes graph nodes on (urls, screenshots, artifacts incl. the refs of
+# attempted actions, sessions). A passed target_state that lacks one of them is treated as partial.
+_HOST_STATE_PRUNE_KEYS = ("urls", "screenshots", "artifacts", "attempted_actions", "sessions")
+
+
+def _load_host_context(
+        database,
+        host_id: int,
+        *,
+        target_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the sync context for a host from its DB row, target state, CVEs and notes.
+
+    ``target_state`` must be the host's FULL stored state (what upsert_target_state/modify_target_state
+    return), not a partial update: it replaces the stored row and the sync prunes url/screenshot/artifact/
+    session nodes the state no longer lists. When it is omitted the state is read from the database. As a
+    guard, a dict that lacks any of the keys the sync prunes on (_HOST_STATE_PRUNE_KEYS) is treated as
+    partial and those keys are taken from the stored row, so a partial dict cannot delete discovered nodes.
+    """
     from app.scheduler.state import build_target_urls, get_target_state, load_observed_service_inventory
 
     session = database.session()
@@ -632,7 +827,17 @@ def _load_host_context(database, host_id: int) -> Dict[str, Any]:
                 "hostname": _clean_text(host_row[2], limit=200),
                 "os_match": _clean_text(host_row[3], limit=120),
             })
-        target_state = get_target_state(database, int(host_id or 0))
+        if not (isinstance(target_state, dict) and target_state):
+            target_state = get_target_state(database, int(host_id or 0))
+        else:
+            missing_keys = [key for key in _HOST_STATE_PRUNE_KEYS if key not in target_state]
+            if missing_keys:
+                stored_state = get_target_state(database, int(host_id or 0))
+                if isinstance(stored_state, dict) and stored_state:
+                    target_state = dict(target_state)
+                    for key in missing_keys:
+                        if key in stored_state:
+                            target_state[key] = stored_state[key]
         if isinstance(target_state, dict) and target_state:
             base.update({key: value for key, value in target_state.items() if value not in [None, ""]})
         service_inventory = load_observed_service_inventory(database, int(host_id or 0))
@@ -649,7 +854,7 @@ def _load_host_context(database, host_id: int) -> Dict[str, Any]:
             "COALESCE(severity, '') AS severity, COALESCE(source, '') AS source, COALESCE(version, '') AS version, "
             "COALESCE(exploitId, 0) AS exploit_id, COALESCE(exploit, '') AS exploit, COALESCE(exploitUrl, '') AS exploit_url, "
             "COALESCE(serviceId, '') AS service_id "
-            "FROM cve WHERE CAST(hostId AS TEXT) = :host_id ORDER BY id ASC"
+            "FROM cve WHERE hostId = :host_id ORDER BY id ASC"
         ), {"host_id": str(int(host_id or 0))}).fetchall()
         base["cves"] = [
             {
@@ -912,7 +1117,7 @@ def sync_target_state_to_evidence_graph(
         host_id: int,
         target_state: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
-    context = _load_host_context(database, int(host_id or 0))
+    context = _load_host_context(database, int(host_id or 0), target_state=target_state)
     if isinstance(target_state, dict) and target_state:
         for key, value in target_state.items():
             if value not in [None, ""]:
@@ -1160,11 +1365,12 @@ def sync_target_state_to_evidence_graph(
             if changed:
                 _remember_mutation(mutations, "edge", edge_id)
 
-        _delete_stale_host_url_nodes(
+        for stale_node_id in _delete_stale_host_url_nodes(
             session,
             host_id=resolved_host_id,
             keep_node_keys=normalized_url_keys,
-        )
+        ):
+            _remember_mutation(mutations, "node", stale_node_id)
 
         for item in list(context.get("technologies", []) or []):
             if not isinstance(item, dict):
@@ -1536,6 +1742,7 @@ def sync_target_state_to_evidence_graph(
                 if changed:
                     _remember_mutation(mutations, "edge", edge_id)
 
+        session_node_keys = set()
         for item in list(context.get("sessions", []) or []):
             if not isinstance(item, dict):
                 continue
@@ -1546,9 +1753,11 @@ def sync_target_state_to_evidence_graph(
             session_type = _clean_text(item.get("session_type", ""), limit=64, lower=True, allow_unknown=True)
             if not any([username, pivot_host, session_type]):
                 continue
+            session_node_key = f"session:{resolved_host_id}:{session_type}:{username.lower()}:{pivot_host.lower()}:{session_port}/{session_protocol}"
+            session_node_keys.add(session_node_key)
             session_node_id, changed = _upsert_node(
                 session,
-                node_key=f"session:{resolved_host_id}:{session_type}:{username.lower()}:{pivot_host.lower()}:{session_port}/{session_protocol}",
+                node_key=session_node_key,
                 node_type="session",
                 label=session_type or username or pivot_host,
                 confidence=_safe_float(item.get("confidence", 78.0), 78.0),
@@ -1666,15 +1875,18 @@ def sync_target_state_to_evidence_graph(
             if changed:
                 _remember_mutation(mutations, "edge", edge_id)
 
+        screenshot_node_keys = set()
         for item in list(context.get("screenshots", []) or []):
             if not isinstance(item, dict):
                 continue
             artifact_ref = _clean_text(item.get("artifact_ref", ""), limit=320, allow_unknown=True)
             if not artifact_ref:
                 continue
+            screenshot_node_key = f"screenshot:{resolved_host_id}:{artifact_ref}"
+            screenshot_node_keys.add(screenshot_node_key)
             screenshot_node_id, changed = _upsert_node(
                 session,
-                node_key=f"screenshot:{resolved_host_id}:{artifact_ref}",
+                node_key=screenshot_node_key,
                 node_type="screenshot",
                 label=_clean_text(item.get("filename", ""), limit=200, allow_unknown=True) or artifact_ref.split("/")[-1] or artifact_ref,
                 confidence=_safe_float(item.get("confidence", 96.0), 96.0),
@@ -1793,6 +2005,21 @@ def sync_target_state_to_evidence_graph(
                 )
                 if changed:
                     _remember_mutation(mutations, "edge", edge_id)
+
+        # Screenshot, artifact and session nodes are derived only from the host's target state: drop the
+        # ones the state no longer lists (e.g. a deleted screenshot) so the graph does not keep showing them.
+        for node_type, keep_keys in (
+            ("screenshot", screenshot_node_keys),
+            ("artifact", {f"artifact:{resolved_host_id}:{ref}" for ref in artifact_nodes}),
+            ("session", session_node_keys),
+        ):
+            for stale_node_id in _delete_stale_host_nodes(
+                session,
+                host_id=resolved_host_id,
+                node_type=node_type,
+                keep_node_keys=keep_keys,
+            ):
+                _remember_mutation(mutations, "node", stale_node_id)
 
         for note in list(context.get("notes", []) or []):
             if not isinstance(note, dict):
@@ -1988,7 +2215,7 @@ def rebuild_evidence_graph(database, *, host_id: Optional[int] = None) -> List[s
     session = database.session()
     try:
         params: Dict[str, Any] = {}
-        query = "SELECT id FROM hostObj"
+        query = "SELECT id, ip FROM hostObj"
         if host_id is not None:
             query += " WHERE id = :host_id"
             params["host_id"] = int(host_id or 0)
@@ -1996,22 +2223,35 @@ def rebuild_evidence_graph(database, *, host_id: Optional[int] = None) -> List[s
         host_rows = session.execute(text(query), params).fetchall()
     finally:
         session.close()
+    # Execution records only store host_ip; for a single-host rebuild only that host's executions are
+    # re-synced (callers hold runtime locks, so re-syncing the whole project here is expensive).
+    host_ip_filter = sorted({
+        str(row[1] or "").strip() for row in host_rows if str(row[1] or "").strip()
+    }) if host_id is not None else None
 
     mutations: List[str] = []
     for row in host_rows:
         for token in sync_target_state_to_evidence_graph(database, host_id=int(row[0] or 0)):
             _remember_mutation(mutations, token.split(":", 1)[0], token.split(":", 1)[1] if ":" in token else token)
 
+    if host_ip_filter is not None and not host_ip_filter:
+        return mutations
+
     session = database.session()
     try:
         _ensure_tables(session)
+        params = {}
+        where_clause = ""
+        if host_ip_filter is not None:
+            in_clause, params = _sql_in_clause("host_ip", host_ip_filter)
+            where_clause = f"WHERE TRIM(COALESCE(host_ip, '')) IN ({in_clause}) "
         query = (
             "SELECT execution_id, step_id, action_id, tool_id, label, scheduler_mode, goal_profile, host_ip, port, protocol, service, "
             "started_at, finished_at, runner_type, exit_status, stdout_ref, stderr_ref, artifact_refs_json, approval_id, "
             "observations_created_json, graph_mutations_json, operator_notes "
-            "FROM scheduler_execution_record ORDER BY id ASC"
+            f"FROM scheduler_execution_record {where_clause}ORDER BY id ASC"
         )
-        rows = session.execute(text(query)).fetchall()
+        rows = session.execute(text(query), params).fetchall()
         keys = [
             "execution_id", "step_id", "action_id", "tool_id", "label", "scheduler_mode", "goal_profile", "host_ip", "port", "protocol",
             "service", "started_at", "finished_at", "runner_type", "exit_status", "stdout_ref", "stderr_ref", "artifact_refs_json",

@@ -1,20 +1,23 @@
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
 from app.scheduler.models import ExecutionRecord, PlanStep
+from app.scheduler.schema_cache import ensure_schema_once, ensure_column
+
+logger = logging.getLogger(__name__)
 
 
-def _ensure_column(session, table_name: str, column_name: str, column_type: str):
-    rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-    existing = {str(row[1]) for row in rows if len(row) > 1}
-    if str(column_name) in existing:
-        return
-    session.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+_ensure_column = ensure_column
 
 
 def _ensure_table(session):
+    ensure_schema_once(session, "execution_record", _ensure_table_uncached, ["scheduler_execution_record"])
+
+
+def _ensure_table_uncached(session):
     session.execute(text(
         "CREATE TABLE IF NOT EXISTS scheduler_execution_record ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -218,25 +221,49 @@ def store_execution_record(
                 patch_session.commit()
             except Exception:
                 patch_session.rollback()
+                logger.warning(
+                    "Failed to store graph mutations for execution %s.", payload.get("execution_id", ""),
+                    exc_info=True,
+                )
             finally:
                 patch_session.close()
     except Exception:
-        pass
+        logger.warning(
+            "Failed to sync execution %s to evidence graph.", payload.get("execution_id", ""),
+            exc_info=True,
+        )
     return payload
 
 
-def list_execution_records(database, limit: int = 200) -> List[Dict[str, Any]]:
+def list_execution_records(
+        database,
+        limit: int = 200,
+        host_ip: Optional[str] = None,
+        tool_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Newest execution records first; host_ip / tool_id filters are applied before the limit."""
     session = database.session()
     try:
         _ensure_table(session)
         max_items = max(1, min(int(limit), 1000))
+        params: Dict[str, Any] = {"limit": max_items}
+        clauses = []
+        if host_ip is not None:
+            clauses.append("TRIM(COALESCE(host_ip, '')) = :host_ip")
+            params["host_ip"] = str(host_ip or "").strip()
+        if tool_id is not None:
+            clauses.append("LOWER(TRIM(COALESCE(tool_id, ''))) = :tool_id")
+            params["tool_id"] = str(tool_id or "").strip().lower()
+        where_clause = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         result = session.execute(text(
             "SELECT execution_id, step_id, action_id, tool_id, label, scheduler_mode, goal_profile, "
             "host_ip, port, protocol, service, started_at, finished_at, runner_type, exit_status, "
             "stdout_ref, stderr_ref, artifact_refs_json, approval_id, observations_created_json, "
             "graph_mutations_json, operator_notes "
-            "FROM scheduler_execution_record ORDER BY id DESC LIMIT :limit"
-        ), {"limit": max_items})
+            "FROM scheduler_execution_record "
+            f"{where_clause}"
+            "ORDER BY id DESC LIMIT :limit"
+        ), params)
         rows = result.fetchall()
         keys = result.keys()
         payload = []

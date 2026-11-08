@@ -54,6 +54,8 @@ class PythonImporter(QtCore.QThread):
         session = None
         db_lock_acquired = False
         try:
+            # Thread-scoped session on purpose: the python script it hands this session to may also use
+            # repositories on this thread, and a second connection would wait on this one's write lock.
             session = self.db.session()
             startTime = time()
             self.db.dbsemaphore.acquire() # ensure that while this thread is running, no one else can write to the DB
@@ -71,8 +73,13 @@ class PythonImporter(QtCore.QThread):
             self.done.emit()
 
         except Exception as e:
-            self.tsLog(e)
-            raise
+            # Never re-raise from QThread.run(): under PyQt6 that aborts the whole application.
+            self.tsLog(f"Python script import failed: {e}")
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            self.done.emit()  # let the UI finish its import state even though nothing was stored
         finally:
             try:
                 if db_lock_acquired:

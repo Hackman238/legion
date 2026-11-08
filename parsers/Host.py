@@ -32,6 +32,8 @@ class Host:
             return
         self.hostNode = HostNode
         self.hostNodes.append(HostNode)
+        # Merged ports depend on every host node; invalidate the cached port list.
+        self._ports_cache = None
 
         status_nodes = HostNode.getElementsByTagName('status')
         status_value = status_nodes[0].getAttribute('state') if status_nodes and \
@@ -116,6 +118,9 @@ class Host:
         return score
 
     def _unique_ports(self):
+        cached = getattr(self, '_ports_cache', None)
+        if cached is not None:
+            return list(cached)
         ports = {}
         for hostNode in getattr(self, 'hostNodes', [self.hostNode]):
             for portNode in hostNode.getElementsByTagName('port'):
@@ -124,7 +129,8 @@ class Host:
                 existing = ports.get(key)
                 if existing is None or self._port_score(port) >= self._port_score(existing):
                     ports[key] = port
-        return list(ports.values())
+        self._ports_cache = list(ports.values())
+        return list(self._ports_cache)
 
     @staticmethod
     def _script_key(script):

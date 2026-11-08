@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from typing import Any, Dict, Optional
 
-from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
+from app.eyewitness import capture_tooling_unavailable, run_eyewitness_capture, summarize_eyewitness_failure
 from app.httputil.isHttps import isHttps
 from app.scheduler.runners import normalize_runner_settings
 from app.screenshot_metadata import (
@@ -85,8 +85,10 @@ def take_screenshot(
             capture = current_capture
             captured_url = url
             break
+        # Without EyeWitness the selenium/browser fallbacks still run per URL, so keep trying the
+        # other scheme unless nothing at all can take a screenshot.
         failure_capture = current_capture
-        if str(current_capture.get("reason", "") or "") == "eyewitness missing":
+        if capture_tooling_unavailable(current_capture):
             break
 
     if not capture:

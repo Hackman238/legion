@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -420,6 +421,40 @@ class SchedulerConfigManagerTest(unittest.TestCase):
                         }
                     }
                 })
+
+    def test_config_file_is_written_atomically(self):
+        from app.scheduler.config import SchedulerConfigManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "scheduler-ai.json")
+            manager = SchedulerConfigManager(config_path=path, secret_store=_MemorySecretStore())
+            manager.load()
+            manager.update_preferences({"max_concurrency": 3})
+            with open(path, "r", encoding="utf-8") as handle:
+                before = handle.read()
+            self.assertEqual(3, int(json.loads(before)["max_concurrency"]))
+            self.assertEqual(["scheduler-ai.json"], os.listdir(tmpdir))
+
+            replaced = []
+            real_replace = os.replace
+
+            def _recording_replace(src, dst):
+                replaced.append((os.path.dirname(os.path.abspath(src)), dst))
+                return real_replace(src, dst)
+
+            with patch("app.scheduler.config.os.replace", side_effect=_recording_replace):
+                manager.update_preferences({"max_concurrency": 4})
+            # The new content lands in one rename from a temp file in the same directory.
+            self.assertEqual([(os.path.abspath(tmpdir), path)], replaced)
+            self.assertEqual(["scheduler-ai.json"], os.listdir(tmpdir))
+
+            # A failure while serializing never leaves a truncated config behind.
+            with patch("app.scheduler.config.json.dump", side_effect=RuntimeError("disk full")):
+                with self.assertRaises(RuntimeError):
+                    manager.update_preferences({"max_concurrency": 5})
+            with open(path, "r", encoding="utf-8") as handle:
+                self.assertEqual(4, int(json.loads(handle.read())["max_concurrency"]))
+            self.assertEqual(["scheduler-ai.json"], os.listdir(tmpdir))
 
 
 if __name__ == "__main__":

@@ -129,6 +129,7 @@ fixname.sh
 ghostdriver.log
 huge_nmap.xml
 *.xml
+!tests/**/*.xml
 
 legion.code-workspace
 docs/

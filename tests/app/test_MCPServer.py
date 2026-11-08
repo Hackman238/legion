@@ -1,3 +1,8 @@
+import asyncio
+import json
+import os
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -393,6 +398,65 @@ class MCPServerTest(unittest.TestCase):
         self.assertIs(mocked_state.call_args.args[0].runtime, self.runtime)
         self.assertEqual(11, mocked_state.call_args.args[1])
         self.assertEqual(42, mocked_state.call_args.kwargs["limit"])
+
+
+    def test_ensure_runtime_creates_temporary_project_when_none_is_active(self):
+        from app.mcpServer import MCPServer
+
+        logic_instance = mock.MagicMock()
+        logic_instance.activeProject = None
+        server = MCPServer()
+        with mock.patch("app.logic.Logic", return_value=logic_instance), \
+                mock.patch("app.web.runtime.WebRuntime") as runtime_cls, \
+                mock.patch("app.ProjectManager.ProjectManager"), \
+                mock.patch("app.tools.ToolCoordinator.ToolCoordinator"), \
+                mock.patch("app.tools.nmap.DefaultNmapExporter.DefaultNmapExporter"):
+            runtime = server._ensure_runtime()
+
+        logic_instance.createNewTemporaryProject.assert_called_once_with()
+        runtime_cls.assert_called_once_with(logic_instance)
+        self.assertIs(runtime_cls.return_value, runtime)
+
+
+    def test_read_request_line_skips_over_limit_lines_and_keeps_reading(self):
+        from app.mcpServer import _read_request_line
+
+        async def scenario():
+            reader = asyncio.StreamReader(limit=64)
+            reader.feed_data(b"x" * 200 + b"\n" + b'{"id": 2}\n' + b"y" * 300)
+            results = [await _read_request_line(reader), await _read_request_line(reader)]
+            # An over-limit line whose newline has not arrived yet is drained once it does.
+            pending = asyncio.ensure_future(_read_request_line(reader))
+            await asyncio.sleep(0)
+            reader.feed_data(b"y" * 300 + b"\n" + b'{"id": 3}')
+            reader.feed_eof()
+            results.append(await pending)
+            results.append(await _read_request_line(reader))
+            results.append(await _read_request_line(reader))
+            return results
+
+        self.assertEqual([None, b'{"id": 2}\n', None, b'{"id": 3}', b""], asyncio.run(scenario()))
+
+    def test_stdio_server_keeps_answering_after_request_line_over_64_kib(self):
+        server_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "app", "mcpServer.py")
+        big_request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"padding": "x" * 70000}})
+        list_tools = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "list_tools"})
+
+        completed = subprocess.run(
+            [sys.executable, server_path],
+            input=f"{big_request}\n{list_tools}\n".encode(),
+            capture_output=True,
+            timeout=60,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr.decode(errors="replace"))
+        responses = {}
+        for line in completed.stdout.decode().splitlines():
+            if line.strip():
+                item = json.loads(line)
+                responses[item.get("id")] = item
+        self.assertEqual(-32601, responses[1]["error"]["code"])
+        self.assertIn("open_project", {tool["name"] for tool in responses[2]["result"]})
 
 
 if __name__ == "__main__":

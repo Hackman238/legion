@@ -11,6 +11,8 @@ import zipfile
 
 from sqlalchemy import text
 
+from tests.timezone_helpers import pin_local_timezone
+
 
 for _name in ("Mapping", "MutableMapping", "Sequence", "Callable"):
     if not hasattr(collections, _name):
@@ -68,6 +70,55 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
                 runtime._close_active_project()
             if restore_root:
                 shutil.rmtree(restore_root, ignore_errors=True)
+
+    def test_failed_restore_removes_extracted_restore_root(self):
+        from unittest.mock import patch
+        from app.web import runtime_project_bundle_archive
+
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+        real_extract = runtime_project_bundle_archive.extract_project_bundle_zip
+        extracted = []
+
+        def extract_spy(path):
+            result = real_extract(path)
+            extracted.append(str(result.get("restore_root", "") or ""))
+            return result
+
+        legacy_zip = ""
+        try:
+            with tempfile.NamedTemporaryFile(prefix="legacy-legion-", suffix=".zip", delete=False) as temp_zip:
+                legacy_zip = temp_zip.name
+            with zipfile.ZipFile(legacy_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(project.properties.projectName, "Failing.legion")
+
+            with patch.object(runtime_project_bundle_archive, "extract_project_bundle_zip", side_effect=extract_spy), \
+                    patch.object(project_manager, "openExistingProject", side_effect=RuntimeError("open failed")):
+                with self.assertRaisesRegex(RuntimeError, "open failed"):
+                    runtime.restore_project_bundle_zip(legacy_zip)
+
+            runtime._save_in_progress = True
+            try:
+                with patch.object(runtime_project_bundle_archive, "extract_project_bundle_zip", side_effect=extract_spy):
+                    with self.assertRaisesRegex(RuntimeError, "save is in progress"):
+                        runtime.restore_project_bundle_zip(legacy_zip)
+            finally:
+                runtime._save_in_progress = False
+
+            self.assertEqual(2, len(extracted))
+            for restore_root in extracted:
+                self.assertTrue(restore_root.strip())
+                self.assertFalse(os.path.exists(restore_root), restore_root)
+            self.assertIs(logic.activeProject, project)
+        finally:
+            if legacy_zip and os.path.isfile(legacy_zip):
+                os.remove(legacy_zip)
+            for restore_root in extracted:
+                shutil.rmtree(restore_root, ignore_errors=True)
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
 
     def test_open_project_failure_keeps_previous_project_active(self):
         project_manager, logic, runtime = self._create_runtime()
@@ -514,6 +565,9 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
                 runtime._close_active_project()
 
     def test_project_bundle_reconciles_reversed_mixed_process_timestamps(self):
+        # The naive start time only reads as "reversed" (after the UTC end time) when
+        # local time is behind UTC, which is the case this reconciliation handles.
+        pin_local_timezone(self, "LEGIONTEST5")
         project_manager, logic, runtime = self._create_runtime()
         project = project_manager.createNewProject(projectType="legion", isTemp=True)
         logic.activeProject = project
@@ -636,6 +690,66 @@ class WebRuntimeProjectRestoreTest(unittest.TestCase):
             self.assertIn("53.0%", payload["progress"]["summary"])
             self.assertIn("Requests 2534/4720", payload["progress"]["summary"])
             self.assertEqual(13, payload["progress"]["estimated_remaining"])
+            self.assertEqual("(53%)", runtime.get_process_output_tail(process_id, max_chars=5))
+            self.assertEqual("", runtime.get_process_output_tail(process_id + 1000, max_chars=5))
+        finally:
+            active_project = getattr(logic, "activeProject", None)
+            if active_project is not None:
+                runtime._close_active_project()
+
+    def test_get_process_output_returns_only_the_requested_chunk(self):
+        project_manager, logic, runtime = self._create_runtime()
+        project = project_manager.createNewProject(projectType="legion", isTemp=True)
+        logic.activeProject = project
+        output = "héllo-" + ("x" * 1000) + "-tail"
+        nul_output = "before\x00after-nul"
+
+        try:
+            runtime._ensure_process_tables()
+            session = project.database.session()
+            try:
+                process_ids = []
+                for status, output_text in (("Finished", output), ("Finished", nul_output), ("Running", None)):
+                    inserted = session.execute(text(
+                        "INSERT INTO process (name, command, status) VALUES ('tool', 'echo test', :status)"
+                    ), {"status": status})
+                    process_id = int(inserted.lastrowid or 0)
+                    process_ids.append(process_id)
+                    if output_text is not None:
+                        session.execute(text(
+                            "INSERT INTO process_output (processId, output) VALUES (:process_id, :output)"
+                        ), {"process_id": process_id, "output": output_text})
+                session.commit()
+            finally:
+                session.close()
+            full_id, nul_id, empty_id = process_ids
+
+            payload = runtime.get_process_output(full_id, offset=3, max_chars=300)
+            # Polling must not ship (or load) the whole output on every request.
+            self.assertNotIn("output", payload)
+            self.assertEqual(output[3:303], payload["output_chunk"])
+            self.assertEqual(len(output), payload["output_length"])
+            self.assertEqual(303, payload["next_offset"])
+            self.assertTrue(payload["completed"])
+
+            tail = runtime.get_process_output(full_id, offset=len(output) - 4, max_chars=300)
+            self.assertEqual("tail", tail["output_chunk"])
+            past_end = runtime.get_process_output(full_id, offset=len(output) + 10)
+            self.assertEqual("", past_end["output_chunk"])
+            self.assertEqual(len(output) + 10, past_end["next_offset"])
+
+            # SQLite text functions stop at NUL; such output still comes back whole.
+            nul_payload = runtime.get_process_output(nul_id)
+            self.assertEqual(nul_output, nul_payload["output_chunk"])
+            self.assertEqual(len(nul_output), nul_payload["output_length"])
+
+            empty = runtime.get_process_output(empty_id)
+            self.assertEqual("", empty["output_chunk"])
+            self.assertEqual(0, empty["output_length"])
+            self.assertFalse(empty["completed"])
+
+            self.assertEqual(output, runtime.get_process_output_text(full_id))
+            self.assertEqual("", runtime.get_process_output_text(empty_id))
         finally:
             active_project = getattr(logic, "activeProject", None)
             if active_project is not None:

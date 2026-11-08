@@ -20,7 +20,7 @@ import ntpath
 import os
 import shutil
 import sys
-from typing import Tuple
+from typing import Optional, Tuple
 
 from app.Project import Project, ProjectProperties
 from app.core.common import Wordlist, getTempFolder
@@ -70,7 +70,14 @@ class ProjectManager:
         )
         return Project(projectProperties, repositoryContainer, database)
 
-    def openExistingProject(self, projectName: str, projectType: str = "legion") -> Project:
+    def openExistingProject(self, projectName: str, projectType: str = "legion",
+                            mark_interrupted_processes: bool = True) -> Project:
+        """Open the project file at projectName.
+
+        mark_interrupted_processes: mark processes the file still records as Running/Waiting as interrupted;
+        they belong to an earlier session (e.g. one that crashed), so their PIDs are stale. saveProjectAs
+        passes False: processes started before a Save As keep running and update their own rows.
+        """
         self.logger.info(f"Opening existing project: {projectName}...")
         database = self.__createDatabase(projectName)
         try:
@@ -101,6 +108,14 @@ class ProjectManager:
         except SADatabaseError as exc:
             database.dispose()
             raise DatabaseIntegrityError(f"Failed to initialise repositories: {exc}") from exc
+        if mark_interrupted_processes:
+            try:
+                interrupted = repositoryContainer.processRepository.markInterruptedProcesses()
+                if interrupted:
+                    self.logger.info(f"Marked {interrupted} process(es) left running by an earlier session "
+                                     f"as interrupted.")
+            except Exception:
+                self.logger.exception("Failed to mark interrupted processes when opening the project")
         return Project(projectProperties, repositoryContainer, database)
 
     def closeProject(self, project: Project) -> None:
@@ -126,7 +141,12 @@ class ProjectManager:
 
     # this function copies the current project files and folder to a new location
     # if the replace flag is set to 1, it overwrites the destination file and folder
-    def saveProjectAs(self, project: Project, fileName: str, replace=0, projectType="legion") -> Project:
+    def saveProjectAs(self, project: Project, fileName: str, replace=0, projectType="legion") -> Optional[Project]:
+        """Copy the project to fileName and return the reopened project.
+
+        Returns None (and writes nothing) when the target already exists and replace is 0,
+        so callers can ask the user whether to overwrite.
+        """
         self.logger.info(f"Saving project {project.properties.projectName}...")
         toolOutputFolder, normalizedFileName = self.__determineOutputFolder(fileName, projectType)
         source_project_name = str(project.properties.projectName or "")
@@ -136,12 +156,14 @@ class ProjectManager:
         same_output_folder = self._same_path(toolOutputFolder, source_output_folder)
         if same_db_path and same_output_folder:
             self.logger.info("Save target matches current project path; skipping SaveAs copy/reopen.")
+            self.__keepProjectAtItsPath(project, normalizedFileName)
             return project
 
-        # check if filename already exists (skip the check if we want to replace the file)
-        if replace == 0 and fileExists(self.shell, normalizedFileName):
+        # check if filename already exists (skip the check if we want to replace the file, or if the
+        # existing file is this project's own database)
+        if replace == 0 and not same_db_path and fileExists(self.shell, normalizedFileName):
             self.logger.warning(f"File {normalizedFileName} already exists and replace flag not set; skipping save.")
-            return project
+            return None
 
         try:
             project.database.verify_integrity()
@@ -149,21 +171,22 @@ class ProjectManager:
             self.logger.error(f"Aborting save: integrity check failed for {project.properties.projectName}: {exc}")
             raise
 
-        # perform safe SQLite backup
-        try:
-            project.database.backup_to(normalizedFileName)
-        except DatabaseIntegrityError as exc:
-            self.logger.error(f"Failed to backup database to {normalizedFileName}: {exc}")
-            raise
+        if not same_db_path:  # never back a database up onto its own file
+            # perform safe SQLite backup
+            try:
+                project.database.backup_to(normalizedFileName)
+            except DatabaseIntegrityError as exc:
+                self.logger.error(f"Failed to backup database to {normalizedFileName}: {exc}")
+                raise
 
-        # Ensure the copied database is readable before proceeding
-        validation_db = None
-        try:
-            validation_db = Database(normalizedFileName)
-            validation_db.verify_integrity()
-        finally:
-            if validation_db:
-                validation_db.dispose()
+            # Ensure the copied database is readable before proceeding
+            validation_db = None
+            try:
+                validation_db = Database(normalizedFileName)
+                validation_db.verify_integrity()
+            finally:
+                if validation_db:
+                    validation_db.dispose()
 
         # copy tool output folder contents
         if same_output_folder:
@@ -176,15 +199,48 @@ class ProjectManager:
                     self.logger.info(f"Merging tool output into existing folder {toolOutputFolder}")
             shutil.copytree(project.properties.outputFolder, toolOutputFolder, dirs_exist_ok=True)
 
-        if project.properties.isTemporary and not same_db_path:
+        if same_db_path:
+            was_temporary = project.properties.isTemporary
+            old_output_folder = project.properties.outputFolder
+            if not same_output_folder:
+                # The project keeps being used as-is, so point it (and its wordlists, which live in the
+                # output folder) at the copied output folder before removing the temporary original.
+                usernamesWordList, passwordWordList = self.__createUsernameAndPasswordWordLists(toolOutputFolder)
+                project.properties = project.properties._replace(
+                    outputFolder=toolOutputFolder, usernamesWordList=usernamesWordList,
+                    passwordWordList=passwordWordList
+                )
+            self.__keepProjectAtItsPath(project, normalizedFileName)
+            if was_temporary and not same_output_folder:
+                self.shell.remove_directory(old_output_folder)
+            self.logger.info(f"Project saved as {normalizedFileName}.")
+            return project
+
+        # Reopen at the new path first so a failure leaves the source project intact. Processes started
+        # before the save keep running and update their rows, so they must not be marked interrupted.
+        saved_project = self.openExistingProject(normalizedFileName, projectType, mark_interrupted_processes=False)
+
+        # The source database engine is deliberately not disposed here: work started before the save
+        # (e.g. a running tool's completion callback) may still hold its repositories, and its open
+        # connection keeps the removed temporary file readable until that work finishes.
+
+        if project.properties.isTemporary:
             self.shell.remove_file(project.properties.projectName)
         if project.properties.isTemporary and not same_output_folder:
             self.shell.remove_directory(project.properties.outputFolder)
 
         self.logger.info(f"Project saved as {normalizedFileName}.")
-        if same_db_path:
-            return project
-        return self.openExistingProject(normalizedFileName, projectType)
+        return saved_project
+
+    @staticmethod
+    def __keepProjectAtItsPath(project: Project, projectName: str) -> None:
+        """A project saved onto its own database file is kept as-is: it now lives at a path the user
+        chose, so it must stop being temporary (closeProject deletes a temporary project's files)."""
+        if not project.properties.isTemporary:
+            return
+        project.properties = project.properties._replace(
+            isTemporary=False, workingDirectory=f"{ntpath.dirname(projectName)}/"
+        )
 
     @staticmethod
     def _same_path(path_a: str, path_b: str) -> bool:

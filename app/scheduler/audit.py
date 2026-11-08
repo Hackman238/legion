@@ -1,6 +1,11 @@
+import logging
 from typing import Dict
 
 from sqlalchemy import text
+
+from app.scheduler.schema_cache import ensure_schema_once, ensure_column
+
+logger = logging.getLogger(__name__)
 
 
 AUDIT_COLUMNS = (
@@ -32,17 +37,14 @@ AUDIT_COLUMNS = (
 )
 
 
-def _ensure_column(session, table_name: str, column_name: str, column_type: str):
-    rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-    existing = {str(row[1]) for row in rows if len(row) > 1}
-    if str(column_name) in existing:
-        return
-    session.execute(text(
-        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-    ))
+_ensure_column = ensure_column
 
 
 def _ensure_table(session):
+    ensure_schema_once(session, "decision_log", _ensure_table_uncached, ["scheduler_decision_log"])
+
+
+def _ensure_table_uncached(session):
     session.execute(text(
         "CREATE TABLE IF NOT EXISTS scheduler_decision_log ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -120,6 +122,12 @@ def log_scheduler_decision(database, record: Dict[str, str]):
         session.commit()
     except Exception:
         session.rollback()
+        logger.warning(
+            "Failed to log scheduler decision for %s on %s.",
+            str((record or {}).get("tool_id", "") or ""),
+            str((record or {}).get("host_ip", "") or ""),
+            exc_info=True,
+        )
     finally:
         session.close()
 
@@ -154,11 +162,17 @@ def update_scheduler_decision_for_approval(
             "SELECT id FROM scheduler_decision_log "
             "WHERE approval_id = :approval_id ORDER BY id DESC LIMIT 1"
         ), {"approval_id": approval_key}).fetchone()
-        if row is None:
+        if row is None and approval_key.isdigit():
+            # Match "approval #<id>" only when no further digit follows, so "#1" never matches "#12".
+            # (GLOB is case-sensitive and the key is digits only, so it needs no escaping.)
             row = session.execute(text(
                 "SELECT id FROM scheduler_decision_log "
-                "WHERE reason LIKE :needle ORDER BY id DESC LIMIT 1"
-            ), {"needle": f"%approval #{approval_key}%"}).fetchone()
+                "WHERE reason GLOB :at_end OR reason GLOB :before_non_digit "
+                "ORDER BY id DESC LIMIT 1"
+            ), {
+                "at_end": f"*approval #{approval_key}",
+                "before_non_digit": f"*approval #{approval_key}[^0-9]*",
+            }).fetchone()
         if row is None:
             return None
 
@@ -192,6 +206,7 @@ def update_scheduler_decision_for_approval(
         return _row_to_dict(result, updated_row)
     except Exception:
         session.rollback()
+        logger.warning("Failed to update scheduler decision for approval %s.", approval_id, exc_info=True)
         return None
     finally:
         session.close()
