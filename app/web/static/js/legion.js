@@ -3803,18 +3803,103 @@ async function refreshProjectListAction() {
             pathCell.className = "path-cell";
             tr.appendChild(pathCell);
             const actions = document.createElement("td");
+            actions.className = "host-actions";
             const openButton = document.createElement("button");
             openButton.type = "button";
             openButton.textContent = project.is_current ? "Current" : "Open";
             openButton.disabled = Boolean(project.is_current) || project.exists === false;
             openButton.addEventListener("click", () => openWorkspacePath(String(project.path || "")));
             actions.appendChild(openButton);
+            if (!project.is_current && project.exists !== false) {
+                const renameButton = document.createElement("button");
+                renameButton.type = "button";
+                renameButton.className = "icon-btn";
+                renameButton.title = "Rename project";
+                renameButton.setAttribute("aria-label", `Rename ${project.name || "project"}`);
+                renameButton.innerHTML = '<i class="fa-solid fa-pen" aria-hidden="true"></i>';
+                renameButton.addEventListener("click", () => beginProjectRename(tr, project));
+                actions.appendChild(renameButton);
+                const deleteButton = document.createElement("button");
+                deleteButton.type = "button";
+                deleteButton.className = "icon-btn icon-btn-danger";
+                deleteButton.title = "Delete project file and its tool output";
+                deleteButton.setAttribute("aria-label", `Delete ${project.name || "project"}`);
+                deleteButton.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+                deleteButton.addEventListener("click", () => deleteProjectAction(project));
+                actions.appendChild(deleteButton);
+            }
             tr.appendChild(actions);
             body.appendChild(tr);
         });
         setText("open-workspace-meta", `${projects.length} project${projects.length === 1 ? "" : "s"} found in the temp and autosave folders on the Legion host.`);
     } catch (err) {
         setText("open-workspace-meta", `Could not list projects: ${err.message}`);
+    }
+}
+
+function beginProjectRename(row, project) {
+    const nameCell = row?.firstElementChild;
+    if (!nameCell || nameCell.querySelector("input")) {
+        return;
+    }
+    const original = String(project.name || "");
+    nameCell.textContent = "";
+    const form = document.createElement("form");
+    form.className = "inline-rename";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = original.replace(/\.legion$/i, "");
+    input.setAttribute("aria-label", "New project name");
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = "Save";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => { nameCell.textContent = original; });
+    form.append(input, save, cancel);
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const newName = input.value.trim();
+        if (!newName || `${newName}.legion` === original || newName === original) {
+            nameCell.textContent = original;
+            return;
+        }
+        save.disabled = true;
+        try {
+            const body = await postJson("/api/project/rename", {path: String(project.path || ""), new_name: newName});
+            setActionStatus(`Renamed ${original} to ${body?.project?.name || newName}`);
+            await refreshProjectListAction();
+        } catch (err) {
+            setActionStatus(`Rename failed: ${err.message}`, true);
+            nameCell.textContent = original;
+        }
+    });
+    nameCell.appendChild(form);
+    input.focus();
+    input.select();
+}
+
+async function deleteProjectAction(project) {
+    const path = String(project?.path || "").trim();
+    if (!path) {
+        return;
+    }
+    const confirmed = await confirmAction({
+        title: `Delete ${project.name || "project"}?`,
+        message: "The project file and its tool-output folder (screenshots, wordlists, tool logs) are removed from disk.",
+        detail: path,
+        confirmLabel: "Delete project",
+    });
+    if (!confirmed) {
+        return;
+    }
+    try {
+        await postJson("/api/project/delete", {path});
+        setActionStatus(`Deleted ${project.name || path}`);
+        await refreshProjectListAction();
+    } catch (err) {
+        setActionStatus(`Delete failed: ${err.message}`, true);
     }
 }
 

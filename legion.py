@@ -264,6 +264,21 @@ def build_arg_parser():
     )
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
     parser.add_argument(
+        "--nmap-xml",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="Headless: import this nmap XML report (repeatable) instead of, or as well as, scanning",
+    )
+    parser.add_argument(
+        "--project",
+        type=str,
+        default="",
+        metavar="FILE",
+        help="Headless: open this .legion project (created if missing) and work in it instead of a temporary project; "
+             "results stay in the file",
+    )
+    parser.add_argument(
         "--discovery",
         action="store_true",
         help="Headless: run an nmap host-discovery sweep (-sn); with --staged-scan it precedes the stages",
@@ -438,16 +453,63 @@ if __name__ == "__main__":
         nmapExporter = DefaultNmapExporter(shell, appLogger)
         toolCoordinator = ToolCoordinator(shell, nmapExporter)
         logic = Logic(shell, projectManager, toolCoordinator)
-        startupLog.info("Creating temporary project for headless mode...")
-        logic.createNewTemporaryProject()
+        nmap_xml_inputs = [str(item or "").strip() for item in list(getattr(args, "nmap_xml", []) or []) if str(item or "").strip()]
+        project_file = str(getattr(args, "project", "") or "").strip()
+        if project_file and not project_file.lower().endswith(".legion"):
+            project_file = f"{project_file}.legion"
 
-        # Import targets from input file
-        if not args.input_file or not os.path.isfile(args.input_file):
-            print("Error: --input-file is required and must exist in headless mode.", file=sys.stderr)
+        # Something has to feed the run: targets, XML reports, or an existing project to act on or export.
+        if args.input_file and not os.path.isfile(args.input_file):
+            print(f"Error: --input-file not found: {args.input_file}", file=sys.stderr)
             sys.exit(1)
+        missing_xml = [path for path in nmap_xml_inputs if not os.path.isfile(path)]
+        if missing_xml:
+            print(f"Error: --nmap-xml not found: {', '.join(missing_xml)}", file=sys.stderr)
+            sys.exit(1)
+        if (args.staged_scan or args.discovery) and not args.input_file:
+            print("Error: --discovery and --staged-scan need --input-file for the targets to scan.", file=sys.stderr)
+            sys.exit(1)
+        if not args.input_file and not nmap_xml_inputs and not (project_file and os.path.isfile(project_file)):
+            print("Error: headless mode needs --input-file, --nmap-xml or an existing --project.", file=sys.stderr)
+            sys.exit(1)
+
+        if project_file:
+            project_file = os.path.abspath(os.path.expanduser(project_file))
+            if os.path.isfile(project_file):
+                startupLog.info(f"Opening project {project_file} for headless mode...")
+                logic.activeProject = projectManager.openExistingProject(project_file, projectType="legion")
+            else:
+                startupLog.info(f"Creating project {project_file} for headless mode...")
+                logic.createNewTemporaryProject()
+                created = projectManager.saveProjectAs(logic.activeProject, project_file, replace=1, projectType="legion")
+                if not created:
+                    print(f"Error: could not create project {project_file}", file=sys.stderr)
+                    sys.exit(1)
+                logic.activeProject = created
+        else:
+            startupLog.info("Creating temporary project for headless mode...")
+            logic.createNewTemporaryProject()
+
         session = logic.activeProject.database.session()
         hostRepository = logic.activeProject.repositoryContainer.hostRepository
-        import_targets_from_textfile(session, hostRepository, args.input_file)
+        if args.input_file:
+            import_targets_from_textfile(session, hostRepository, args.input_file)
+
+        # Import nmap XML reports handed in on the command line
+        xml_import_failed = False
+        for xml_report in nmap_xml_inputs:
+            try:
+                import_nmap_xml_into_project(
+                    project=logic.activeProject,
+                    xml_path=xml_report,
+                    output="",
+                    update_progress_observable=None,
+                    host_repository=hostRepository,
+                )
+                print(f"Imported {xml_report}")
+            except Exception as exc:
+                xml_import_failed = True
+                print(f"Error: could not import {xml_report}: {exc}", file=sys.stderr)
 
         # Run nmap scan if requested
         nmap_xml = None
@@ -558,6 +620,8 @@ if __name__ == "__main__":
             else:
                 print("Error: --output-file must end with .json or .legion", file=sys.stderr)
                 sys.exit(1)
+        elif project_file:
+            print(f"Results saved in project {project_file}")
         else:
             print("No --output-file specified, skipping export.")
 
@@ -568,7 +632,7 @@ if __name__ == "__main__":
         except Exception as exc:
             startupLog.warning(f"Could not clean up the headless project: {exc}")
 
-        if nmap_failed:
+        if nmap_failed or xml_import_failed:
             print("Headless Legion run finished with errors (nmap scan/import failed).", file=sys.stderr)
             sys.exit(1)
         print("Headless Legion run complete.")

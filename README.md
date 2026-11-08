@@ -74,10 +74,14 @@ python legion.py --web --web-transparent-ui           # enable translucent UI ef
 
 ```shell
 python legion.py --headless --input-file targets.txt --staged-scan --run-actions --output-file results.json
+python legion.py --headless --nmap-xml scan1.xml --nmap-xml scan2.xml --project client.legion   # import into a project
+python legion.py --headless --project client.legion --output-file client.json                    # export a project
 ```
 
-`--output-file` accepts `.json` (hosts, ports, services, scripts, notes, CVEs and screenshots) or `.legion` (a project
-file you can open in the UI). The process exits non-zero if the scan or import fails.
+`--input-file` imports targets, `--nmap-xml` imports finished nmap reports, and `--project` works inside a `.legion`
+file (created when missing) instead of a throwaway temporary project. `--output-file` accepts `.json` (hosts, ports,
+services, scripts, notes, CVEs and screenshots) or `.legion` (a project file you can open in the UI). The process exits
+non-zero if a scan or import fails.
 
 ### MCP server
 
@@ -141,11 +145,17 @@ A `Dockerfile` is included for local builds (`docker build -t legion .`). Pre-bu
 
 | What | Where |
 | --- | --- |
-| Runtime data, projects, logs | `${LEGION_HOME:-~/.local/share/legion}` |
-| Action mappings (scheduler, port and host actions, terminal launchers) | `${LEGION_HOME}/legion.conf` |
+| Runtime data, config, logs, autosaves | `${LEGION_HOME:-~/.local/share/legion}` |
+| Temporary projects, running tool output | `${LEGION_TMPDIR:-/tmp/legion}` |
+| Action mappings (scheduler, port and host actions) and staged-scan stages | `${LEGION_HOME}/legion.conf` (editable under **Settings > Application**) |
 | Scheduler and AI provider preferences | `${LEGION_HOME}/scheduler-ai.json` |
 | API keys | OS keyring or encrypted local store, never the JSON file; `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `SHODAN_API_KEY`, `CHAOS_API_KEY` and `GRAYHATWARFARE_API_KEY` are also honoured |
 | Tool paths, providers, engagement policy | **Settings** in the web UI |
+| Web UI token | `--web-token` or `LEGION_WEB_TOKEN` (see the command-line reference) |
+| Extra pipette definitions | `LEGION_PIPETTES_PATH` (directory of pipette JSON files, see [docs/pipettes.md](docs/pipettes.md)) |
+
+`GET /health` answers `{"status": "ok"}` without a token, for container health checks. The REST API behind the web UI
+is documented in [docs/api.md](docs/api.md).
 
 Exploit-DB references for vulners CVEs are looked up offline from the bundled `pyexploitdb` data; run
 `python primeExploitDb.py` to fetch or refresh that data (this is the only step that needs network access).
@@ -161,6 +171,8 @@ Exploit-DB references for vulners CVEs are looked up offline from the bundled `p
 | `--web-transparent-ui` | Enable translucent UI effects (the UI is opaque by default). |
 | `--headless` | Run without a UI, driven by the options below. |
 | `--input-file FILE` | Text file of targets, one per line (IPs, subnets, hostnames, URLs). |
+| `--nmap-xml FILE` | Headless: import this nmap XML report; repeat the option for several reports. |
+| `--project FILE` | Headless: open (or create) this `.legion` project and keep the results in it instead of a temporary project. |
 | `--discovery` | Headless: run an nmap host-discovery sweep (`-sn`) of the targets; with `--staged-scan` it runs first. |
 | `--staged-scan` | Headless: run the `[StagedNmapSettings]` stages from `legion.conf` (service detection per port group, then NSE scripts), importing each stage. |
 | `--nmap-args ARGS` | Headless: extra nmap arguments appended to every stage. |

@@ -609,6 +609,12 @@ class WebRuntime:
     def create_new_temporary_project(self) -> Dict[str, Any]:
         return web_runtime_projects.create_new_temporary_project(self)
 
+    def rename_project(self, path: str, new_name: str) -> Dict[str, Any]:
+        return web_runtime_projects.rename_project(self, path, new_name)
+
+    def delete_project(self, path: str) -> Dict[str, Any]:
+        return web_runtime_projects.delete_project(self, path)
+
     def open_project(self, path: str) -> Dict[str, Any]:
         return web_runtime_projects.open_project(self, path)
 
