@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Legion sign in</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/legion.css') }}">
+</head>
+<body class="opaque-ui login-page">
+<div class="shell login-shell">
+    <header class="topbar">
+        <div class="topbar-brand"><h1>LEGION</h1></div>
+    </header>
+    <main class="panel login-panel">
+        <h2>Web token required</h2>
+        <p class="meta-note">This instance is reachable beyond localhost, so it asks for the token printed when Legion started (or given with <code>--web-token</code> / <code>LEGION_WEB_TOKEN</code>).</p>
+        <form method="post" action="/login" class="login-form" autocomplete="off">
+            <label>
+                Token
+                <input name="token" type="password" autofocus required placeholder="paste the web token">
+            </label>
+            {% if error %}<p class="meta-note login-error">{{ error }}</p>{% endif %}
+            <button type="submit">Sign in</button>
+        </form>
+        <p class="meta-note">API clients send it as <code>Authorization: Bearer &lt;token&gt;</code> or <code>X-Legion-Token</code>.</p>
+    </main>
+</div>
+</body>
+</html>

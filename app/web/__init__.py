@@ -42,7 +42,8 @@ def create_app(runtime: "WebRuntime") -> Flask:
         static_folder="static",
     )
     app.config["LEGION_WS_EVENT_HEARTBEAT_SECONDS"] = 30.0
-    app.config["LEGION_AUTH_ENABLED"] = False
+    app.config["LEGION_AUTH_ENABLED"] = False  # set with LEGION_WEB_TOKEN via configure_web_token()
+    app.config["LEGION_WEB_TOKEN"] = ""
     app.config["LEGION_WEB_BIND_HOST"] = "127.0.0.1"
     app.config["LEGION_WEB_BIND_LABEL"] = "Localhost only"
     app.config["LEGION_UI_OPAQUE"] = True
@@ -58,6 +59,7 @@ def create_app(runtime: "WebRuntime") -> Flask:
         return {
             "legion_web_bind_host": app.config.get("LEGION_WEB_BIND_HOST", "127.0.0.1"),
             "legion_web_bind_label": app.config.get("LEGION_WEB_BIND_LABEL", "Localhost only"),
+            "legion_auth_enabled": bool(app.config.get("LEGION_AUTH_ENABLED", False)),
             "legion_ui_opaque": bool(app.config.get("LEGION_UI_OPAQUE", False)),
             "legion_colorful_ascii_background": bool(app.config.get("LEGION_COLORFUL_ASCII_BACKGROUND", False)),
             "legion_version_label": f"v{applicationInfo.get('version', '0.0.0')}",
@@ -85,3 +87,10 @@ def create_app(runtime: "WebRuntime") -> Flask:
     else:
         app.config["LEGION_WEBSOCKETS_ENABLED"] = False
     return app
+
+
+def configure_web_token(app: Flask, token: str) -> None:
+    """Require this token (header, bearer or login cookie) on every page and API call."""
+    value = str(token or "").strip()
+    app.config["LEGION_WEB_TOKEN"] = value
+    app.config["LEGION_AUTH_ENABLED"] = bool(value)

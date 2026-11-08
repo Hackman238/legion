@@ -23,7 +23,13 @@
         <div class="topbar-meta">
             <span class="chip">{{ legion_version_label }}</span>
             <span class="chip">{{ legion_web_bind_label }}</span>
-            <span class="chip">No auth</span>
+            {% if legion_auth_enabled %}
+            <form method="post" action="/logout" class="chip-form">
+                <button class="chip chip-button" type="submit" title="Forget the web token on this browser">Token auth · sign out</button>
+            </form>
+            {% else %}
+            <span class="chip" title="No authentication: only bind to localhost, or pass --web-token when exposing the UI">No auth</span>
+            {% endif %}
             <span class="chip" id="live-status">Live</span>
         </div>
     </header>
