@@ -2423,6 +2423,25 @@
     </div>
 </div>
 
+<div id="confirm-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal host-remove-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="confirm-modal-title">Confirm</h2>
+            <button id="confirm-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p id="confirm-modal-message" class="meta-note"></p>
+        <p id="confirm-modal-detail" class="meta-note confirm-detail"></p>
+        <div class="modal-actions">
+            <button id="confirm-modal-cancel" type="button" data-modal-initial-focus>Cancel</button>
+            <button id="confirm-modal-confirm" type="button">Confirm</button>
+        </div>
+    </div>
+</div>
+
+<div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
 <div id="host-remove-modal" class="legion-modal-overlay" aria-hidden="true">
     <div class="legion-modal host-remove-modal" role="dialog" aria-modal="true" aria-labelledby="host-remove-modal-title">
         <div class="panel-header modal-header">
