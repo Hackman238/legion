@@ -165,3 +165,16 @@ def scan_history():
         return jsonify(service.scan_history(request.args.get("limit", 100)))
     except Exception as exc:
         return json_error(str(exc), 500)
+
+
+@scans_bp.post("/api/scans/history/<int:submission_id>/rerun")
+def scan_history_rerun(submission_id):
+    service = _scan_service()
+    try:
+        return jsonify(service.rerun_scan(submission_id)), 202
+    except KeyError as exc:
+        return json_error(str(exc), 404)
+    except (ValueError, FileNotFoundError) as exc:
+        return json_error(str(exc), 400)
+    except Exception as exc:
+        return json_error(str(exc), 500)

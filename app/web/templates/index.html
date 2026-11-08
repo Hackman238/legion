@@ -809,10 +809,20 @@
                 </div>
             </div>
         </div>
+        <div id="hosts-bulk-bar" class="table-bulk-bar" hidden>
+            <span id="hosts-bulk-count" class="table-bulk-count">0 selected</span>
+            <button id="hosts-bulk-rescan-button" type="button" title="Queue a rescan for every selected host">Rescan</button>
+            <button id="hosts-bulk-dig-deeper-button" type="button" title="Queue Dig Deeper for every selected host">Dig Deeper</button>
+            <button id="hosts-bulk-screenshots-button" type="button" title="Refresh screenshots for every selected host">Screenshots</button>
+            <button id="hosts-bulk-run-tool-button" type="button" title="Run one tool against every open service on the selected hosts">Run Tool</button>
+            <button id="hosts-bulk-remove-button" class="danger" type="button" title="Remove every selected host from the workspace">Remove</button>
+            <button id="hosts-bulk-clear-button" type="button" title="Clear the selection">Clear</button>
+        </div>
         <div class="table-wrap">
             <table>
                 <thead>
                 <tr>
+                    <th class="host-select-cell"><input id="hosts-select-all" type="checkbox" title="Select all visible hosts" aria-label="Select all visible hosts"></th>
                     <th></th>
                     <th>IP</th>
                     <th>Hostname</th>
@@ -1440,6 +1450,10 @@
             <label id="workspace-tool-target-wrapper" hidden>
                 Target
                 <select id="workspace-tool-target-select"></select>
+            </label>
+            <label id="workspace-tool-batch-wrapper" class="checkbox" hidden>
+                <input id="workspace-tool-batch" type="checkbox">
+                Run against all <span id="workspace-tool-batch-count">0</span> listed targets (one job each)
             </label>
             <p id="workspace-tool-context" class="meta-note"></p>
             <label>
@@ -2291,6 +2305,7 @@
                     <th>Mode</th>
                     <th>Created</th>
                     <th>Result</th>
+                    <th>Actions</th>
                 </tr>
                 </thead>
                 <tbody id="scan-history-body"></tbody>

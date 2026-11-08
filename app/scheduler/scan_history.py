@@ -230,6 +230,25 @@ def update_scan_submission(
         session.close()
 
 
+def get_scan_submission(database, submission_id: int) -> Optional[Dict[str, Any]]:
+    session = database.session()
+    try:
+        _ensure_table(session)
+        result = session.execute(text(
+            "SELECT " + ", ".join(SCAN_HISTORY_COLUMNS) + " "
+            "FROM scheduler_scan_submission WHERE id = :id LIMIT 1"
+        ), {"id": int(submission_id or 0)})
+        row = result.fetchone()
+        if row is None:
+            return None
+        item = dict(zip(result.keys(), row))
+        item["targets"] = _from_json(item.get("targets_json"), [])
+        item["scan_options"] = _from_json(item.get("scan_options_json"), {})
+        return item
+    finally:
+        session.close()
+
+
 def list_scan_submissions(database, limit: int = 200) -> List[Dict[str, Any]]:
     session = database.session()
     try:
