@@ -2353,6 +2353,43 @@ td button {
     text-align: center;
 }
 
+.host-select-cell {
+    width: 2rem;
+    text-align: center;
+}
+
+.host-select-cell input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+}
+
+.table-bulk-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0 0 0.6rem;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid rgba(123, 131, 255, 0.35);
+    border-radius: 8px;
+    background: rgba(123, 131, 255, 0.12);
+}
+
+.table-bulk-bar .table-bulk-count {
+    font-weight: 600;
+    margin-right: 0.4rem;
+}
+
+.table-bulk-bar button {
+    padding: 0.3rem 0.7rem;
+    font-size: 0.85rem;
+}
+
+.table-bulk-bar button.danger {
+    border-color: rgba(255, 99, 99, 0.6);
+    color: #ff8f8f;
+}
+
 .host-filter-cell .icon-btn,
 .service-filter-cell .icon-btn {
     margin-right: 0;

@@ -76,6 +76,10 @@ class ScanService:
         resolved_limit = max(1, min(resolved_limit, 1000))
         return ScanHistoryResponse.from_scans(self.runtime.get_scan_history(limit=resolved_limit)).to_dict()
 
+    def rerun_scan(self, submission_id: int) -> Dict[str, Any]:
+        job = self.runtime.rerun_scan_submission(int(submission_id))
+        return AcceptedJobResponse.from_job(job).to_dict()
+
     def run_discovery(self, payload: Any) -> Dict[str, Any]:
         request = DiscoveryRequest.from_payload(payload)
         return self.runtime.run_governed_discovery(request.target, run_actions=request.run_actions)

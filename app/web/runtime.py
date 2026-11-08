@@ -312,6 +312,9 @@ class WebRuntime:
     def get_scan_history(self, limit: int = 200) -> List[Dict[str, Any]]:
         return web_runtime_scheduler.get_scan_history(self, limit=limit)
 
+    def rerun_scan_submission(self, submission_id: int) -> Dict[str, Any]:
+        return web_runtime_scans.rerun_scan_submission(self, int(submission_id))
+
     @staticmethod
     def _project_listing_row(path: str, *, source: str, current_path: str = "") -> Dict[str, Any]:
         return web_runtime_projects.project_listing_row(

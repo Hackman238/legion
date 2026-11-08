@@ -14,6 +14,7 @@ const workspaceState = {
     selectedHostId: null,
     hostDetail: null,
     manualToolTargets: [],
+    bulkHostIds: new Set(),
     manualToolOptions: [],
     deviceCategoryRules: [],
     builtInDeviceCategories: [],
@@ -1869,9 +1870,25 @@ function renderHosts(hosts) {
         return;
     }
     body.innerHTML = "";
+    const knownHostIds = new Set(workspaceState.hosts.map((host) => parseInt(host.id, 10)).filter(Boolean));
+    Array.from(workspaceState.bulkHostIds).forEach((id) => {
+        if (!knownHostIds.has(id)) {
+            workspaceState.bulkHostIds.delete(id);
+        }
+    });
     workspaceState.hosts.forEach((host) => {
         const tr = document.createElement("tr");
         tr.dataset.hostId = String(host.id || "");
+        const selectCell = document.createElement("td");
+        selectCell.className = "host-select-cell";
+        const selectBox = document.createElement("input");
+        selectBox.type = "checkbox";
+        selectBox.dataset.hostSelect = String(host.id || "");
+        selectBox.checked = workspaceState.bulkHostIds.has(parseInt(host.id, 10));
+        selectBox.title = `Select ${String(host.hostname || host.ip || "host").trim()} for bulk actions`;
+        selectBox.setAttribute("aria-label", selectBox.title);
+        selectCell.appendChild(selectBox);
+        tr.appendChild(selectCell);
         const filterCell = document.createElement("td");
         filterCell.className = "host-filter-cell";
         const filterButton = document.createElement("button");
@@ -1937,11 +1954,141 @@ function renderHosts(hosts) {
         body.appendChild(tr);
     });
     setText("host-count", workspaceState.hosts.length);
+    renderHostBulkBar();
     renderHostSelector(workspaceState.hosts);
     renderHostSelectionState();
     syncCategoryFilterOptions();
     syncHostServiceFilterOptions();
     graphUpdateHostFilterOptions();
+}
+
+// ---- Bulk host selection ----
+function renderHostBulkBar() {
+    const bar = document.getElementById("hosts-bulk-bar");
+    const count = workspaceState.bulkHostIds.size;
+    if (bar) {
+        bar.hidden = count === 0;
+    }
+    setText("hosts-bulk-count", `${count} selected`);
+    const selectAll = document.getElementById("hosts-select-all");
+    if (selectAll) {
+        const visibleIds = visibleHostRowIds();
+        const selectedVisible = visibleIds.filter((id) => workspaceState.bulkHostIds.has(id)).length;
+        selectAll.checked = visibleIds.length > 0 && selectedVisible === visibleIds.length;
+        selectAll.indeterminate = selectedVisible > 0 && selectedVisible < visibleIds.length;
+    }
+}
+
+function visibleHostRowIds() {
+    const body = document.getElementById("hosts-body");
+    if (!body) {
+        return [];
+    }
+    return Array.from(body.querySelectorAll("tr[data-host-id]:not([hidden])"))
+        .map((row) => parseInt(row.dataset.hostId, 10))
+        .filter(Boolean);
+}
+
+function setHostBulkSelected(hostId, selected) {
+    const id = parseInt(hostId, 10);
+    if (!id) {
+        return;
+    }
+    if (selected) {
+        workspaceState.bulkHostIds.add(id);
+    } else {
+        workspaceState.bulkHostIds.delete(id);
+    }
+    const box = document.querySelector(`#hosts-body input[data-host-select="${id}"]`);
+    if (box) {
+        box.checked = Boolean(selected);
+    }
+    renderHostBulkBar();
+}
+
+function toggleAllVisibleHostsAction(selected) {
+    visibleHostRowIds().forEach((id) => setHostBulkSelected(id, selected));
+}
+
+function clearHostBulkSelectionAction() {
+    Array.from(workspaceState.bulkHostIds).forEach((id) => setHostBulkSelected(id, false));
+}
+
+function selectedBulkHosts() {
+    return workspaceState.hosts.filter((host) => workspaceState.bulkHostIds.has(parseInt(host.id, 10)));
+}
+
+async function bulkHostAction(action) {
+    return runExclusiveAction(`bulkHostAction:${action}`, () => bulkHostActionImpl(action));
+}
+
+async function bulkHostActionImpl(action) {
+    const hosts = selectedBulkHosts();
+    if (!hosts.length) {
+        setWorkspaceStatus("Select at least one host first", true);
+        return;
+    }
+    const labels = {rescan: "Rescan", "dig-deeper": "Dig Deeper", "refresh-screenshots": "Screenshot refresh", remove: "Remove"};
+    const label = labels[action] || action;
+    if (action === "remove") {
+        const preview = hosts.slice(0, 6).map((host) => host.ip || host.hostname || host.id).join(", ");
+        const confirmed = await confirmAction({
+            title: `Remove ${hosts.length} host${hosts.length === 1 ? "" : "s"}?`,
+            message: "Their ports, services, scripts, CVEs, notes and screenshots are deleted from this workspace.",
+            detail: preview + (hosts.length > 6 ? ` and ${hosts.length - 6} more` : ""),
+            confirmLabel: "Remove hosts",
+        });
+        if (!confirmed) {
+            return;
+        }
+    }
+    setWorkspaceStatus(`${label}: queueing for ${hosts.length} host${hosts.length === 1 ? "" : "s"}...`);
+    try {
+        const body = await postJson("/api/workspace/hosts/bulk-action", {
+            action,
+            host_ids: hosts.map((host) => parseInt(host.id, 10)),
+        });
+        const failed = Number(body?.failed || 0);
+        const succeeded = Number(body?.succeeded || 0);
+        if (failed) {
+            const firstError = (body?.results || []).find((item) => item.status === "error");
+            setWorkspaceStatus(`${label}: ${succeeded} succeeded, ${failed} failed${firstError ? ` (${firstError.error})` : ""}`, true);
+        } else {
+            setWorkspaceStatus(`${label} ${action === "remove" ? "completed" : "queued"} for ${succeeded} host${succeeded === 1 ? "" : "s"}`);
+        }
+        if (action === "remove") {
+            clearHostBulkSelectionAction();
+            await loadWorkspaceHosts();
+        }
+        await pollSnapshot();
+    } catch (err) {
+        setWorkspaceStatus(`${label} failed: ${err.message}`, true);
+    }
+}
+
+async function bulkRunToolAction() {
+    const hosts = selectedBulkHosts();
+    if (!hosts.length) {
+        setWorkspaceStatus("Select at least one host first", true);
+        return;
+    }
+    let targets = [];
+    try {
+        const perHost = await Promise.all(hosts.map((host) => fetchWorkspaceToolTargets({hostId: Number(host.id) || 0, limit: 2000})));
+        targets = perHost.flat();
+    } catch (err) {
+        setWorkspaceStatus(`Load tool targets failed: ${err.message}`, true);
+        return;
+    }
+    if (!targets.length) {
+        setWorkspaceStatus("The selected hosts have no open services to run a tool against", true);
+        return;
+    }
+    await openManualToolPicker({
+        targets,
+        batch: true,
+        contextLabel: `${targets.length} open service${targets.length === 1 ? "" : "s"} on ${hosts.length} selected host${hosts.length === 1 ? "" : "s"}`,
+    });
 }
 
 function hostMatchesServiceFilter(host, serviceFilter) {
@@ -3160,7 +3307,7 @@ async function applyManualToolTarget(target, {preferredToolId = ""} = {}) {
     });
 }
 
-async function renderManualToolTargets(targets, {preferredTargetKey = "", preferredToolId = ""} = {}) {
+async function renderManualToolTargets(targets, {preferredTargetKey = "", preferredToolId = "", batch = false} = {}) {
     workspaceState.manualToolTargets = Array.isArray(targets) ? targets : [];
     const wrapper = document.getElementById("workspace-tool-target-wrapper");
     const select = document.getElementById("workspace-tool-target-select");
@@ -3168,6 +3315,15 @@ async function renderManualToolTargets(targets, {preferredTargetKey = "", prefer
         return;
     }
     select.innerHTML = "";
+    const batchWrapper = document.getElementById("workspace-tool-batch-wrapper");
+    const batchBox = document.getElementById("workspace-tool-batch");
+    if (batchWrapper) {
+        batchWrapper.hidden = workspaceState.manualToolTargets.length < 2;
+    }
+    setText("workspace-tool-batch-count", workspaceState.manualToolTargets.length);
+    if (batchBox) {
+        batchBox.checked = Boolean(batch) && workspaceState.manualToolTargets.length > 1;
+    }
     if (!workspaceState.manualToolTargets.length) {
         wrapper.hidden = true;
         return;
@@ -3195,6 +3351,7 @@ async function openManualToolPicker({
     hostId = 0,
     service = "",
     preferredToolId = "",
+    batch = false,
 } = {}) {
     closeRibbonMenus();
     setManualScanModalOpen(true);
@@ -3209,7 +3366,7 @@ async function openManualToolPicker({
             });
         }
         if (resolvedTargets.length) {
-            await renderManualToolTargets(resolvedTargets, {preferredToolId});
+            await renderManualToolTargets(resolvedTargets, {preferredToolId, batch});
             return;
         }
     } catch (err) {
@@ -3218,6 +3375,10 @@ async function openManualToolPicker({
     workspaceState.manualToolTargets = [];
     const wrapper = document.getElementById("workspace-tool-target-wrapper");
     const select = document.getElementById("workspace-tool-target-select");
+    const batchWrapper = document.getElementById("workspace-tool-batch-wrapper");
+    if (batchWrapper) {
+        batchWrapper.hidden = true;
+    }
     if (wrapper) {
         wrapper.hidden = true;
     }
@@ -5958,9 +6119,44 @@ function renderScanHistory(scans) {
         tr.appendChild(makeCell(scan.scan_mode || ""));
         tr.appendChild(makeCell(formatTimestamp(scan.created_at || "")));
         tr.appendChild(makeCell(scan.result_summary || ""));
+        const actions = document.createElement("td");
+        actions.className = "host-actions";
+        if (RERUNNABLE_SCAN_KINDS.has(String(scan.submission_kind || "").toLowerCase()) && scan.id) {
+            const rerun = document.createElement("button");
+            rerun.type = "button";
+            rerun.className = "icon-btn";
+            rerun.title = "Re-run this scan with the same settings";
+            rerun.setAttribute("aria-label", rerun.title);
+            rerun.innerHTML = '<i class="fa-solid fa-rotate-right" aria-hidden="true"></i>';
+            rerun.addEventListener("click", async (event) => {
+                event.stopPropagation();
+                await rerunScanAction(scan.id);
+            });
+            actions.appendChild(rerun);
+        }
+        tr.appendChild(actions);
         body.appendChild(tr);
     });
     setText("scan-history-count", (scans || []).length);
+}
+
+const RERUNNABLE_SCAN_KINDS = new Set(["nmap_scan", "import_nmap_xml", "passive_capture_scan"]);
+
+async function rerunScanAction(submissionId) {
+    const id = parseInt(submissionId, 10);
+    if (!id) {
+        return;
+    }
+    return runExclusiveAction(`rerunScanAction:${id}`, async () => {
+        setWorkspaceStatus(`Re-running scan #${id}...`);
+        try {
+            const body = await postJson(`/api/scans/history/${id}/rerun`, {});
+            setWorkspaceStatus(`Scan #${id} re-queued (job ${body?.job?.id || "?"})`);
+            await pollSnapshot();
+        } catch (err) {
+            setWorkspaceStatus(`Re-run failed: ${err.message}`, true);
+        }
+    });
 }
 
 function renderCredentialCaptureRecentCaptures(captures) {
@@ -11366,17 +11562,30 @@ async function runManualTool() {
         return;
     }
     const parameters = collectManualToolParameters();
+    const batchBox = document.getElementById("workspace-tool-batch");
+    const batchTargets = batchBox && batchBox.checked && !batchBox.closest("[hidden]")
+        ? workspaceState.manualToolTargets.map((target) => ({
+            host_ip: String(target?.host_ip || "").trim(),
+            port: String(target?.port || "").trim(),
+            protocol: String(target?.protocol || "tcp").trim() || "tcp",
+        })).filter((target) => target.host_ip && target.port)
+        : [];
     dismissManualScanModalAction();
-    setWorkspaceStatus("Queueing tool run...");
+    setWorkspaceStatus(batchTargets.length > 1 ? `Queueing ${batchTargets.length} tool runs...` : "Queueing tool run...");
     try {
-        const body = await postJson("/api/workspace/tools/run", {
-            host_ip: hostIp,
-            port,
-            protocol,
-            tool_id: toolId,
-            parameters,
-        });
-        setWorkspaceStatus(`Tool run queued (job ${body?.job?.id || "?"})`);
+        const payload = {host_ip: hostIp, port, protocol, tool_id: toolId, parameters};
+        if (batchTargets.length > 1) {
+            payload.targets = batchTargets;
+        }
+        const body = await postJson("/api/workspace/tools/run", payload);
+        const queued = Number(body?.queued || (body?.job ? 1 : 0));
+        const errors = Array.isArray(body?.errors) ? body.errors : [];
+        if (queued > 1 || errors.length) {
+            const suffix = errors.length ? `, ${errors.length} failed (${errors[0].error})` : "";
+            setWorkspaceStatus(`${queued} tool run${queued === 1 ? "" : "s"} queued${suffix}`, errors.length > 0);
+        } else {
+            setWorkspaceStatus(`Tool run queued (job ${body?.job?.id || "?"})`);
+        }
         await pollSnapshot();
     } catch (err) {
         setWorkspaceStatus(`Tool run failed: ${err.message}`, true);
@@ -12970,6 +13179,14 @@ function bindActionButtons() {
     const hostsBody = document.getElementById("hosts-body");
     if (hostsBody) {
         hostsBody.addEventListener("click", async (event) => {
+            const selectBox = event.target.closest("input[data-host-select]");
+            if (selectBox) {
+                setHostBulkSelected(selectBox.dataset.hostSelect, selectBox.checked);
+                return;
+            }
+            if (event.target.closest("td.host-select-cell")) {
+                return;
+            }
             const actionBtn = event.target.closest("button[data-host-action]");
             if (actionBtn) {
                 if (await handleHostActionButtonAction(actionBtn)) {
@@ -13154,6 +13371,13 @@ function bindActionButtons() {
     bind("approvals-export-csv-button", () => exportTableAction("scheduler_approvals"));
     bind("approvals-approve-all-button", () => bulkApprovalAction("approve"));
     bind("approvals-reject-all-button", () => bulkApprovalAction("reject"));
+    bind("hosts-bulk-rescan-button", () => bulkHostAction("rescan"));
+    bind("hosts-bulk-dig-deeper-button", () => bulkHostAction("dig-deeper"));
+    bind("hosts-bulk-screenshots-button", () => bulkHostAction("refresh-screenshots"));
+    bind("hosts-bulk-remove-button", () => bulkHostAction("remove"));
+    bind("hosts-bulk-run-tool-button", bulkRunToolAction);
+    bind("hosts-bulk-clear-button", clearHostBulkSelectionAction);
+    bind("hosts-select-all", (event) => toggleAllVisibleHostsAction(Boolean(event?.target?.checked)), "change");
     initTableEnhancements();
     bind("ribbon-export-services-csv-action-button", () => exportTableAction("services"));
     bind("ribbon-export-ports-csv-action-button", () => exportTableAction("ports"));
