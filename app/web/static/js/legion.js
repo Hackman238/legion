@@ -325,6 +325,7 @@ const uiModalState = {
     executionsOpen: false,
     findingsOpen: false,
     openWorkspaceOpen: false,
+    confirmOpen: false,
     hostRemoveOpen: false,
     graphNoteOpen: false,
     workspaceSwitchGuardOpen: false,
@@ -442,6 +443,7 @@ function updateBodyModalState() {
         || uiModalState.executionsOpen
         || uiModalState.findingsOpen
         || uiModalState.openWorkspaceOpen
+        || uiModalState.confirmOpen
         || uiModalState.hostRemoveOpen
         || uiModalState.graphNoteOpen
         || uiModalState.workspaceSwitchGuardOpen
@@ -1394,20 +1396,105 @@ function getProcessStatusClass(status) {
 
 function setActionStatus(text, isError = false) {
     const node = document.getElementById("action-status");
-    if (!node) {
-        return;
+    if (node) {
+        node.textContent = text;
+        node.style.color = isError ? "#ff9b9b" : "";
     }
-    node.textContent = text;
-    node.style.color = isError ? "#ff9b9b" : "";
+    showToast(text, isError ? "error" : "info");
 }
 
 function setWorkspaceStatus(text, isError = false) {
     const node = document.getElementById("workspace-status");
-    if (!node) {
+    if (node) {
+        node.textContent = text;
+        node.style.color = isError ? "#ff9b9b" : "";
+    }
+    showToast(text, isError ? "error" : "info");
+}
+
+// ---- Toast notifications: errors stay until dismissed, everything else fades ----
+const toastState = {recent: new Map()};
+
+function showToast(text, kind = "info", {sticky = null, timeoutMs = null} = {}) {
+    const message = String(text || "").trim();
+    const stack = typeof document !== "undefined" ? document.getElementById("toast-stack") : null;
+    if (!message || !stack) {
         return;
     }
-    node.textContent = text;
-    node.style.color = isError ? "#ff9b9b" : "";
+    if (kind !== "error" && (message.endsWith("...") || /^(idle|loading)/i.test(message))) {
+        return; // progress chatter stays in the status line only
+    }
+    const now = Date.now();
+    const last = toastState.recent.get(message) || 0;
+    if (now - last < 3000) {
+        return; // the same text within 3 s is a repeat, not news
+    }
+    toastState.recent.set(message, now);
+    if (toastState.recent.size > 50) {
+        toastState.recent.delete(toastState.recent.keys().next().value);
+    }
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${kind}`;
+    toast.setAttribute("role", kind === "error" ? "alert" : "status");
+    const body = document.createElement("span");
+    body.className = "toast-text";
+    body.textContent = message;
+    toast.appendChild(body);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "toast-close";
+    close.setAttribute("aria-label", "Dismiss notification");
+    close.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+    toast.appendChild(close);
+    const remove = () => {
+        toast.classList.add("is-leaving");
+        window.setTimeout(() => toast.remove(), 180);
+    };
+    close.addEventListener("click", remove);
+    stack.appendChild(toast);
+    while (stack.children.length > 6) {
+        stack.firstElementChild.remove();
+    }
+    const persistent = sticky === null ? kind === "error" : Boolean(sticky);
+    if (!persistent) {
+        window.setTimeout(remove, timeoutMs || (kind === "success" ? 4500 : 3500));
+    } else if (timeoutMs) {
+        window.setTimeout(remove, timeoutMs);
+    }
+}
+
+// ---- Generic confirmation dialog ----
+const confirmModalState = {resolve: null};
+
+function confirmAction({title = "Confirm", message = "", detail = "", confirmLabel = "Confirm", danger = true} = {}) {
+    const overlay = document.getElementById("confirm-modal");
+    if (!overlay) {
+        return Promise.resolve(window.confirm(message || title));
+    }
+    if (confirmModalState.resolve) {
+        confirmModalState.resolve(false);
+    }
+    setText("confirm-modal-title", title);
+    setText("confirm-modal-message", message);
+    setText("confirm-modal-detail", detail);
+    const confirmButton = document.getElementById("confirm-modal-confirm");
+    if (confirmButton) {
+        confirmButton.textContent = confirmLabel;
+        confirmButton.classList.toggle("danger-button", Boolean(danger));
+    }
+    setGenericModalOpen("confirm-modal", "confirmOpen", true);
+    return new Promise((resolve) => {
+        confirmModalState.resolve = resolve;
+    });
+}
+
+function resolveConfirmModal(result) {
+    const resolve = confirmModalState.resolve;
+    confirmModalState.resolve = null;
+    setGenericModalOpen("confirm-modal", "confirmOpen", false);
+    if (resolve) {
+        resolve(Boolean(result));
+    }
 }
 
 function setStartupWizardStatus(text, isError = false) {
@@ -3834,6 +3921,14 @@ async function copyToolInstallScriptAction() {
 
 async function startToolInstallAction() {
     const platform = currentToolInstallPlatform();
+    if (!(await confirmAction({
+        title: "Install Missing Tools",
+        message: `Run the generated ${platform} install script on this machine?`,
+        detail: "This runs package-manager and installer commands with sudo -n in the background. Review the script preview first.",
+        confirmLabel: "Install",
+    }))) {
+        return;
+    }
     setToolInstallStatus("Queueing install job...");
     try {
         const body = await postJson("/api/settings/tool-audit/install", {
@@ -3957,6 +4052,18 @@ async function restoreWorkspaceBundleSelectedAction(event) {
     const input = event?.target;
     const file = input?.files && input.files.length ? input.files[0] : null;
     if (!file) {
+        return;
+    }
+    const proceed = await confirmAction({
+        title: "Restore Workspace",
+        message: `Restore ${file.name} and replace the open workspace with it?`,
+        detail: "The current workspace is closed first; save it with Workspace > Save As if it has unsaved work.",
+        confirmLabel: "Restore",
+    });
+    if (!proceed) {
+        if (input) {
+            input.value = "";
+        }
         return;
     }
 
@@ -5265,6 +5372,9 @@ async function loadProcessOutput(processId, reset = true) {
 }
 
 async function killProcessAction(processId) {
+    if (!(await confirmAction({title: "Kill Process", message: `Stop process ${processId} now?`, confirmLabel: "Kill"}))) {
+        return;
+    }
     try {
         await postJson(`/api/processes/${processId}/kill`, {});
         setWorkspaceStatus(`Process ${processId} kill requested`);
@@ -5302,6 +5412,15 @@ async function closeProcessAction(processId) {
 }
 
 async function clearProcessesAction(resetAll) {
+    if (resetAll && !(await confirmAction({
+        title: "Hide All Non-Running Processes",
+        message: "Hide every finished, failed and killed process from the list?",
+        detail: "Their output stays in the project; hidden rows no longer appear in the process table.",
+        confirmLabel: "Hide All",
+        danger: false,
+    }))) {
+        return;
+    }
     try {
         await postJson("/api/processes/clear", {reset_all: Boolean(resetAll)});
         setWorkspaceStatus(resetAll ? "Hidden all non-running processes" : "Hidden finished/issues processes");
@@ -11046,6 +11165,9 @@ async function addCveEntry() {
 }
 
 async function deleteScript(scriptId) {
+    if (!(await confirmAction({title: "Delete Script", message: "Delete this script result from the host?", confirmLabel: "Delete"}))) {
+        return;
+    }
     try {
         const response = await fetch(`/api/workspace/scripts/${scriptId}`, {method: "DELETE"});
         if (!response.ok) {
@@ -11061,6 +11183,9 @@ async function deleteScript(scriptId) {
 }
 
 async function deleteCve(cveId) {
+    if (!(await confirmAction({title: "Delete CVE", message: "Delete this CVE entry from the host?", confirmLabel: "Delete"}))) {
+        return;
+    }
     try {
         const response = await fetch(`/api/workspace/cves/${cveId}`, {method: "DELETE"});
         if (!response.ok) {
@@ -11620,6 +11745,16 @@ async function createNewTemporaryProjectCore() {
 }
 
 async function createNewTemporaryProject() {
+    const isTemporary = String(document.getElementById("project-kind")?.textContent || "").trim() === "temporary";
+    const hostCount = Number(document.getElementById("stat-hosts")?.textContent || 0);
+    if (isTemporary && hostCount > 0 && !(await confirmAction({
+        title: "New Workspace",
+        message: `The current temporary workspace has ${hostCount} host${hostCount === 1 ? "" : "s"} and has not been saved.`,
+        detail: "Starting a new workspace discards it. Use Workspace > Save As first to keep it.",
+        confirmLabel: "Discard and Create",
+    }))) {
+        return;
+    }
     try {
         await withWorkspaceSwitchGuard("creating a new workspace", createNewTemporaryProjectCore);
     } catch (err) {
@@ -12360,6 +12495,9 @@ function bindActionButtons() {
     bind("findings-severity-filter", renderFindings, "change");
     bind("workspace-plan-preview-button", previewPlanAction);
     bind("open-workspace-modal-close", () => setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false));
+    bind("confirm-modal-close", () => resolveConfirmModal(false));
+    bind("confirm-modal-cancel", () => resolveConfirmModal(false));
+    bind("confirm-modal-confirm", () => resolveConfirmModal(true));
     bind("open-workspace-path-button", () => openWorkspacePath(""));
     bind("open-workspace-refresh-button", refreshProjectListAction);
     bind("ribbon-logging-ai-provider-button", openProviderLogsAction);
@@ -13023,6 +13161,10 @@ function bindActionButtons() {
             setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false);
             return;
         }
+        if (uiModalState.confirmOpen) {
+            resolveConfirmModal(false);
+            return;
+        }
         if (uiModalState.interfaceSettingsOpen) {
             setInterfaceSettingsModalOpen(false);
             return;
@@ -13086,6 +13228,7 @@ function bindActionButtons() {
             || uiModalState.executionsOpen
             || uiModalState.findingsOpen
             || uiModalState.openWorkspaceOpen
+            || uiModalState.confirmOpen
             || uiModalState.hostRemoveOpen
             || uiModalState.graphNoteOpen
             || uiModalState.interfaceSettingsOpen
