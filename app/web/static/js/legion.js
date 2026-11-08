@@ -495,6 +495,97 @@ function makeCell(value) {
     return td;
 }
 
+function severityPill(value) {
+    const severity = String(value || "info").trim().toLowerCase() || "info";
+    const pill = document.createElement("span");
+    pill.className = `severity-pill severity-${severity}`;
+    pill.textContent = severity;
+    return pill;
+}
+
+function severityFromScoreOrText(value) {
+    const text = String(value || "").trim().toLowerCase();
+    const score = Number.parseFloat(text);
+    if (Number.isFinite(score) && /^\d/.test(text)) {
+        if (score >= 9) {
+            return "critical";
+        }
+        if (score >= 7) {
+            return "high";
+        }
+        if (score >= 4) {
+            return "medium";
+        }
+        return score > 0 ? "low" : "info";
+    }
+    for (const level of ["critical", "high", "medium", "low"]) {
+        if (text.includes(level)) {
+            return level;
+        }
+    }
+    return "info";
+}
+
+async function copyTextToClipboard(text, label = "Copied") {
+    const value = String(text || "");
+    if (!value) {
+        return false;
+    }
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(value);
+        } else {
+            const area = document.createElement("textarea");
+            area.value = value;
+            area.setAttribute("readonly", "readonly");
+            area.style.position = "fixed";
+            area.style.opacity = "0";
+            document.body.appendChild(area);
+            area.select();
+            document.execCommand("copy");
+            area.remove();
+        }
+        showToast(`${label}: ${value.length > 60 ? `${value.slice(0, 57)}...` : value}`, "success");
+        return true;
+    } catch (err) {
+        showToast(`Copy failed: ${err.message}`, "error");
+        return false;
+    }
+}
+
+function makeCopyButton(text, title = "Copy") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "icon-btn icon-btn-inline";
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    button.innerHTML = '<i class="fa-solid fa-copy" aria-hidden="true"></i>';
+    button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        copyTextToClipboard(text, title.replace(/^Copy\s*/i, "Copied "));
+    });
+    return button;
+}
+
+function makeLinkCell(url, label = "") {
+    const cell = document.createElement("td");
+    const value = String(url || "").trim();
+    if (!value) {
+        return cell;
+    }
+    if (/^https?:\/\//i.test(value)) {
+        const link = document.createElement("a");
+        link.href = value;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = label || value.replace(/^https?:\/\//i, "");
+        cell.appendChild(link);
+    } else {
+        cell.textContent = label || value;
+    }
+    return cell;
+}
+
 function makeTruncatedCell(value, className = "") {
     const td = document.createElement("td");
     if (className) {
@@ -1549,6 +1640,15 @@ function clearHostDetailView({resetForms = true} = {}) {
     workspaceState.hostDetail = null;
     setText("host-detail-name", "");
     setValue("workspace-note", "");
+    setValue("host-detail-note", "");
+    const noteBlock = document.getElementById("host-detail-note-block");
+    if (noteBlock) {
+        noteBlock.hidden = true;
+    }
+    const copyIpButton = document.getElementById("host-detail-copy-ip");
+    if (copyIpButton) {
+        copyIpButton.hidden = true;
+    }
     setValue("workspace-tool-host-ip", "");
 
     if (resetForms) {
@@ -6221,6 +6321,16 @@ function renderHostDetail(payload) {
     const stateDeviceCategoryOverride = Boolean(targetState?.device_category_override);
 
     setText("host-detail-name", host.ip ? `${host.ip} (${host.hostname || "no-hostname"})` : "");
+    const copyIpButton = document.getElementById("host-detail-copy-ip");
+    if (copyIpButton) {
+        copyIpButton.hidden = !host.ip;
+        copyIpButton.onclick = () => copyTextToClipboard(String(host.ip || ""), "Copy IP address");
+    }
+    const noteBlock = document.getElementById("host-detail-note-block");
+    if (noteBlock) {
+        noteBlock.hidden = !host.id;
+    }
+    setValue("host-detail-note", payload?.note || "");
     setValue("workspace-note", payload?.note || "");
     setValue("workspace-tool-host-ip", host.ip || "");
     setValue("workspace-host-categories", normalizeCategoryList(stateManualDeviceCategories).join(", "));
@@ -6307,7 +6417,6 @@ function renderHostDetail(payload) {
         ports.forEach((portRow) => {
             (portRow.scripts || []).forEach((scriptRow) => {
                 const tr = document.createElement("tr");
-                tr.appendChild(makeCell(scriptRow.id || ""));
                 tr.appendChild(makeCell(scriptRow.script_id || ""));
                 tr.appendChild(makeCell(scriptRow.display_output || (scriptRow.output || "").slice(0, 140)));
                 const actions = document.createElement("td");
@@ -6332,11 +6441,34 @@ function renderHostDetail(payload) {
         cvesBody.innerHTML = "";
         cves.forEach((item) => {
             const tr = document.createElement("tr");
-            tr.appendChild(makeCell(item.id || ""));
-            tr.appendChild(makeCell(item.name || ""));
-            tr.appendChild(makeCell(item.severity || ""));
-            tr.appendChild(makeCell(item.product || ""));
-            tr.appendChild(makeCell(item.url || ""));
+            const nameCell = makeCell(item.name || "");
+            if (item.name) {
+                nameCell.appendChild(makeCopyButton(String(item.name), "Copy CVE id"));
+            }
+            tr.appendChild(nameCell);
+            const severityCell = document.createElement("td");
+            severityCell.dataset.sortValue = String(Number.parseFloat(item.severity) || 0);
+            severityCell.appendChild(severityPill(severityFromScoreOrText(item.severity)));
+            if (String(item.severity || "").trim() && /^\d/.test(String(item.severity).trim())) {
+                const score = document.createElement("small");
+                score.className = "severity-score";
+                score.textContent = ` ${String(item.severity).trim()}`;
+                severityCell.appendChild(score);
+            }
+            tr.appendChild(severityCell);
+            tr.appendChild(makeCell([item.product, item.version].filter(Boolean).join(" ")));
+            const exploitCell = document.createElement("td");
+            if (item.exploitUrl || item.exploitId) {
+                const link = document.createElement("a");
+                link.href = String(item.exploitUrl || `https://www.exploit-db.com/exploits/${item.exploitId}`);
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+                link.textContent = item.exploitId ? `EDB-${item.exploitId}` : "exploit";
+                link.title = String(item.exploit || "");
+                exploitCell.appendChild(link);
+            }
+            tr.appendChild(exploitCell);
+            tr.appendChild(makeLinkCell(item.url || "", item.source ? `${item.source}` : ""));
             const actions = document.createElement("td");
             const del = document.createElement("button");
             del.type = "button";
@@ -6366,10 +6498,12 @@ function renderHostDetail(payload) {
         aiFindingsBody.innerHTML = "";
         aiFindings.forEach((item) => {
             const tr = document.createElement("tr");
-            tr.appendChild(makeCell(item.severity || ""));
+            const severityCell = document.createElement("td");
+            severityCell.appendChild(severityPill(item.severity || "info"));
+            tr.appendChild(severityCell);
             tr.appendChild(makeCell(item.title || ""));
             tr.appendChild(makeCell(item.cve || ""));
-            tr.appendChild(makeCell(item.cvss ?? ""));
+            tr.appendChild(makeCell(Number(item.cvss) > 0 ? Number(item.cvss).toFixed(1) : ""));
             tr.appendChild(makeCell(item.evidence || ""));
             aiFindingsBody.appendChild(tr);
         });
@@ -6381,7 +6515,14 @@ function renderHostDetail(payload) {
         aiManualTests.forEach((item) => {
             const tr = document.createElement("tr");
             tr.appendChild(makeCell(item.why || ""));
-            tr.appendChild(makeCell(item.command || ""));
+            const commandCell = document.createElement("td");
+            const code = document.createElement("code");
+            code.textContent = String(item.command || "");
+            commandCell.appendChild(code);
+            if (item.command) {
+                commandCell.appendChild(makeCopyButton(String(item.command), "Copy command"));
+            }
+            tr.appendChild(commandCell);
             tr.appendChild(makeCell(item.scope_note || ""));
             aiManualBody.appendChild(tr);
         });
@@ -11158,6 +11299,11 @@ async function refreshWorkspace() {
     }
 }
 
+async function saveHostDetailNote() {
+    setValue("workspace-note", getValue("host-detail-note"));
+    await saveHostNote();
+}
+
 async function saveHostNote() {
     const hostId = workspaceState.selectedHostId;
     if (!hostId) {
@@ -11165,6 +11311,7 @@ async function saveHostNote() {
         return;
     }
     const text = getValue("workspace-note");
+    setValue("host-detail-note", text);
     try {
         await postJson(`/api/workspace/hosts/${hostId}/note`, {text});
         setWorkspaceStatus("Note saved");
@@ -12692,6 +12839,7 @@ function bindActionButtons() {
 
     bind("workspace-refresh-button", refreshWorkspace);
     bind("workspace-save-note-button", saveHostNote);
+    bind("host-detail-save-note-button", saveHostDetailNote);
     bind("workspace-save-categories-button", saveHostCategories);
     bind("workspace-run-tool-button", runManualTool);
     bind("workspace-run-scheduler-button", runSchedulerNow);

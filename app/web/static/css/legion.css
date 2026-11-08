@@ -3317,3 +3317,36 @@ select {
     color: var(--text-muted);
     font-style: italic;
 }
+
+
+.icon-btn-inline {
+    margin-left: 0.35rem;
+    padding: 0.1rem 0.35rem;
+    font-size: 0.7rem;
+    vertical-align: middle;
+}
+.severity-score {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+.host-detail-note {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.6rem;
+    align-items: end;
+    margin-bottom: 0.75rem;
+}
+.host-detail-note label {
+    display: grid;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+.host-detail-note textarea {
+    width: 100%;
+    resize: vertical;
+}
+td code {
+    font-size: 0.78rem;
+    word-break: break-all;
+}

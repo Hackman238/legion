@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.web.runtime_scheduler_technology import cvss_score_from_text
 
 from typing import Any, Dict, List
 
@@ -209,7 +210,7 @@ def infer_findings_from_observations(
         rows.append({
             "title": title,
             "severity": severity,
-            "cvss": 0.0,
+            "cvss": cvss_score_from_text(row.get("severity", "")),
             "cve": cve_id,
             "evidence": evidence or title,
         })
