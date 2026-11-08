@@ -150,3 +150,17 @@ Acceptance:
   - Web, headless CLI, and MCP now use the shared Nmap import runner.
 - Additional reliability coverage:
   - Added tests in `tests/app/test_NmapImportRunner.py` for valid fixture parsing, malformed XML handling, and relocated XML file discovery.
+
+## Progress Snapshot (2026-11-08)
+- Qt desktop UI is still in-tree and supported for compatibility; it is no longer the documented primary path.
+- 0.7.1 fixed the desktop UI failing to start (missing imports after the module split) and the segfault on exit; Qt
+  teardown is now centralised in `ui/qt_shutdown.py`, which the desktop entry point and GUI tests share.
+- Phase 2 progress: `NmapImporter.importFile()` is the Qt-free import core (used by the web, headless and MCP paths
+  via `app/importers/nmap_runner.py`); `run()` is the thin QThread wrapper that reports failures over a `failed`
+  signal instead of raising. Imports use an independent session (`Database.new_session()`) so repository calls
+  cannot discard their work.
+- Phase 3 progress: the web, headless and MCP surfaces share the orchestrator, scheduler state, evidence graph and
+  schema-cache layers; the desktop controller still carries its own process queue and import queue.
+- Remaining before Phase 4: desktop-only features (brute tabs, Responder/NTLMRelay widgets, staged-nmap chaining in
+  the controller) need web equivalents or explicit retirement decisions.
+
