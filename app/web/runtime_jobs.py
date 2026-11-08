@@ -90,6 +90,8 @@ def handle_job_change(runtime, job: Dict[str, Any], event_name: str):
         channels.add("processes")
     if job_type in {"credential-capture-session"}:
         channels.add("credential_capture")
+    if job_type in {"tool-run", "process-retry", "scheduler-run", "scheduler-approval-execute", "scheduler-dig-deeper"}:
+        channels.add("tools")  # run counts / last status in the tool catalog
     if job_type in {"nmap-scan", "import-nmap-xml", "project-restore-zip"}:
         channels.update({"scan_history", "hosts", "services", "graph"})
     emit_ui_invalidation(runtime, *sorted(channels))

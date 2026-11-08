@@ -2266,19 +2266,35 @@ def delete_host_from_evidence_graph(database, *, host_id: int, host_ip: str = ""
         ]
         if not node_ids:
             return 0
+        deleted_set = set(node_ids)
+        neighbour_ids: set = set()
         for chunk_start in range(0, len(node_ids), 400):
             chunk = node_ids[chunk_start:chunk_start + 400]
             in_clause, in_params = _sql_in_clause("node_id", chunk)
+            for from_id, to_id in session.execute(text(
+                f"SELECT from_node_id, to_node_id FROM graph_edge WHERE from_node_id IN ({in_clause}) OR to_node_id IN ({in_clause})"
+            ), in_params).fetchall():
+                for node_id in (str(from_id or ""), str(to_id or "")):
+                    if node_id and node_id not in deleted_set:
+                        neighbour_ids.add(node_id)
             session.execute(text(f"DELETE FROM graph_edge WHERE from_node_id IN ({in_clause}) OR to_node_id IN ({in_clause})"), in_params)
             session.execute(text(f"DELETE FROM graph_evidence_ref WHERE owner_kind = 'node' AND owner_id IN ({in_clause})"), in_params)
             session.execute(text(f"DELETE FROM graph_node WHERE node_id IN ({in_clause})"), in_params)
-        # Shared nodes (hostnames, CPEs, CVEs, exploits, identities) that only this host pointed at are now orphans.
-        orphan_rows = session.execute(text(
-            "SELECT node_id FROM graph_node WHERE type IN ('fqdn', 'cpe', 'cve', 'exploit', 'identity') "
-            "AND node_id NOT IN (SELECT from_node_id FROM graph_edge) "
-            "AND node_id NOT IN (SELECT to_node_id FROM graph_edge)"
-        )).fetchall()
-        orphan_ids = [str(row[0]) for row in orphan_rows]
+        # Shared nodes (hostnames, CPEs, CVEs, exploits, identities) that only this host pointed at are now
+        # orphans. Only the deleted host's former neighbours are considered: a graph-wide sweep would race a
+        # concurrent sync that has inserted a node but not yet its edges.
+        orphan_ids: List[str] = []
+        neighbour_list = sorted(neighbour_ids)
+        for chunk_start in range(0, len(neighbour_list), 400):
+            chunk = neighbour_list[chunk_start:chunk_start + 400]
+            in_clause, in_params = _sql_in_clause("node_id", chunk)
+            orphan_rows = session.execute(text(
+                f"SELECT node_id FROM graph_node WHERE node_id IN ({in_clause}) "
+                "AND type IN ('fqdn', 'cpe', 'cve', 'exploit', 'identity') "
+                "AND node_id NOT IN (SELECT from_node_id FROM graph_edge) "
+                "AND node_id NOT IN (SELECT to_node_id FROM graph_edge)"
+            ), in_params).fetchall()
+            orphan_ids.extend(str(row[0]) for row in orphan_rows)
         for chunk_start in range(0, len(orphan_ids), 400):
             chunk = orphan_ids[chunk_start:chunk_start + 400]
             in_clause, in_params = _sql_in_clause("node_id", chunk)

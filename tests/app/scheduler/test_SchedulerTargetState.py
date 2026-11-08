@@ -485,7 +485,13 @@ class SchedulerTargetStateConcurrencyTest(unittest.TestCase):
                 upsert_target_state(project.database, 51, {"host_ip": "10.0.0.51"})
                 self.assertEqual({"lock_present": True, "lock_free_during_sync": False}, observed)
                 observed.clear()
-                state_module.modify_target_state(project.database, 51, lambda state: state)
+
+                def _change(state):
+                    # an actual change: an unchanged state is not re-synced to the graph
+                    state["coverage_gaps"] = [{"gap_id": "web_probe", "recommended_tool_ids": ["httpx"]}]
+                    return state
+
+                state_module.modify_target_state(project.database, 51, _change)
                 self.assertEqual({"lock_present": True, "lock_free_during_sync": False}, observed)
         finally:
             project_manager.closeProject(project)

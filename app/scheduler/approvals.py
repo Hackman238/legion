@@ -84,8 +84,6 @@ def _ensure_table_uncached(session):
         "execution_job_id TEXT"
         ")"
     ))
-    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_pending_approval_host_ip ON scheduler_pending_approval (host_ip)"))
-    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_pending_approval_status ON scheduler_pending_approval (status)"))
     _ensure_column(session, "scheduler_pending_approval", "risk_tags", "TEXT")
     _ensure_column(session, "scheduler_pending_approval", "engagement_preset", "TEXT")
     _ensure_column(session, "scheduler_pending_approval", "policy_decision", "TEXT")
@@ -94,6 +92,9 @@ def _ensure_table_uncached(session):
     _ensure_column(session, "scheduler_pending_approval", "safer_alternative", "TEXT")
     _ensure_column(session, "scheduler_pending_approval", "family_policy_state", "TEXT")
     _ensure_column(session, "scheduler_pending_approval", "evidence_refs", "TEXT")
+    # Indexes last: an indexed column may have been added by a migration just above (legacy projects).
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_pending_approval_host_ip ON scheduler_pending_approval (host_ip)"))
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_pending_approval_status ON scheduler_pending_approval (status)"))
 
 
 def _select_columns() -> str:

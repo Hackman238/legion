@@ -48,8 +48,6 @@ def _ensure_table_uncached(session):
         "operator_notes TEXT"
         ")"
     ))
-    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_execution_record_host_ip ON scheduler_execution_record (host_ip)"))
-    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_execution_record_approval_id ON scheduler_execution_record (approval_id)"))
     for column_name, column_type in (
             ("execution_id", "TEXT"),
             ("step_id", "TEXT"),
@@ -75,6 +73,9 @@ def _ensure_table_uncached(session):
             ("operator_notes", "TEXT"),
     ):
         _ensure_column(session, "scheduler_execution_record", column_name, column_type)
+    # Indexes last: an indexed column may have been added by a migration just above (legacy projects).
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_execution_record_host_ip ON scheduler_execution_record (host_ip)"))
+    session.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduler_execution_record_approval_id ON scheduler_execution_record (approval_id)"))
 
 
 def _to_json(value: Any) -> str:
