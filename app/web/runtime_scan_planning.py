@@ -50,11 +50,27 @@ def can_raw_socket(nmap_path: str = "") -> bool:
     return not hasattr(os, "geteuid") or os.geteuid() == 0
 
 
+_os_detection_warned = False
+
+
+def reset_os_detection_warning() -> None:
+    """Let the next dropped OS detection warn again (tests, or after the privilege situation changed)."""
+    global _os_detection_warned
+    _os_detection_warned = False
+
+
 def os_detection_allowed(nmap_path: str = "") -> bool:
-    """can_raw_socket for a plan that wants OS detection: when it is dropped, say so once per plan."""
+    """can_raw_socket for a plan that wants OS detection.
+
+    When it is dropped the reason is logged once per process: the host's privilege does not change between
+    plans, and a chunked RFC1918 sweep builds one plan per chunk.
+    """
+    global _os_detection_warned
     if can_raw_socket(nmap_path):
         return True
-    log.warning(OS_DETECTION_DROPPED_MESSAGE)
+    if not _os_detection_warned:
+        _os_detection_warned = True
+        log.warning(OS_DETECTION_DROPPED_MESSAGE)
     return False
 
 
@@ -291,7 +307,6 @@ def build_staged_scan_plan(
     if discovery:
         stages.append(_stage("stage0-discovery", "Nmap Host Discovery", [nmap_path, "-sn"], 1800))
 
-    privileged = os_detection_allowed(nmap_path)  # the first port stage (or the fallback) wants -O
     port_stage_index = 0
     for index, raw_spec in enumerate(stage_specs, start=1):
         spec = parse_stage_spec(raw_spec)
@@ -303,7 +318,7 @@ def build_staged_scan_plan(
                 continue
             port_stage_index += 1
             tokens = base + ["-sV"]
-            if port_stage_index == 1 and privileged:
+            if port_stage_index == 1 and os_detection_allowed(nmap_path):  # only the first port stage wants -O
                 tokens.append("-O")
             tokens.extend(["-p", spec["ports"]])
             scanned_port_specs.append(spec["ports"])
@@ -317,7 +332,9 @@ def build_staged_scan_plan(
             stages.append(_stage(f"stage{index}", f"Nmap Stage {index}: {', '.join(spec['scripts'])}", tokens, 5400))
 
     if not stages:  # nothing configured: fall back to one service scan
-        fallback = [nmap_path] + ([] if discovery else ["-Pn"]) + ["-sV"] + (["-O"] if privileged else [])
+        fallback = [nmap_path] + ([] if discovery else ["-Pn"]) + ["-sV"]
+        if os_detection_allowed(nmap_path):
+            fallback.append("-O")
         stages.append(_stage("stage1", "Nmap Service Scan", fallback, 5400))
     return {"xml_path": stages[-1]["xml_path"], "stages": stages, "import_each_stage": True}
 

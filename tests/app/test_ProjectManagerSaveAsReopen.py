@@ -59,6 +59,10 @@ class ProjectManagerSaveAsReopenTest(unittest.TestCase):
 
         self.assertEqual([], project.repositoryContainer.hostRepository.getAllHostObjs())
         self.assertFalse(project.repositoryContainer.processRepository.isKilledProcess("1"))
+        # The removed temporary file stays readable only through a pooled connection that is still open;
+        # SQLAlchemy 1.4 would otherwise open a fresh, empty database at the deleted path (NullPool).
+        from sqlalchemy.pool import QueuePool
+        self.assertIsInstance(project.database.engine.pool, QueuePool)
 
 
 class ProjectManagerInterruptedProcessesTest(unittest.TestCase):
