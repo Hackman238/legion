@@ -298,7 +298,7 @@ def run_governed_discovery(
         discovery=True,
         staged=False,
         run_actions=bool(run_actions),
-        nmap_path="nmap",
+        nmap_path="",  # resolved from settings by the scan planner
         nmap_args="",
         scan_mode="legacy",
         scan_options={},

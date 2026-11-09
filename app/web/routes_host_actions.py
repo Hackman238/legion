@@ -140,6 +140,17 @@ def workspace_host_dig_deeper(host_id):
         return json_error(str(exc), 500)
 
 
+@host_actions_bp.post("/api/workspace/hosts/bulk-action")
+def workspace_hosts_bulk_action():
+    service = _host_action_service()
+    try:
+        return jsonify(service.bulk_host_action(request.get_json(silent=True) or {})), 202
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    except Exception as exc:
+        return json_error(str(exc), 500)
+
+
 @host_actions_bp.delete("/api/workspace/hosts/<int:host_id>")
 def workspace_host_remove(host_id):
     service = _host_action_service()

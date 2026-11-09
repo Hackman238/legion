@@ -78,6 +78,10 @@
                         <button id="ribbon-export-json-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as JSON">Export JSON</button>
                         <button id="ribbon-export-csv-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as CSV">Export CSV</button>
                         <button id="ribbon-export-hosts-csv-action-button" class="ribbon-submenu-item" type="button" title="Export hosts only as CSV">Export Hosts CSV</button>
+                        <button id="ribbon-export-services-csv-action-button" class="ribbon-submenu-item" type="button" title="Export every service as CSV">Export Services CSV</button>
+                        <button id="ribbon-export-ports-csv-action-button" class="ribbon-submenu-item" type="button" title="Export every host/port/service row as CSV">Export Ports CSV</button>
+                        <button id="ribbon-export-cves-csv-action-button" class="ribbon-submenu-item" type="button" title="Export every CVE with its exploit references as CSV">Export CVEs CSV</button>
+                        <button id="ribbon-export-findings-csv-action-button" class="ribbon-submenu-item" type="button" title="Export project-wide findings as CSV">Export Findings CSV</button>
                         <button id="ribbon-export-project-report-json-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as JSON">Export Project Report JSON</button>
                         <button id="ribbon-export-project-report-md-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as Markdown">Export Project Report Markdown</button>
                         <button id="ribbon-export-project-report-push-action-button" class="ribbon-submenu-item" type="button" title="Push full project report to configured delivery endpoint">Push Project Report</button>
@@ -118,6 +122,7 @@
                         <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
                     </button>
                     <div id="ribbon-misc-menu" class="ribbon-submenu" role="menu" aria-label="Misc options">
+                        <button id="ribbon-misc-findings-action-button" class="ribbon-submenu-item" type="button" title="Project-wide findings ranked by severity">Findings</button>
                         <button id="ribbon-misc-host-selection-action-button" class="ribbon-submenu-item" type="button" title="Open host selection and notes">Host Selection</button>
                         <button id="ribbon-misc-script-cve-action-button" class="ribbon-submenu-item" type="button" title="Open Add Script/CVE form">Add Script/CVE</button>
                     </div>
@@ -140,6 +145,7 @@
                         <button id="ribbon-logging-jobs-button" class="ribbon-submenu-item" type="button" title="View background jobs">Jobs</button>
                         <button id="ribbon-logging-submitted-scans-button" class="ribbon-submenu-item" type="button" title="View submitted scan history">Submitted Scans</button>
                         <button id="ribbon-logging-scheduler-decisions-button" class="ribbon-submenu-item" type="button" title="View scheduler decisions">Scheduler Decisions</button>
+                        <button id="ribbon-logging-executions-button" class="ribbon-submenu-item" type="button" title="View scheduler execution traces with their output">Executions</button>
                         <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View provider request and response logs">Provider Logs</button>
                     </div>
                 </div>
@@ -179,7 +185,7 @@
                 <div class="ribbon-lower-row">
                     <div class="ribbon-group ribbon-project-group" aria-label="Project summary">
                         <div class="ribbon-project-header">
-                            <h2>Project</h2>
+                            <h2>Workspace</h2>
                             <p id="project-name">{{ snapshot.project.name }}</p>
                         </div>
                         <div class="ribbon-project-body">
@@ -251,11 +257,11 @@
                             <strong id="stat-services" class="ribbon-stat-value">{{ snapshot.summary.services }}</strong>
                         </div>
                         <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Running Jobs</span>
+                            <span class="ribbon-stat-label">Running Processes</span>
                             <strong id="stat-running" class="ribbon-stat-value">{{ snapshot.summary.running_processes }}</strong>
                         </div>
                         <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Finished Jobs</span>
+                            <span class="ribbon-stat-label">Finished Processes</span>
                             <strong id="stat-finished" class="ribbon-stat-value">{{ snapshot.summary.finished_processes }}</strong>
                         </div>
                     </div>
@@ -267,8 +273,8 @@
                         <span class="ribbon-process-icon" aria-hidden="true">
                             <i class="fa-solid fa-terminal" aria-hidden="true"></i>
                         </span>
-                        <span class="sr-only">Processes</span>
-                        <strong id="process-count" class="ribbon-process-count">{{ snapshot.processes | length }}</strong>
+                        <h2 class="ribbon-process-title">Processes</h2>
+                        <strong id="process-count" class="ribbon-process-count" title="Processes shown">{{ snapshot.processes | length }}</strong>
                     </div>
                     <div class="process-actions ribbon-process-actions">
                         <button
@@ -299,6 +305,8 @@
                             <th>Name</th>
                             <th>Target</th>
                             <th>Status</th>
+                            <th>Started</th>
+                            <th>Elapsed</th>
                             <th>%</th>
                             <th>ETA</th>
                             <th>Actions</th>
@@ -801,10 +809,20 @@
                 </div>
             </div>
         </div>
+        <div id="hosts-bulk-bar" class="table-bulk-bar" hidden>
+            <span id="hosts-bulk-count" class="table-bulk-count">0 selected</span>
+            <button id="hosts-bulk-rescan-button" type="button" title="Queue a rescan for every selected host">Rescan</button>
+            <button id="hosts-bulk-dig-deeper-button" type="button" title="Queue Dig Deeper for every selected host">Dig Deeper</button>
+            <button id="hosts-bulk-screenshots-button" type="button" title="Refresh screenshots for every selected host">Screenshots</button>
+            <button id="hosts-bulk-run-tool-button" type="button" title="Run one tool against every open service on the selected hosts">Run Tool</button>
+            <button id="hosts-bulk-remove-button" class="danger" type="button" title="Remove every selected host from the workspace">Remove</button>
+            <button id="hosts-bulk-clear-button" type="button" title="Clear the selection">Clear</button>
+        </div>
         <div class="table-wrap">
             <table>
                 <thead>
                 <tr>
+                    <th class="host-select-cell"><input id="hosts-select-all" type="checkbox" title="Select all visible hosts" aria-label="Select all visible hosts"></th>
                     <th></th>
                     <th>IP</th>
                     <th>Hostname</th>
@@ -846,7 +864,7 @@
                 </button>
             </div>
         </div>
-        <div id="services-panel-body" class="table-wrap" hidden>
+        <div id="services-panel-body" class="table-wrap">
             <table>
                 <thead>
                 <tr>
@@ -869,6 +887,16 @@
         <div class="panel-header">
             <h2>Host Detail</h2>
             <p id="host-detail-name"></p>
+            <button id="host-detail-copy-ip" class="icon-btn" type="button" title="Copy IP address" aria-label="Copy IP address" hidden>
+                <i class="fa-solid fa-copy" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div id="host-detail-note-block" class="host-detail-note" hidden>
+            <label>
+                Operator note
+                <textarea id="host-detail-note" rows="2" placeholder="Context, credentials found, next steps..."></textarea>
+            </label>
+            <button id="host-detail-save-note-button" type="button">Save Note</button>
         </div>
         <div class="table-wrap">
             <table>
@@ -881,6 +909,7 @@
                     <th>Product</th>
                     <th>Banner</th>
                     <th>Screenshot</th>
+                    <th>Actions</th>
                 </tr>
                 </thead>
                 <tbody id="host-detail-ports"></tbody>
@@ -890,8 +919,7 @@
             <table>
                 <thead>
                 <tr>
-                    <th>Script DB ID</th>
-                    <th>Script ID</th>
+                    <th>Script</th>
                     <th>Output</th>
                     <th>Action</th>
                 </tr>
@@ -903,11 +931,11 @@
             <table>
                 <thead>
                 <tr>
-                    <th>CVE ID</th>
-                    <th>Name</th>
+                    <th>CVE</th>
                     <th>Severity</th>
                     <th>Product</th>
-                    <th>URL</th>
+                    <th>Exploit</th>
+                    <th>Reference</th>
                     <th>Action</th>
                 </tr>
                 </thead>
@@ -990,6 +1018,9 @@
         <div class="panel-header">
             <h2>Dangerous Action Approvals</h2>
             <p id="approval-count">{{ snapshot.scheduler_approvals | length }}</p>
+            <button id="approvals-approve-all-button" class="modal-header-action" type="button" title="Approve and run every pending action listed">Approve All</button>
+            <button id="approvals-reject-all-button" class="modal-header-action" type="button" title="Reject every pending action listed">Reject All</button>
+            <button id="approvals-export-csv-button" class="modal-header-action" type="button" title="Download every approval (all statuses) as CSV">Export CSV</button>
         </div>
         <div class="table-wrap">
             <table>
@@ -1420,6 +1451,10 @@
                 Target
                 <select id="workspace-tool-target-select"></select>
             </label>
+            <label id="workspace-tool-batch-wrapper" class="checkbox" hidden>
+                <input id="workspace-tool-batch" type="checkbox">
+                Run against all <span id="workspace-tool-batch-count">0</span> listed targets (one job each)
+            </label>
             <p id="workspace-tool-context" class="meta-note"></p>
             <label>
                 Target Host IP
@@ -1447,6 +1482,11 @@
             <div class="scheduler-actions">
                 <button id="workspace-run-tool-button" type="button">Run Tool</button>
                 <button id="workspace-run-scheduler-button" type="button">Run Scheduler Now</button>
+                <button id="workspace-plan-preview-button" type="button" title="Show what the deterministic and AI planners would run against this target">Preview Plan</button>
+            </div>
+            <div id="workspace-plan-preview" class="plan-preview" hidden>
+                <h3>Planned Actions <span id="workspace-plan-preview-meta" class="plan-preview-meta"></span></h3>
+                <div id="workspace-plan-preview-body" class="plan-preview-body"></div>
             </div>
         </div>
     </div>
@@ -1861,6 +1901,25 @@
                     Enable web follow-up specialist sidecar
                 </label>
             </fieldset>
+            <fieldset class="danger-group scheduler-settings-group scheduler-families-group">
+                <legend>Pre-approved and Suppressed Families</legend>
+                <p class="meta-note">Decisions taken from the approvals panel ("Allow Family" / "Suppress Family"). Clearing a family sends its actions back through the normal policy.</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Family</th>
+                            <th>Tool</th>
+                            <th>State</th>
+                            <th>Decided</th>
+                            <th>Reason</th>
+                            <th>Actions</th>
+                        </tr>
+                        </thead>
+                        <tbody id="scheduler-families-body"></tbody>
+                    </table>
+                </div>
+            </fieldset>
             <div class="scheduler-actions">
                 <button id="scheduler-test-provider-button" type="button">Test Provider</button>
                 <button id="scheduler-save-button" type="submit">Save Scheduler Preferences</button>
@@ -1944,6 +2003,11 @@
             </button>
         </div>
         <p class="meta-note">Live interface controls for the current workspace. Changes apply immediately.</p>
+        <label class="settings-inline-toggle">
+            <input id="interface-light-theme" type="checkbox">
+            <span>Light theme</span>
+        </label>
+        <p class="meta-note">Stored in this browser only. The dark theme is the default.</p>
         <label class="settings-inline-toggle">
             <input id="interface-graph-workspace-enabled" type="checkbox">
             <span>Enable graph workspace</span>
@@ -2199,6 +2263,7 @@
         <div class="panel-header modal-header">
             <h2 id="jobs-modal-title">Jobs</h2>
             <p><span id="job-count">{{ snapshot.jobs | length }}</span> total</p>
+            <button id="jobs-export-csv-button" class="modal-header-action" type="button" title="Download every job as CSV">Export CSV</button>
             <button id="jobs-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
@@ -2228,6 +2293,7 @@
         <div class="panel-header modal-header">
             <h2 id="submitted-scans-modal-title">Submitted Scans</h2>
             <p><span id="scan-history-count">{{ snapshot.scan_history | length }}</span> total</p>
+            <button id="scan-history-export-csv-button" class="modal-header-action" type="button" title="Download the scan history as CSV">Export CSV</button>
             <button id="submitted-scans-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
@@ -2244,6 +2310,7 @@
                     <th>Mode</th>
                     <th>Created</th>
                     <th>Result</th>
+                    <th>Actions</th>
                 </tr>
                 </thead>
                 <tbody id="scan-history-body"></tbody>
@@ -2257,6 +2324,7 @@
         <div class="panel-header modal-header">
             <h2 id="scheduler-decisions-modal-title">Scheduler Decisions</h2>
             <p><span id="decision-count">{{ snapshot.scheduler_decisions | length }}</span> total</p>
+            <button id="decisions-export-csv-button" class="modal-header-action" type="button" title="Download the full decision log as CSV">Export CSV</button>
             <button id="scheduler-decisions-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
@@ -2280,6 +2348,196 @@
         </div>
     </div>
 </div>
+
+<div id="scheduler-executions-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-executions-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="scheduler-executions-modal-title">Scheduler Executions</h2>
+            <p><span id="execution-count">0</span> total</p>
+            <button id="executions-export-csv-button" class="modal-header-action" type="button" title="Download every execution record as CSV">Export CSV</button>
+            <button id="scheduler-executions-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Started</th>
+                    <th>Target</th>
+                    <th>Tool</th>
+                    <th>Mode</th>
+                    <th>Runner</th>
+                    <th>Exit</th>
+                    <th>Artifacts</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="executions-body"></tbody>
+            </table>
+        </div>
+        <pre id="executions-output" class="execution-output" hidden></pre>
+    </div>
+</div>
+
+<div id="findings-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="findings-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="findings-modal-title">Findings</h2>
+            <p><span id="findings-count">0</span> across <span id="findings-host-count">0</span> hosts</p>
+            <label class="inline-filter">Severity
+                <select id="findings-severity-filter">
+                    <option value="">all</option>
+                    <option value="critical">critical</option>
+                    <option value="high">high</option>
+                    <option value="medium">medium</option>
+                    <option value="low">low</option>
+                    <option value="info">info</option>
+                </select>
+            </label>
+            <button id="findings-export-csv-button" class="modal-header-action" type="button" title="Download the findings as CSV">Export CSV</button>
+            <button id="findings-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Host</th>
+                    <th>Title</th>
+                    <th>Source</th>
+                    <th>Confidence</th>
+                    <th>Evidence</th>
+                </tr>
+                </thead>
+                <tbody id="findings-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="open-workspace-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal modal-table-modal" role="dialog" aria-modal="true" aria-labelledby="open-workspace-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="open-workspace-modal-title">Open Workspace</h2>
+            <p id="open-workspace-meta">Projects found in the temp and autosave folders on the Legion host.</p>
+            <button id="open-workspace-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block open-workspace-path">
+            <label>
+                Project path on the Legion host
+                <input id="open-workspace-path-input" type="text" placeholder="/path/to/project.legion" list="open-workspace-path-options">
+                <datalist id="open-workspace-path-options"></datalist>
+            </label>
+            <div class="scheduler-actions">
+                <button id="open-workspace-path-button" type="button">Open Path</button>
+                <button id="open-workspace-refresh-button" type="button">Refresh List</button>
+            </div>
+        </div>
+        <div class="table-wrap modal-table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Source</th>
+                    <th>Modified</th>
+                    <th>Path</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="open-workspace-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="import-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal manual-scan-modal" role="dialog" aria-modal="true" aria-labelledby="import-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="import-modal-title">Import Data</h2>
+            <p id="import-modal-meta">Add scan results or a target list to the open workspace.</p>
+            <button id="import-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block">
+            <label>
+                What to import
+                <select id="import-kind-select">
+                    <option value="xml">Scan report (nmap XML or .gnmap, masscan XML, JSON or list output)</option>
+                    <option value="targets">Target list (one IP, CIDR, hostname or URL per line)</option>
+                </select>
+            </label>
+            <label>
+                Upload a file from this browser
+                <input id="import-file-input" type="file" accept=".xml,.gnmap,.json,.txt,.lst,.list,.csv,text/plain,text/xml,application/xml,application/json">
+            </label>
+            <p class="meta-note">or</p>
+            <label>
+                Path on the Legion host
+                <input id="import-path-input" type="text" placeholder="/path/to/scan.xml" list="import-path-options">
+                <datalist id="import-path-options"></datalist>
+            </label>
+            <label id="import-run-actions-wrapper" class="checkbox">
+                <input id="import-run-actions" type="checkbox">
+                Run scheduled actions after the import
+            </label>
+            <div class="scheduler-actions">
+                <button id="import-submit-button" type="button">Import</button>
+            </div>
+            <p id="import-modal-status" class="meta-note"></p>
+        </div>
+    </div>
+</div>
+
+<div id="save-as-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal host-remove-modal" role="dialog" aria-modal="true" aria-labelledby="save-as-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="save-as-modal-title">Save Workspace As</h2>
+            <p>Writes a .legion project file on the Legion host.</p>
+            <button id="save-as-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="action-block">
+            <label>
+                Destination path
+                <input id="save-as-path-input" type="text" placeholder="/home/you/engagements/client.legion" list="open-workspace-path-options" data-modal-initial-focus>
+            </label>
+            <label class="checkbox">
+                <input id="save-as-replace" type="checkbox" checked>
+                Replace the file if it already exists
+            </label>
+            <div class="modal-actions">
+                <button id="save-as-cancel-button" type="button">Cancel</button>
+                <button id="save-as-confirm-button" type="button">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="confirm-modal" class="legion-modal-overlay" aria-hidden="true">
+    <div class="legion-modal host-remove-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+        <div class="panel-header modal-header">
+            <h2 id="confirm-modal-title">Confirm</h2>
+            <button id="confirm-modal-close" class="modal-close-btn" type="button" aria-label="Close dialog">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p id="confirm-modal-message" class="meta-note"></p>
+        <p id="confirm-modal-detail" class="meta-note confirm-detail"></p>
+        <div class="modal-actions">
+            <button id="confirm-modal-cancel" type="button" data-modal-initial-focus>Cancel</button>
+            <button id="confirm-modal-confirm" type="button">Confirm</button>
+        </div>
+    </div>
+</div>
+
+<div id="toast-stack" class="toast-stack" aria-live="polite"></div>
 
 <div id="host-remove-modal" class="legion-modal-overlay" aria-hidden="true">
     <div class="legion-modal host-remove-modal" role="dialog" aria-modal="true" aria-labelledby="host-remove-modal-title">
@@ -2342,7 +2600,7 @@
             </label>
             <label>
                 Existing Project Path
-                <input id="startup-project-open-path" type="text" placeholder="/path/to/project.legion">
+                <input id="startup-project-open-path" type="text" placeholder="/path/to/project.legion" list="open-workspace-path-options">
             </label>
         </section>
 

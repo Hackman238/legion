@@ -256,13 +256,39 @@ def build_arg_parser():
         help="When used with --web, enable transparent UI effects",
     )
     parser.add_argument(
-        "--web-opaque-ui",
-        action="store_true",
-        help=argparse.SUPPRESS,
+        "--web-token",
+        type=str,
+        default="",
+        help="Require this token for the web UI and API (also LEGION_WEB_TOKEN). "
+             "A random token is generated and printed when --web-bind-all is used without one.",
     )
     parser.add_argument("--input-file", type=str, help="Text file with targets (hostnames, subnets, IPs, etc.)")
-    parser.add_argument("--discovery", action="store_true", help="Run an nmap host-discovery scan of the targets (headless)")
-    parser.add_argument("--staged-scan", action="store_true", help="Enable staged scan")
+    parser.add_argument(
+        "--nmap-xml",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="Headless: import this nmap XML report (repeatable) instead of, or as well as, scanning",
+    )
+    parser.add_argument(
+        "--project",
+        type=str,
+        default="",
+        metavar="FILE",
+        help="Headless: open this .legion project (created if missing) and work in it instead of a temporary project; "
+             "results stay in the file",
+    )
+    parser.add_argument(
+        "--discovery",
+        action="store_true",
+        help="Headless: run an nmap host-discovery sweep (-sn); with --staged-scan it precedes the stages",
+    )
+    parser.add_argument(
+        "--staged-scan",
+        action="store_true",
+        help="Headless: run the [StagedNmapSettings] stages (service detection per port group, then NSE scripts)",
+    )
+    parser.add_argument("--nmap-args", type=str, default="", help="Headless: extra nmap arguments appended to every stage")
     parser.add_argument("--output-file", type=str, help="Output file (.legion or .json)")
     parser.add_argument(
         "--run-actions",
@@ -276,6 +302,16 @@ def resolve_web_bind_host(args) -> str:
     if bool(getattr(args, "web_bind_all", False)):
         return "0.0.0.0"
     return "127.0.0.1"
+
+
+def resolve_web_token(args, environ=None, *, generate=None) -> str:
+    """The web token from --web-token or LEGION_WEB_TOKEN; generated when the UI is exposed without one."""
+    env = environ if environ is not None else os.environ
+    token = str(getattr(args, "web_token", "") or "").strip() or str(env.get("LEGION_WEB_TOKEN", "") or "").strip()
+    if not token and bool(getattr(args, "web_bind_all", False)):
+        import secrets
+        token = (generate or (lambda: secrets.token_urlsafe(24)))()
+    return token
 
 
 def describe_web_bind_host(host: str) -> str:
@@ -388,6 +424,15 @@ if __name__ == "__main__":
         logic = create_default_logic()
         runtime = WebRuntime(logic)
         web_app = create_app(runtime)
+        web_token = resolve_web_token(args)
+        if web_token:
+            from app.web import configure_web_token
+            configure_web_token(web_app, web_token)
+            if not str(getattr(args, "web_token", "") or "").strip() and not os.environ.get("LEGION_WEB_TOKEN"):
+                print(f"Web token (sign in at http://<host>:{args.web_port}/login): {web_token}", file=sys.stderr)
+            startupLog.info("Web token authentication is enabled.")
+        elif web_bind_host == "0.0.0.0":
+            startupLog.warning("Web interface is exposed on all interfaces without authentication.")
         web_app.config["LEGION_WEB_BIND_HOST"] = web_bind_host
         web_app.config["LEGION_WEB_BIND_LABEL"] = describe_web_bind_host(web_bind_host)
         web_app.config["LEGION_UI_OPAQUE"] = resolve_web_opaque_ui(args)
@@ -396,7 +441,7 @@ if __name__ == "__main__":
 
     if args.headless:  # the web branch above exits, so this is the only mode left
         # --- HEADLESS CLI MODE ---
-        from app.cli_utils import import_targets_from_textfile, run_nmap_scan
+        from app.cli_utils import NmapStageError, import_targets_from_textfile, run_nmap_scan
         from app.importers.nmap_runner import import_nmap_xml_into_project
         import time
 
@@ -408,16 +453,76 @@ if __name__ == "__main__":
         nmapExporter = DefaultNmapExporter(shell, appLogger)
         toolCoordinator = ToolCoordinator(shell, nmapExporter)
         logic = Logic(shell, projectManager, toolCoordinator)
-        startupLog.info("Creating temporary project for headless mode...")
-        logic.createNewTemporaryProject()
+        nmap_xml_inputs = [str(item or "").strip() for item in list(getattr(args, "nmap_xml", []) or []) if str(item or "").strip()]
+        project_file = str(getattr(args, "project", "") or "").strip()
+        if project_file and not project_file.lower().endswith(".legion"):
+            project_file = f"{project_file}.legion"
 
-        # Import targets from input file
-        if not args.input_file or not os.path.isfile(args.input_file):
-            print("Error: --input-file is required and must exist in headless mode.", file=sys.stderr)
+        # Something has to feed the run: targets, XML reports, or an existing project to act on or export.
+        if args.input_file and not os.path.isfile(args.input_file):
+            print(f"Error: --input-file not found: {args.input_file}", file=sys.stderr)
             sys.exit(1)
+        missing_xml = [path for path in nmap_xml_inputs if not os.path.isfile(path)]
+        if missing_xml:
+            print(f"Error: --nmap-xml not found: {', '.join(missing_xml)}", file=sys.stderr)
+            sys.exit(1)
+        if (args.staged_scan or args.discovery) and not args.input_file:
+            print("Error: --discovery and --staged-scan need --input-file for the targets to scan.", file=sys.stderr)
+            sys.exit(1)
+        if not args.input_file and not nmap_xml_inputs and not (project_file and os.path.isfile(project_file)):
+            print("Error: headless mode needs --input-file, --nmap-xml or an existing --project.", file=sys.stderr)
+            sys.exit(1)
+
+        if project_file:
+            project_file = os.path.abspath(os.path.expanduser(project_file))
+            if os.path.isfile(project_file):
+                startupLog.info(f"Opening project {project_file} for headless mode...")
+                logic.activeProject = projectManager.openExistingProject(project_file, projectType="legion")
+            else:
+                startupLog.info(f"Creating project {project_file} for headless mode...")
+                logic.createNewTemporaryProject()
+                temp_project = logic.activeProject
+                created = projectManager.saveProjectAs(temp_project, project_file, replace=1, projectType="legion")
+                if not created:
+                    print(f"Error: could not create project {project_file}", file=sys.stderr)
+                    sys.exit(1)
+                logic.activeProject = created
+                # saveProjectAs reopens at the new path; release the temporary source database and its running
+                # folder (closeProject never runs for the source project).
+                temp_database = getattr(temp_project, "database", None)
+                if temp_database is not None and temp_database is not created.database:
+                    temp_database.dispose()
+                temp_running = str(getattr(temp_project.properties, "runningFolder", "") or "")
+                if os.path.isdir(temp_running) and os.path.realpath(temp_running) != \
+                        os.path.realpath(str(created.properties.runningFolder or "")):
+                    try:
+                        shell.remove_directory(temp_running)
+                    except Exception as exc:
+                        startupLog.warning(f"Could not remove running folder {temp_running}: {exc}")
+        else:
+            startupLog.info("Creating temporary project for headless mode...")
+            logic.createNewTemporaryProject()
+
         session = logic.activeProject.database.session()
         hostRepository = logic.activeProject.repositoryContainer.hostRepository
-        import_targets_from_textfile(session, hostRepository, args.input_file)
+        if args.input_file:
+            import_targets_from_textfile(session, hostRepository, args.input_file)
+
+        # Import nmap XML reports handed in on the command line
+        xml_import_failed = False
+        for xml_report in nmap_xml_inputs:
+            try:
+                import_nmap_xml_into_project(
+                    project=logic.activeProject,
+                    xml_path=xml_report,
+                    output="",
+                    update_progress_observable=None,
+                    host_repository=hostRepository,
+                )
+                print(f"Imported {xml_report}")
+            except Exception as exc:
+                xml_import_failed = True
+                print(f"Error: could not import {xml_report}: {exc}", file=sys.stderr)
 
         # Run nmap scan if requested
         nmap_xml = None
@@ -433,37 +538,48 @@ if __name__ == "__main__":
                     if t and t not in targets:
                         targets.append(t)
             targets_str = " ".join(targets)
-            configured_nmap = str(Settings(AppSettings()).tools_path_nmap or "").strip()
-            nmap_path = configured_nmap if configured_nmap and os.path.isfile(configured_nmap) else "nmap"
+            headless_settings = Settings(AppSettings())
+            configured_nmap = str(headless_settings.tools_path_nmap or "").strip()
+            nmap_path = configured_nmap if configured_nmap and (os.path.isfile(configured_nmap) or shutil.which(configured_nmap)) else "nmap"
+            from app.web.runtime_scan_planning import staged_stage_specs
+            stage_specs = staged_stage_specs(headless_settings)
             output_prefix = os.path.join(logic.activeProject.properties.runningFolder, f"cli-nmap-{int(time.time())}")
             try:
-                nmap_xml = run_nmap_scan(
-                    targets_str,
-                    output_prefix,
-                    discovery=args.discovery,
-                    staged=args.staged_scan,
-                    nmap_path=nmap_path,
-                )
+                try:
+                    nmap_xml = run_nmap_scan(
+                        targets_str,
+                        output_prefix,
+                        discovery=args.discovery,
+                        staged=args.staged_scan,
+                        nmap_path=nmap_path,
+                        stage_specs=stage_specs,
+                        nmap_args=str(getattr(args, "nmap_args", "") or ""),
+                    )
+                except NmapStageError as exc:
+                    # A later stage failed: import the stages that did finish, but the run still ends non-zero.
+                    nmap_failed = True
+                    nmap_xml = list(exc.written)
+                    print(f"Error: nmap stage {exc.stage_name} failed; importing the {len(nmap_xml)} completed stage(s).",
+                          file=sys.stderr)
                 if nmap_xml is None:
                     # run_nmap_scan already printed nmap's error; keep the imported targets and still export.
                     nmap_failed = True
                     print("Error: nmap scan failed; skipping nmap import.", file=sys.stderr)
                 else:
-                    # Import nmap XML results into the project
-                    import_nmap_xml_into_project(
-                        project=logic.activeProject,
-                        xml_path=nmap_xml,
-                        output="",
-                        update_progress_observable=None,
-                        host_repository=hostRepository,
-                    )
+                    for xml_report in list(nmap_xml):
+                        import_nmap_xml_into_project(
+                            project=logic.activeProject,
+                            xml_path=xml_report,
+                            output="",
+                            update_progress_observable=None,
+                            host_repository=hostRepository,
+                        )
             except Exception as exc:  # e.g. nmap not installed, or an unreadable XML report
                 nmap_failed = True
                 print(f"Error: nmap scan/import failed: {exc}", file=sys.stderr)
 
         # Run scripted actions/automated attacks if requested
         if args.run_actions:
-            # Placeholder: will call logic.run_scripted_actions() after implementation
             print("Running scripted actions/automated attacks (CLI)...")
             logic.run_scripted_actions()
 
@@ -524,6 +640,8 @@ if __name__ == "__main__":
             else:
                 print("Error: --output-file must end with .json or .legion", file=sys.stderr)
                 sys.exit(1)
+        elif project_file:
+            print(f"Results saved in project {project_file}")
         else:
             print("No --output-file specified, skipping export.")
 
@@ -534,7 +652,7 @@ if __name__ == "__main__":
         except Exception as exc:
             startupLog.warning(f"Could not clean up the headless project: {exc}")
 
-        if nmap_failed:
+        if nmap_failed or xml_import_failed:
             print("Headless Legion run finished with errors (nmap scan/import failed).", file=sys.stderr)
             sys.exit(1)
         print("Headless Legion run complete.")

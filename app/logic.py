@@ -1342,18 +1342,6 @@ class Logic:
                 print(f"[*] Running bounded web follow-up for discovered hosts ({len(materialized_host_ids)})...")
                 run_bounded_discovered_followup(materialized_host_ids)
 
-    def createFolderForTool(self, tool):
-        if 'nmap' in tool:
-            tool = 'nmap'
-        path = self.activeProject.properties.runningFolder + '/' + re.sub("[^0-9a-zA-Z]", "", str(tool))
-        if not os.path.exists(path):
-            os.makedirs(path)
-
-    # this flag is matched to the conf file setting, so that we know if we need
-    # to delete the found usernames/passwords wordlists on exit
-    def setStoreWordlistsOnExit(self, flag=True):
-        self.storeWordlists = flag
-
     def copyNmapXMLToOutputFolder(self, file):
         outputFolder = self.activeProject.properties.outputFolder
         try:

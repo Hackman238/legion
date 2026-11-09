@@ -1,6 +1,4 @@
-import csv
 import datetime
-import io
 import json
 import re
 
@@ -13,6 +11,14 @@ from flask import (
 )
 
 from app.ApplicationInfo import getConsoleLogo
+from app.web.runtime_exports import (
+    EXPORT_TABLES,
+    ExportInterrupted,
+    build_full_csv_export,
+    build_full_export,
+    export_table_rows,
+    rows_to_csv,
+)
 from app.web.services.settings_service import load_display_settings
 
 web_bp = Blueprint("web", __name__)
@@ -40,71 +46,6 @@ def _get_sanitized_console_logo() -> str:
     return "\n".join(lines).strip("\n")
 
 
-def _build_csv_export(snapshot):
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    def write_key_value_section(title, data):
-        writer.writerow([title])
-        writer.writerow(["key", "value"])
-        for key, value in (data or {}).items():
-            writer.writerow([str(key), json.dumps(value, default=str) if isinstance(value, (dict, list)) else str(value)])
-        writer.writerow([])
-
-    def write_table_section(title, rows, headers):
-        writer.writerow([title])
-        writer.writerow(headers)
-        for row in rows or []:
-            writer.writerow([str(row.get(header, "")) for header in headers])
-        writer.writerow([])
-
-    write_key_value_section("Project", snapshot.get("project", {}))
-    write_key_value_section("Summary", snapshot.get("summary", {}))
-
-    write_table_section(
-        "Hosts",
-        snapshot.get("hosts", []),
-        ["id", "ip", "hostname", "status", "os", "open_ports", "total_ports"],
-    )
-    write_table_section(
-        "Services",
-        snapshot.get("services", []),
-        ["service", "ports", "host_count", "port_count", "protocols"],
-    )
-    write_table_section(
-        "Tools",
-        snapshot.get("tools", []),
-        ["label", "tool_id", "run_count", "last_status", "danger_categories"],
-    )
-    write_table_section(
-        "Processes",
-        snapshot.get("processes", []),
-        ["id", "name", "hostIp", "port", "protocol", "status", "startTime", "elapsed"],
-    )
-    write_table_section(
-        "Scheduler Decisions",
-        snapshot.get("scheduler_decisions", []),
-        ["id", "timestamp", "host_ip", "port", "protocol", "tool_id", "scheduler_mode", "approved", "executed", "reason"],
-    )
-    write_table_section(
-        "Dangerous Action Approvals",
-        snapshot.get("scheduler_approvals", []),
-        ["id", "host_ip", "port", "protocol", "tool_id", "danger_categories", "status", "decision_reason"],
-    )
-    write_table_section(
-        "Jobs",
-        snapshot.get("jobs", []),
-        ["id", "type", "status", "created_at", "started_at", "finished_at", "error"],
-    )
-    write_table_section(
-        "Submitted Scans",
-        snapshot.get("scan_history", []),
-        ["id", "submission_kind", "status", "target_summary", "scope_summary", "scan_mode", "created_at", "result_summary"],
-    )
-
-    return output.getvalue()
-
-
 @web_bp.get("/")
 def index():
     runtime = current_app.extensions["legion_runtime"]
@@ -130,9 +71,9 @@ def health():
 
 @web_bp.get("/api/export/json")
 def export_json():
+    # The whole project, not the capped UI snapshot (which drops down hosts and truncates every list).
     runtime = current_app.extensions["legion_runtime"]
-    snapshot = runtime.get_snapshot()
-    payload = json.dumps(snapshot, indent=2, default=str)
+    payload = json.dumps(build_full_export(runtime), indent=2, default=str)
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
     response = current_app.response_class(payload, mimetype="application/json")
     response.headers["Content-Disposition"] = f'attachment; filename="legion-export-{timestamp}.json"'
@@ -142,9 +83,35 @@ def export_json():
 @web_bp.get("/api/export/csv")
 def export_csv():
     runtime = current_app.extensions["legion_runtime"]
-    snapshot = runtime.get_snapshot()
-    csv_text = _build_csv_export(snapshot)
+    csv_text = build_full_csv_export(build_full_export(runtime))
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
     response = current_app.response_class(csv_text, mimetype="text/csv")
     response.headers["Content-Disposition"] = f'attachment; filename="legion-export-{timestamp}.csv"'
+    return response
+
+
+@web_bp.get("/api/export/tables")
+def export_tables():
+    return jsonify({"tables": list(EXPORT_TABLES)})
+
+
+@web_bp.get("/api/export/table/<table>.<fmt>")
+def export_table(table, fmt):
+    runtime = current_app.extensions["legion_runtime"]
+    table_name = str(table or "").strip().lower()
+    if table_name not in EXPORT_TABLES:
+        return jsonify({"status": "error", "error": f"Unknown export table: {table}"}), 404
+    if fmt not in {"csv", "json"}:
+        return jsonify({"status": "error", "error": "Format must be csv or json."}), 400
+    try:
+        rows = export_table_rows(runtime, table_name)
+    except ExportInterrupted as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 409
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    if fmt == "json":
+        body = json.dumps({"table": table_name, "count": len(rows), "rows": rows}, indent=2, default=str)
+        response = current_app.response_class(body, mimetype="application/json")
+    else:
+        response = current_app.response_class(rows_to_csv(rows), mimetype="text/csv")
+    response.headers["Content-Disposition"] = f'attachment; filename="legion-{table_name}-{timestamp}.{fmt}"'
     return response

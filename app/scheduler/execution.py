@@ -244,16 +244,17 @@ def store_execution_record(
 
 def list_execution_records(
         database,
-        limit: int = 200,
+        limit: Optional[int] = 200,
         host_ip: Optional[str] = None,
         tool_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Newest execution records first; host_ip / tool_id filters are applied before the limit."""
+    """Newest execution records first; host_ip / tool_id filters are applied before the limit.
+
+    `limit=None` returns every matching record (exports); the UI passes a bounded limit."""
     session = database.session()
     try:
         _ensure_table(session)
-        max_items = max(1, min(int(limit), 1000))
-        params: Dict[str, Any] = {"limit": max_items}
+        params: Dict[str, Any] = {} if limit is None else {"limit": max(1, min(int(limit), 1000))}
         clauses = []
         if host_ip is not None:
             clauses.append("TRIM(COALESCE(host_ip, '')) = :host_ip")
@@ -269,7 +270,7 @@ def list_execution_records(
             "graph_mutations_json, operator_notes "
             "FROM scheduler_execution_record "
             f"{where_clause}"
-            "ORDER BY id DESC LIMIT :limit"
+            "ORDER BY id DESC" + ("" if limit is None else " LIMIT :limit")
         ), params)
         rows = result.fetchall()
         keys = result.keys()

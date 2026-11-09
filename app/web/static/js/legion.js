@@ -14,6 +14,9 @@ const workspaceState = {
     selectedHostId: null,
     hostDetail: null,
     manualToolTargets: [],
+    bulkHostIds: new Set(),
+    persistedFiltersProject: "",
+    persistedFiltersTemporary: false,
     manualToolOptions: [],
     deviceCategoryRules: [],
     builtInDeviceCategories: [],
@@ -322,6 +325,12 @@ const uiModalState = {
     jobsOpen: false,
     submittedScansOpen: false,
     schedulerDecisionsOpen: false,
+    executionsOpen: false,
+    findingsOpen: false,
+    openWorkspaceOpen: false,
+    confirmOpen: false,
+    importOpen: false,
+    saveAsOpen: false,
     hostRemoveOpen: false,
     graphNoteOpen: false,
     workspaceSwitchGuardOpen: false,
@@ -335,6 +344,33 @@ const STARTUP_WIZARD_SESSION_KEY = "legion_startup_wizard_done";
 
 const modalFocusReturnTargets = {};
 const openModalIdStack = []; // ids in open order; the last entry is the dialog that owns keyboard focus
+// How Escape closes each stacked dialog (looked up by the id on top of openModalIdStack).
+const MODAL_ESCAPE_CLOSERS = {
+    "nmap-scan-modal": () => closeNmapScanModalAction(),
+    "manual-scan-modal": () => closeManualScanModalAction(),
+    "host-selection-modal": () => closeHostSelectionModalAction(),
+    "script-cve-modal": () => closeScriptCveModalAction(),
+    "provider-logs-modal": () => closeProviderLogsModalAction(),
+    "credentials-modal": () => closeCredentialsModalAction(),
+    "credential-capture-config-modal": () => closeCredentialCaptureConfigModalAction(),
+    "jobs-modal": () => closeJobsModalAction(),
+    "submitted-scans-modal": () => closeSubmittedScansModalAction(),
+    "scheduler-decisions-modal": () => closeSchedulerDecisionsModalAction(),
+    "scheduler-executions-modal": () => setGenericModalOpen("scheduler-executions-modal", "executionsOpen", false),
+    "findings-modal": () => setGenericModalOpen("findings-modal", "findingsOpen", false),
+    "open-workspace-modal": () => setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false),
+    "confirm-modal": () => resolveConfirmModal(false),
+    "import-modal": () => setGenericModalOpen("import-modal", "importOpen", false),
+    "save-as-modal": () => setGenericModalOpen("save-as-modal", "saveAsOpen", false),
+    "interface-settings-modal": () => setInterfaceSettingsModalOpen(false),
+    "workspace-switch-guard-modal": () => setWorkspaceSwitchGuardModalOpen(false),
+    "host-remove-modal": () => closeHostRemoveModalAction(true),
+    "graph-note-modal": () => closeGraphNoteModalAction(false),
+    "app-settings-modal": () => closeAppSettingsAction(),
+    "device-category-settings-modal": () => closeDeviceCategorySettingsAction(),
+    "scheduler-settings-modal": () => closeSchedulerSettingsAction(),
+    "report-provider-modal": () => closeReportProviderModalAction(),
+};
 const MODAL_FOCUSABLE_SELECTOR = [
     "button:not([disabled])", "[href]", "input:not([disabled]):not([type=hidden])", "select:not([disabled])",
     "textarea:not([disabled])", "[tabindex]:not([tabindex='-1'])",
@@ -436,6 +472,12 @@ function updateBodyModalState() {
         || uiModalState.jobsOpen
         || uiModalState.submittedScansOpen
         || uiModalState.schedulerDecisionsOpen
+        || uiModalState.executionsOpen
+        || uiModalState.findingsOpen
+        || uiModalState.openWorkspaceOpen
+        || uiModalState.confirmOpen
+        || uiModalState.importOpen
+        || uiModalState.saveAsOpen
         || uiModalState.hostRemoveOpen
         || uiModalState.graphNoteOpen
         || uiModalState.workspaceSwitchGuardOpen
@@ -481,6 +523,97 @@ function makeCell(value) {
     const td = document.createElement("td");
     td.textContent = value ?? "";
     return td;
+}
+
+function severityPill(value) {
+    const severity = String(value || "info").trim().toLowerCase() || "info";
+    const pill = document.createElement("span");
+    pill.className = `severity-pill severity-${severity}`;
+    pill.textContent = severity;
+    return pill;
+}
+
+function severityFromScoreOrText(value) {
+    const text = String(value || "").trim().toLowerCase();
+    const score = Number.parseFloat(text);
+    if (Number.isFinite(score) && /^\d/.test(text)) {
+        if (score >= 9) {
+            return "critical";
+        }
+        if (score >= 7) {
+            return "high";
+        }
+        if (score >= 4) {
+            return "medium";
+        }
+        return score > 0 ? "low" : "info";
+    }
+    for (const level of ["critical", "high", "medium", "low"]) {
+        if (text.includes(level)) {
+            return level;
+        }
+    }
+    return "info";
+}
+
+async function copyTextToClipboard(text, label = "Copied") {
+    const value = String(text || "");
+    if (!value) {
+        return false;
+    }
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(value);
+        } else {
+            const area = document.createElement("textarea");
+            area.value = value;
+            area.setAttribute("readonly", "readonly");
+            area.style.position = "fixed";
+            area.style.opacity = "0";
+            document.body.appendChild(area);
+            area.select();
+            document.execCommand("copy");
+            area.remove();
+        }
+        showToast(`${label}: ${value.length > 60 ? `${value.slice(0, 57)}...` : value}`, "success");
+        return true;
+    } catch (err) {
+        showToast(`Copy failed: ${err.message}`, "error");
+        return false;
+    }
+}
+
+function makeCopyButton(text, title = "Copy") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "icon-btn icon-btn-inline";
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    button.innerHTML = '<i class="fa-solid fa-copy" aria-hidden="true"></i>';
+    button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        copyTextToClipboard(text, title.replace(/^Copy\s*/i, "Copied "));
+    });
+    return button;
+}
+
+function makeLinkCell(url, label = "") {
+    const cell = document.createElement("td");
+    const value = String(url || "").trim();
+    if (!value) {
+        return cell;
+    }
+    if (/^https?:\/\//i.test(value)) {
+        const link = document.createElement("a");
+        link.href = value;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = label || value.replace(/^https?:\/\//i, "");
+        cell.appendChild(link);
+    } else {
+        cell.textContent = label || value;
+    }
+    return cell;
 }
 
 function makeTruncatedCell(value, className = "") {
@@ -1388,20 +1521,105 @@ function getProcessStatusClass(status) {
 
 function setActionStatus(text, isError = false) {
     const node = document.getElementById("action-status");
-    if (!node) {
-        return;
+    if (node) {
+        node.textContent = text;
+        node.style.color = isError ? "#ff9b9b" : "";
     }
-    node.textContent = text;
-    node.style.color = isError ? "#ff9b9b" : "";
+    showToast(text, isError ? "error" : "info");
 }
 
 function setWorkspaceStatus(text, isError = false) {
     const node = document.getElementById("workspace-status");
-    if (!node) {
+    if (node) {
+        node.textContent = text;
+        node.style.color = isError ? "#ff9b9b" : "";
+    }
+    showToast(text, isError ? "error" : "info");
+}
+
+// ---- Toast notifications: errors stay until dismissed, everything else fades ----
+const toastState = {recent: new Map()};
+
+function showToast(text, kind = "info", {sticky = null, timeoutMs = null} = {}) {
+    const message = String(text || "").trim();
+    const stack = typeof document !== "undefined" ? document.getElementById("toast-stack") : null;
+    if (!message || !stack) {
         return;
     }
-    node.textContent = text;
-    node.style.color = isError ? "#ff9b9b" : "";
+    if (kind !== "error" && (message.endsWith("...") || /^(idle|loading)/i.test(message))) {
+        return; // progress chatter stays in the status line only
+    }
+    const now = Date.now();
+    const last = toastState.recent.get(message) || 0;
+    if (now - last < 3000) {
+        return; // the same text within 3 s is a repeat, not news
+    }
+    toastState.recent.set(message, now);
+    if (toastState.recent.size > 50) {
+        toastState.recent.delete(toastState.recent.keys().next().value);
+    }
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${kind}`;
+    toast.setAttribute("role", kind === "error" ? "alert" : "status");
+    const body = document.createElement("span");
+    body.className = "toast-text";
+    body.textContent = message;
+    toast.appendChild(body);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "toast-close";
+    close.setAttribute("aria-label", "Dismiss notification");
+    close.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+    toast.appendChild(close);
+    const remove = () => {
+        toast.classList.add("is-leaving");
+        window.setTimeout(() => toast.remove(), 180);
+    };
+    close.addEventListener("click", remove);
+    stack.appendChild(toast);
+    while (stack.children.length > 6) {
+        stack.firstElementChild.remove();
+    }
+    const persistent = sticky === null ? kind === "error" : Boolean(sticky);
+    if (!persistent) {
+        window.setTimeout(remove, timeoutMs || (kind === "success" ? 4500 : 3500));
+    } else if (timeoutMs) {
+        window.setTimeout(remove, timeoutMs);
+    }
+}
+
+// ---- Generic confirmation dialog ----
+const confirmModalState = {resolve: null};
+
+function confirmAction({title = "Confirm", message = "", detail = "", confirmLabel = "Confirm", danger = true} = {}) {
+    const overlay = document.getElementById("confirm-modal");
+    if (!overlay) {
+        return Promise.resolve(window.confirm(message || title));
+    }
+    if (confirmModalState.resolve) {
+        confirmModalState.resolve(false);
+    }
+    setText("confirm-modal-title", title);
+    setText("confirm-modal-message", message);
+    setText("confirm-modal-detail", detail);
+    const confirmButton = document.getElementById("confirm-modal-confirm");
+    if (confirmButton) {
+        confirmButton.textContent = confirmLabel;
+        confirmButton.classList.toggle("danger-button", Boolean(danger));
+    }
+    setGenericModalOpen("confirm-modal", "confirmOpen", true);
+    return new Promise((resolve) => {
+        confirmModalState.resolve = resolve;
+    });
+}
+
+function resolveConfirmModal(result) {
+    const resolve = confirmModalState.resolve;
+    confirmModalState.resolve = null;
+    setGenericModalOpen("confirm-modal", "confirmOpen", false);
+    if (resolve) {
+        resolve(Boolean(result));
+    }
 }
 
 function setStartupWizardStatus(text, isError = false) {
@@ -1414,10 +1632,27 @@ function setStartupWizardStatus(text, isError = false) {
 }
 
 function renderProject(project) {
-    setText("project-name", project.name || "");
+    const name = String(project.name || "");
+    const base = (path) => {
+        const parts = String(path || "").trim().split(/[\\/]/).filter(Boolean);
+        return parts.length ? parts[parts.length - 1] : String(path || "");
+    };
+    const title = (id, value) => {
+        if (typeof document !== "undefined") {
+            const node = document.getElementById(id);
+            if (node) {
+                node.title = value || "";
+            }
+        }
+    };
+    // Show the file name; the full path stays available as a tooltip (temp projects live in a temp folder).
+    setText("project-name", project.is_temporary ? `${base(name)} (unsaved)` : base(name));
+    title("project-name", name);
     setText("project-kind", project.is_temporary ? "temporary" : "saved");
-    setText("project-output-folder", project.output_folder || "");
-    setText("project-running-folder", project.running_folder || "");
+    setText("project-output-folder", project.output_folder ? `Tool output: ${base(project.output_folder)}` : "");
+    title("project-output-folder", project.output_folder || "");
+    setText("project-running-folder", project.running_folder ? `Running: ${base(project.running_folder)}` : "");
+    title("project-running-folder", project.running_folder || "");
 
     const currentSavePath = getValue("project-save-path").trim();
     if (project.is_temporary) {
@@ -1435,6 +1670,15 @@ function clearHostDetailView({resetForms = true} = {}) {
     workspaceState.hostDetail = null;
     setText("host-detail-name", "");
     setValue("workspace-note", "");
+    setValue("host-detail-note", "");
+    const noteBlock = document.getElementById("host-detail-note-block");
+    if (noteBlock) {
+        noteBlock.hidden = true;
+    }
+    const copyIpButton = document.getElementById("host-detail-copy-ip");
+    if (copyIpButton) {
+        copyIpButton.hidden = true;
+    }
     setValue("workspace-tool-host-ip", "");
 
     if (resetForms) {
@@ -1473,6 +1717,7 @@ function clearHostDetailView({resetForms = true} = {}) {
 function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {}) {
     workspaceState.hosts = [];
     workspaceState.hostsHydrated = false;
+    workspaceState.persistedFiltersProject = "";
     workspaceState.lastSnapshotSummaryKey = "";
     workspaceState.hostFilter = "hide_down";
     workspaceState.hostServiceFilter = "";
@@ -1655,9 +1900,25 @@ function renderHosts(hosts) {
         return;
     }
     body.innerHTML = "";
+    const knownHostIds = new Set(workspaceState.hosts.map((host) => parseInt(host.id, 10)).filter(Boolean));
+    Array.from(workspaceState.bulkHostIds).forEach((id) => {
+        if (!knownHostIds.has(id)) {
+            workspaceState.bulkHostIds.delete(id);
+        }
+    });
     workspaceState.hosts.forEach((host) => {
         const tr = document.createElement("tr");
         tr.dataset.hostId = String(host.id || "");
+        const selectCell = document.createElement("td");
+        selectCell.className = "host-select-cell";
+        const selectBox = document.createElement("input");
+        selectBox.type = "checkbox";
+        selectBox.dataset.hostSelect = String(host.id || "");
+        selectBox.checked = workspaceState.bulkHostIds.has(parseInt(host.id, 10));
+        selectBox.title = `Select ${String(host.hostname || host.ip || "host").trim()} for bulk actions`;
+        selectBox.setAttribute("aria-label", selectBox.title);
+        selectCell.appendChild(selectBox);
+        tr.appendChild(selectCell);
         const filterCell = document.createElement("td");
         filterCell.className = "host-filter-cell";
         const filterButton = document.createElement("button");
@@ -1723,11 +1984,158 @@ function renderHosts(hosts) {
         body.appendChild(tr);
     });
     setText("host-count", workspaceState.hosts.length);
+    renderHostBulkBar();
     renderHostSelector(workspaceState.hosts);
     renderHostSelectionState();
     syncCategoryFilterOptions();
     syncHostServiceFilterOptions();
     graphUpdateHostFilterOptions();
+}
+
+// ---- Bulk host selection ----
+function renderHostBulkBar() {
+    const bar = document.getElementById("hosts-bulk-bar");
+    const count = workspaceState.bulkHostIds.size;
+    if (bar) {
+        bar.hidden = count === 0;
+    }
+    setText("hosts-bulk-count", `${count} selected`);
+    const selectAll = document.getElementById("hosts-select-all");
+    if (selectAll) {
+        const visibleIds = visibleHostRowIds();
+        const selectedVisible = visibleIds.filter((id) => workspaceState.bulkHostIds.has(id)).length;
+        selectAll.checked = visibleIds.length > 0 && selectedVisible === visibleIds.length;
+        selectAll.indeterminate = selectedVisible > 0 && selectedVisible < visibleIds.length;
+    }
+}
+
+function visibleHostRowIds() {
+    const body = document.getElementById("hosts-body");
+    if (!body) {
+        return [];
+    }
+    return Array.from(body.querySelectorAll("tr[data-host-id]:not([hidden])"))
+        .map((row) => parseInt(row.dataset.hostId, 10))
+        .filter(Boolean);
+}
+
+function setHostBulkSelected(hostId, selected) {
+    const id = parseInt(hostId, 10);
+    if (!id) {
+        return;
+    }
+    if (selected) {
+        workspaceState.bulkHostIds.add(id);
+    } else {
+        workspaceState.bulkHostIds.delete(id);
+    }
+    const box = document.querySelector(`#hosts-body input[data-host-select="${id}"]`);
+    if (box) {
+        box.checked = Boolean(selected);
+    }
+    renderHostBulkBar();
+}
+
+function toggleAllVisibleHostsAction(selected) {
+    visibleHostRowIds().forEach((id) => setHostBulkSelected(id, selected));
+}
+
+function clearHostBulkSelectionAction() {
+    Array.from(workspaceState.bulkHostIds).forEach((id) => setHostBulkSelected(id, false));
+}
+
+function selectedBulkHosts() {
+    return workspaceState.hosts.filter((host) => workspaceState.bulkHostIds.has(parseInt(host.id, 10)));
+}
+
+async function bulkHostAction(action) {
+    return runExclusiveAction(`bulkHostAction:${action}`, () => bulkHostActionImpl(action));
+}
+
+async function bulkHostActionImpl(action) {
+    const hosts = selectedBulkHosts();
+    if (!hosts.length) {
+        setWorkspaceStatus("Select at least one host first", true);
+        return;
+    }
+    const labels = {rescan: "Rescan", "dig-deeper": "Dig Deeper", "refresh-screenshots": "Screenshot refresh", remove: "Remove"};
+    const label = labels[action] || action;
+    if (action === "remove") {
+        const preview = hosts.slice(0, 6).map((host) => host.ip || host.hostname || host.id).join(", ");
+        const confirmed = await confirmAction({
+            title: `Remove ${hosts.length} host${hosts.length === 1 ? "" : "s"}?`,
+            message: "Their ports, services, scripts, CVEs, notes and screenshots are deleted from this workspace.",
+            detail: preview + (hosts.length > 6 ? ` and ${hosts.length - 6} more` : ""),
+            confirmLabel: "Remove hosts",
+        });
+        if (!confirmed) {
+            return;
+        }
+    }
+    setWorkspaceStatus(`${label}: queueing for ${hosts.length} host${hosts.length === 1 ? "" : "s"}...`);
+    try {
+        let body = await postJson("/api/workspace/hosts/bulk-action", {
+            action,
+            host_ids: hosts.map((host) => parseInt(host.id, 10)),
+        });
+        if (action === "remove" && body?.job?.id) {
+            // Removal runs as a job (it cascades through the evidence graph); wait for its per-host outcome.
+            setWorkspaceStatus(`Removing ${hosts.length} host${hosts.length === 1 ? "" : "s"} (job ${body.job.id})...`);
+            // waitForJobCompletion resolves only for a completed job and throws for failed or cancelled ones.
+            const job = await waitForJobCompletion(body.job.id, 30 * 60 * 1000, 1000);
+            body = job.result || {};
+        }
+        const failed = Number(body?.failed || 0);
+        const succeeded = Number(body?.succeeded || 0);
+        if (failed) {
+            const firstError = (body?.results || []).find((item) => item.status === "error");
+            setWorkspaceStatus(`${label}: ${succeeded} succeeded, ${failed} failed${firstError ? ` (${firstError.error})` : ""}`, true);
+        } else {
+            setWorkspaceStatus(`${label} ${action === "remove" ? "completed" : "queued"} for ${succeeded} host${succeeded === 1 ? "" : "s"}`);
+        }
+        if (action === "remove") {
+            clearHostBulkSelectionAction();
+            if (hosts.some((host) => parseInt(host.id, 10) === parseInt(workspaceState.selectedHostId, 10))) {
+                clearHostDetailView();  // the host shown in Host Detail was among those removed
+                workspaceState.selectedHostId = null;
+            }
+            await Promise.all([refreshWorkspace(), loadApprovals()]);  // same full reload as a single remove
+        }
+        await pollSnapshot();
+    } catch (err) {
+        setWorkspaceStatus(`${label} failed: ${err.message}`, true);
+    }
+}
+
+async function bulkRunToolAction() {
+    const hosts = selectedBulkHosts();
+    if (!hosts.length) {
+        setWorkspaceStatus("Select at least one host first", true);
+        return;
+    }
+    let targets = [];
+    let truncated = false;
+    try {
+        // One request, scoped to the selected hosts server-side so the 5000-row ceiling applies to them alone.
+        const result = await fetchWorkspaceToolTargets({hostIds: hosts.map((host) => host.id), limit: 5000, withMeta: true});
+        targets = result.targets;
+        truncated = result.truncated;
+    } catch (err) {
+        setWorkspaceStatus(`Load tool targets failed: ${err.message}`, true);
+        return;
+    }
+    if (!targets.length) {
+        setWorkspaceStatus("The selected hosts have no open services to run a tool against", true);
+        return;
+    }
+    if (truncated) {
+        setWorkspaceStatus("The selected hosts have more open services than one picker can list; only the first 5000 are shown.", true);
+    }
+    await openManualToolPicker({
+        targets,
+        batch: true,
+        contextLabel: `${targets.length}${truncated ? "+" : ""} open service${targets.length === 1 ? "" : "s"} on ${hosts.length} selected host${hosts.length === 1 ? "" : "s"}`,
+    });
 }
 
 function hostMatchesServiceFilter(host, serviceFilter) {
@@ -1816,7 +2224,149 @@ function toggleServicesPanelAction() {
     if (!body) {
         return;
     }
-    setServicesPanelCollapsed(!body.hidden);
+    const collapsed = !body.hidden;
+    setServicesPanelCollapsed(collapsed);
+    writeStoredFlag("legion_services_collapsed", collapsed);
+}
+
+function readStoredFlag(key, fallback) {
+    try {
+        const raw = window.localStorage.getItem(key);
+        return raw === null ? fallback : raw === "1";
+    } catch (_err) {
+        return fallback;
+    }
+}
+
+function writeStoredFlag(key, value) {
+    try {
+        window.localStorage.setItem(key, value ? "1" : "0");
+    } catch (_err) {
+    }
+}
+
+function readStoredJson(key, fallback) {
+    try {
+        const raw = window.localStorage.getItem(key);
+        return raw === null ? fallback : JSON.parse(raw);
+    } catch (_err) {
+        return fallback;
+    }
+}
+
+function writeStoredJson(key, value) {
+    try {
+        if (value === null || value === undefined) {
+            window.localStorage.removeItem(key);
+        } else {
+            window.localStorage.setItem(key, JSON.stringify(value));
+        }
+    } catch (_err) {
+    }
+}
+
+// ---- Theme (per browser) ----
+function applyLightThemeEnabled(enabled, {persist = true} = {}) {
+    const next = Boolean(enabled);
+    if (next) {
+        document.documentElement.setAttribute("data-theme", "light");
+    } else {
+        document.documentElement.removeAttribute("data-theme");
+    }
+    setChecked("interface-light-theme", next);
+    if (persist) {
+        try {
+            window.localStorage.setItem("legion_theme", next ? "light" : "dark");
+        } catch (_err) {
+        }
+    }
+}
+
+function isLightThemeEnabled() {
+    try {
+        return window.localStorage.getItem("legion_theme") === "light";
+    } catch (_err) {
+        return document.documentElement.getAttribute("data-theme") === "light";
+    }
+}
+
+// ---- Persisted host/service filters (per project, per browser) ----
+const FILTER_STORAGE_PREFIX = "legion_filters:";
+
+function filterStorageKey(projectName) {
+    const name = String(projectName || workspaceState.persistedFiltersProject || "").trim();
+    return name ? `${FILTER_STORAGE_PREFIX}${name}` : "";
+}
+
+function persistWorkspaceFilters() {
+    const key = filterStorageKey();
+    if (!key || workspaceState.persistedFiltersTemporary) {
+        return;  // a temporary workspace has a throwaway path; remembering its filters would only litter storage
+    }
+    const payload = {
+        hostFilter: workspaceState.hostFilter || "hide_down",
+        hostServiceFilters: Array.isArray(workspaceState.hostServiceFilters) ? workspaceState.hostServiceFilters : [],
+        hostCategoryFilter: workspaceState.hostCategoryFilter || "",
+        servicesCategoryFilter: workspaceState.servicesCategoryFilter || "",
+    };
+    const isDefault = payload.hostFilter === "hide_down" && !payload.hostServiceFilters.length
+        && !payload.hostCategoryFilter && !payload.servicesCategoryFilter;
+    writeStoredJson(key, isDefault ? null : payload);
+}
+
+function restoreWorkspaceFilters(project) {
+    const source = project && typeof project === "object" ? project : {name: project};
+    const name = String(source.name || "").trim();
+    if (!name || name === workspaceState.persistedFiltersProject) {
+        return false;
+    }
+    workspaceState.persistedFiltersProject = name;
+    workspaceState.persistedFiltersTemporary = Boolean(source.is_temporary);
+    if (workspaceState.persistedFiltersTemporary) {
+        return false;
+    }
+    const saved = readStoredJson(filterStorageKey(name), null);
+    if (!saved || typeof saved !== "object") {
+        return false;
+    }
+    workspaceState.hostFilter = saved.hostFilter === "show_all" ? "show_all" : "hide_down";
+    workspaceState.hostServiceFilters = normalizeServiceFilterList(saved.hostServiceFilters || []);
+    workspaceState.hostServiceFilter = workspaceState.hostServiceFilters.join(",");
+    workspaceState.hostCategoryFilter = String(saved.hostCategoryFilter || "").trim();
+    workspaceState.servicesCategoryFilter = String(saved.servicesCategoryFilter || "").trim();
+    syncHostFilterControls();
+    return true;
+}
+
+// ---- Remembered paths (per browser) ----
+function rememberPath(key, value) {
+    const path = String(value || "").trim();
+    if (path) {
+        writeStoredJson(`legion_path:${key}`, path);
+    }
+}
+
+function recallPath(key) {
+    const value = readStoredJson(`legion_path:${key}`, "");
+    return typeof value === "string" ? value : "";
+}
+
+function formatElapsedSeconds(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+        return "";
+    }
+    const total = Math.floor(seconds);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const rest = total % 60;
+    if (hours > 0) {
+        return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+    }
+    if (minutes > 0) {
+        return `${minutes}m ${String(rest).padStart(2, "0")}s`;
+    }
+    return `${rest}s`;
 }
 
 function setGraphPanelCollapsed(collapsed) {
@@ -1865,27 +2415,11 @@ function getHostOsIcon(osText) {
 }
 
 function renderTools(tools) {
+    // The tools catalog feeds the Manual Tool Run picker (the standalone tools table was retired).
     workspaceState.tools = Array.isArray(tools) ? tools : [];
-    const body = document.getElementById("tools-body");
-    if (body) {
-        body.innerHTML = "";
-        workspaceState.tools.forEach((tool) => {
-            const tr = document.createElement("tr");
-            tr.dataset.toolId = String(tool.tool_id || "");
-            tr.appendChild(makeCell(tool.label || ""));
-            tr.appendChild(makeCell(tool.tool_id || ""));
-            tr.appendChild(makeCell(tool.run_count || 0));
-            tr.appendChild(makeCell(tool.last_status || ""));
-            tr.appendChild(makeCell(Array.isArray(tool.danger_categories) ? tool.danger_categories.join(",") : ""));
-            body.appendChild(tr);
-        });
-    }
-
     if (!workspaceState.manualToolTargets.length) {
         populateManualToolSelect(workspaceState.tools);
     }
-
-    setText("tool-count", workspaceState.tools.length);
 }
 
 function renderProcesses(processes) {
@@ -1920,6 +2454,13 @@ function renderProcesses(processes) {
         statusWrap.appendChild(statusText);
         statusCell.appendChild(statusWrap);
         tr.appendChild(statusCell);
+        const startedCell = makeCell(formatTimestamp(process.startTime || ""));
+        startedCell.className = "process-started-cell";
+        startedCell.title = String(process.startTime || "");
+        tr.appendChild(startedCell);
+        const elapsedCell = makeCell(formatElapsedSeconds(process.elapsed));
+        elapsedCell.className = "process-elapsed-cell";
+        tr.appendChild(elapsedCell);
 
         let percentDisplay = process.percent || "";
         const numericPercent = Number(String(percentDisplay).replace("%", "").trim());
@@ -2889,17 +3430,22 @@ async function fetchWorkspaceToolsAll({service = "", port = "", protocol = "tcp"
     return allTools;
 }
 
-async function fetchWorkspaceToolTargets({hostId = 0, service = "", limit = 500} = {}) {
+async function fetchWorkspaceToolTargets({hostId = 0, hostIds = [], service = "", limit = 500, withMeta = false} = {}) {
     const params = new URLSearchParams();
     params.set("limit", String(limit));
     if (hostId) {
         params.set("host_id", String(hostId));
     }
+    const ids = (Array.isArray(hostIds) ? hostIds : []).map((id) => Number(id) || 0).filter((id) => id > 0);
+    if (ids.length) {
+        params.set("host_ids", ids.join(","));
+    }
     if (service) {
         params.set("service", String(service));
     }
     const body = await fetchJson(`/api/workspace/tool-targets?${params.toString()}`);
-    return Array.isArray(body?.targets) ? body.targets : [];
+    const targets = Array.isArray(body?.targets) ? body.targets : [];
+    return withMeta ? {targets, truncated: Boolean(body?.truncated)} : targets;
 }
 
 async function loadManualToolOptionsForService(service = "", preferredToolId = "", {port = "", protocol = "tcp"} = {}) {
@@ -2919,7 +3465,7 @@ async function applyManualToolTarget(target, {preferredToolId = ""} = {}) {
     });
 }
 
-async function renderManualToolTargets(targets, {preferredTargetKey = "", preferredToolId = ""} = {}) {
+async function renderManualToolTargets(targets, {preferredTargetKey = "", preferredToolId = "", batch = false} = {}) {
     workspaceState.manualToolTargets = Array.isArray(targets) ? targets : [];
     const wrapper = document.getElementById("workspace-tool-target-wrapper");
     const select = document.getElementById("workspace-tool-target-select");
@@ -2927,6 +3473,15 @@ async function renderManualToolTargets(targets, {preferredTargetKey = "", prefer
         return;
     }
     select.innerHTML = "";
+    const batchWrapper = document.getElementById("workspace-tool-batch-wrapper");
+    const batchBox = document.getElementById("workspace-tool-batch");
+    if (batchWrapper) {
+        batchWrapper.hidden = workspaceState.manualToolTargets.length < 2;
+    }
+    setText("workspace-tool-batch-count", workspaceState.manualToolTargets.length);
+    if (batchBox) {
+        batchBox.checked = Boolean(batch) && workspaceState.manualToolTargets.length > 1;
+    }
     if (!workspaceState.manualToolTargets.length) {
         wrapper.hidden = true;
         return;
@@ -2954,6 +3509,7 @@ async function openManualToolPicker({
     hostId = 0,
     service = "",
     preferredToolId = "",
+    batch = false,
 } = {}) {
     closeRibbonMenus();
     setManualScanModalOpen(true);
@@ -2968,7 +3524,7 @@ async function openManualToolPicker({
             });
         }
         if (resolvedTargets.length) {
-            await renderManualToolTargets(resolvedTargets, {preferredToolId});
+            await renderManualToolTargets(resolvedTargets, {preferredToolId, batch});
             return;
         }
     } catch (err) {
@@ -2977,6 +3533,10 @@ async function openManualToolPicker({
     workspaceState.manualToolTargets = [];
     const wrapper = document.getElementById("workspace-tool-target-wrapper");
     const select = document.getElementById("workspace-tool-target-select");
+    const batchWrapper = document.getElementById("workspace-tool-batch-wrapper");
+    if (batchWrapper) {
+        batchWrapper.hidden = true;
+    }
     if (wrapper) {
         wrapper.hidden = true;
     }
@@ -3061,6 +3621,470 @@ async function openSchedulerDecisionsAction() {
     closeRibbonMenus();
     setSchedulerDecisionsModalOpen(true);
     await pollSnapshot();
+}
+
+function setGenericModalOpen(modalId, stateKey, open) {
+    const overlay = document.getElementById(modalId);
+    if (!overlay) {
+        return;
+    }
+    uiModalState[stateKey] = Boolean(open);
+    overlay.classList.toggle("is-open", Boolean(open));
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    applyModalFocus(overlay, Boolean(open));
+    updateBodyModalState();
+}
+
+// ---- Scheduler executions (Logging > Executions) ----
+async function openExecutionsAction() {
+    closeRibbonMenus();
+    setGenericModalOpen("scheduler-executions-modal", "executionsOpen", true);
+    const output = document.getElementById("executions-output");
+    if (output) {
+        output.hidden = true;
+        output.textContent = "";
+    }
+    try {
+        const body = await fetchJson("/api/scheduler/executions?limit=200");
+        renderExecutions(Array.isArray(body?.executions) ? body.executions : []);
+    } catch (err) {
+        setWorkspaceStatus(`Could not load executions: ${err.message}`, true);
+    }
+}
+
+function renderExecutions(records) {
+    const body = document.getElementById("executions-body");
+    if (!body) {
+        return;
+    }
+    body.innerHTML = "";
+    if (!records.length) {
+        const tr = document.createElement("tr");
+        const td = makeCell("No scheduler executions recorded yet.");
+        td.colSpan = 8;
+        tr.appendChild(td);
+        body.appendChild(tr);
+    }
+    records.forEach((record) => {
+        const tr = document.createElement("tr");
+        tr.appendChild(makeCell(formatTimestamp(record.started_at || "")));
+        tr.appendChild(makeCell(formatTargetLabel(record.host_ip, record.port, record.protocol)));
+        tr.appendChild(makeCell(record.label || record.tool_id || ""));
+        tr.appendChild(makeCell(record.scheduler_mode || ""));
+        tr.appendChild(makeCell(record.runner_type || ""));
+        tr.appendChild(makeCell(record.exit_status || ""));
+        const artifacts = Array.isArray(record.artifact_refs) ? record.artifact_refs : [];
+        tr.appendChild(makeCell(artifacts.length ? String(artifacts.length) : ""));
+        const actions = document.createElement("td");
+        const outputButton = document.createElement("button");
+        outputButton.type = "button";
+        outputButton.textContent = "Output";
+        outputButton.addEventListener("click", () => showExecutionOutput(String(record.execution_id || "")));
+        actions.appendChild(outputButton);
+        tr.appendChild(actions);
+        body.appendChild(tr);
+    });
+    setText("execution-count", records.length);
+}
+
+async function showExecutionOutput(executionId) {
+    const output = document.getElementById("executions-output");
+    if (!output || !executionId) {
+        return;
+    }
+    output.hidden = false;
+    output.textContent = "Loading...";
+    try {
+        const trace = await fetchJson(`/api/scheduler/executions/${encodeURIComponent(executionId)}?max_chars=8000`);
+        const parts = [];
+        if (trace.command) {
+            parts.push(`$ ${trace.command}`);
+        }
+        const stdout = trace.stdout_excerpt || trace.stdout || "";
+        const stderr = trace.stderr_excerpt || trace.stderr || "";
+        parts.push(stdout || "(no stdout captured)");
+        if (stderr) {
+            parts.push(`--- stderr ---\n${stderr}`);
+        }
+        output.textContent = parts.join("\n\n");
+    } catch (err) {
+        output.textContent = `Could not load output: ${err.message}`;
+    }
+}
+
+// ---- Findings (Misc > Findings) ----
+const findingsState = {rows: []};
+
+async function openFindingsAction() {
+    closeRibbonMenus();
+    setGenericModalOpen("findings-modal", "findingsOpen", true);
+    try {
+        const body = await fetchJson("/api/workspace/findings?limit=1000");
+        findingsState.rows = Array.isArray(body?.findings) ? body.findings : [];
+        setText("findings-host-count", body?.host_scope_count ?? 0);
+        renderFindings();
+    } catch (err) {
+        setWorkspaceStatus(`Could not load findings: ${err.message}`, true);
+    }
+}
+
+function renderFindings() {
+    const body = document.getElementById("findings-body");
+    if (!body) {
+        return;
+    }
+    const severityFilter = String(document.getElementById("findings-severity-filter")?.value || "").toLowerCase();
+    const rows = findingsState.rows.filter((row) => !severityFilter || String(row.severity || "").toLowerCase() === severityFilter);
+    body.innerHTML = "";
+    if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = makeCell(findingsState.rows.length ? "No findings at this severity." : "No findings yet. Run the scheduler or import a vulners scan.");
+        td.colSpan = 6;
+        tr.appendChild(td);
+        body.appendChild(tr);
+    }
+    rows.forEach((row) => {
+        const tr = document.createElement("tr");
+        const severity = String(row.severity || "info").toLowerCase();
+        const severityCell = document.createElement("td");
+        const pill = document.createElement("span");
+        pill.className = `severity-pill severity-${severity}`;
+        pill.textContent = severity;
+        severityCell.appendChild(pill);
+        tr.appendChild(severityCell);
+        const host = row.host || {};
+        const hostCell = document.createElement("td");
+        const hostLink = document.createElement("a");
+        hostLink.href = "#";
+        hostLink.textContent = host.hostname ? `${host.ip} (${host.hostname})` : String(host.ip || "");
+        hostLink.addEventListener("click", (event) => {
+            event.preventDefault();
+            setGenericModalOpen("findings-modal", "findingsOpen", false);
+            if (host.id) {
+                selectHost(host.id);
+            }
+        });
+        hostCell.appendChild(hostLink);
+        tr.appendChild(hostCell);
+        tr.appendChild(makeCell(row.title || ""));
+        tr.appendChild(makeCell(row.source_kind || ""));
+        const confidence = Number(row.confidence || 0);
+        tr.appendChild(makeCell(Number.isFinite(confidence) && confidence > 0 ? confidence.toFixed(0) : ""));
+        const finding = row.finding || {};
+        tr.appendChild(makeCell(finding.evidence || finding.cve || finding.url || ""));
+        body.appendChild(tr);
+    });
+    setText("findings-count", rows.length);
+}
+
+// ---- Plan preview (Manual Tool Run) ----
+async function previewPlanAction() {
+    const hostIp = getValue("workspace-tool-host-ip").trim();
+    const port = getValue("workspace-tool-port").trim();
+    const protocol = getValue("workspace-tool-protocol").trim() || "tcp";
+    const container = document.getElementById("workspace-plan-preview");
+    const body = document.getElementById("workspace-plan-preview-body");
+    if (!container || !body) {
+        return;
+    }
+    container.hidden = false;
+    body.innerHTML = "";
+    setText("workspace-plan-preview-meta", "loading...");
+    const params = new URLSearchParams({mode: "compare", limit_targets: "3", limit_actions: "8"});
+    if (hostIp) {
+        params.set("host_ip", hostIp);
+    }
+    if (port) {
+        params.set("port", port);
+    }
+    if (protocol) {
+        params.set("protocol", protocol);
+    }
+    try {
+        const preview = await fetchJson(`/api/scheduler/plan-preview?${params.toString()}`);
+        const targets = Array.isArray(preview?.targets) ? preview.targets : [];
+        setText("workspace-plan-preview-meta", `${targets.length} target${targets.length === 1 ? "" : "s"} | current mode: ${preview.current_mode || ""}`);
+        if (!targets.length) {
+            const empty = document.createElement("p");
+            empty.className = "plan-preview-empty";
+            empty.textContent = "No open services match this target, so the scheduler has nothing to plan.";
+            body.appendChild(empty);
+            return;
+        }
+        targets.forEach((entry) => {
+            const target = entry.target || {};
+            const label = formatTargetLabel(target.host_ip, target.port, target.protocol) + (target.service_name ? ` ${target.service_name}` : "");
+            [["Deterministic", entry.deterministic], ["AI", entry.ai]].forEach(([title, plan]) => {
+                const column = document.createElement("div");
+                column.className = "plan-preview-column";
+                const heading = document.createElement("h4");
+                heading.textContent = `${title} | ${label}${plan?.fallback_used ? " (fallback)" : ""}`;
+                column.appendChild(heading);
+                const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+                if (!steps.length) {
+                    const none = document.createElement("p");
+                    none.className = "plan-preview-empty";
+                    none.textContent = "nothing planned";
+                    column.appendChild(none);
+                } else {
+                    const list = document.createElement("ol");
+                    steps.forEach((step) => {
+                        const item = document.createElement("li");
+                        item.textContent = step.label || step.tool_id || "";
+                        const detail = document.createElement("small");
+                        const bits = [];
+                        if (step.policy_decision) {
+                            bits.push(step.policy_decision);
+                        }
+                        if (step.approval_state && step.approval_state !== "not_required") {
+                            bits.push(step.approval_state);
+                        }
+                        if (step.rationale) {
+                            bits.push(step.rationale);
+                        }
+                        detail.textContent = bits.join(" | ");
+                        item.appendChild(detail);
+                        list.appendChild(item);
+                    });
+                    column.appendChild(list);
+                }
+                body.appendChild(column);
+            });
+        });
+    } catch (err) {
+        setText("workspace-plan-preview-meta", "");
+        const failed = document.createElement("p");
+        failed.className = "plan-preview-empty";
+        failed.textContent = `Preview failed: ${err.message}`;
+        body.appendChild(failed);
+    }
+}
+
+// ---- Pre-approved families (Scheduler Settings) ----
+function renderSchedulerFamilies(families) {
+    const body = document.getElementById("scheduler-families-body");
+    if (!body) {
+        return;
+    }
+    body.innerHTML = "";
+    const rows = Array.isArray(families) ? families : [];
+    if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = makeCell("No family decisions yet. Use \"Allow Family\" or \"Suppress Family\" on a pending approval.");
+        td.colSpan = 6;
+        tr.appendChild(td);
+        body.appendChild(tr);
+        return;
+    }
+    rows.forEach((family) => {
+        const tr = document.createElement("tr");
+        tr.appendChild(makeCell(family.family_id || ""));
+        tr.appendChild(makeCell(family.label || family.tool_id || ""));
+        tr.appendChild(makeCell(family.policy_state || ""));
+        tr.appendChild(makeCell(formatTimestamp(family.approved_at || "")));
+        tr.appendChild(makeCell(family.reason || ""));
+        const actions = document.createElement("td");
+        actions.className = "approval-action-buttons";
+        const state = String(family.policy_state || "");
+        [["allowed", "Allow"], ["suppressed", "Suppress"], ["clear", "Clear"]].forEach(([nextState, text]) => {
+            if (nextState === state) {
+                return;
+            }
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = text;
+            button.addEventListener("click", () => setFamilyPolicyAction(String(family.family_id || ""), nextState));
+            actions.appendChild(button);
+        });
+        tr.appendChild(actions);
+        body.appendChild(tr);
+    });
+}
+
+async function setFamilyPolicyAction(familyId, state) {
+    if (!familyId) {
+        return;
+    }
+    try {
+        const body = await postJson("/api/scheduler/family-policy", {family_id: familyId, state});
+        renderSchedulerFamilies(body?.families || []);
+        setText("scheduler-families", Array.isArray(body?.families) ? body.families.length : 0);
+        setWorkspaceStatus(state === "clear" ? `Family ${familyId} cleared.` : `Family ${familyId} set to ${state}.`);
+        await loadApprovals();
+    } catch (err) {
+        setWorkspaceStatus(`Family update failed: ${err.message}`, true);
+    }
+}
+
+// ---- Open workspace picker ----
+async function openWorkspacePickerAction() {
+    closeRibbonMenus();
+    setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", true);
+    setValue("open-workspace-path-input", getValue("project-open-path") || recallPath("open"));
+    await refreshProjectListAction();
+}
+
+async function refreshProjectListAction() {
+    const body = document.getElementById("open-workspace-body");
+    const options = document.getElementById("open-workspace-path-options");
+    if (!body) {
+        return;
+    }
+    body.innerHTML = "";
+    try {
+        const payload = await fetchJson("/api/projects?limit=200");
+        const projects = Array.isArray(payload?.projects) ? payload.projects : [];
+        if (options) {
+            options.innerHTML = "";
+            projects.forEach((project) => {
+                const option = document.createElement("option");
+                option.value = String(project.path || "");
+                options.appendChild(option);
+            });
+        }
+        if (!projects.length) {
+            const tr = document.createElement("tr");
+            const td = makeCell("No saved projects found. Enter a path above to open a project stored elsewhere.");
+            td.colSpan = 5;
+            tr.appendChild(td);
+            body.appendChild(tr);
+        }
+        projects.forEach((project) => {
+            const tr = document.createElement("tr");
+            if (project.is_current) {
+                tr.classList.add("is-current-project");
+            }
+            tr.appendChild(makeCell(project.name || ""));
+            tr.appendChild(makeCell(project.source || ""));
+            tr.appendChild(makeCell(formatTimestamp(project.modified_at || "")));
+            const pathCell = makeCell(project.path || "");
+            pathCell.className = "path-cell";
+            tr.appendChild(pathCell);
+            const actions = document.createElement("td");
+            actions.className = "host-actions";
+            const openButton = document.createElement("button");
+            openButton.type = "button";
+            openButton.textContent = project.is_current ? "Current" : "Open";
+            openButton.disabled = Boolean(project.is_current) || project.exists === false;
+            openButton.addEventListener("click", () => openWorkspacePath(String(project.path || "")));
+            actions.appendChild(openButton);
+            if (!project.is_current && project.exists !== false) {
+                const renameButton = document.createElement("button");
+                renameButton.type = "button";
+                renameButton.className = "icon-btn";
+                renameButton.title = "Rename project";
+                renameButton.setAttribute("aria-label", `Rename ${project.name || "project"}`);
+                renameButton.innerHTML = '<i class="fa-solid fa-pen" aria-hidden="true"></i>';
+                renameButton.addEventListener("click", () => beginProjectRename(tr, project));
+                actions.appendChild(renameButton);
+                const deleteButton = document.createElement("button");
+                deleteButton.type = "button";
+                deleteButton.className = "icon-btn icon-btn-danger";
+                deleteButton.title = "Delete project file and its tool output";
+                deleteButton.setAttribute("aria-label", `Delete ${project.name || "project"}`);
+                deleteButton.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+                deleteButton.addEventListener("click", () => deleteProjectAction(project));
+                actions.appendChild(deleteButton);
+            }
+            tr.appendChild(actions);
+            body.appendChild(tr);
+        });
+        setText("open-workspace-meta", `${projects.length} project${projects.length === 1 ? "" : "s"} found in the temp and autosave folders on the Legion host.`);
+    } catch (err) {
+        setText("open-workspace-meta", `Could not list projects: ${err.message}`);
+    }
+}
+
+function beginProjectRename(row, project) {
+    const nameCell = row?.firstElementChild;
+    if (!nameCell || nameCell.querySelector("input")) {
+        return;
+    }
+    const original = String(project.name || "");
+    nameCell.textContent = "";
+    const form = document.createElement("form");
+    form.className = "inline-rename";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = original.replace(/\.legion$/i, "");
+    input.setAttribute("aria-label", "New project name");
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = "Save";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => { nameCell.textContent = original; });
+    form.append(input, save, cancel);
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const newName = input.value.trim();
+        if (!newName || `${newName}.legion` === original || newName === original) {
+            nameCell.textContent = original;
+            return;
+        }
+        save.disabled = true;
+        try {
+            const body = await postJson("/api/project/rename", {path: String(project.path || ""), new_name: newName});
+            setActionStatus(`Renamed ${original} to ${body?.project?.name || newName}`);
+            await refreshProjectListAction();
+        } catch (err) {
+            setActionStatus(`Rename failed: ${err.message}`, true);
+            nameCell.textContent = original;
+        }
+    });
+    nameCell.appendChild(form);
+    input.focus();
+    input.select();
+}
+
+async function deleteProjectAction(project) {
+    const path = String(project?.path || "").trim();
+    if (!path) {
+        return;
+    }
+    const confirmed = await confirmAction({
+        title: `Delete ${project.name || "project"}?`,
+        message: "The project file and its tool-output folder (screenshots, wordlists, tool logs) are removed from disk.",
+        detail: path,
+        confirmLabel: "Delete project",
+    });
+    if (!confirmed) {
+        return;
+    }
+    try {
+        await postJson("/api/project/delete", {path});
+        writeStoredJson(filterStorageKey(path), null);  // its remembered filters go with it
+        setActionStatus(`Deleted ${project.name || path}`);
+        await refreshProjectListAction();
+    } catch (err) {
+        setActionStatus(`Delete failed: ${err.message}`, true);
+    }
+}
+
+async function openWorkspacePath(path) {
+    const target = String(path || getValue("open-workspace-path-input") || "").trim();
+    if (!target) {
+        setActionStatus("Open failed: a project path is required", true);
+        return;
+    }
+    rememberPath("open", target);
+    setValue("project-open-path", target);
+    setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false);
+    await openProject();
+}
+
+function formatTimestamp(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+        return "";
+    }
+    const parsed = new Date(text);
+    if (Number.isNaN(parsed.getTime())) {
+        return text;
+    }
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`;
 }
 
 function requestHostRemoveAction(hostId) {
@@ -3155,12 +4179,7 @@ function setToolInstallStatus(text, isError = false) {
 }
 
 function setDisplaySettingsStatus(text, isError = false) {
-    const node = document.getElementById("settings-display-status");
-    if (!node) {
-        return;
-    }
-    node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    setInterfaceSettingsStatus(text, isError);  // the display toggles live in the Interface Settings modal
 }
 
 function setInterfaceSettingsStatus(text, isError = false) {
@@ -3412,6 +4431,14 @@ async function copyToolInstallScriptAction() {
 
 async function startToolInstallAction() {
     const platform = currentToolInstallPlatform();
+    if (!(await confirmAction({
+        title: "Install Missing Tools",
+        message: `Run the generated ${platform} install script on this machine?`,
+        detail: "This runs package-manager and installer commands with sudo -n in the background. Review the script preview first.",
+        confirmLabel: "Install",
+    }))) {
+        return;
+    }
     setToolInstallStatus("Queueing install job...");
     try {
         const body = await postJson("/api/settings/tool-audit/install", {
@@ -3467,6 +4494,10 @@ function toggleRibbonMenu(menuId) {
 }
 
 async function openWorkspaceFromRibbonAction() {
+    await openWorkspacePickerAction();
+}
+
+async function openWorkspaceFromRibbonLegacyAction() {
     closeRibbonMenus();
     let path = getValue("project-open-path").trim();
     if (!path) {
@@ -3482,16 +4513,28 @@ async function openWorkspaceFromRibbonAction() {
 
 async function saveWorkspaceFromRibbonAction(forcePrompt = false) {
     closeRibbonMenus();
-    let path = getValue("project-save-path").trim();
+    const path = getValue("project-save-path").trim();
     if (forcePrompt || !path) {
-        const suggested = String(getValue("project-name") || "").trim();
-        const prompted = window.prompt("Enter destination path (.legion):", suggested);
-        path = String(prompted || "").trim();
-        if (!path) {
-            return;
-        }
-        setValue("project-save-path", path);
+        const current = document.getElementById("project-name")?.title || "";
+        setValue("save-as-path-input", path || (current.endsWith(".legion") && !current.includes("/tmp/") ? current : "") || recallPath("save_as"));
+        setChecked("save-as-replace", getChecked("project-save-replace"));
+        refreshProjectListAction().catch(() => {});  // fills the path suggestions
+        setGenericModalOpen("save-as-modal", "saveAsOpen", true);
+        return;
     }
+    await saveProjectAs();
+}
+
+async function confirmSaveAsDialog() {
+    const path = getValue("save-as-path-input").trim();
+    rememberPath("save_as", path);
+    if (!path) {
+        setActionStatus("Save failed: destination path is required", true);
+        return;
+    }
+    setValue("project-save-path", path);
+    setChecked("project-save-replace", getChecked("save-as-replace"));
+    setGenericModalOpen("save-as-modal", "saveAsOpen", false);
     await saveProjectAs();
 }
 
@@ -3531,6 +4574,18 @@ async function restoreWorkspaceBundleSelectedAction(event) {
     const input = event?.target;
     const file = input?.files && input.files.length ? input.files[0] : null;
     if (!file) {
+        return;
+    }
+    const proceed = await confirmAction({
+        title: "Restore Workspace",
+        message: `Restore ${file.name} and replace the open workspace with it?`,
+        detail: "The current workspace is closed first; save it with Workspace > Save As if it has unsaved work.",
+        confirmLabel: "Restore",
+    });
+    if (!proceed) {
+        if (input) {
+            input.value = "";
+        }
         return;
     }
 
@@ -3577,22 +4632,99 @@ async function restoreWorkspaceBundleSelectedAction(event) {
 }
 
 async function importNmapXmlFromRibbonAction() {
+    openImportDialog("xml");
+}
+
+function openImportDialog(kind = "xml") {
     closeRibbonMenus();
-    let path = getValue("nmap-xml-path").trim();
-    if (!path) {
-        const prompted = window.prompt("Enter Nmap XML path:", "");
-        path = String(prompted || "").trim();
-        if (!path) {
-            return;
-        }
-        setValue("nmap-xml-path", path);
+    setValue("import-kind-select", kind === "targets" ? "targets" : "xml");
+    setValue("import-path-input", (kind === "targets" ? getValue("targets-file-path") : getValue("nmap-xml-path")) || recallPath(kind === "targets" ? "import_targets" : "import_xml"));
+    const fileInput = document.getElementById("import-file-input");
+    if (fileInput) {
+        fileInput.value = "";
     }
-    const runActions = window.confirm("Run scripted actions after XML import?");
-    setChecked("nmap-xml-run-actions", runActions);
-    await importNmapXml();
+    setText("import-modal-status", "");
+    syncImportDialogKind();
+    setGenericModalOpen("import-modal", "importOpen", true);
+}
+
+function syncImportDialogKind() {
+    const kind = getValue("import-kind-select") || "xml";
+    const wrapper = document.getElementById("import-run-actions-wrapper");
+    if (wrapper) {
+        wrapper.hidden = kind !== "xml";
+    }
+    const pathInput = document.getElementById("import-path-input");
+    if (pathInput) {
+        pathInput.placeholder = kind === "xml" ? "/path/to/scan.xml" : "/path/to/targets.txt";
+    }
+    const fileInput = document.getElementById("import-file-input");
+    if (fileInput) {
+        fileInput.accept = kind === "xml"
+            ? ".xml,.gnmap,.json,.list,.txt,text/xml,application/xml,application/json,text/plain"
+            : ".txt,.lst,.csv,text/plain";
+    }
+}
+
+async function submitImportDialog() {
+    const kind = getValue("import-kind-select") || "xml";
+    const fileInput = document.getElementById("import-file-input");
+    const file = fileInput?.files && fileInput.files.length ? fileInput.files[0] : null;
+    const path = getValue("import-path-input").trim();
+    const runActions = getChecked("import-run-actions");
+    if (!file && !path) {
+        setText("import-modal-status", "Choose a file to upload or enter a path on the Legion host.");
+        return;
+    }
+    setText("import-modal-status", file ? `Uploading ${file.name}...` : "Queueing import...");
+    try {
+        let body;
+        if (file) {
+            const formData = new FormData();
+            formData.append("file", file, file.name);
+            if (kind === "xml") {
+                formData.append("run_actions", runActions ? "true" : "false");
+            }
+            const response = await fetch(kind === "xml" ? "/api/nmap/import-xml-upload" : "/api/targets/import-upload", {
+                method: "POST",
+                body: formData,
+            });
+            if (handleUnauthorizedResponse(response)) {
+                return;  // the browser is on its way to /login
+            }
+            try {
+                body = await response.json();
+            } catch (_err) {
+                body = {};
+            }
+            if (!response.ok) {
+                throw new Error(body.error || `Request failed (${response.status})`);
+            }
+        } else if (kind === "xml") {
+            setValue("nmap-xml-path", path);
+            rememberPath("import_xml", path);
+            body = await postJson("/api/nmap/import-xml", {path, run_actions: runActions});
+        } else {
+            setValue("targets-file-path", path);
+            rememberPath("import_targets", path);
+            body = await postJson("/api/targets/import-file", {path});
+        }
+        const jobId = body?.job?.id;
+        const label = kind === "xml" ? "Scan report import" : "Targets import";
+        setActionStatus(jobId ? `${label} queued (job ${jobId})` : `${label} queued`);
+        setGenericModalOpen("import-modal", "importOpen", false);
+        await pollSnapshot();
+    } catch (err) {
+        setText("import-modal-status", `Import failed: ${err.message}`);
+        setActionStatus(`Import failed: ${err.message}`, true);
+    }
 }
 
 async function importTargetsFromRibbonAction() {
+    openImportDialog("targets");
+}
+
+async function importTargetsFromRibbonLegacyAction() {
     closeRibbonMenus();
     let path = getValue("targets-file-path").trim();
     if (!path) {
@@ -3614,6 +4746,15 @@ function exportWorkspaceJsonAction() {
 function exportWorkspaceCsvAction() {
     closeRibbonMenus();
     window.location.assign(`/api/export/csv?t=${Date.now()}`);
+}
+
+function exportTableAction(table, format = "csv") {
+    closeRibbonMenus();
+    const name = String(table || "").trim();
+    if (!name) {
+        return;
+    }
+    window.location.assign(`/api/export/table/${encodeURIComponent(name)}.${format === "json" ? "json" : "csv"}?t=${Date.now()}`);
 }
 
 function currentHostFilterQuery() {
@@ -3700,6 +4841,7 @@ async function setHostFilterAction(filter) {
     workspaceState.hostFilter = String(filter || "hide_down").trim().toLowerCase() === "show_all"
         ? "show_all"
         : "hide_down";
+    persistWorkspaceFilters();
     syncHostFilterControls();
     closeRibbonMenus();
     await loadWorkspaceHosts();
@@ -3708,6 +4850,7 @@ async function setHostFilterAction(filter) {
 
 async function setHostCategoryFilterAction(category) {
     workspaceState.hostCategoryFilter = String(category || "").trim();
+    persistWorkspaceFilters();
     syncHostFilterControls();
     renderHosts(workspaceState.hosts);
     await Promise.all([
@@ -3731,6 +4874,7 @@ async function setHostServiceFilterAction(service) {
 async function setHostServiceFiltersAction(services) {
     workspaceState.hostServiceFilters = normalizeServiceFilterList(services);
     workspaceState.hostServiceFilter = workspaceState.hostServiceFilters.join(",");
+    persistWorkspaceFilters();
     syncHostFilterControls();
     syncHostServiceFilterOptions();
     renderHosts(workspaceState.hosts);
@@ -3744,6 +4888,7 @@ async function setHostServiceFiltersAction(services) {
 
 async function setServicesCategoryFilterAction(category) {
     workspaceState.servicesCategoryFilter = String(category || "").trim();
+    persistWorkspaceFilters();
     syncHostFilterControls();
     renderServices(workspaceState.services);
     await loadWorkspaceServices();
@@ -3776,6 +4921,7 @@ async function resetHostFiltersAction() {
     workspaceState.servicesHostFilterId = 0;
     workspaceState.servicesHostFilterLabel = "";
     workspaceState.servicesCategoryFilter = "";
+    persistWorkspaceFilters();
     syncHostFilterControls();
     renderHosts(workspaceState.hosts);
     renderServices(workspaceState.services);
@@ -3932,6 +5078,7 @@ async function refreshInterfaceSettingsAction() {
         setChecked("interface-graph-workspace-enabled", graphEnabled);
         setChecked("interface-credential-capture-panel-enabled", featureFlags.credential_capture_panel);
         setChecked("interface-colorful-ascii-background", Boolean(display?.colorful_ascii_background));
+        setChecked("interface-light-theme", isLightThemeEnabled());
         setInterfaceSettingsStatus("Interface settings loaded");
     } catch (err) {
         setInterfaceSettingsStatus(`Load failed: ${err.message}`, true);
@@ -3969,7 +5116,11 @@ async function saveAppSettingsConfigAction() {
     try {
         const body = await postJson("/api/settings/legion-conf", {text});
         setText("settings-config-path", body.path || "legion.conf");
-        setConfigSettingsStatus("Config saved");
+        if (body.reloaded === false) {
+            setConfigSettingsStatus("Config saved, but the running instance could not reload it; check the log and fix the file.", true);
+        } else {
+            setConfigSettingsStatus("Config saved and reloaded");
+        }
     } catch (err) {
         setConfigSettingsStatus(`Save failed: ${err.message}`, true);
     }
@@ -4830,6 +5981,9 @@ async function loadProcessOutput(processId, reset = true) {
 }
 
 async function killProcessAction(processId) {
+    if (!(await confirmAction({title: "Kill Process", message: `Stop process ${processId} now?`, confirmLabel: "Kill"}))) {
+        return;
+    }
     try {
         await postJson(`/api/processes/${processId}/kill`, {});
         setWorkspaceStatus(`Process ${processId} kill requested`);
@@ -4867,6 +6021,15 @@ async function closeProcessAction(processId) {
 }
 
 async function clearProcessesAction(resetAll) {
+    if (resetAll && !(await confirmAction({
+        title: "Hide All Non-Running Processes",
+        message: "Hide every finished, failed and killed process from the list?",
+        detail: "Their output stays in the project; hidden rows no longer appear in the process table.",
+        confirmLabel: "Hide All",
+        danger: false,
+    }))) {
+        return;
+    }
     try {
         await postJson("/api/processes/clear", {reset_all: Boolean(resetAll)});
         setWorkspaceStatus(resetAll ? "Hidden all non-running processes" : "Hidden finished/issues processes");
@@ -5042,7 +6205,7 @@ function renderDecisions(decisions) {
     (decisions || []).forEach((decision) => {
         const tr = document.createElement("tr");
         const target = formatTargetLabel(decision.host_ip, decision.port, decision.protocol);
-        tr.appendChild(makeCell(decision.timestamp || ""));
+        tr.appendChild(makeCell(formatTimestamp(decision.timestamp || "")));
         tr.appendChild(makeCell(target));
         tr.appendChild(makeCell(decision.tool_id || decision.label || ""));
         tr.appendChild(makeCell(decision.scheduler_mode || ""));
@@ -5060,7 +6223,23 @@ function renderApprovals(approvals) {
     if (!body) {
         return;
     }
+    workspaceState.approvals = Array.isArray(approvals) ? approvals : [];
     body.innerHTML = "";
+    if (!workspaceState.approvals.length) {
+        const tr = document.createElement("tr");
+        tr.className = "table-empty-row";
+        const td = makeCell("No actions are waiting for approval.");
+        td.colSpan = 6;
+        tr.appendChild(td);
+        body.appendChild(tr);
+    }
+    const bulkButtons = ["approvals-approve-all-button", "approvals-reject-all-button"];
+    bulkButtons.forEach((id) => {
+        const button = document.getElementById(id);
+        if (button) {
+            button.disabled = !workspaceState.approvals.length;
+        }
+    });
     (approvals || []).forEach((item) => {
         const tr = document.createElement("tr");
         tr.dataset.approvalId = String(item.id || "");
@@ -5152,9 +6331,9 @@ function renderJobs(jobs) {
             ? "stopping"
             : (cancelRequested && status === "queued" ? "cancelling" : (job.status || ""));
         tr.appendChild(makeCell(renderedStatus));
-        tr.appendChild(makeCell(job.created_at || ""));
-        tr.appendChild(makeCell(job.started_at || ""));
-        tr.appendChild(makeCell(job.finished_at || ""));
+        tr.appendChild(makeCell(formatTimestamp(job.created_at || "")));
+        tr.appendChild(makeCell(formatTimestamp(job.started_at || "")));
+        tr.appendChild(makeCell(formatTimestamp(job.finished_at || "")));
         const warnings = Array.isArray(job?.result?.warnings) ? job.result.warnings.filter(Boolean) : [];
         const errorText = String(job?.error || "");
         const cancelReason = String(job?.cancel_reason || "").trim();
@@ -5197,11 +6376,46 @@ function renderScanHistory(scans) {
         tr.appendChild(makeCell(scan.target_summary || ""));
         tr.appendChild(makeCell(scan.scope_summary || ""));
         tr.appendChild(makeCell(scan.scan_mode || ""));
-        tr.appendChild(makeCell(scan.created_at || ""));
+        tr.appendChild(makeCell(formatTimestamp(scan.created_at || "")));
         tr.appendChild(makeCell(scan.result_summary || ""));
+        const actions = document.createElement("td");
+        actions.className = "host-actions";
+        if (RERUNNABLE_SCAN_KINDS.has(String(scan.submission_kind || "").toLowerCase()) && scan.id) {
+            const rerun = document.createElement("button");
+            rerun.type = "button";
+            rerun.className = "icon-btn";
+            rerun.title = "Re-run this scan with the same settings";
+            rerun.setAttribute("aria-label", rerun.title);
+            rerun.innerHTML = '<i class="fa-solid fa-rotate-right" aria-hidden="true"></i>';
+            rerun.addEventListener("click", async (event) => {
+                event.stopPropagation();
+                await rerunScanAction(scan.id);
+            });
+            actions.appendChild(rerun);
+        }
+        tr.appendChild(actions);
         body.appendChild(tr);
     });
     setText("scan-history-count", (scans || []).length);
+}
+
+const RERUNNABLE_SCAN_KINDS = new Set(["nmap_scan", "import_nmap_xml", "passive_capture_scan"]);
+
+async function rerunScanAction(submissionId) {
+    const id = parseInt(submissionId, 10);
+    if (!id) {
+        return;
+    }
+    return runExclusiveAction(`rerunScanAction:${id}`, async () => {
+        setWorkspaceStatus(`Re-running scan #${id}...`);
+        try {
+            const body = await postJson(`/api/scans/history/${id}/rerun`, {});
+            setWorkspaceStatus(`Scan #${id} re-queued (job ${body?.job?.id || "?"})`);
+            await pollSnapshot();
+        } catch (err) {
+            setWorkspaceStatus(`Re-run failed: ${err.message}`, true);
+        }
+    });
 }
 
 function renderCredentialCaptureRecentCaptures(captures) {
@@ -5566,6 +6780,16 @@ function renderHostDetail(payload) {
     const stateDeviceCategoryOverride = Boolean(targetState?.device_category_override);
 
     setText("host-detail-name", host.ip ? `${host.ip} (${host.hostname || "no-hostname"})` : "");
+    const copyIpButton = document.getElementById("host-detail-copy-ip");
+    if (copyIpButton) {
+        copyIpButton.hidden = !host.ip;
+        copyIpButton.onclick = () => copyTextToClipboard(String(host.ip || ""), "Copy IP address");
+    }
+    const noteBlock = document.getElementById("host-detail-note-block");
+    if (noteBlock) {
+        noteBlock.hidden = !host.id;
+    }
+    setValue("host-detail-note", payload?.note || "");
     setValue("workspace-note", payload?.note || "");
     setValue("workspace-tool-host-ip", host.ip || "");
     setValue("workspace-host-categories", normalizeCategoryList(stateManualDeviceCategories).join(", "));
@@ -5613,6 +6837,35 @@ function renderHostDetail(payload) {
                 }
             }
             tr.appendChild(screenshotCell);
+            const portActions = document.createElement("td");
+            portActions.className = "process-actions";
+            const runButton = document.createElement("button");
+            runButton.type = "button";
+            runButton.className = "icon-btn";
+            runButton.title = `Run a tool against ${row.port}/${row.protocol || "tcp"}`;
+            runButton.setAttribute("aria-label", runButton.title);
+            runButton.innerHTML = '<i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i>';
+            runButton.addEventListener("click", () => {
+                const target = {
+                    host_id: Number(host.id || 0),
+                    host_ip: String(host.ip || ""),
+                    hostname: String(host.hostname || ""),
+                    port: String(row.port || ""),
+                    protocol: String(row.protocol || "tcp"),
+                    service: String(row.service?.name || ""),
+                    service_product: String(row.service?.product || ""),
+                    service_version: String(row.service?.version || ""),
+                    label: [host.ip, host.hostname, row.service?.name, `${row.port}/${row.protocol || "tcp"}`].filter(Boolean).join(" | "),
+                };
+                openManualToolPicker({
+                    contextLabel: `Tools for ${host.ip} ${row.port}/${row.protocol || "tcp"}${row.service?.name ? ` (${row.service.name})` : ""}`,
+                    targets: [target],
+                    hostId: Number(host.id || 0),
+                    service: String(row.service?.name || ""),
+                });
+            });
+            portActions.appendChild(runButton);
+            tr.appendChild(portActions);
             portsBody.appendChild(tr);
         });
     }
@@ -5623,7 +6876,6 @@ function renderHostDetail(payload) {
         ports.forEach((portRow) => {
             (portRow.scripts || []).forEach((scriptRow) => {
                 const tr = document.createElement("tr");
-                tr.appendChild(makeCell(scriptRow.id || ""));
                 tr.appendChild(makeCell(scriptRow.script_id || ""));
                 tr.appendChild(makeCell(scriptRow.display_output || (scriptRow.output || "").slice(0, 140)));
                 const actions = document.createElement("td");
@@ -5648,11 +6900,34 @@ function renderHostDetail(payload) {
         cvesBody.innerHTML = "";
         cves.forEach((item) => {
             const tr = document.createElement("tr");
-            tr.appendChild(makeCell(item.id || ""));
-            tr.appendChild(makeCell(item.name || ""));
-            tr.appendChild(makeCell(item.severity || ""));
-            tr.appendChild(makeCell(item.product || ""));
-            tr.appendChild(makeCell(item.url || ""));
+            const nameCell = makeCell(item.name || "");
+            if (item.name) {
+                nameCell.appendChild(makeCopyButton(String(item.name), "Copy CVE id"));
+            }
+            tr.appendChild(nameCell);
+            const severityCell = document.createElement("td");
+            severityCell.dataset.sortValue = String(Number.parseFloat(item.severity) || 0);
+            severityCell.appendChild(severityPill(severityFromScoreOrText(item.severity)));
+            if (String(item.severity || "").trim() && /^\d/.test(String(item.severity).trim())) {
+                const score = document.createElement("small");
+                score.className = "severity-score";
+                score.textContent = ` ${String(item.severity).trim()}`;
+                severityCell.appendChild(score);
+            }
+            tr.appendChild(severityCell);
+            tr.appendChild(makeCell([item.product, item.version].filter(Boolean).join(" ")));
+            const exploitCell = document.createElement("td");
+            if (item.exploitUrl || item.exploitId) {
+                const link = document.createElement("a");
+                link.href = String(item.exploitUrl || `https://www.exploit-db.com/exploits/${item.exploitId}`);
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+                link.textContent = item.exploitId ? `EDB-${item.exploitId}` : "exploit";
+                link.title = String(item.exploit || "");
+                exploitCell.appendChild(link);
+            }
+            tr.appendChild(exploitCell);
+            tr.appendChild(makeLinkCell(item.url || "", item.source ? `${item.source}` : ""));
             const actions = document.createElement("td");
             const del = document.createElement("button");
             del.type = "button";
@@ -5682,10 +6957,12 @@ function renderHostDetail(payload) {
         aiFindingsBody.innerHTML = "";
         aiFindings.forEach((item) => {
             const tr = document.createElement("tr");
-            tr.appendChild(makeCell(item.severity || ""));
+            const severityCell = document.createElement("td");
+            severityCell.appendChild(severityPill(item.severity || "info"));
+            tr.appendChild(severityCell);
             tr.appendChild(makeCell(item.title || ""));
             tr.appendChild(makeCell(item.cve || ""));
-            tr.appendChild(makeCell(item.cvss ?? ""));
+            tr.appendChild(makeCell(Number(item.cvss) > 0 ? Number(item.cvss).toFixed(1) : ""));
             tr.appendChild(makeCell(item.evidence || ""));
             aiFindingsBody.appendChild(tr);
         });
@@ -5697,7 +6974,14 @@ function renderHostDetail(payload) {
         aiManualTests.forEach((item) => {
             const tr = document.createElement("tr");
             tr.appendChild(makeCell(item.why || ""));
-            tr.appendChild(makeCell(item.command || ""));
+            const commandCell = document.createElement("td");
+            const code = document.createElement("code");
+            code.textContent = String(item.command || "");
+            commandCell.appendChild(code);
+            if (item.command) {
+                commandCell.appendChild(makeCopyButton(String(item.command), "Copy command"));
+            }
+            tr.appendChild(commandCell);
             tr.appendChild(makeCell(item.scope_note || ""));
             aiManualBody.appendChild(tr);
         });
@@ -5775,6 +7059,7 @@ function applySchedulerPreferences(prefs) {
     setText("scheduler-mode", prefs.mode || "");
     setText("scheduler-goal", policy.preset_label || policy.preset || prefs.goal_profile || "");
     setText("scheduler-families", prefs.preapproved_families_count || 0);
+    renderSchedulerFamilies(prefs.preapproved_command_families || []);
 
     setValue("scheduler-mode-select", prefs.mode || "deterministic");
     setValue("scheduler-goal-select", policy.preset || "internal_recon");
@@ -6453,12 +7738,25 @@ function collectProjectReportDeliveryFromForm() {
     };
 }
 
+let unauthorizedRedirectStarted = false;
+
+function handleUnauthorizedResponse(response) {
+    // The web token cookie expired or the token was rotated: every call would fail from here on, so go to /login.
+    if (!response || response.status !== 401 || unauthorizedRedirectStarted) {
+        return false;
+    }
+    unauthorizedRedirectStarted = true;
+    window.location.assign("/login");
+    return true;
+}
+
 async function postJson(url, payload) {
     const response = await fetch(url, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload || {}),
     });
+    handleUnauthorizedResponse(response);
     let body = {};
     try {
         body = await response.json();
@@ -6473,6 +7771,7 @@ async function postJson(url, payload) {
 
 async function fetchJson(url) {
     const response = await fetch(url, {cache: "no-store"});
+    handleUnauthorizedResponse(response);
     if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
     }
@@ -10473,6 +11772,11 @@ async function refreshWorkspace() {
     }
 }
 
+async function saveHostDetailNote() {
+    setValue("workspace-note", getValue("host-detail-note"));
+    await saveHostNote();
+}
+
 async function saveHostNote() {
     const hostId = workspaceState.selectedHostId;
     if (!hostId) {
@@ -10480,6 +11784,7 @@ async function saveHostNote() {
         return;
     }
     const text = getValue("workspace-note");
+    setValue("host-detail-note", text);
     try {
         await postJson(`/api/workspace/hosts/${hostId}/note`, {text});
         setWorkspaceStatus("Note saved");
@@ -10530,17 +11835,51 @@ async function runManualTool() {
         return;
     }
     const parameters = collectManualToolParameters();
+    const batchBox = document.getElementById("workspace-tool-batch");
+    const tool = selectedManualTool();
+    const scope = Array.isArray(tool?.service_scope) ? tool.service_scope.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean) : [];
+    let skippedOutOfScope = 0;
+    const batchTargets = batchBox && batchBox.checked && !batchBox.closest("[hidden]")
+        ? workspaceState.manualToolTargets.filter((target) => {
+            // A tool configured for specific services only runs where one of them is listening.
+            if (!scope.length) {
+                return true;
+            }
+            const service = String(target?.service || "").trim().toLowerCase().replace(/\?$/, "");
+            const inScope = scope.includes(service);
+            if (!inScope) {
+                skippedOutOfScope += 1;
+            }
+            return inScope;
+        }).map((target) => ({
+            host_ip: String(target?.host_ip || "").trim(),
+            port: String(target?.port || "").trim(),
+            protocol: String(target?.protocol || "tcp").trim() || "tcp",
+        })).filter((target) => target.host_ip && target.port)
+        : [];
+    if (batchBox && batchBox.checked && !batchBox.closest("[hidden]") && !batchTargets.length) {
+        setWorkspaceStatus(`None of the listed targets runs a service ${tool?.label || toolId} applies to`, true);
+        return;
+    }
     dismissManualScanModalAction();
-    setWorkspaceStatus("Queueing tool run...");
+    if (skippedOutOfScope) {
+        setWorkspaceStatus(`Skipping ${skippedOutOfScope} target${skippedOutOfScope === 1 ? "" : "s"} outside the tool's service scope`);
+    }
+    setWorkspaceStatus(batchTargets.length > 1 ? `Queueing ${batchTargets.length} tool runs...` : "Queueing tool run...");
     try {
-        const body = await postJson("/api/workspace/tools/run", {
-            host_ip: hostIp,
-            port,
-            protocol,
-            tool_id: toolId,
-            parameters,
-        });
-        setWorkspaceStatus(`Tool run queued (job ${body?.job?.id || "?"})`);
+        const payload = {host_ip: hostIp, port, protocol, tool_id: toolId, parameters};
+        if (batchTargets.length) {
+            payload.targets = batchTargets;
+        }
+        const body = await postJson("/api/workspace/tools/run", payload);
+        const queued = Number(body?.queued || (body?.job ? 1 : 0));
+        const errors = Array.isArray(body?.errors) ? body.errors : [];
+        if (queued > 1 || errors.length) {
+            const suffix = errors.length ? `, ${errors.length} failed (${errors[0].error})` : "";
+            setWorkspaceStatus(`${queued} tool run${queued === 1 ? "" : "s"} queued${suffix}`, errors.length > 0);
+        } else {
+            setWorkspaceStatus(`Tool run queued (job ${body?.job?.id || "?"})`);
+        }
         await pollSnapshot();
     } catch (err) {
         setWorkspaceStatus(`Tool run failed: ${err.message}`, true);
@@ -10610,6 +11949,9 @@ async function addCveEntry() {
 }
 
 async function deleteScript(scriptId) {
+    if (!(await confirmAction({title: "Delete Script", message: "Delete this script result from the host?", confirmLabel: "Delete"}))) {
+        return;
+    }
     try {
         const response = await fetch(`/api/workspace/scripts/${scriptId}`, {method: "DELETE"});
         if (!response.ok) {
@@ -10625,6 +11967,9 @@ async function deleteScript(scriptId) {
 }
 
 async function deleteCve(cveId) {
+    if (!(await confirmAction({title: "Delete CVE", message: "Delete this CVE entry from the host?", confirmLabel: "Delete"}))) {
+        return;
+    }
     try {
         const response = await fetch(`/api/workspace/cves/${cveId}`, {method: "DELETE"});
         if (!response.ok) {
@@ -10665,6 +12010,42 @@ async function approveApproval(approvalId, familyAction = "") {
     } catch (err) {
         setWorkspaceStatus(`Approve failed: ${err.message}`, true);
     }
+}
+
+async function bulkApprovalAction(mode) {
+    const pending = (workspaceState.approvals || []).filter((item) => String(item.status || "pending").toLowerCase() === "pending");
+    if (!pending.length) {
+        setWorkspaceStatus("No pending approvals.");
+        return;
+    }
+    const approve = mode === "approve";
+    const ok = await confirmAction({
+        title: approve ? "Approve All Pending Actions" : "Reject All Pending Actions",
+        message: `${approve ? "Approve and run" : "Reject"} ${pending.length} pending action${pending.length === 1 ? "" : "s"}?`,
+        detail: approve ? "Each action starts as its own job and follows the engagement policy." : "",
+        confirmLabel: approve ? "Approve All" : "Reject All",
+        danger: approve,
+    });
+    if (!ok) {
+        return;
+    }
+    let failures = 0;
+    for (const item of pending) {
+        try {
+            if (approve) {
+                await postJson(`/api/scheduler/approvals/${item.id}/approve`, {approve_family: false, run_now: true, family_action: ""});
+            } else {
+                await postJson(`/api/scheduler/approvals/${item.id}/reject`, {reason: "rejected in bulk via web", family_action: ""});
+            }
+        } catch (_err) {
+            failures += 1;
+        }
+    }
+    setWorkspaceStatus(
+        `${approve ? "Approved" : "Rejected"} ${pending.length - failures} of ${pending.length} pending action${pending.length === 1 ? "" : "s"}${failures ? ` (${failures} failed)` : ""}`,
+        failures > 0,
+    );
+    await Promise.all([loadApprovals(), pollSnapshot()]);
 }
 
 async function rejectApproval(approvalId, familyAction = "") {
@@ -10713,6 +12094,10 @@ function renderSnapshot(snapshot) {
     }
     if (snapshot.project) {
         renderProject(snapshot.project);
+        if (restoreWorkspaceFilters(snapshot.project) && workspaceState.hostsHydrated) {
+            // Filters came back after the tables were already loaded with defaults: load them again.
+            Promise.all([loadWorkspaceHosts(), loadWorkspaceServices()]).catch(() => {});
+        }
     }
     if (snapshot.summary) {
         renderSummary(snapshot.summary);
@@ -10987,6 +12372,8 @@ function connectSnapshotWebSocket() {
             window.clearInterval(snapshotSocketState.watchdog);
             snapshotSocketState.watchdog = null;
         }
+        // A socket refused for want of a token never reconnects; one cheap probe tells us to go to /login instead.
+        fetch("/api/jobs?limit=1", {cache: "no-store"}).then(handleUnauthorizedResponse).catch(() => {});
         setLiveChip("Reconnecting", true);
         snapshotSocketState.attempts += 1;
         const delay = Math.min(30000, 1500 * (2 ** Math.min(snapshotSocketState.attempts - 1, 4)));
@@ -10997,6 +12384,9 @@ function connectSnapshotWebSocket() {
 async function pollSnapshot() {
     try {
         const response = await fetch("/api/snapshot", {cache: "no-store"});
+        if (handleUnauthorizedResponse(response)) {
+            return;
+        }
         if (!response.ok) {
             setLiveChip("Polling Error", true);
             return;
@@ -11179,11 +12569,22 @@ async function createNewTemporaryProjectCore() {
     setActionStatus("Created temporary project");
     resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: true});
     renderProject(body?.project || {});
+    restoreWorkspaceFilters(body?.project || {});
     await refreshWorkspace();
     await Promise.all([pollSnapshot(), loadApprovals()]);
 }
 
 async function createNewTemporaryProject() {
+    const isTemporary = String(document.getElementById("project-kind")?.textContent || "").trim() === "temporary";
+    const hostCount = Number(document.getElementById("stat-hosts")?.textContent || 0);
+    if (isTemporary && hostCount > 0 && !(await confirmAction({
+        title: "New Workspace",
+        message: `The current temporary workspace has ${hostCount} host${hostCount === 1 ? "" : "s"} and has not been saved.`,
+        detail: "Starting a new workspace discards it. Use Workspace > Save As first to keep it.",
+        confirmLabel: "Discard and Create",
+    }))) {
+        return;
+    }
     try {
         await withWorkspaceSwitchGuard("creating a new workspace", createNewTemporaryProjectCore);
     } catch (err) {
@@ -11207,6 +12608,7 @@ async function openProjectCore() {
     resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: false});
     setValue("project-save-path", "");
     renderProject(body?.project || {});
+    restoreWorkspaceFilters(body?.project || {});
     await refreshWorkspace();
     await Promise.all([pollSnapshot(), loadApprovals()]);
 }
@@ -11877,10 +13279,10 @@ async function runNmapScanImpl() {
 }
 
 function bindActionButtons() {
-    const bind = (id, handler) => {
+    const bind = (id, handler, eventName = "click") => {
         const node = document.getElementById(id);
         if (node) {
-            node.addEventListener("click", handler);
+            node.addEventListener(eventName, handler);
         }
     };
 
@@ -11915,6 +13317,26 @@ function bindActionButtons() {
     bind("ribbon-logging-jobs-button", openJobsAction);
     bind("ribbon-logging-submitted-scans-button", openSubmittedScansAction);
     bind("ribbon-logging-scheduler-decisions-button", openSchedulerDecisionsAction);
+    bind("ribbon-logging-executions-button", openExecutionsAction);
+    bind("scheduler-executions-modal-close", () => setGenericModalOpen("scheduler-executions-modal", "executionsOpen", false));
+    bind("executions-export-csv-button", () => exportTableAction("scheduler_executions"));
+    bind("ribbon-misc-findings-action-button", openFindingsAction);
+    bind("findings-modal-close", () => setGenericModalOpen("findings-modal", "findingsOpen", false));
+    bind("findings-export-csv-button", () => exportTableAction("findings"));
+    bind("findings-severity-filter", renderFindings, "change");
+    bind("workspace-plan-preview-button", previewPlanAction);
+    bind("open-workspace-modal-close", () => setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false));
+    bind("confirm-modal-close", () => resolveConfirmModal(false));
+    bind("import-modal-close", () => setGenericModalOpen("import-modal", "importOpen", false));
+    bind("import-submit-button", submitImportDialog);
+    bind("import-kind-select", syncImportDialogKind, "change");
+    bind("save-as-modal-close", () => setGenericModalOpen("save-as-modal", "saveAsOpen", false));
+    bind("save-as-cancel-button", () => setGenericModalOpen("save-as-modal", "saveAsOpen", false));
+    bind("save-as-confirm-button", confirmSaveAsDialog);
+    bind("confirm-modal-cancel", () => resolveConfirmModal(false));
+    bind("confirm-modal-confirm", () => resolveConfirmModal(true));
+    bind("open-workspace-path-button", () => openWorkspacePath(""));
+    bind("open-workspace-refresh-button", refreshProjectListAction);
     bind("ribbon-logging-ai-provider-button", openProviderLogsAction);
     bind("ribbon-credential-capture-toggle-button", toggleCredentialCapturePanelAction);
     bind("ribbon-scheduler-settings-button", openSchedulerSettingsAction);
@@ -11935,6 +13357,7 @@ function bindActionButtons() {
 
     bind("workspace-refresh-button", refreshWorkspace);
     bind("workspace-save-note-button", saveHostNote);
+    bind("host-detail-save-note-button", saveHostDetailNote);
     bind("workspace-save-categories-button", saveHostCategories);
     bind("workspace-run-tool-button", runManualTool);
     bind("workspace-run-scheduler-button", runSchedulerNow);
@@ -11963,7 +13386,7 @@ function bindActionButtons() {
     bind("graph-detail-dock-toggle-button", graphToggleDetailModeAction);
     bind("graph-detail-close-button", graphDismissSelection);
     graphSetFiltersExpanded(graphWorkspaceState.filtersExpanded);
-    setServicesPanelCollapsed(true);
+    setServicesPanelCollapsed(readStoredFlag("legion_services_collapsed", false));
     setGraphPanelCollapsed(false);
 
     const graphScrollNode = getGraphCanvasScrollNode();
@@ -12061,6 +13484,14 @@ function bindActionButtons() {
     const hostsBody = document.getElementById("hosts-body");
     if (hostsBody) {
         hostsBody.addEventListener("click", async (event) => {
+            const selectBox = event.target.closest("input[data-host-select]");
+            if (selectBox) {
+                setHostBulkSelected(selectBox.dataset.hostSelect, selectBox.checked);
+                return;
+            }
+            if (event.target.closest("td.host-select-cell")) {
+                return;
+            }
             const actionBtn = event.target.closest("button[data-host-action]");
             if (actionBtn) {
                 if (await handleHostActionButtonAction(actionBtn)) {
@@ -12239,6 +13670,26 @@ function bindActionButtons() {
     bind("script-cve-modal-close", closeScriptCveModalAction);
     bind("provider-logs-modal-close", closeProviderLogsModalAction);
     bind("jobs-modal-close", closeJobsModalAction);
+    bind("jobs-export-csv-button", () => exportTableAction("jobs"));
+    bind("scan-history-export-csv-button", () => exportTableAction("scan_history"));
+    bind("decisions-export-csv-button", () => exportTableAction("scheduler_decisions"));
+    bind("approvals-export-csv-button", () => exportTableAction("scheduler_approvals"));
+    bind("approvals-approve-all-button", () => bulkApprovalAction("approve"));
+    bind("approvals-reject-all-button", () => bulkApprovalAction("reject"));
+    bind("hosts-bulk-rescan-button", () => bulkHostAction("rescan"));
+    bind("hosts-bulk-dig-deeper-button", () => bulkHostAction("dig-deeper"));
+    bind("hosts-bulk-screenshots-button", () => bulkHostAction("refresh-screenshots"));
+    bind("hosts-bulk-remove-button", () => bulkHostAction("remove"));
+    bind("hosts-bulk-run-tool-button", bulkRunToolAction);
+    bind("hosts-bulk-clear-button", clearHostBulkSelectionAction);
+    bind("hosts-select-all", (event) => toggleAllVisibleHostsAction(Boolean(event?.target?.checked)), "change");
+    bind("interface-light-theme", (event) => applyLightThemeEnabled(Boolean(event?.target?.checked)), "change");
+    applyLightThemeEnabled(isLightThemeEnabled(), {persist: false});
+    initTableEnhancements();
+    bind("ribbon-export-services-csv-action-button", () => exportTableAction("services"));
+    bind("ribbon-export-ports-csv-action-button", () => exportTableAction("ports"));
+    bind("ribbon-export-cves-csv-action-button", () => exportTableAction("cves"));
+    bind("ribbon-export-findings-csv-action-button", () => exportTableAction("findings"));
     bind("submitted-scans-modal-close", closeSubmittedScansModalAction);
     bind("scheduler-decisions-modal-close", closeSchedulerDecisionsModalAction);
     bind("provider-logs-refresh-button", loadProviderLogsAction);
@@ -12516,6 +13967,14 @@ function bindActionButtons() {
             closeScreenshotModal(true);
             return;
         }
+        // Dialogs stack (a confirmation over the Open Workspace picker, a note over the graph): Escape must close
+        // the one on top, which is the last entry of the focus stack, not the first flag in a fixed list.
+        const topModalId = openModalIdStack[openModalIdStack.length - 1] || "";
+        const topCloser = topModalId ? MODAL_ESCAPE_CLOSERS[topModalId] : null;
+        if (topCloser && document.getElementById(topModalId)?.classList.contains("is-open")) {
+            topCloser();
+            return;
+        }
         if (uiModalState.nmapScanOpen) {
             closeNmapScanModalAction();
             return;
@@ -12554,6 +14013,38 @@ function bindActionButtons() {
         }
         if (uiModalState.schedulerDecisionsOpen) {
             closeSchedulerDecisionsModalAction();
+            return;
+        }
+        if (uiModalState.executionsOpen) {
+            setGenericModalOpen("scheduler-executions-modal", "executionsOpen", false);
+            return;
+        }
+        if (uiModalState.findingsOpen) {
+            setGenericModalOpen("findings-modal", "findingsOpen", false);
+            return;
+        }
+        if (uiModalState.openWorkspaceOpen) {
+            setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false);
+            return;
+        }
+        if (uiModalState.confirmOpen) {
+            resolveConfirmModal(false);
+            return;
+        }
+        if (uiModalState.importOpen) {
+            setGenericModalOpen("import-modal", "importOpen", false);
+            return;
+        }
+        if (uiModalState.saveAsOpen) {
+            setGenericModalOpen("save-as-modal", "saveAsOpen", false);
+            return;
+        }
+        if (uiModalState.interfaceSettingsOpen) {
+            setInterfaceSettingsModalOpen(false);
+            return;
+        }
+        if (uiModalState.workspaceSwitchGuardOpen) {
+            setWorkspaceSwitchGuardModalOpen(false);
             return;
         }
         if (uiModalState.hostRemoveOpen) {
@@ -12608,6 +14099,12 @@ function bindActionButtons() {
             || uiModalState.jobsOpen
             || uiModalState.submittedScansOpen
             || uiModalState.schedulerDecisionsOpen
+            || uiModalState.executionsOpen
+            || uiModalState.findingsOpen
+            || uiModalState.openWorkspaceOpen
+            || uiModalState.confirmOpen
+            || uiModalState.importOpen
+            || uiModalState.saveAsOpen
             || uiModalState.hostRemoveOpen
             || uiModalState.graphNoteOpen
             || uiModalState.interfaceSettingsOpen
@@ -12747,3 +14244,188 @@ window.addEventListener("DOMContentLoaded", () => {
     initializeStartupWizard();
     refreshWorkspace();
 });
+
+
+// ---- Sortable, filterable tables ----
+// Every data table gets click-to-sort headers and a text filter; renderers keep rebuilding <tbody> rows, so the
+// enhancement re-applies itself from a MutationObserver instead of touching each renderer.
+const TABLE_ENHANCEMENT_BODIES = [
+    "processes-body", "hosts-body", "services-body", "approvals-body", "jobs-body", "scan-history-body",
+    "decisions-body", "executions-body", "findings-body", "credential-captures-body", "host-detail-cves",
+    "host-detail-ports", "settings-tool-audit-body",
+];
+const TABLE_FILTER_LABELS = {
+    "host-detail-ports": "Filter ports",
+    "host-detail-cves": "Filter CVEs",
+    "processes-body": "Filter processes",
+    "hosts-body": "Filter hosts",
+    "services-body": "Filter services",
+    "approvals-body": "Filter approvals",
+    "jobs-body": "Filter jobs",
+    "scan-history-body": "Filter scans",
+    "decisions-body": "Filter decisions",
+    "executions-body": "Filter executions",
+    "findings-body": "Filter findings",
+    "credential-captures-body": "Filter captures",
+    "settings-tool-audit-body": "Filter tools",
+};
+const tableEnhancementState = new Map(); // tbody id -> {sortIndex, sortDir, filter, applying}
+
+function tableRowKey(row, index) {
+    const cell = row.children[index];
+    if (!cell) {
+        return "";
+    }
+    const text = (cell.dataset.sortValue || cell.textContent || "").trim();
+    return text;
+}
+
+function compareTableValues(a, b) {
+    const ipA = a.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    const ipB = b.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipA && ipB) {
+        for (let i = 1; i <= 4; i += 1) {
+            const diff = Number(ipA[i]) - Number(ipB[i]);
+            if (diff !== 0) {
+                return diff;
+            }
+        }
+        return 0;
+    }
+    const numA = Number(a.replace(/[%,]/g, ""));
+    const numB = Number(b.replace(/[%,]/g, ""));
+    if (a !== "" && b !== "" && Number.isFinite(numA) && Number.isFinite(numB)) {
+        return numA - numB;
+    }
+    if (a === "" && b !== "") {
+        return 1;
+    }
+    if (b === "" && a !== "") {
+        return -1;
+    }
+    return a.localeCompare(b, undefined, {numeric: true, sensitivity: "base"});
+}
+
+function applyTableEnhancement(bodyId) {
+    const state = tableEnhancementState.get(bodyId);
+    const body = document.getElementById(bodyId);
+    if (!state || !body || state.applying) {
+        return;
+    }
+    state.applying = true;
+    try {
+        const rows = Array.from(body.querySelectorAll(":scope > tr")).filter((row) => !row.querySelector("td[colspan]"));
+        if (state.sortIndex !== null && state.sortIndex >= 0) {
+            const direction = state.sortDir === "desc" ? -1 : 1;
+            const ordered = rows
+                .map((row, position) => ({row, position}))
+                .sort((left, right) => {
+                    const result = compareTableValues(tableRowKey(left.row, state.sortIndex), tableRowKey(right.row, state.sortIndex));
+                    return (result || (left.position - right.position)) * (result ? direction : 1);
+                })
+                .map((entry) => entry.row);
+            const alreadyOrdered = ordered.every((row, index) => row === rows[index]);
+            if (!alreadyOrdered) {
+                ordered.forEach((row) => body.appendChild(row));
+            }
+        }
+        const needle = String(state.filter || "").trim().toLowerCase();
+        let visible = 0;
+        rows.forEach((row) => {
+            const match = !needle || row.textContent.toLowerCase().includes(needle);
+            row.hidden = !match;
+            if (match) {
+                visible += 1;
+            }
+        });
+        if (state.countNode) {
+            state.countNode.textContent = needle ? `${visible} of ${rows.length}` : "";
+        }
+        const table = body.closest("table");
+        if (table) {
+            Array.from(table.querySelectorAll("thead th")).forEach((th, index) => {
+                th.classList.toggle("is-sorted-asc", state.sortIndex === index && state.sortDir === "asc");
+                th.classList.toggle("is-sorted-desc", state.sortIndex === index && state.sortDir === "desc");
+            });
+        }
+    } finally {
+        if (state.observer) {
+            state.observer.takeRecords(); // our own reordering is not a re-render
+        }
+        state.applying = false;
+    }
+}
+
+function initTableEnhancements() {
+    TABLE_ENHANCEMENT_BODIES.forEach((bodyId) => {
+        const body = document.getElementById(bodyId);
+        if (!body || tableEnhancementState.has(bodyId)) {
+            return;
+        }
+        const table = body.closest("table");
+        if (!table) {
+            return;
+        }
+        const state = {sortIndex: null, sortDir: "asc", filter: "", applying: false, countNode: null};
+        tableEnhancementState.set(bodyId, state);
+        table.classList.add("enhanced-table");
+        Array.from(table.querySelectorAll("thead th")).forEach((th, index) => {
+            if (!th.textContent.trim() || /actions?$/i.test(th.textContent.trim())) {
+                return;
+            }
+            th.classList.add("sortable");
+            th.tabIndex = 0;
+            th.title = `Sort by ${th.textContent.trim()}`;
+            const toggle = () => {
+                if (state.sortIndex === index) {
+                    state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+                } else {
+                    state.sortIndex = index;
+                    state.sortDir = "asc";
+                }
+                applyTableEnhancement(bodyId);
+            };
+            th.addEventListener("click", toggle);
+            th.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    toggle();
+                }
+            });
+        });
+        // Filter box in the owning panel or modal header.
+        const container = body.closest(".legion-modal, .panel, section");
+        const header = container ? container.querySelector(".panel-header, .modal-header") : null;
+        if (header && !header.querySelector(`[data-table-filter-for="${bodyId}"]`)) {
+            const wrapper = document.createElement("span");
+            wrapper.className = "table-filter";
+            const input = document.createElement("input");
+            input.type = "search";
+            input.placeholder = TABLE_FILTER_LABELS[bodyId] || "Filter rows";
+            input.setAttribute("aria-label", TABLE_FILTER_LABELS[bodyId] || "Filter table rows");
+            input.dataset.tableFilterFor = bodyId;
+            input.addEventListener("input", () => {
+                state.filter = input.value;
+                applyTableEnhancement(bodyId);
+            });
+            const count = document.createElement("small");
+            count.className = "table-match-count";
+            state.countNode = count;
+            wrapper.appendChild(input);
+            wrapper.appendChild(count);
+            const closeButton = header.querySelector(".modal-close-btn");
+            if (closeButton) {
+                header.insertBefore(wrapper, closeButton);
+            } else {
+                header.appendChild(wrapper);
+            }
+        }
+        const observer = new MutationObserver(() => {
+            if (!state.applying && (state.sortIndex !== null || state.filter)) {
+                applyTableEnhancement(bodyId);
+            }
+        });
+        state.observer = observer;
+        observer.observe(body, {childList: true});
+    });
+}

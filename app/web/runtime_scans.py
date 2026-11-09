@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.scheduler.scan_history import (
+    get_scan_submission as db_get_scan_submission,
     ensure_scan_submission_table,
     record_scan_submission as db_record_scan_submission,
     update_scan_submission as db_update_scan_submission,
@@ -135,3 +136,46 @@ def update_scan_submission_status(
         )
     runtime._emit_ui_invalidation("scan_history")
     return record
+
+
+def _flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def rerun_scan_submission(runtime, submission_id: int) -> Dict[str, Any]:
+    """Queue a fresh job with the same parameters as an earlier Submitted Scans row."""
+    with runtime._lock:
+        project = runtime._require_active_project()
+        record = db_get_scan_submission(project.database, int(submission_id or 0))
+    if not record:
+        raise KeyError(f"Unknown scan submission id: {submission_id}")
+    kind = str(record.get("submission_kind", "") or "").strip().lower()
+    options = dict(record.get("scan_options") or {})
+    if kind == "nmap_scan":
+        targets = [str(item or "").strip() for item in list(record.get("targets") or []) if str(item or "").strip()]
+        if not targets:
+            raise ValueError("The original scan recorded no targets, so it cannot be re-run.")
+        return runtime.start_nmap_scan_job(
+            targets=targets,
+            discovery=_flag(record.get("discovery")),
+            staged=_flag(record.get("staged")),
+            run_actions=_flag(record.get("run_actions")),
+            nmap_path=str(record.get("nmap_path", "") or ""),  # empty: the planner uses the configured nmap
+            nmap_args=str(record.get("nmap_args", "") or ""),
+            scan_mode=str(record.get("scan_mode", "") or "legacy"),
+            scan_options=options,
+        )
+    if kind == "import_nmap_xml":
+        source_path = str(record.get("source_path", "") or "").strip()
+        if not source_path:
+            raise ValueError("The original import recorded no source path, so it cannot be re-run.")
+        return runtime.start_nmap_xml_import_job(source_path, run_actions=_flag(record.get("run_actions")))
+    if kind == "passive_capture_scan":
+        return runtime.start_passive_capture_scan_job(
+            interface_name=str(options.get("interface_name", "") or record.get("target_summary", "") or ""),
+            duration_minutes=int(options.get("duration_minutes", 0) or 0),
+            run_actions=_flag(record.get("run_actions")),
+        )
+    raise ValueError(f"Scan submissions of kind '{kind or 'unknown'}' cannot be re-run.")

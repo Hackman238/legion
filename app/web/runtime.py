@@ -312,6 +312,9 @@ class WebRuntime:
     def get_scan_history(self, limit: int = 200) -> List[Dict[str, Any]]:
         return web_runtime_scheduler.get_scan_history(self, limit=limit)
 
+    def rerun_scan_submission(self, submission_id: int) -> Dict[str, Any]:
+        return web_runtime_scans.rerun_scan_submission(self, int(submission_id))
+
     @staticmethod
     def _project_listing_row(path: str, *, source: str, current_path: str = "") -> Dict[str, Any]:
         return web_runtime_projects.project_listing_row(
@@ -606,6 +609,12 @@ class WebRuntime:
     def create_new_temporary_project(self) -> Dict[str, Any]:
         return web_runtime_projects.create_new_temporary_project(self)
 
+    def rename_project(self, path: str, new_name: str) -> Dict[str, Any]:
+        return web_runtime_projects.rename_project(self, path, new_name)
+
+    def delete_project(self, path: str) -> Dict[str, Any]:
+        return web_runtime_projects.delete_project(self, path)
+
     def open_project(self, path: str) -> Dict[str, Any]:
         return web_runtime_projects.open_project(self, path)
 
@@ -894,12 +903,14 @@ class WebRuntime:
             host_id: int = 0,
             service: str = "",
             limit: int = 500,
+            host_ids: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         return web_runtime_tools.get_workspace_tool_targets(
             self,
             host_id=host_id,
             service=service,
             limit=limit,
+            host_ids=host_ids,
         )
 
     def get_workspace_tools_page(
@@ -1020,6 +1031,9 @@ class WebRuntime:
             manual_categories=manual_categories,
             override_auto=override_auto,
         )
+
+    def start_bulk_host_remove_job(self, host_ids: List[int]) -> Dict[str, Any]:
+        return web_runtime_workspace.start_bulk_host_remove_job(self, host_ids)
 
     def delete_host_workspace(self, host_id: int) -> Dict[str, Any]:
         return web_runtime_workspace.delete_host_workspace(self, host_id)

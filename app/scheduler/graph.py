@@ -2234,7 +2234,7 @@ def delete_host_from_evidence_graph(database, *, host_id: int, host_ip: str = ""
     key_patterns: List[str] = []
     if resolved_host_id > 0:
         for prefix in (
-            "port", "service", "technology", "finding", "credential", "artifact", "screenshot",
+            "port", "service", "url", "technology", "finding", "credential", "artifact", "screenshot",
             "evidence:finding", "evidence:technology", "evidence:credential",
         ):
             key_patterns.append(f"{prefix}:{resolved_host_id}:%")

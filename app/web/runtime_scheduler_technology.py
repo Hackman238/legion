@@ -484,8 +484,37 @@ def guess_technology_hint(name_or_text: Any, version_hint: Any = "") -> Tuple[st
     return "", ""
 
 
+def cvss_score_from_text(value: Any) -> float:
+    """A CVSS score carried in a severity field ("9.8", "7.5/10", "CVSS 6.1"), else 0.0."""
+    token = str(value or "").strip().lower()
+    match = re.search(r"(?<![\w.])(10(?:\.0)?|[0-9](?:\.[0-9])?)(?![\w.])", token)
+    if not match:
+        return 0.0
+    try:
+        score = float(match.group(1))
+    except ValueError:
+        return 0.0
+    return score if 0.0 <= score <= 10.0 else 0.0
+
+
+def severity_from_cvss(score: float) -> str:
+    if score >= 9.0:
+        return "critical"
+    if score >= 7.0:
+        return "high"
+    if score >= 4.0:
+        return "medium"
+    if score > 0.0:
+        return "low"
+    return "info"
+
+
 def severity_from_text(value: Any) -> str:
     token = str(value or "").strip().lower()
+    if token and token not in {"critical", "high", "medium", "low", "info", "informational", "none"}:
+        score = cvss_score_from_text(token)
+        if score > 0.0 and not any(word in token for word in ("critical", "high", "medium", "low")):
+            return severity_from_cvss(score)  # vulners and nmap store the CVSS score as the severity
     if "critical" in token:
         return "critical"
     if "high" in token:

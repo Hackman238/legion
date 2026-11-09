@@ -33,7 +33,9 @@ python -m pip install --upgrade pip -r requirements.txt
 python legion.py --web
 ```
 
-Then open <http://127.0.0.1:5000>. Scanning needs raw-socket access, so run Legion as root (or via `sudo`) when you
+Then open <http://127.0.0.1:5000>. The web UI has no authentication when it listens on localhost only; when you
+expose it with `--web-bind-all`, Legion requires a web token (generated and printed at startup, or set with
+`--web-token` / `LEGION_WEB_TOKEN`). Scanning needs raw-socket access, so run Legion as root (or via `sudo`) when you
 want it to launch Nmap itself; importing existing Nmap XML works without it.
 
 Check which external tools Legion can find, and get an install script for the missing ones:
@@ -63,7 +65,8 @@ python legion.py --tool-install-plan kali      # or: ubuntu
 
 ```shell
 python legion.py                                      # http://127.0.0.1:5000 (same as --web)
-python legion.py --web --web-port 8080 --web-bind-all # listen on all interfaces
+python legion.py --web --web-port 8080 --web-bind-all # listen on all interfaces (a web token is generated and printed)
+python legion.py --web --web-bind-all --web-token "$(openssl rand -hex 24)"  # or choose the token yourself
 python legion.py --web --web-transparent-ui           # enable translucent UI effects (opaque by default)
 ```
 
@@ -71,10 +74,14 @@ python legion.py --web --web-transparent-ui           # enable translucent UI ef
 
 ```shell
 python legion.py --headless --input-file targets.txt --staged-scan --run-actions --output-file results.json
+python legion.py --headless --nmap-xml scan1.xml --nmap-xml scan2.xml --project client.legion   # import into a project
+python legion.py --headless --project client.legion --output-file client.json                    # export a project
 ```
 
-`--output-file` accepts `.json` (hosts, ports, services, scripts, notes, CVEs and screenshots) or `.legion` (a project
-file you can open in the UI). The process exits non-zero if the scan or import fails.
+`--input-file` imports targets, `--nmap-xml` imports finished nmap reports, and `--project` works inside a `.legion`
+file (created when missing) instead of a throwaway temporary project. `--output-file` accepts `.json` (hosts, ports,
+services, scripts, notes, CVEs and screenshots) or `.legion` (a project file you can open in the UI). The process exits
+non-zero if a scan or import fails.
 
 ### MCP server
 
@@ -82,8 +89,27 @@ file you can open in the UI). The process exits non-zero if the scan or import f
 python legion.py --mcp-server
 ```
 
-Exposes project access, planning, approvals, graph and state queries, findings, execution traces and report export
-over MCP, through the same governed core as the web UI.
+A Model Context Protocol server over stdio (`initialize`, `tools/list`, `tools/call`). It exposes the open project to
+an AI agent through the same governed core as the web UI: host and service inventory, nmap scans and XML import,
+the tool catalog and single tool runs, scheduler runs with the approval queue, process output, the evidence graph,
+findings, execution traces and report export. Dangerous actions still go through engagement policy and approvals.
+
+Client configuration (Claude Desktop, Cursor and similar):
+
+```json
+{
+  "mcpServers": {
+    "legion": {
+      "command": "/path/to/legion/.venv/bin/python",
+      "args": ["/path/to/legion/legion.py", "--mcp-server"],
+      "env": {"LEGION_HOME": "/home/you/.local/share/legion"}
+    }
+  }
+}
+```
+
+Scans need the same privileges as the web UI, so run the client (or Legion) as root when the agent should launch
+nmap itself.
 
 ## Installation
 
@@ -119,11 +145,17 @@ A `Dockerfile` is included for local builds (`docker build -t legion .`). Pre-bu
 
 | What | Where |
 | --- | --- |
-| Runtime data, projects, logs | `${LEGION_HOME:-~/.local/share/legion}` |
-| Action mappings (scheduler, port and host actions, terminal launchers) | `${LEGION_HOME}/legion.conf` |
+| Runtime data, config, logs, autosaves | `${LEGION_HOME:-~/.local/share/legion}` |
+| Temporary projects, running tool output | `${LEGION_TMPDIR:-/tmp/legion}` |
+| Action mappings (scheduler, port and host actions) and staged-scan stages | `${LEGION_HOME}/legion.conf` (editable under **Settings > Application**) |
 | Scheduler and AI provider preferences | `${LEGION_HOME}/scheduler-ai.json` |
 | API keys | OS keyring or encrypted local store, never the JSON file; `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `SHODAN_API_KEY`, `CHAOS_API_KEY` and `GRAYHATWARFARE_API_KEY` are also honoured |
 | Tool paths, providers, engagement policy | **Settings** in the web UI |
+| Web UI token | `--web-token` or `LEGION_WEB_TOKEN` (see the command-line reference) |
+| Extra pipette definitions | `LEGION_PIPETTES_PATH` (directory of pipette JSON files, see [docs/pipettes.md](docs/pipettes.md)) |
+
+`GET /health` answers `{"status": "ok"}` without a token, for container health checks. The REST API behind the web UI
+is documented in [docs/api.md](docs/api.md).
 
 Exploit-DB references for vulners CVEs are looked up offline from the bundled `pyexploitdb` data; run
 `python primeExploitDb.py` to fetch or refresh that data (this is the only step that needs network access).
@@ -134,12 +166,16 @@ Exploit-DB references for vulners CVEs are looked up offline from the bundled `p
 | --- | --- |
 | `--web` | Run the web interface (the default when no mode flag is given). |
 | `--web-port PORT` | Web interface port (default `5000`). |
-| `--web-bind-all` | Bind to `0.0.0.0` instead of `127.0.0.1`. |
+| `--web-bind-all` | Bind to `0.0.0.0` instead of `127.0.0.1`. Without `--web-token` a random token is generated and printed at startup. |
+| `--web-token TOKEN` | Require this token for the web UI and API (`LEGION_WEB_TOKEN` works too). Sign in at `/login`, or send `Authorization: Bearer TOKEN`. |
 | `--web-transparent-ui` | Enable translucent UI effects (the UI is opaque by default). |
 | `--headless` | Run without a UI, driven by the options below. |
 | `--input-file FILE` | Text file of targets, one per line (IPs, subnets, hostnames, URLs). |
-| `--discovery` | Enable host discovery (headless). |
-| `--staged-scan` | Run the staged Nmap scan profile (headless). |
+| `--nmap-xml FILE` | Headless: import this nmap XML report; repeat the option for several reports. |
+| `--project FILE` | Headless: open (or create) this `.legion` project and keep the results in it instead of a temporary project. |
+| `--discovery` | Headless: run an nmap host-discovery sweep (`-sn`) of the targets; with `--staged-scan` it runs first. |
+| `--staged-scan` | Headless: run the `[StagedNmapSettings]` stages from `legion.conf` (service detection per port group, then NSE scripts), importing each stage. |
+| `--nmap-args ARGS` | Headless: extra nmap arguments appended to every stage. |
 | `--run-actions` | Run configured scripted actions after the scan or import (headless). |
 | `--output-file FILE` | Export headless results to `.legion` or `.json`. |
 | `--mcp-server` | Start the MCP server. |

@@ -26,6 +26,20 @@ class ProjectPathRequest:
 
 
 @dataclass(frozen=True)
+class ProjectRenameRequest:
+    path: str
+    new_name: str
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "ProjectRenameRequest":
+        source = payload if isinstance(payload, dict) else {}
+        return cls(
+            path=str(source.get("path", "") or "").strip(),
+            new_name=str(source.get("new_name", "") or "").strip(),
+        )
+
+
+@dataclass(frozen=True)
 class ProjectSaveRequest:
     path: str
     replace: bool

@@ -37,14 +37,16 @@ def load_display_settings(runtime=None) -> Dict[str, Any]:
     }
 
 
-def _refresh_runtime_settings(runtime) -> None:
+def _refresh_runtime_settings(runtime) -> bool:
     if runtime is None:
-        return
+        return False
     try:
         runtime.settings_file = AppSettings()
         runtime.settings = Settings(runtime.settings_file)
+        return True
     except Exception:
         logging.getLogger("legion.web.settings").warning("Settings saved but could not be reloaded.", exc_info=True)
+        return False
 
 
 def _validate_legion_conf_text(text_value: str) -> None:
@@ -87,8 +89,8 @@ class SettingsService:
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-        _refresh_runtime_settings(self.runtime)
-        return {"status": "ok", "path": conf_path}
+        reloaded = _refresh_runtime_settings(self.runtime)
+        return {"status": "ok", "path": conf_path, "reloaded": bool(reloaded)}
 
     def get_display_settings(self) -> Dict[str, Any]:
         return load_display_settings(self.runtime)
@@ -141,11 +143,8 @@ class SettingsService:
         )
 
     def start_tool_install(self, payload: Any) -> Dict[str, Any]:
-        runtime_start = getattr(self.runtime, "start_tool_install_job", None) if self.runtime is not None else None
-        if not callable(runtime_start):
-            raise NotImplementedError("Tool installation is unavailable in this runtime.")
         request = ToolAuditInstallRequest.from_payload(payload)
-        job = runtime_start(
+        job = self.runtime.start_tool_install_job(
             platform=request.platform,
             scope=request.scope,
             tool_keys=request.tool_keys,
