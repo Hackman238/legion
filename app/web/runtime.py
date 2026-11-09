@@ -903,12 +903,14 @@ class WebRuntime:
             host_id: int = 0,
             service: str = "",
             limit: int = 500,
+            host_ids: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         return web_runtime_tools.get_workspace_tool_targets(
             self,
             host_id=host_id,
             service=service,
             limit=limit,
+            host_ids=host_ids,
         )
 
     def get_workspace_tools_page(

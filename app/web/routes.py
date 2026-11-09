@@ -13,6 +13,7 @@ from flask import (
 from app.ApplicationInfo import getConsoleLogo
 from app.web.runtime_exports import (
     EXPORT_TABLES,
+    ExportInterrupted,
     build_full_csv_export,
     build_full_export,
     export_table_rows,
@@ -102,7 +103,10 @@ def export_table(table, fmt):
         return jsonify({"status": "error", "error": f"Unknown export table: {table}"}), 404
     if fmt not in {"csv", "json"}:
         return jsonify({"status": "error", "error": "Format must be csv or json."}), 400
-    rows = export_table_rows(runtime, table_name)
+    try:
+        rows = export_table_rows(runtime, table_name)
+    except ExportInterrupted as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 409
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
     if fmt == "json":
         body = json.dumps({"table": table_name, "count": len(rows), "rows": rows}, indent=2, default=str)

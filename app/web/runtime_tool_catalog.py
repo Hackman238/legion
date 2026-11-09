@@ -259,6 +259,7 @@ def get_workspace_tool_targets(
         host_id: int = 0,
         service: str = "",
         limit: int = 500,
+        host_ids: Optional[List[int]] = None,
 ) -> List[Dict[str, Any]]:
     with runtime._lock:
         project = getattr(runtime.logic, "activeProject", None)
@@ -272,6 +273,18 @@ def get_workspace_tool_targets(
                 normalized_host_id = 0
             normalized_service = str(service or "").strip().rstrip("?").lower()
             resolved_limit = max(1, min(int(limit or 500), 5000))
+            selected_ids: List[int] = []
+            for raw in list(host_ids or []):
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0 and value not in selected_ids:
+                    selected_ids.append(value)
+            id_params = {f"hid{index}": value for index, value in enumerate(selected_ids)}
+            host_ids_sql = (
+                f"AND hosts.id IN ({', '.join(':' + name for name in id_params)}) " if id_params else ""
+            )
             result = session.execute(text(
                 "SELECT hosts.id AS host_id, "
                 "COALESCE(hosts.ip, '') AS host_ip, "
@@ -286,6 +299,7 @@ def get_workspace_tool_targets(
                 "LEFT OUTER JOIN serviceObj AS services ON services.id = ports.serviceId "
                 "WHERE ports.state IN ('open', 'open|filtered') "
                 "AND (:host_id <= 0 OR hosts.id = :host_id) "
+                f"{host_ids_sql}"
                 "AND (:service = '' OR LOWER(COALESCE(services.name, 'unknown')) = :service) "
                 "ORDER BY hosts.ip ASC, ports.protocol ASC, ports.portId ASC "
                 "LIMIT :limit"
@@ -293,6 +307,7 @@ def get_workspace_tool_targets(
                 "host_id": normalized_host_id,
                 "service": normalized_service,
                 "limit": resolved_limit,
+                **id_params,
             })
             rows = []
             for row in result.mappings():

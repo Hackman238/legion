@@ -30,13 +30,20 @@ class WorkspaceToolTargetsQuery:
     service: str
     host_id: int
     limit: int
+    host_ids: Tuple[int, ...] = ()
 
     @classmethod
     def from_args(cls, args: Any) -> "WorkspaceToolTargetsQuery":
+        host_ids = []
+        for token in str(args.get("host_ids", "") or "").split(","):
+            token = token.strip()
+            if token.isdigit() and int(token) > 0 and int(token) not in host_ids:
+                host_ids.append(int(token))
         return cls(
             service=str(args.get("service", "") or "").strip(),
             host_id=clamp_int(args.get("host_id", 0), 0, 0, 10**9),
             limit=clamp_int(args.get("limit", 300), 300, 1, 5000),
+            host_ids=tuple(host_ids),
         )
 
 
