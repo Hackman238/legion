@@ -11,6 +11,17 @@ class StagedScanPlanTest(unittest.TestCase):
         self.assertEqual({"kind": "scripts", "scripts": ["vulners"]}, parse_stage_spec("NSE|vulners"))
         self.assertEqual({"kind": "scripts", "scripts": ["vulners"]}, parse_stage_spec("Vulners,CVE"))
 
+    def test_privilege_detection_honours_nmap_environment_overrides(self):
+        import os
+        from app.web.runtime_scan_planning import can_raw_socket
+
+        with patch.dict(os.environ, {"NMAP_UNPRIVILEGED": "1"}, clear=False):
+            self.assertFalse(can_raw_socket())  # even as root: the operator says nmap must not use raw sockets
+        env = {key: value for key, value in os.environ.items() if key != "NMAP_UNPRIVILEGED"}
+        env["NMAP_PRIVILEGED"] = "1"
+        with patch.dict(os.environ, env, clear=True), patch("os.geteuid", return_value=1000):
+            self.assertTrue(can_raw_socket())  # capabilities (docker --cap-add NET_RAW) asserted the nmap way
+
     def test_unprivileged_plans_leave_out_os_detection(self):
         from app.web import runtime_scan_planning as planning
 
