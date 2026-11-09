@@ -404,6 +404,7 @@ def execute_tool_install_plan(
 
         process = subprocess.Popen(
             ["bash", "-c", command],  # not a login shell: /etc/profile would reset the PATH built above
+            stdin=subprocess.DEVNULL,  # installers must not wait on Legion's stdin (sudo -n fails fast instead)
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

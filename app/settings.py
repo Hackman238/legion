@@ -266,7 +266,7 @@ class AppSettings():
     )
     KATANA_COMMAND = (
         "(command -v katana >/dev/null 2>&1 && "
-        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
+        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
         "echo katana not found"
     )
     ENUM4LINUX_NG_COMMAND = (
@@ -391,7 +391,6 @@ class AppSettings():
                 "nmap-path": defaults.tools_path_nmap,
                 "hydra-path": defaults.tools_path_hydra,
                 "texteditor-path": defaults.tools_path_texteditor,
-                "pyshodan-api-key": defaults.tools_pyshodan_api_key,
                 "responder-path": defaults.tools_path_responder,
                 "ntlmrelay-path": defaults.tools_path_ntlmrelay,
             },
@@ -437,7 +436,6 @@ class AppSettings():
                 "nmap-path": [("ToolSettings", "nmap_path"), ("GeneralSettings", "nmap_path")],
                 "hydra-path": [("ToolSettings", "hydra_path"), ("GeneralSettings", "hydra_path")],
                 "texteditor-path": [("ToolSettings", "texteditor_path"), ("GeneralSettings", "texteditor_path")],
-                "pyshodan-api-key": [("ToolSettings", "pyshodan_api_key"), ("GeneralSettings", "pyshodan_api_key")],
                 "responder-path": [("ToolSettings", "responder_path"), ("GeneralSettings", "responder_path")],
                 "ntlmrelay-path": [("ToolSettings", "ntlmrelay_path"), ("GeneralSettings", "ntlmrelay_path")],
             },
@@ -511,6 +509,13 @@ class AppSettings():
 
         for alias_group, alias_key in sorted(removals):
             changed = self._remove_group_key(alias_group, alias_key) or changed
+
+        # Nothing ever read the ToolSettings Shodan key: the Shodan integration takes its key from the scheduler
+        # integrations (keyring / SHODAN_API_KEY). Drop the entry (and the shipped placeholder) from older configs
+        # so a real key is not left in plaintext for nothing.
+        for stale_group, stale_key in (("ToolSettings", "pyshodan-api-key"), ("ToolSettings", "pyshodan_api_key"),
+                                       ("GeneralSettings", "pyshodan_api_key")):
+            changed = self._remove_group_key(stale_group, stale_key) or changed
 
         if changed:
             self.actions.sync()
@@ -1324,6 +1329,7 @@ class AppSettings():
         katana_command = re.sub(r"(?i)(?:^|\s)-silent\b", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-jc\b", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-kf\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-(?:ct|crawl-duration)\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-d\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-c\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-p\s+\S+", " ", katana_command)
@@ -1334,7 +1340,7 @@ class AppSettings():
             katana_command = re.sub(r"(?i)\bkatana\b", "katana -u [WEB_URL]", katana_command, count=1)
         katana_command = re.sub(
             r"(?i)\bkatana\b",
-            "katana -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5",
+            "katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5",
             katana_command,
             count=1,
         )
@@ -1820,7 +1826,6 @@ class AppSettings():
         self.actions.setValue('nmap-path', newSettings.tools_path_nmap)
         self.actions.setValue('hydra-path', newSettings.tools_path_hydra)
         self.actions.setValue('texteditor-path', newSettings.tools_path_texteditor)
-        self.actions.setValue('pyshodan-api-key', newSettings.tools_pyshodan_api_key)
         self.actions.setValue('responder-path', newSettings.tools_path_responder)
         self.actions.setValue('ntlmrelay-path', newSettings.tools_path_ntlmrelay)
         self.actions.endGroup()
@@ -1905,12 +1910,11 @@ class Settings():
                                        "2050-3305,3307-3388,3390-5431,5433-8079,8081-29999"
         self.tools_nmap_stage6_ports = "T:30000-65535"
 
-        self.tools_path_nmap = "/sbin/nmap"
-        self.tools_path_hydra = "/usr/bin/hydra"
+        self.tools_path_nmap = "nmap"  # resolved from PATH at run time (see runtime_scan_planning.default_nmap_path)
+        self.tools_path_hydra = "hydra"
         self.tools_path_texteditor = "/usr/bin/xdg-open"
-        self.tools_pyshodan_api_key = ""
         self.tools_path_responder = "responder"
-        self.tools_path_ntlmrelay = "ntlmrelayx.py"
+        self.tools_path_ntlmrelay = "impacket-ntlmrelayx"  # Kali/Debian name; pip installs provide ntlmrelayx.py
 
         # GUI settings
         self.gui_process_tab_column_widths = "125,0,100,150,100,100,100,100,100,100,100,100,100,100,100,100,100"
@@ -2048,10 +2052,6 @@ class Settings():
                 self.tools_path_texteditor = self.toolSettings.get(
                     'texteditor-path',
                     self.tools_path_texteditor,
-                )
-                self.tools_pyshodan_api_key = self.toolSettings.get(
-                    'pyshodan-api-key',
-                    self.tools_pyshodan_api_key,
                 )
                 self.tools_path_responder = self.toolSettings.get('responder-path', self.tools_path_responder)
                 self.tools_path_ntlmrelay = self.toolSettings.get('ntlmrelay-path', self.tools_path_ntlmrelay)

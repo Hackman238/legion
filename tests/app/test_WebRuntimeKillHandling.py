@@ -276,6 +276,21 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         )
         return runtime
 
+    def test_run_command_never_hands_the_tool_legions_stdin(self):
+        from app.web.runtime import WebRuntime
+
+        repo = _DummyProcessRepo()
+        runtime = self._make_runtime(repo)
+        with patch("app.web.runtime_execution._PROCESS_READER_EXIT_GRACE_SECONDS", 0.0):
+            with patch("app.web.runtime_execution.subprocess.Popen", return_value=_ExitedProc()) as popen:
+                WebRuntime._run_command_with_tracking(
+                    runtime, tool_name="katana", tab_title="Test", host_ip="127.0.0.1", port="80",
+                    protocol="tcp", command="katana -u http://127.0.0.1", outputfile="/tmp/out", timeout=30,
+                )
+        import subprocess
+        # Go tools (katana, httpx) read a piped stdin as another target list and block forever on it.
+        self.assertEqual(subprocess.DEVNULL, popen.call_args.kwargs.get("stdin"))
+
     def test_run_command_forces_completion_when_reader_does_not_close(self):
         from app.web.runtime import WebRuntime
 
