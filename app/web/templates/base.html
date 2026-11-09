@@ -7,6 +7,14 @@
     {# Font Awesome Free 6.5.1 is bundled (app/web/static/vendor/fontawesome) so icons work on offline labs. #}
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/legion.css') }}">
+    <script>
+        // Apply the stored theme before the first paint so a light-theme user never sees a dark flash.
+        try {
+            if (window.localStorage.getItem("legion_theme") === "light") {
+                document.documentElement.setAttribute("data-theme", "light");
+            }
+        } catch (_err) {}
+    </script>
 </head>
 <body{% if legion_ui_opaque or legion_colorful_ascii_background %} class="{% if legion_ui_opaque %}opaque-ui{% endif %}{% if legion_ui_opaque and legion_colorful_ascii_background %} {% endif %}{% if legion_colorful_ascii_background %}colorful-background{% endif %}"{% endif %}>
 <div class="background-glow"></div>
