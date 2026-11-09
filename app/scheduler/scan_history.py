@@ -249,15 +249,21 @@ def get_scan_submission(database, submission_id: int) -> Optional[Dict[str, Any]
         session.close()
 
 
-def list_scan_submissions(database, limit: int = 200) -> List[Dict[str, Any]]:
+def list_scan_submissions(database, limit: Optional[int] = 200) -> List[Dict[str, Any]]:
+    """Newest first. `limit=None` returns every row (exports); the UI always passes a bounded limit."""
     session = database.session()
     try:
         _ensure_table(session)
-        safe_limit = max(1, min(int(limit or 200), 2000))
-        result = session.execute(text(
-            "SELECT " + ", ".join(SCAN_HISTORY_COLUMNS) + " "
-            "FROM scheduler_scan_submission ORDER BY id DESC LIMIT :limit"
-        ), {"limit": safe_limit})
+        if limit is None:
+            result = session.execute(text(
+                "SELECT " + ", ".join(SCAN_HISTORY_COLUMNS) + " FROM scheduler_scan_submission ORDER BY id DESC"
+            ))
+        else:
+            safe_limit = max(1, min(int(limit or 200), 2000))
+            result = session.execute(text(
+                "SELECT " + ", ".join(SCAN_HISTORY_COLUMNS) + " "
+                "FROM scheduler_scan_submission ORDER BY id DESC LIMIT :limit"
+            ), {"limit": safe_limit})
         rows = result.fetchall()
         payload: List[Dict[str, Any]] = []
         for row in rows:

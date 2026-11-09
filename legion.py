@@ -481,11 +481,24 @@ if __name__ == "__main__":
             else:
                 startupLog.info(f"Creating project {project_file} for headless mode...")
                 logic.createNewTemporaryProject()
-                created = projectManager.saveProjectAs(logic.activeProject, project_file, replace=1, projectType="legion")
+                temp_project = logic.activeProject
+                created = projectManager.saveProjectAs(temp_project, project_file, replace=1, projectType="legion")
                 if not created:
                     print(f"Error: could not create project {project_file}", file=sys.stderr)
                     sys.exit(1)
                 logic.activeProject = created
+                # saveProjectAs reopens at the new path; release the temporary source database and its running
+                # folder (closeProject never runs for the source project).
+                temp_database = getattr(temp_project, "database", None)
+                if temp_database is not None and temp_database is not created.database:
+                    temp_database.dispose()
+                temp_running = str(getattr(temp_project.properties, "runningFolder", "") or "")
+                if os.path.isdir(temp_running) and os.path.realpath(temp_running) != \
+                        os.path.realpath(str(created.properties.runningFolder or "")):
+                    try:
+                        shell.remove_directory(temp_running)
+                    except Exception as exc:
+                        startupLog.warning(f"Could not remove running folder {temp_running}: {exc}")
         else:
             startupLog.info("Creating temporary project for headless mode...")
             logic.createNewTemporaryProject()

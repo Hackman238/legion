@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from xml.sax.saxutils import quoteattr
@@ -288,11 +289,14 @@ def convert_report_to_nmap_xml(path: str, output_dir: Optional[str] = None) -> T
     else:
         hosts, scanner = _parse_masscan_xml(text), "masscan"
     target_dir = output_dir if output_dir and os.path.isdir(output_dir) else os.path.dirname(os.path.abspath(path))
-    base = os.path.splitext(os.path.basename(path))[0]
-    xml_path = os.path.join(target_dir, f"{base}.converted-{detected}.xml")
-    with open(xml_path, "w", encoding="utf-8") as handle:
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.splitext(os.path.basename(path))[0])[:80]
+    # Unique per conversion: two same-named reports (or two concurrent import jobs) must not share a file.
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", prefix=f"{base}.converted-{detected}-", suffix=".xml", dir=target_dir, delete=False,
+    )
+    with handle:
         handle.write(_xml_for_hosts(hosts, scanner=scanner, args=args or f"converted from {detected}"))
-    return xml_path, detected
+    return handle.name, detected
 
 
 def summarize_hosts(xml_text: str) -> List[str]:

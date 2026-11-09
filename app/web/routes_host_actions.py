@@ -144,8 +144,7 @@ def workspace_host_dig_deeper(host_id):
 def workspace_hosts_bulk_action():
     service = _host_action_service()
     try:
-        result = service.bulk_host_action(request.get_json(silent=True) or {})
-        return jsonify(result), (202 if result.get("action") != "remove" else 200)
+        return jsonify(service.bulk_host_action(request.get_json(silent=True) or {})), 202
     except ValueError as exc:
         return json_error(str(exc), 400)
     except Exception as exc:

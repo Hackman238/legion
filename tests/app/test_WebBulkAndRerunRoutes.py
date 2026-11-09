@@ -27,6 +27,10 @@ class _BulkRuntime:
         self.calls.append(("delete_host_workspace", int(host_id)))
         return {"deleted": True, "host_id": int(host_id)}
 
+    def start_bulk_host_remove_job(self, host_ids):
+        self.calls.append(("start_bulk_host_remove_job", list(host_ids)))
+        return {"id": 1200, "type": "hosts-bulk-remove", "status": "queued"}
+
     def start_tool_run_job(self, host_ip, port, protocol, tool_id, timeout=300, parameters=None):
         self.calls.append(("start_tool_run_job", str(host_ip), str(port), str(protocol), str(tool_id), int(timeout), dict(parameters or {})))
         if str(host_ip) == "10.0.0.9":
@@ -63,11 +67,40 @@ class WebBulkAndRerunRoutesTest(unittest.TestCase):
         # duplicates and junk ids are dropped before any call is made
         self.assertEqual(3, len([call for call in self.runtime.calls if call[0] == "start_host_rescan_job"]))
 
-    def test_bulk_remove_returns_200_and_deletes_each_host(self):
-        response = self.client.post("/api/workspace/hosts/bulk-action", json={"action": "remove", "host_ids": [11, 12]})
-        self.assertEqual(200, response.status_code)
-        self.assertEqual("ok", response.json["status"])
-        self.assertEqual([("delete_host_workspace", 11), ("delete_host_workspace", 12)], self.runtime.calls)
+    def test_bulk_remove_queues_one_job_for_the_selection(self):
+        response = self.client.post("/api/workspace/hosts/bulk-action", json={"action": "remove", "host_ids": [11, 12, 12]})
+        self.assertEqual(202, response.status_code)
+        self.assertEqual("accepted", response.json["status"])
+        self.assertEqual("hosts-bulk-remove", response.json["job"]["type"])
+        self.assertEqual([("start_bulk_host_remove_job", [11, 12])], self.runtime.calls)
+
+    def test_bulk_remove_job_deletes_each_host_and_reports_per_host(self):
+        from app.web.runtime_workspace_mutation import start_bulk_host_remove_job
+
+        class _Runtime:
+            def __init__(self):
+                self.deleted = []
+                self.jobs = SimpleNamespace(is_cancel_requested=lambda _job_id: False)
+
+            def _start_job(self, job_type, runner, *, payload=None, **_kw):
+                return {"id": 5, "type": job_type, "payload": payload, "result": runner(5)}
+
+        runtime = _Runtime()
+        import app.web.runtime_workspace_mutation as mutation
+
+        original = mutation.delete_host_workspace
+        mutation.delete_host_workspace = lambda rt, host_id: (
+            runtime.deleted.append(host_id) or {"deleted": True}
+        ) if host_id != 13 else (_ for _ in ()).throw(KeyError("Unknown host id: 13"))
+        try:
+            job = start_bulk_host_remove_job(runtime, [11, "12", 13, 11])
+        finally:
+            mutation.delete_host_workspace = original
+        self.assertEqual("hosts-bulk-remove", job["type"])
+        self.assertEqual([11, 12], runtime.deleted)
+        self.assertEqual(2, job["result"]["succeeded"])
+        self.assertEqual(1, job["result"]["failed"])
+        self.assertEqual("error", job["result"]["results"][2]["status"])
 
     def test_bulk_action_validates_input(self):
         self.assertEqual(400, self.client.post("/api/workspace/hosts/bulk-action", json={"action": "explode", "host_ids": [1]}).status_code)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict
+from typing import List, Any, Dict
 
 from sqlalchemy import text
 
@@ -124,6 +124,40 @@ def update_host_categories(
             "manual_device_categories": category_names(updated_state.get("manual_device_categories", [])),
             "device_category_override": bool(updated_state.get("device_category_override", False)),
         }
+
+
+def start_bulk_host_remove_job(runtime, host_ids: List[int]) -> Dict[str, Any]:
+    """Delete many hosts in the background; the job result lists the outcome per host."""
+    ids = []
+    for raw in list(host_ids or []):
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in ids:
+            ids.append(value)
+    if not ids:
+        raise ValueError("host_ids must contain at least one host id.")
+
+    def _run(job_id):
+        results = []
+        for host_id in ids:
+            if int(job_id or 0) > 0 and runtime.jobs.is_cancel_requested(int(job_id)):
+                raise RuntimeError("cancelled")
+            try:
+                results.append({"host_id": host_id, "status": "ok", **dict(delete_host_workspace(runtime, host_id) or {})})
+            except Exception as exc:
+                results.append({"host_id": host_id, "status": "error", "error": str(exc)})
+        succeeded = sum(1 for item in results if item["status"] == "ok")
+        return {
+            "action": "remove",
+            "requested": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+            "results": results,
+        }
+
+    return runtime._start_job("hosts-bulk-remove", _run, payload={"host_ids": ids, "count": len(ids)})
 
 
 def delete_host_workspace(runtime, host_id: int) -> Dict[str, Any]:

@@ -1030,6 +1030,9 @@ class WebRuntime:
             override_auto=override_auto,
         )
 
+    def start_bulk_host_remove_job(self, host_ids: List[int]) -> Dict[str, Any]:
+        return web_runtime_workspace.start_bulk_host_remove_job(self, host_ids)
+
     def delete_host_workspace(self, host_id: int) -> Dict[str, Any]:
         return web_runtime_workspace.delete_host_workspace(self, host_id)
 

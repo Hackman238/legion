@@ -91,7 +91,9 @@ def install_request_guards(app: Flask) -> None:
             if path in _AUTH_EXEMPT_PATHS or path.startswith(_AUTH_EXEMPT_PREFIXES):
                 return None
             if not request_presents_token(app):
-                if path.startswith("/api/") or path.startswith("/ws/"):
+                wants_page = request.method == "GET" and request.accept_mimetypes.accept_html \
+                    and not request.accept_mimetypes.accept_json
+                if (path.startswith("/api/") or path.startswith("/ws/")) and not wants_page:
                     return jsonify({"status": "error", "error": "Authentication required: send the web token."}), 401
                 return redirect("/login")
         return None

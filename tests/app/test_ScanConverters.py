@@ -94,6 +94,23 @@ class ScanConverterTest(unittest.TestCase):
         self.assertEqual(["8080"], hosts["203.0.113.5"].getPorts("tcp", "open"))
         self.assertIn("Jetty", hosts["203.0.113.5"].getService("tcp", "8080").extrainfo)
 
+    def test_same_named_reports_convert_to_distinct_files(self):
+        from app.importers.scan_converters import convert_report_to_nmap_xml
+
+        first_dir = os.path.join(self.tmp.name, "a")
+        second_dir = os.path.join(self.tmp.name, "b")
+        os.makedirs(first_dir)
+        os.makedirs(second_dir)
+        for folder in (first_dir, second_dir):
+            with open(os.path.join(folder, "scan.gnmap"), "w", encoding="utf-8") as handle:
+                handle.write(GNMAP)
+        out_dir = os.path.join(self.tmp.name, "running")
+        os.makedirs(out_dir)
+        first, _ = convert_report_to_nmap_xml(os.path.join(first_dir, "scan.gnmap"), output_dir=out_dir)
+        second, _ = convert_report_to_nmap_xml(os.path.join(second_dir, "scan.gnmap"), output_dir=out_dir)
+        self.assertNotEqual(first, second)
+        self.assertTrue(os.path.isfile(first) and os.path.isfile(second))
+
     def test_unknown_format_is_rejected(self):
         from app.importers.scan_converters import convert_report_to_nmap_xml
 
@@ -113,7 +130,7 @@ class ScanConverterTest(unittest.TestCase):
             import_nmap_xml_into_project(project=project, xml_path=self._write("scan.gnmap", GNMAP))
             hosts = project.repositoryContainer.hostRepository.getAllHostObjs()
             self.assertIn("10.0.0.1", [host.ip for host in hosts])
-            converted = [name for name in os.listdir(project.properties.runningFolder) if name.endswith(".converted-gnmap.xml")]
+            converted = [name for name in os.listdir(project.properties.runningFolder) if ".converted-gnmap-" in name and name.endswith(".xml")]
             self.assertEqual(1, len(converted))
         finally:
             project_manager.closeProject(project)
