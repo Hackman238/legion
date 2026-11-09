@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: registers-server-in-claude-code
+expected_outcome: |
+  The agent registers the Legion MCP server for Claude Code with the venv interpreter, legion.py --mcp-server and a LEGION_HOME, then verifies the connection with the smoke-test script or an equivalent initialize / tools/list exchange, and does not start any scan.

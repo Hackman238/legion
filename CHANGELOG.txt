@@ -1,3 +1,7 @@
+LEGION Unreleased
+
+* Added an agent skill, `skills/legion-mcp`, for Claude Code, Codex and other Agent Skills clients: how to install Legion, register the MCP server (Claude Code, Codex, JSON clients, Docker), verify it with a stdio smoke test, and work through policy, scans, inventory, tool runs, approvals, results and reports. The tool reference is generated from the server and checked by a test. The repository links the skill for Claude Code and Codex and ships a `.mcp.json` that registers the server.
+
 LEGION 0.8.1
 
 * Portability fixes adopted from Denys Kolomiiets' macOS port (pull request #53): tool processes never inherit Legion's stdin (katana and httpx blocked forever on a piped stdin), nmap plans leave out OS detection when raw sockets are unavailable instead of failing (root, Windows nmap.exe under WSL and `NMAP_PRIVILEGED=1` count as privileged, `NMAP_UNPRIVILEGED=1` denies it, and the dropped detection is logged), the nmap HTML stylesheet is found under Homebrew as well as /usr/share, katana uses the repeated `-kf` form modern releases require and a 5-minute crawl cap (`-ct 300`, seconds, so older katana builds accept it too), importing the loggers no longer creates a cache directory (so a read-only home does not stop Legion from starting), tool paths default to bare names resolved from PATH (ntlmrelayx defaults to the `impacket-ntlmrelayx` package name and the relay tools fall back to whichever variant is installed), `exec-in-shell` works without getent, and `.dockerignore` keeps projects and secrets out of images.

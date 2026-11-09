@@ -108,8 +108,23 @@ Client configuration (Claude Desktop, Cursor and similar):
 }
 ```
 
+Codex uses the same command in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.legion]
+command = "/path/to/legion/.venv/bin/python"
+args = ["/path/to/legion/legion.py", "--mcp-server"]
+env = { LEGION_HOME = "/home/you/.local/share/legion" }
+```
+
 Scans need the same privileges as the web UI, so run the client (or Legion) as root when the agent should launch
-nmap itself.
+nmap itself (or give nmap the capability and set `NMAP_PRIVILEGED=1`).
+
+An agent skill that teaches Claude Code, Codex and other Agent Skills clients how to install Legion, register the
+server and work through scans, approvals and reports lives in [skills/legion-mcp](skills/legion-mcp). Copy or
+symlink that directory to `~/.claude/skills/legion-mcp` or `~/.codex/skills/legion-mcp`; inside this repository
+it is already linked for both, and `.mcp.json` registers the server for Claude Code.
+`skills/legion-mcp/scripts/mcp_smoke_test.py` checks a registration end to end.
 
 ## Installation
 
