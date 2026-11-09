@@ -266,7 +266,7 @@ class AppSettings():
     )
     KATANA_COMMAND = (
         "(command -v katana >/dev/null 2>&1 && "
-        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
+        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 300 -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
         "echo katana not found"
     )
     ENUM4LINUX_NG_COMMAND = (
@@ -515,7 +515,15 @@ class AppSettings():
         # so a real key is not left in plaintext for nothing.
         for stale_group, stale_key in (("ToolSettings", "pyshodan-api-key"), ("ToolSettings", "pyshodan_api_key"),
                                        ("GeneralSettings", "pyshodan_api_key")):
-            changed = self._remove_group_key(stale_group, stale_key) or changed
+            stale_value = str(self._read_group_value(stale_group, stale_key) or "").strip()
+            if self._remove_group_key(stale_group, stale_key):
+                changed = True
+                if stale_value and stale_value.lower() not in {"yourkeygoeshere", "changeme"}:
+                    log.warning(
+                        "Removed the unused %s/%s entry from legion.conf; nothing read it. The Shodan integration key "
+                        "is configured under Settings > Scheduler integrations (or SHODAN_API_KEY).",
+                        stale_group, stale_key,
+                    )
 
         if changed:
             self.actions.sync()
@@ -1340,7 +1348,7 @@ class AppSettings():
             katana_command = re.sub(r"(?i)\bkatana\b", "katana -u [WEB_URL]", katana_command, count=1)
         katana_command = re.sub(
             r"(?i)\bkatana\b",
-            "katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5",
+            "katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 300 -c 5 -p 1 -rl 5",
             katana_command,
             count=1,
         )

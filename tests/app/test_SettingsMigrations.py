@@ -154,6 +154,22 @@ class SettingsMigrationTest(unittest.TestCase):
             self.assertNotIn("pyshodan", saved)
             self.assertIn("nmap-path=nmap", saved)
 
+    def test_removing_a_real_shodan_value_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, ".local", "share", "legion")
+            os.makedirs(config_dir, exist_ok=True)
+            with open(os.path.join(config_dir, "legion.conf"), "w", encoding="utf-8") as handle:
+                handle.write("[ToolSettings]\npyshodan-api-key=abc123realkey\n")
+            env = {key: value for key, value in os.environ.items() if key != "LEGION_HOME"}
+            env["HOME"] = tmpdir
+            with patch.dict(os.environ, env, clear=True):
+                import app.settings as settings_module
+
+                with patch.object(settings_module.log, "warning") as warning:
+                    settings_module.AppSettings()
+            messages = [str(call.args[0]) % tuple(call.args[1:]) for call in warning.call_args_list]
+            self.assertTrue(any("pyshodan-api-key" in m and "Scheduler integrations" in m for m in messages), messages)
+
     def test_repeated_nikto_config_fixture_migrates_once_and_stays_stable(self):
         fixture_path = os.path.join(
             os.path.dirname(__file__),
@@ -380,9 +396,9 @@ class SettingsMigrationTest(unittest.TestCase):
         normalized = AppSettings._ensure_katana_command(command)
 
         self.assertIn("command -v katana >/dev/null 2>&1", normalized)
-        self.assertIn("katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5 -u [WEB_URL]", normalized)
+        self.assertIn("katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 300 -c 5 -p 1 -rl 5 -u [WEB_URL]", normalized)
         # an older command with the comma list (rejected by katana >= 1.2) migrates to the repeated flag once
-        legacy = AppSettings._ensure_katana_command(normalized.replace("-kf robotstxt -kf sitemapxml -ct 5m", "-kf robotstxt,sitemapxml"))
+        legacy = AppSettings._ensure_katana_command(normalized.replace("-kf robotstxt -kf sitemapxml -ct 300", "-kf robotstxt,sitemapxml"))
         self.assertEqual(normalized, legacy)
         self.assertEqual(normalized, AppSettings._ensure_katana_command(normalized))
         self.assertIn("-o [OUTPUT].jsonl", normalized)
