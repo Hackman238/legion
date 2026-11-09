@@ -64,6 +64,25 @@ def configured_web_token(app: Flask) -> str:
     return str(app.config.get("LEGION_WEB_TOKEN", "") or "").strip()
 
 
+def _tokens_match(candidate: str, expected: str) -> bool:
+    """Constant-time comparison that copes with non-ASCII tokens.
+
+    compare_digest only accepts ASCII str, so bytes are compared. A header or cookie value reaches WSGI decoded as
+    latin-1 (one char per raw byte), while a form field is decoded as UTF-8, so a candidate is tried both ways.
+    """
+    expected_bytes = str(expected or "").encode("utf-8")
+    candidate_text = str(candidate or "")
+    forms = [candidate_text.encode("utf-8")]
+    try:
+        forms.append(candidate_text.encode("latin-1"))  # the raw bytes a real client sent in a header or cookie
+    except UnicodeEncodeError:
+        pass
+    matched = False
+    for form in forms:
+        matched = hmac.compare_digest(form, expected_bytes) or matched
+    return matched
+
+
 def request_presents_token(app: Flask) -> bool:
     """Bearer header, X-Legion-Token header or the session cookie, compared in constant time."""
     expected = configured_web_token(app)
@@ -75,7 +94,7 @@ def request_presents_token(app: Flask) -> bool:
         candidates.append(authorization[7:].strip())
     candidates.append(str(request.headers.get("X-Legion-Token", "") or "").strip())
     candidates.append(str(request.cookies.get(AUTH_COOKIE_NAME, "") or "").strip())
-    return any(candidate and hmac.compare_digest(candidate, expected) for candidate in candidates)
+    return any(candidate and _tokens_match(candidate, expected) for candidate in candidates)
 
 
 def install_request_guards(app: Flask) -> None:
@@ -112,7 +131,7 @@ def install_request_guards(app: Flask) -> None:
         if not configured_web_token(app):
             return redirect("/")
         supplied = str(request.form.get("token", "") or "").strip()
-        if not supplied or not hmac.compare_digest(supplied, configured_web_token(app)):
+        if not supplied or not _tokens_match(supplied, configured_web_token(app)):
             return render_template("login.html", error="That token was not accepted."), 401
         response = redirect("/")
         response.set_cookie(

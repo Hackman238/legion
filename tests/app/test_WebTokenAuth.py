@@ -56,6 +56,17 @@ class WebTokenAuthTest(unittest.TestCase):
         self.assertEqual(302, self.client.post("/logout").status_code)
         self.assertEqual(401, self.client.get("/api/snapshot").status_code)
 
+    def test_non_ascii_token_is_compared_not_crashed(self):
+        from app.web import configure_web_token
+
+        configure_web_token(self.app, "Passw\u00f6rd-2026")
+        self.assertEqual(401, self.client.get("/api/snapshot", headers={"Authorization": "Bearer wrong"}).status_code)
+        # A real client puts the UTF-8 bytes on the wire; WSGI hands them to Flask decoded as latin-1.
+        on_the_wire = "Passw\u00f6rd-2026".encode("utf-8").decode("latin-1")
+        self.assertEqual(200, self.client.get("/api/snapshot", headers={"X-Legion-Token": on_the_wire}).status_code)
+        self.assertEqual(200, self.client.get("/api/snapshot", headers={"X-Legion-Token": "Passw\u00f6rd-2026"}).status_code)
+        self.assertEqual(302, self.client.post("/login", data={"token": "Passw\u00f6rd-2026"}).status_code)
+
     def test_without_a_token_nothing_changes(self):
         other = create_app(WebRuntime(self.app.extensions["legion_runtime"].logic))
         other.config["TESTING"] = True

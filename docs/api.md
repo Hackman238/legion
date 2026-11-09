@@ -93,7 +93,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 | Method | Path | Body / query | Description |
 | --- | --- | --- | --- |
 | GET | `/api/workspace/tools` | `service`, `port`, `protocol`, `limit`, `offset` | Configured port actions and pipettes with availability of their executables. |
-| GET | `/api/workspace/tool-targets` | `host_id`, `service`, `limit` | Open services a tool can be pointed at. |
+| GET | `/api/workspace/tool-targets` | `host_id`, `host_ids` (comma-separated), `service`, `limit` | Open services a tool can be pointed at; `truncated` is true when the limit cut the list. |
 | POST | `/api/workspace/tools/run` | `tool_id`, `host_ip`, `port`, `protocol`, `parameters{}`, `timeout`, or `targets[{host_ip, port, protocol}]` | Run a tool against one target, or against every entry of `targets` (one job each; `queued`, `jobs[]` and `errors[]` in the response). |
 | GET | `/api/processes` | `limit` | Tracked tool processes. |
 | GET | `/api/processes/<id>/output` | `offset`, `max_chars` | Output slice of a process. |

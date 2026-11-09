@@ -2114,10 +2114,12 @@ async function bulkRunToolAction() {
         return;
     }
     let targets = [];
+    let truncated = false;
     try {
-        const selectedIds = new Set(hosts.map((host) => Number(host.id) || 0));
-        const allTargets = await fetchWorkspaceToolTargets({limit: 5000});
-        targets = allTargets.filter((target) => selectedIds.has(Number(target?.host_id) || 0));
+        // One request, scoped to the selected hosts server-side so the 5000-row ceiling applies to them alone.
+        const result = await fetchWorkspaceToolTargets({hostIds: hosts.map((host) => host.id), limit: 5000, withMeta: true});
+        targets = result.targets;
+        truncated = result.truncated;
     } catch (err) {
         setWorkspaceStatus(`Load tool targets failed: ${err.message}`, true);
         return;
@@ -2126,10 +2128,13 @@ async function bulkRunToolAction() {
         setWorkspaceStatus("The selected hosts have no open services to run a tool against", true);
         return;
     }
+    if (truncated) {
+        setWorkspaceStatus("The selected hosts have more open services than one picker can list; only the first 5000 are shown.", true);
+    }
     await openManualToolPicker({
         targets,
         batch: true,
-        contextLabel: `${targets.length} open service${targets.length === 1 ? "" : "s"} on ${hosts.length} selected host${hosts.length === 1 ? "" : "s"}`,
+        contextLabel: `${targets.length}${truncated ? "+" : ""} open service${targets.length === 1 ? "" : "s"} on ${hosts.length} selected host${hosts.length === 1 ? "" : "s"}`,
     });
 }
 
@@ -3425,17 +3430,22 @@ async function fetchWorkspaceToolsAll({service = "", port = "", protocol = "tcp"
     return allTools;
 }
 
-async function fetchWorkspaceToolTargets({hostId = 0, service = "", limit = 500} = {}) {
+async function fetchWorkspaceToolTargets({hostId = 0, hostIds = [], service = "", limit = 500, withMeta = false} = {}) {
     const params = new URLSearchParams();
     params.set("limit", String(limit));
     if (hostId) {
         params.set("host_id", String(hostId));
     }
+    const ids = (Array.isArray(hostIds) ? hostIds : []).map((id) => Number(id) || 0).filter((id) => id > 0);
+    if (ids.length) {
+        params.set("host_ids", ids.join(","));
+    }
     if (service) {
         params.set("service", String(service));
     }
     const body = await fetchJson(`/api/workspace/tool-targets?${params.toString()}`);
-    return Array.isArray(body?.targets) ? body.targets : [];
+    const targets = Array.isArray(body?.targets) ? body.targets : [];
+    return withMeta ? {targets, truncated: Boolean(body?.truncated)} : targets;
 }
 
 async function loadManualToolOptionsForService(service = "", preferredToolId = "", {port = "", protocol = "tcp"} = {}) {

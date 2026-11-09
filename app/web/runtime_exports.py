@@ -46,6 +46,10 @@ def _rows(value: Any) -> List[Dict[str, Any]]:
     return [dict(item) for item in list(value or []) if isinstance(item, dict)]
 
 
+class ExportInterrupted(RuntimeError):
+    """The open project changed (switched, restored or closed) while an export was reading it."""
+
+
 def _active_database(runtime):
     """The open project's database, looked up under the lock; reads then run outside it (SQLite serialises them)
     so a large export does not stall scans, imports and the live UI."""
@@ -54,25 +58,35 @@ def _active_database(runtime):
         return getattr(project, "database", None) if project is not None else None
 
 
-def _store_rows(runtime, loader) -> List[Dict[str, Any]]:
-    """Run `loader(database)` against the open project; the loaders take limit=None for every row."""
+def _read_outside_lock(runtime, reader):
+    """Run `reader(database)` without the runtime lock; if the project was switched underneath it, say so."""
     database = _active_database(runtime)
     if database is None:
         return []
-    return _rows(loader(database))
+    try:
+        return reader(database)
+    except Exception as exc:
+        if _active_database(runtime) is not database:
+            raise ExportInterrupted("The open project changed while the export was running; export again.") from exc
+        raise
+
+
+def _store_rows(runtime, loader) -> List[Dict[str, Any]]:
+    """Run `loader(database)` against the open project; the loaders take limit=None for every row."""
+    return _rows(_read_outside_lock(runtime, loader))
 
 
 def _sql_rows(runtime, sql: str) -> List[Dict[str, Any]]:
-    database = _active_database(runtime)
-    if database is None:
-        return []
-    session = database.session()
-    try:
-        result = session.execute(text(sql))
-        keys = list(result.keys())
-        return [dict(zip(keys, row)) for row in result.fetchall()]
-    finally:
-        session.close()
+    def _read(database):
+        session = database.session()
+        try:
+            result = session.execute(text(sql))
+            keys = list(result.keys())
+            return [dict(zip(keys, row)) for row in result.fetchall()]
+        finally:
+            session.close()
+
+    return _read_outside_lock(runtime, _read)
 
 
 def export_table_rows(runtime, table: str) -> List[Dict[str, Any]]:
@@ -96,7 +110,7 @@ def export_table_rows(runtime, table: str) -> List[Dict[str, Any]]:
             "FROM cve c JOIN hostObj h ON h.id = c.hostId ORDER BY h.ip, c.severity DESC, c.name"
         ))
     if name == "findings":
-        payload = runtime.get_findings(limit_hosts=_UNBOUNDED, limit_findings=_UNBOUNDED)
+        payload = runtime.get_findings(limit_hosts=None, limit_findings=None)  # None: no cap, unlike the UI
         return _rows(payload)
     if name == "scripts":
         return _sql_rows(runtime, (

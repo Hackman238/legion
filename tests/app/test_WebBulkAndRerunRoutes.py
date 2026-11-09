@@ -37,6 +37,10 @@ class _BulkRuntime:
             raise KeyError("Unknown tool id: nope")
         return {"id": len(self.calls), "type": "tool-run"}
 
+    def get_workspace_tool_targets(self, host_id=0, service="", limit=500, host_ids=None):
+        self.calls.append(("get_workspace_tool_targets", int(host_id), str(service), int(limit), list(host_ids or [])))
+        return [{"host_id": hid, "host_ip": f"10.0.0.{hid}", "port": "80", "protocol": "tcp", "service": "http"} for hid in (host_ids or [1])][: int(limit)]
+
     def rerun_scan_submission(self, submission_id):
         self.calls.append(("rerun_scan_submission", int(submission_id)))
         if int(submission_id) == 404:
@@ -145,6 +149,16 @@ class WebBulkAndRerunRoutesTest(unittest.TestCase):
         response = self.client.post("/api/workspace/tools/run", json={"tool_id": "nikto", "host_ip": "10.0.0.5", "port": "80"})
         self.assertEqual(202, response.status_code)
         self.assertEqual(1, response.json["queued"])
+
+    def test_tool_targets_can_be_scoped_to_selected_hosts(self):
+        response = self.client.get("/api/workspace/tool-targets?host_ids=11,12,x,12&limit=2")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(("get_workspace_tool_targets", 0, "", 2, [11, 12]), self.runtime.calls[-1])
+        self.assertEqual([11, 12], response.json["host_ids"])
+        self.assertTrue(response.json["truncated"])  # two rows for a limit of two: the caller must know
+        plain = self.client.get("/api/workspace/tool-targets?service=http")
+        self.assertEqual(("get_workspace_tool_targets", 0, "http", 300, []), self.runtime.calls[-1])
+        self.assertFalse(plain.json["truncated"])
 
     def test_scan_rerun_route_maps_errors(self):
         ok = self.client.post("/api/scans/history/7/rerun", json={})

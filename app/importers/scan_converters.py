@@ -35,40 +35,45 @@ def _head(path: str, size: int = 65536) -> str:
         return handle.read(size).decode("utf-8", errors="ignore")
 
 
-def detect_scan_format(path: str) -> str:
-    """Name the report format of `path`; FORMAT_UNKNOWN when it is none of the supported ones."""
+def _detect_scan_format(path: str) -> Tuple[str, Any]:
+    """(format, parsed JSON payload or None); FORMAT_UNKNOWN when the file is none of the supported formats."""
     try:
         head = _head(path)
     except OSError:
-        return FORMAT_UNKNOWN
+        return FORMAT_UNKNOWN, None
     stripped = head.lstrip("\ufeff \t\r\n")
     if stripped.startswith("<"):
         # Any other XML is handed to the nmap importer unchanged, so its own malformed-document error is raised.
-        return FORMAT_MASSCAN_XML if 'scanner="masscan"' in stripped[:4096].lower() else FORMAT_NMAP_XML
+        return (FORMAT_MASSCAN_XML if 'scanner="masscan"' in stripped[:4096].lower() else FORMAT_NMAP_XML), None
     if stripped.startswith("[") or stripped.startswith("{"):
         try:
             payload = json.loads(_read_all(path))
         except (OSError, ValueError):
-            return FORMAT_UNKNOWN
+            return FORMAT_UNKNOWN, None
         rows = payload if isinstance(payload, list) else [payload]
         if rows and all(isinstance(row, dict) and ("ip" in row and "ports" in row) for row in rows):
-            return FORMAT_MASSCAN_JSON
-        return FORMAT_UNKNOWN
+            return FORMAT_MASSCAN_JSON, payload
+        return FORMAT_UNKNOWN, None
     for line in stripped.splitlines()[:50]:
         text = line.strip()
         if not text:
             continue
         if text.startswith("#"):
             if "masscan" in text.lower():
-                return FORMAT_MASSCAN_LIST
+                return FORMAT_MASSCAN_LIST, None
             if "nmap" in text.lower() and ("-oG" in text or "scan initiated" in text.lower()):
-                return FORMAT_GNMAP
+                return FORMAT_GNMAP, None
             continue
         if _GNMAP_HOST_RE.match(text):
-            return FORMAT_GNMAP
+            return FORMAT_GNMAP, None
         if _MASSCAN_LIST_RE.match(text) or _MASSCAN_BANNER_RE.match(text):
-            return FORMAT_MASSCAN_LIST
-    return FORMAT_UNKNOWN
+            return FORMAT_MASSCAN_LIST, None
+    return FORMAT_UNKNOWN, None
+
+
+def detect_scan_format(path: str) -> str:
+    """Name the report format of `path`; FORMAT_UNKNOWN when it is none of the supported ones."""
+    return _detect_scan_format(path)[0]
 
 
 def _read_all(path: str) -> str:
@@ -151,8 +156,11 @@ def _parse_masscan_list(text: str) -> Dict[str, Dict[str, Any]]:
 
 
 def _parse_masscan_json(text: str) -> Dict[str, Dict[str, Any]]:
+    return _parse_masscan_payload(json.loads(text))
+
+
+def _parse_masscan_payload(payload: Any) -> Dict[str, Dict[str, Any]]:
     hosts: Dict[str, Dict[str, Any]] = {}
-    payload = json.loads(text)
     rows = payload if isinstance(payload, list) else [payload]
     for row in rows:
         if not isinstance(row, dict):
@@ -269,7 +277,7 @@ def convert_report_to_nmap_xml(path: str, output_dir: Optional[str] = None) -> T
     (or into `output_dir`). Raises ValueError for formats Legion cannot read."""
     if not os.path.isfile(path):
         return path, FORMAT_NMAP_XML  # the importer reports missing files (and searches its fallback folders) itself
-    detected = detect_scan_format(path)
+    detected, parsed_payload = _detect_scan_format(path)
     if detected == FORMAT_NMAP_XML:
         return path, detected
     if detected == FORMAT_UNKNOWN:
@@ -277,17 +285,18 @@ def convert_report_to_nmap_xml(path: str, output_dir: Optional[str] = None) -> T
             f"{os.path.basename(path)} is not a report Legion can import "
             "(expected nmap XML or .gnmap, or masscan XML, JSON or list output)."
         )
-    text = _read_all(path)
     args = ""
-    if detected == FORMAT_GNMAP:
-        hosts, args = _parse_gnmap(text)
-        scanner = "nmap"
-    elif detected == FORMAT_MASSCAN_LIST:
-        hosts, scanner = _parse_masscan_list(text), "masscan"
-    elif detected == FORMAT_MASSCAN_JSON:
-        hosts, scanner = _parse_masscan_json(text), "masscan"
+    if detected == FORMAT_MASSCAN_JSON:
+        hosts, scanner = _parse_masscan_payload(parsed_payload), "masscan"  # detection already parsed it
     else:
-        hosts, scanner = _parse_masscan_xml(text), "masscan"
+        text = _read_all(path)
+        if detected == FORMAT_GNMAP:
+            hosts, args = _parse_gnmap(text)
+            scanner = "nmap"
+        elif detected == FORMAT_MASSCAN_LIST:
+            hosts, scanner = _parse_masscan_list(text), "masscan"
+        else:
+            hosts, scanner = _parse_masscan_xml(text), "masscan"
     target_dir = output_dir if output_dir and os.path.isdir(output_dir) else os.path.dirname(os.path.abspath(path))
     base = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.splitext(os.path.basename(path))[0])[:80]
     # Unique per conversion: two same-named reports (or two concurrent import jobs) must not share a file.
