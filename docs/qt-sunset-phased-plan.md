@@ -160,4 +160,6 @@ Acceptance:
   `startLegion.sh` and the `Dockerfile`; the test suite needs no Qt libraries or display server.
 - Not carried over to the web UI: brute-force (Hydra) tabs, the per-port terminal launchers from
   `[PortTerminalActions]` in `legion.conf`, and the local text-editor/image-viewer host actions. These were desktop-only
-  conveniences; the config keys are kept so existing `legion.conf` files still load.
+  conveniences. 0.8.0 dropped the dead `[BruteSettings]`, `[GUISettings]` and `[PortTerminalActions]` sections from
+  the shipped `legion.conf`; older files that still contain them load unchanged (unknown sections are ignored).
+- Released as 0.8.0 (2026-11-09) together with the web UI workflow catch-up described in `web-replatform-plan.md`.
