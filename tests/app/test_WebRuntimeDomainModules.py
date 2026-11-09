@@ -757,6 +757,9 @@ class WebRuntimeDomainModulesTest(unittest.TestCase):
         runtime = _ToolRuntime()
 
         # Every configured port action is listed; only installed executables are runnable.
+        from app.web.runtime_tool_catalog import reset_executable_availability_cache
+
+        reset_executable_availability_cache()  # availability is cached across requests; start from a clean slate
         with patch("app.web.runtime_tool_catalog.shutil.which", side_effect=lambda name: "/usr/bin/whatweb" if name == "whatweb" else None):
             page = runtime_tools.get_workspace_tools_page(runtime, service="http", limit=10, offset=0)
 

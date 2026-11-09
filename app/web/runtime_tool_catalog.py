@@ -4,7 +4,9 @@ import os
 import re
 import shlex
 import shutil
-from typing import Any, Dict, List
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 
@@ -38,13 +40,34 @@ def command_executable(command_template: str) -> str:
     return ""
 
 
-def _executable_available(executable: str, cache: Dict[str, bool]) -> bool:
+_AVAILABILITY_TTL_SECONDS = 60.0
+_availability_cache: Dict[str, Tuple[float, bool]] = {}
+_availability_lock = threading.Lock()
+
+
+def _executable_available(executable: str, cache: Optional[Dict[str, bool]] = None) -> bool:
+    """Whether the program resolves on PATH (or is an existing absolute path), cached across requests for a minute."""
     name = str(executable or "").strip()
     if not name:
         return False
-    if name not in cache:
-        cache[name] = bool(shutil.which(name)) or (os.path.isabs(name) and os.path.isfile(name))
-    return cache[name]
+    if cache is not None and name in cache:
+        return cache[name]
+    now = time.monotonic()
+    with _availability_lock:
+        entry = _availability_cache.get(name)
+        if entry is not None and now - entry[0] < _AVAILABILITY_TTL_SECONDS:
+            available = entry[1]
+        else:
+            available = bool(shutil.which(name)) or (os.path.isabs(name) and os.path.isfile(name))
+            _availability_cache[name] = (now, available)
+    if cache is not None:
+        cache[name] = available
+    return available
+
+
+def reset_executable_availability_cache() -> None:
+    with _availability_lock:
+        _availability_cache.clear()
 
 
 def _service_matches_scope(normalized_service: str, service_scope: List[str]) -> bool:

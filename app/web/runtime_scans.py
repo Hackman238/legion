@@ -162,7 +162,7 @@ def rerun_scan_submission(runtime, submission_id: int) -> Dict[str, Any]:
             discovery=_flag(record.get("discovery")),
             staged=_flag(record.get("staged")),
             run_actions=_flag(record.get("run_actions")),
-            nmap_path=str(record.get("nmap_path", "") or "nmap"),
+            nmap_path=str(record.get("nmap_path", "") or ""),  # empty: the planner uses the configured nmap
             nmap_args=str(record.get("nmap_args", "") or ""),
             scan_mode=str(record.get("scan_mode", "") or "legacy"),
             scan_options=options,

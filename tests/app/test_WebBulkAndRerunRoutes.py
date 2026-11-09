@@ -190,6 +190,13 @@ class RerunScanSubmissionTest(unittest.TestCase):
         self.assertEqual("easy", kwargs["scan_mode"])
         self.assertEqual({"top_ports": 100}, kwargs["scan_options"])
 
+    def test_rerun_keeps_empty_nmap_path_for_the_planner_to_resolve(self):
+        from app.web.runtime_scans import rerun_scan_submission
+
+        created = self._record(nmap_path="")
+        rerun_scan_submission(self.runtime, created["id"])
+        self.assertEqual("", self.runtime.calls[0][1]["nmap_path"])
+
     def test_rerun_import_and_capture_kinds(self):
         from app.web.runtime_scans import rerun_scan_submission
 

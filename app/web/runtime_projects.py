@@ -379,10 +379,15 @@ def rename_project(runtime, path: str, new_name: str) -> Dict[str, Any]:
         return project_listing_row(project_path, source="renamed")
     if os.path.exists(target_path):
         raise FileExistsError(f"A project named {candidate} already exists in that folder.")
-    os.replace(project_path, target_path)
     old_output = _project_tool_output_dir(project_path)
     new_output = _project_tool_output_dir(target_path)
-    if os.path.isdir(old_output) and not os.path.exists(new_output):
+    if os.path.isdir(old_output) and os.path.exists(new_output):
+        raise FileExistsError(
+            f"{os.path.basename(new_output)} already exists next to the project; remove or rename it first so the "
+            "project's screenshots and wordlists can move with it."
+        )
+    os.replace(project_path, target_path)
+    if os.path.isdir(old_output):
         try:
             os.replace(old_output, new_output)
         except OSError:

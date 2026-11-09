@@ -441,7 +441,7 @@ if __name__ == "__main__":
 
     if args.headless:  # the web branch above exits, so this is the only mode left
         # --- HEADLESS CLI MODE ---
-        from app.cli_utils import import_targets_from_textfile, run_nmap_scan
+        from app.cli_utils import NmapStageError, import_targets_from_textfile, run_nmap_scan
         from app.importers.nmap_runner import import_nmap_xml_into_project
         import time
 
@@ -532,15 +532,22 @@ if __name__ == "__main__":
             stage_specs = staged_stage_specs(headless_settings)
             output_prefix = os.path.join(logic.activeProject.properties.runningFolder, f"cli-nmap-{int(time.time())}")
             try:
-                nmap_xml = run_nmap_scan(
-                    targets_str,
-                    output_prefix,
-                    discovery=args.discovery,
-                    staged=args.staged_scan,
-                    nmap_path=nmap_path,
-                    stage_specs=stage_specs,
-                    nmap_args=str(getattr(args, "nmap_args", "") or ""),
-                )
+                try:
+                    nmap_xml = run_nmap_scan(
+                        targets_str,
+                        output_prefix,
+                        discovery=args.discovery,
+                        staged=args.staged_scan,
+                        nmap_path=nmap_path,
+                        stage_specs=stage_specs,
+                        nmap_args=str(getattr(args, "nmap_args", "") or ""),
+                    )
+                except NmapStageError as exc:
+                    # A later stage failed: import the stages that did finish, but the run still ends non-zero.
+                    nmap_failed = True
+                    nmap_xml = list(exc.written)
+                    print(f"Error: nmap stage {exc.stage_name} failed; importing the {len(nmap_xml)} completed stage(s).",
+                          file=sys.stderr)
                 if nmap_xml is None:
                     # run_nmap_scan already printed nmap's error; keep the imported targets and still export.
                     nmap_failed = True

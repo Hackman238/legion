@@ -222,10 +222,20 @@ def to_windows_path(path):
             return f"{drive.upper()}:\\{rest_win}"
         return path
 
+class NmapStageError(RuntimeError):
+    """A staged scan stopped part-way; `written` lists the XML reports of the stages that did complete."""
+
+    def __init__(self, stage_name, written):
+        super().__init__(f"nmap stage {stage_name} failed")
+        self.stage_name = str(stage_name)
+        self.written = list(written or [])
+
+
 def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_path="nmap", stage_specs=None,
                   nmap_args=""):
     """
     Run nmap against the given targets and return the XML reports written (a list of paths), or None on failure.
+    A staged scan that fails after some stages completed raises NmapStageError carrying the reports written so far.
     - discovery: run a host-discovery sweep (-sn). With staged=False and discovery=True that is the whole scan.
     - staged: run the configured [StagedNmapSettings] stages (service detection per port group, NSE stage), each
       producing its own XML; when discovery is False the stages use -Pn.
@@ -246,10 +256,11 @@ def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_pat
         return None
 
     if staged:
+        # The planner converts the -oA argument for nmap.exe under WSL itself; xml_path stays a local path.
         plan = build_staged_scan_plan(
             nmap_path=nmap_path,
             targets=target_list,
-            output_prefix=convert_if_needed(output_prefix),
+            output_prefix=output_prefix,
             discovery=bool(discovery),
             extra_args=extra_args,
             stage_specs=list(stage_specs or []),
@@ -260,7 +271,7 @@ def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_pat
                 subprocess.run(shlex.split(stage["command"]), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except (subprocess.CalledProcessError, OSError) as exc:
                 print(f"Error running nmap stage {stage['tool_name']}: {exc}", file=sys.stderr)
-                return written or None
+                raise NmapStageError(stage["tool_name"], written) from exc
             written.append(stage["xml_path"])
         return written
 

@@ -161,7 +161,12 @@ def run_nmap_scan_and_import(
                     f"Nmap stage '{stage['tool_name']}' failed ({reason}). "
                     f"Command: {stage['command']}"
                 )
-            if scan_plan.get("import_each_stage") and os.path.isfile(str(stage.get("xml_path", "") or "")):
+            is_last_stage = stage is scan_plan["stages"][-1]
+            if (
+                scan_plan.get("import_each_stage")
+                and not is_last_stage  # the last report is imported below, once, with run_actions
+                and os.path.isfile(str(stage.get("xml_path", "") or ""))
+            ):
                 # Staged scans build up the picture stage by stage; import each report as it lands.
                 runtime._import_nmap_xml(stage["xml_path"], run_actions=False)
                 runtime._emit_ui_invalidation("overview", "hosts", "services", "graph")

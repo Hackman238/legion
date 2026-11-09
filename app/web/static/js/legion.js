@@ -4604,7 +4604,9 @@ function syncImportDialogKind() {
     }
     const fileInput = document.getElementById("import-file-input");
     if (fileInput) {
-        fileInput.accept = kind === "xml" ? ".xml,text/xml,application/xml" : ".txt,.lst,.csv,text/plain";
+        fileInput.accept = kind === "xml"
+            ? ".xml,.gnmap,.json,.list,.txt,text/xml,application/xml,application/json,text/plain"
+            : ".txt,.lst,.csv,text/plain";
     }
 }
 
@@ -11761,18 +11763,39 @@ async function runManualTool() {
     }
     const parameters = collectManualToolParameters();
     const batchBox = document.getElementById("workspace-tool-batch");
+    const tool = selectedManualTool();
+    const scope = Array.isArray(tool?.service_scope) ? tool.service_scope.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean) : [];
+    let skippedOutOfScope = 0;
     const batchTargets = batchBox && batchBox.checked && !batchBox.closest("[hidden]")
-        ? workspaceState.manualToolTargets.map((target) => ({
+        ? workspaceState.manualToolTargets.filter((target) => {
+            // A tool configured for specific services only runs where one of them is listening.
+            if (!scope.length) {
+                return true;
+            }
+            const service = String(target?.service || "").trim().toLowerCase().replace(/\?$/, "");
+            const inScope = scope.includes(service);
+            if (!inScope) {
+                skippedOutOfScope += 1;
+            }
+            return inScope;
+        }).map((target) => ({
             host_ip: String(target?.host_ip || "").trim(),
             port: String(target?.port || "").trim(),
             protocol: String(target?.protocol || "tcp").trim() || "tcp",
         })).filter((target) => target.host_ip && target.port)
         : [];
+    if (batchBox && batchBox.checked && !batchBox.closest("[hidden]") && !batchTargets.length) {
+        setWorkspaceStatus(`None of the listed targets runs a service ${tool?.label || toolId} applies to`, true);
+        return;
+    }
     dismissManualScanModalAction();
+    if (skippedOutOfScope) {
+        setWorkspaceStatus(`Skipping ${skippedOutOfScope} target${skippedOutOfScope === 1 ? "" : "s"} outside the tool's service scope`);
+    }
     setWorkspaceStatus(batchTargets.length > 1 ? `Queueing ${batchTargets.length} tool runs...` : "Queueing tool run...");
     try {
         const payload = {host_ip: hostIp, port, protocol, tool_id: toolId, parameters};
-        if (batchTargets.length > 1) {
+        if (batchTargets.length) {
             payload.targets = batchTargets;
         }
         const body = await postJson("/api/workspace/tools/run", payload);
@@ -11998,7 +12021,10 @@ function renderSnapshot(snapshot) {
     }
     if (snapshot.project) {
         renderProject(snapshot.project);
-        restoreWorkspaceFilters(snapshot.project.name);
+        if (restoreWorkspaceFilters(snapshot.project.name) && workspaceState.hostsHydrated) {
+            // Filters came back after the tables were already loaded with defaults: load them again.
+            Promise.all([loadWorkspaceHosts(), loadWorkspaceServices()]).catch(() => {});
+        }
     }
     if (snapshot.summary) {
         renderSummary(snapshot.summary);
@@ -12504,6 +12530,7 @@ async function openProjectCore() {
     resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: false});
     setValue("project-save-path", "");
     renderProject(body?.project || {});
+    restoreWorkspaceFilters(body?.project?.name);
     await refreshWorkspace();
     await Promise.all([pollSnapshot(), loadApprovals()]);
 }
@@ -14141,6 +14168,21 @@ const TABLE_ENHANCEMENT_BODIES = [
     "decisions-body", "executions-body", "findings-body", "credential-captures-body", "host-detail-cves",
     "host-detail-ports", "settings-tool-audit-body",
 ];
+const TABLE_FILTER_LABELS = {
+    "host-detail-ports": "Filter ports",
+    "host-detail-cves": "Filter CVEs",
+    "processes-body": "Filter processes",
+    "hosts-body": "Filter hosts",
+    "services-body": "Filter services",
+    "approvals-body": "Filter approvals",
+    "jobs-body": "Filter jobs",
+    "scan-history-body": "Filter scans",
+    "decisions-body": "Filter decisions",
+    "executions-body": "Filter executions",
+    "findings-body": "Filter findings",
+    "credential-captures-body": "Filter captures",
+    "settings-tool-audit-body": "Filter tools",
+};
 const tableEnhancementState = new Map(); // tbody id -> {sortIndex, sortDir, filter, applying}
 
 function tableRowKey(row, index) {
@@ -14273,8 +14315,8 @@ function initTableEnhancements() {
             wrapper.className = "table-filter";
             const input = document.createElement("input");
             input.type = "search";
-            input.placeholder = "Filter rows";
-            input.setAttribute("aria-label", "Filter table rows");
+            input.placeholder = TABLE_FILTER_LABELS[bodyId] || "Filter rows";
+            input.setAttribute("aria-label", TABLE_FILTER_LABELS[bodyId] || "Filter table rows");
             input.dataset.tableFilterFor = bodyId;
             input.addEventListener("input", () => {
                 state.filter = input.value;
