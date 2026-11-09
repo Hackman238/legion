@@ -73,6 +73,13 @@ def ensure_schema_once(
             pass
 
 
+def index_exists(session, index_name: str) -> bool:
+    row = session.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = :name"), {"name": str(index_name)}
+    ).fetchone()
+    return row is not None
+
+
 def ensure_column(session, table_name: str, column_name: str, column_type: str) -> None:
     """Add column_name to table_name if it is missing (SQLite has no ADD COLUMN IF NOT EXISTS)."""
     rows = session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()

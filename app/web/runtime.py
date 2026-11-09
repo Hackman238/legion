@@ -637,8 +637,10 @@ class WebRuntime:
     def _save_project_as(self, project_path: str, replace: bool = True) -> Dict[str, Any]:
         return web_runtime_projects.save_project_as_impl(self, project_path, replace=replace)
 
-    def _count_running_scan_jobs(self, include_queued: bool = True) -> int:
-        return web_runtime_projects.count_running_scan_jobs(self, include_queued=include_queued)
+    def _count_running_scan_jobs(self, include_queued: bool = True, *, scan_jobs_only: bool = False) -> int:
+        return web_runtime_projects.count_running_scan_jobs(
+            self, include_queued=include_queued, scan_jobs_only=scan_jobs_only,
+        )
 
     def _has_running_autosave_job(self) -> bool:
         return web_runtime_projects.has_running_autosave_job(self)

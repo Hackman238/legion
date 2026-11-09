@@ -1,3 +1,4 @@
+import logging
 import datetime
 import json
 from typing import Any, Dict, Optional
@@ -13,6 +14,8 @@ from app.scheduler.state import (
     target_state_to_legacy_ai_state,
     upsert_target_state,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -91,6 +94,7 @@ def ensure_scheduler_ai_state_table(database):
         session.commit()
     except Exception:
         session.rollback()
+        logger.warning("Could not prepare the scheduler AI state table.", exc_info=True)
     finally:
         session.close()
 

@@ -41,7 +41,7 @@ class ServiceRepositoryTest(unittest.TestCase):
         self.assertEqual([{'name': 'service_name1'}, {'name': 'service_name2'}], service_names)
 
     def test_getServiceNames_InvokedWithNoFilters_FetchesAllServiceNames(self):
-        from app.auxiliary import Filters
+        from app.core.common import Filters
 
         expectedQuery = ("SELECT DISTINCT service.name FROM serviceObj as service "
                          "INNER JOIN portObj as ports "
@@ -54,7 +54,7 @@ class ServiceRepositoryTest(unittest.TestCase):
         self.getServiceNamesTestCase(filters=filters, expectedQuery=expectedQuery)
 
     def test_getServiceNames_InvokedWithFewFilters_FetchesAllServiceNamesWithFiltersApplied(self):
-        from app.auxiliary import Filters
+        from app.core.common import Filters
 
         expectedQuery = ("SELECT DISTINCT service.name FROM serviceObj as service "
                          "INNER JOIN portObj as ports "

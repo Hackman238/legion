@@ -164,3 +164,13 @@ Acceptance:
 - Remaining before Phase 4: desktop-only features (brute tabs, Responder/NTLMRelay widgets, staged-nmap chaining in
   the controller) need web equivalents or explicit retirement decisions.
 
+## Progress Snapshot (2026-11-08, desktop removal)
+- Phase 4 done: the GUI branch of `legion.py` is gone and web mode is the default when no mode flag is given.
+  `ui/`, `controller/`, `app/ModelHelpers.py`, `app/Screenshooter.py`, `app/importers/PythonImporter.py`,
+  `app/auxiliary.py` (its Qt-free helpers already lived in `app/core/common.py`) and `utilities/qtLogging.py` were
+  removed, along with their tests. `NmapImporter` is a plain class with lightweight connect/emit signals.
+- Phase 5 done: `PyQt6` and `qasync` are out of `requirements.txt`, `debian/control`, `deps/installDeps.sh`,
+  `startLegion.sh` and the `Dockerfile`; the test suite needs no Qt libraries or display server.
+- Not carried over to the web UI: brute-force (Hydra) tabs, the per-port terminal launchers from
+  `[PortTerminalActions]` in `legion.conf`, and the local text-editor/image-viewer host actions. These were desktop-only
+  conveniences; the config keys are kept so existing `legion.conf` files still load.

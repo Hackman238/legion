@@ -16,6 +16,7 @@ def build_project_bundle_zip(runtime) -> Tuple[str, str]:
         project_file = str(getattr(props, "projectName", "") or "")
         output_folder = str(getattr(props, "outputFolder", "") or "")
         running_folder = str(getattr(props, "runningFolder", "") or "")
+        database = getattr(project, "database", None)
     try:
         provider_logs = runtime.get_scheduler_provider_logs(limit=1000)
     except Exception:
@@ -56,11 +57,21 @@ def build_project_bundle_zip(runtime) -> Tuple[str, str]:
                 f"{root_name}/manifest.json",
                 json.dumps(manifest, indent=2, sort_keys=True),
             )
-            zip_add_file_if_exists(
-                archive,
-                project_file,
-                f"{root_name}/session/{os.path.basename(project_file or 'session.legion')}",
-            )
+            # Job workers may be mid-transaction: archive a consistent snapshot (SQLite backup API), not the
+            # live file, which could be torn and fail the integrity check on restore.
+            db_snapshot = _snapshot_database(database, project_file)
+            try:
+                zip_add_file_if_exists(
+                    archive,
+                    db_snapshot or project_file,
+                    f"{root_name}/session/{os.path.basename(project_file or 'session.legion')}",
+                )
+            finally:
+                if db_snapshot and os.path.isfile(db_snapshot):
+                    try:
+                        os.remove(db_snapshot)
+                    except OSError:
+                        pass
             archive.writestr(
                 f"{root_name}/provider-logs.json",
                 json.dumps(list(provider_logs or []), indent=2, sort_keys=True),
@@ -88,6 +99,25 @@ def build_project_bundle_zip(runtime) -> Tuple[str, str]:
         raise
 
     return bundle_path, bundle_name
+
+
+def _snapshot_database(database, project_file: str) -> str:
+    """Path of a consistent copy of the project database, or '' when no backup API is available."""
+    backup_to = getattr(database, "backup_to", None)
+    if not callable(backup_to) or not project_file or not os.path.isfile(project_file):
+        return ""
+    handle = tempfile.NamedTemporaryFile(prefix="legion-bundle-db-", suffix=".legion", delete=False)
+    snapshot_path = handle.name
+    handle.close()
+    try:
+        backup_to(snapshot_path)
+    except Exception:
+        try:
+            os.remove(snapshot_path)
+        except OSError:
+            pass
+        raise
+    return snapshot_path
 
 
 def zip_add_file_if_exists(archive: zipfile.ZipFile, src_path: str, arc_path: str):

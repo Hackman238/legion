@@ -1187,8 +1187,9 @@ class SchedulerPlanner:
             if not blocked:
                 filtered.append(candidate)
 
-        # Keep original candidates if pruning would remove everything.
-        return filtered or candidates
+        # Pruning everything means nothing here is appropriate (or allowed) for this target; plan_steps falls
+        # back to deterministic planning. Returning the unfiltered list would re-admit blocked candidates.
+        return filtered
 
     @classmethod
     def _covered_web_followup_tool_already_satisfied(

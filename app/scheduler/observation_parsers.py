@@ -349,6 +349,14 @@ _PLACEHOLDER_VALUE_TOKENS = {
 }
 
 
+
+def _safe_count(value: Any, default: int = 0) -> int:
+    """int(value) for tool JSON counters that may be missing or non-numeric ("n/a", "many")."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default or 0)
+
 def _clean_text(value: Any, limit: int = 320) -> str:
     text = _ANSI_ESCAPE_RE.sub("", str(value or ""))
     text = re.sub(r"\s+", " ", text).strip()
@@ -3262,8 +3270,8 @@ def _parse_grayhatwarfare_output(tool_id: str, output_text: str) -> Dict[str, An
             if discovered:
                 discovered_hosts.add(discovered)
 
-    bucket_results = int(meta.get("bucket_results", len(bucket_evidence_items)) or 0)
-    file_results = int(meta.get("file_results", len(file_evidence_items)) or 0)
+    bucket_results = _safe_count(meta.get("bucket_results"), len(bucket_evidence_items))
+    file_results = _safe_count(meta.get("file_results"), len(file_evidence_items))
     evidence_prefix = f"{tool_id}: {root_domain}" if root_domain else tool_id
 
     if bucket_evidence_items or bucket_results:
@@ -3329,7 +3337,7 @@ def _parse_shodan_output(tool_id: str, output_text: str) -> Dict[str, Any]:
     dns_resolve = payload.get("dns_resolve", {}) if isinstance(payload.get("dns_resolve", {}), dict) else {}
     dns_domain = payload.get("dns_domain", {}) if isinstance(payload.get("dns_domain", {}), dict) else {}
     matches = payload.get("matches", []) if isinstance(payload.get("matches", []), list) else []
-    total = int(payload.get("total", len(matches)) or 0)
+    total = _safe_count(payload.get("total"), len(matches))
 
     if exact_hostname:
         discovered_hosts.add(exact_hostname)

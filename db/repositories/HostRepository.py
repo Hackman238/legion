@@ -93,6 +93,15 @@ class HostRepository:
         try:
             host = session.query(hostObj).filter_by(ip=str(hostIP)).first()
             if host:
+                # No ON DELETE cascade on these tables: remove the host's children so no orphans remain.
+                from db.entities.cve import cve
+                from db.entities.l1script import l1ScriptObj
+                from db.entities.note import note
+                from db.entities.os import osObj
+                from db.entities.port import portObj
+                from db.entities.service import serviceObj
+                for entity in (cve, l1ScriptObj, note, osObj, portObj, serviceObj):
+                    session.query(entity).filter_by(hostId=host.id).delete(synchronize_session=False)
                 session.delete(host)
                 session.commit()
         except Exception:

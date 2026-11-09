@@ -3,6 +3,12 @@ from typing import TYPE_CHECKING
 from flask import Flask
 
 from app.ApplicationInfo import applicationInfo
+from app.web.request_guards import (  # noqa: F401  (re-exported for callers and tests)
+    install_request_guards,
+    origin_matches_request_host,
+    request_host_is_rebound,
+    request_is_cross_site,
+)
 
 try:
     from flask_sock import Sock
@@ -42,6 +48,10 @@ def create_app(runtime: "WebRuntime") -> Flask:
     app.config["LEGION_UI_OPAQUE"] = True
     app.config["LEGION_COLORFUL_ASCII_BACKGROUND"] = False
     app.extensions["legion_runtime"] = runtime
+    # Project bundles (ZIP with screenshots/tool output) can be large, but not unbounded: a runaway upload must
+    # not fill the temp partition before the restore job even starts.
+    app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
+    install_request_guards(app)
 
     @app.context_processor
     def inject_legion_runtime_flags():

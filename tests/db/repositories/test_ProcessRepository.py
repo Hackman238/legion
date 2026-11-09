@@ -17,7 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 import unittest
 from unittest import mock
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from tests.db.helpers.db_helpers import mockExecuteRows, mockFirstBySideEffect, mockFirstByReturnValue, \
     mockQueryWithFilterBy
@@ -49,7 +49,7 @@ class ProcessRepositoryTest(unittest.TestCase):
         processes = self.processRepository.getProcesses(self.mockFilters, showProcesses='noNmap')
         self.assertEqual(processes, [{'name': 'some-process'}, {'name': 'some-process2'}])
         query = str(self.mockDbSession.execute.call_args.args[0])
-        self.assertIn('FROM process AS process WHERE process.closed = "False"', query)
+        self.assertIn("FROM process AS process WHERE process.closed = 'False'", query)
         self.assertIn('ORDER BY process.id DESC', query)
 
     def test_getProcesses_WhenProvidedShowProcessesWithFlagFalse_ReturnsProcesses(self):

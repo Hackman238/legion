@@ -17,7 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 import xml
 
-from app.auxiliary import log
+from app.core.common import log
 from parsers.Script import Script
 
 if __name__ == '__main__':

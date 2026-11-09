@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 from db.entities.cve import cve
 
 __author__ =  'ketchup'
@@ -111,6 +111,19 @@ def getPyExploitDb():
         return instance
 
 _VULNERS_CPE_LINE = re.compile(r'^\s*cpe:/[a-z]:([^:]+):([^:]+):([^:]+):?$')
+# vulners.nse falls back to "<product> <version>:" headers when the service has no CPE
+_VULNERS_SOFTWARE_LINE = re.compile(r'^\s{1,3}(?!cpe:/)(\S.*?)\s+(\S+):\s*$')
+
+
+def _vulners_header(line):
+    """(source, product, version) for a vulners section header line, or None."""
+    match = _VULNERS_CPE_LINE.match(line)
+    if match:
+        return match.group(1), match.group(2), match.group(3)
+    match = _VULNERS_SOFTWARE_LINE.match(line)
+    if match:
+        return 'software', match.group(1), match.group(2)
+    return None
 
 
 class Script:
@@ -122,9 +135,9 @@ class Script:
         """(product, version) pairs named by a vulners script's output; product is lower-cased."""
         pairs = set()
         for line in str(output or "").splitlines():
-            match = _VULNERS_CPE_LINE.match(line.rstrip())
-            if match:
-                pairs.add((match.group(2).lower(), match.group(3)))
+            header = _vulners_header(line.rstrip())
+            if header:
+                pairs.add((header[1].lower(), header[2]))
         return pairs
 
     def __init__(self, ScriptNode):
@@ -156,16 +169,14 @@ class Script:
         lines = vulnersOutput.splitlines()
         for line in lines:
             line = line.rstrip()
-            # CPE line (e.g. "  cpe:/a:openbsd:openssh:8.4p1:")
-            cpe_match = _VULNERS_CPE_LINE.match(line)
-            if cpe_match:
+            # Section header: "  cpe:/a:openbsd:openssh:8.4p1:" or, without a CPE, "  nginx 1.14.0:"
+            header = _vulners_header(line)
+            if header:
                 # Save previous product's CVEs
                 if current_product and cve_list:
                     resultsDict[current_product] = cve_list
                 # Start new CPE/product
-                current_product = cpe_match.group(2)
-                current_version = cpe_match.group(3)
-                current_source = cpe_match.group(1)
+                current_source, current_product, current_version = header
                 cve_list = []
                 continue
             # CVE or exploit line (indented with tab)

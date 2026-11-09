@@ -458,6 +458,30 @@ class MCPServerTest(unittest.TestCase):
         self.assertEqual(-32601, responses[1]["error"]["code"])
         self.assertIn("open_project", {tool["name"] for tool in responses[2]["result"]})
 
+    def test_legion_mcp_server_flag_serves_json_rpc_on_its_own_stdio(self):
+        # `legion.py --mcp-server` used to spawn the server with its stdio discarded, so it could never answer.
+        import tempfile
+
+        repo_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        list_tools = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "list_tools"})
+        with tempfile.TemporaryDirectory() as home:
+            env = dict(os.environ, LEGION_HOME=home, LEGION_TMPDIR=os.path.join(home, "tmp"))
+            completed = subprocess.run(
+                [sys.executable, "legion.py", "--mcp-server"],
+                input=f"{list_tools}\n".encode(),
+                capture_output=True,
+                timeout=120,
+                cwd=repo_root,
+                env=env,
+            )
+
+        self.assertEqual(0, completed.returncode, completed.stderr.decode(errors="replace"))
+        lines = [line for line in completed.stdout.decode().splitlines() if line.strip()]
+        # stdout is the protocol stream: every line must be a JSON-RPC response (no banner, no log lines)
+        responses = [json.loads(line) for line in lines]
+        self.assertEqual([1], [item.get("id") for item in responses])
+        self.assertIn("open_project", {tool["name"] for tool in responses[0]["result"]})
+
 
 if __name__ == "__main__":
     unittest.main()

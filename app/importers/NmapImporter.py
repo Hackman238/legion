@@ -19,52 +19,6 @@ import ipaddress
 import re
 import sys
 
-try:
-    from PyQt6 import QtCore
-except Exception:  # pragma: no cover - exercised only in non-Qt environments.
-    class _Signal:
-        def __init__(self):
-            self._callbacks = []
-
-        def connect(self, callback):
-            if callable(callback):
-                self._callbacks.append(callback)
-
-        def emit(self, *args, **kwargs):
-            for callback in list(self._callbacks):
-                try:
-                    callback(*args, **kwargs)
-                except Exception:
-                    pass
-
-    class _SignalDescriptor:
-        def __set_name__(self, owner, name):
-            self._name = f"__signal_{name}"
-
-        def __get__(self, instance, owner):
-            if instance is None:
-                return self
-            signal = instance.__dict__.get(self._name)
-            if signal is None:
-                signal = _Signal()
-                instance.__dict__[self._name] = signal
-            return signal
-
-    class _FallbackQThread:
-        def __init__(self, parent=None):
-            self._parent = parent
-
-        def start(self):
-            self.run()
-
-    class _FallbackQtCore:
-        QThread = _FallbackQThread
-
-        @staticmethod
-        def pyqtSignal(*_args, **_kwargs):
-            return _SignalDescriptor()
-
-    QtCore = _FallbackQtCore()
 from sqlalchemy import func, or_, text
 
 from app.actions.updateProgress import AbstractUpdateProgressObservable
@@ -92,22 +46,68 @@ from time import time
 
 appLog = getAppLogger()
 
+
+class _Signal:
+    """Minimal connect/emit signal, so progress and completion callbacks work without Qt."""
+
+    def __init__(self):
+        self._callbacks = []
+
+    def connect(self, callback):
+        if callable(callback):
+            self._callbacks.append(callback)
+
+    def disconnect(self, callback=None):
+        if callback is None:
+            self._callbacks = []
+        else:
+            self._callbacks = [item for item in self._callbacks if item is not callback]
+
+    def emit(self, *args, **kwargs):
+        for callback in list(self._callbacks):
+            try:
+                callback(*args, **kwargs)
+            except Exception:
+                appLog.exception("Nmap importer callback failed")
+
+
+class _SignalDescriptor:
+    """One _Signal per importer instance, created on first access."""
+
+    def __set_name__(self, owner, name):
+        self._name = f"__signal_{name}"
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        signal = instance.__dict__.get(self._name)
+        if signal is None:
+            signal = _Signal()
+            instance.__dict__[self._name] = signal
+        return signal
+
+
+
 def _new_import_session(database):
     new_session = getattr(database, "new_session", None)
     return new_session() if callable(new_session) else database.session()
 
 
-class NmapImporter(QtCore.QThread):
-    tick = QtCore.pyqtSignal(int, name="changed")  # New style signal
-    done = QtCore.pyqtSignal(name="done")  # New style signal
-    schedule = QtCore.pyqtSignal(object, bool, name="schedule")  # New style signal
-    log = QtCore.pyqtSignal(str, name="log")
+class NmapImporter:
+    """Imports an Nmap XML report into a project database.
+
+    Callers run `importFile()` (raises on failure) or `run()` (never raises; reports through `failed`).
+    The signal attributes take plain callables via `connect()`.
+    """
+    tick = _SignalDescriptor()  # unused by the current callers; kept for API compatibility
+    done = _SignalDescriptor()  # emitted after a successful import
+    schedule = _SignalDescriptor()  # (nmapReport, imported_from_xml) after a successful import
+    log = _SignalDescriptor()  # str log lines
+    progressUpdated = _SignalDescriptor()  # (percent, title)
+    failed = _SignalDescriptor()  # error message when run() catches a failure
     HOST_COMMIT_BATCH = 50  # new hosts per commit while adding hosts
-    progressUpdated = QtCore.pyqtSignal(int, str)  # progress, title
-    failed = QtCore.pyqtSignal(str)  # error message when an import fails (run() never raises)
 
     def __init__(self, updateProgressObservable: AbstractUpdateProgressObservable, hostRepository: HostRepository):
-        QtCore.QThread.__init__(self, parent=None)
         self.output = ''
         self.updateProgressObservable = updateProgressObservable
         self.hostRepository = hostRepository
@@ -120,8 +120,6 @@ class NmapImporter(QtCore.QThread):
         """Clear a cancel request; call when starting a new import (not inside the run, so an early cancel
         pressed right after start() is still honoured)."""
         self._cancel_requested = False
-
-    # Removed startProgressTimer and stopProgressTimer (QTimer usage) due to threading issues.
 
     def updatePercentFromXml(self):
         """Read the XML file and update percent in the process table."""
@@ -300,8 +298,7 @@ class NmapImporter(QtCore.QThread):
         self.output = output
 
     def run(self):
-        """QThread entry point. Never lets an exception escape: under PyQt6 an exception leaving a QThread's
-        run() aborts the whole application (SIGABRT), so a failed import is reported via `failed` instead."""
+        """Import self.filename without raising: a failed import is reported through `failed` instead."""
         try:
             self.importFile()
         except Exception as exc:
@@ -311,7 +308,6 @@ class NmapImporter(QtCore.QThread):
             except Exception:
                 pass
 
-    # it is necessary to get the qprocess because we need to send it back to the scheduler when we're done importing
     def importFile(self):
         """Import self.filename synchronously; raises on failure (used directly by headless/web callers)."""
         session = None
@@ -323,7 +319,6 @@ class NmapImporter(QtCore.QThread):
         run_db = self.db
         self._run_db = run_db
         try:
-            # Removed periodic progress updates (QTimer) due to threading issues.
             if self.updateProgressObservable is not None:
                 self.updateProgressObservable.start()
             # An independent session: repository calls on this thread close the thread-scoped session,
@@ -412,7 +407,12 @@ class NmapImporter(QtCore.QThread):
                     else:
                         raise
 
-            allHosts = nmapReport.getAllHosts()
+            allHosts = list(nmapReport.getAllHosts())
+            # A <host> without an <address> (seen in truncated or hand-edited reports) cannot be stored.
+            addressless = [h for h in allHosts if not str(getattr(h, 'ip', '') or '').strip()]
+            if addressless:
+                self.tsLog(f"Skipping {len(addressless)} host entr{'y' if len(addressless) == 1 else 'ies'} without an address.")
+                allHosts = [h for h in allHosts if str(getattr(h, 'ip', '') or '').strip()]
             hostCount = len(allHosts)
             if hostCount == 0:  # to fix a division by zero if we ran nmap on one host
                 hostCount = 1
@@ -689,7 +689,7 @@ class NmapImporter(QtCore.QThread):
                         self._abortForCancel(session, "Import canceled by user during script creation.")
                         return
                     db_script = session.query(l1ScriptObj).filter_by(scriptId=hs.scriptId) \
-                        .filter_by(hostId=db_host.id).first()
+                        .filter_by(hostId=db_host.id).filter(l1ScriptObj.portId.is_(None)).first()
                     if not db_script:
                         t_l1ScriptObj = l1ScriptObj(hs.scriptId, hs.output, None, db_host.id)
                         session.add(t_l1ScriptObj)
@@ -906,7 +906,6 @@ class NmapImporter(QtCore.QThread):
             appLog.debug("NmapImporter: emitting done signal")
             self.done.emit()
 
-            # Removed periodic progress updates (QTimer) due to threading issues.
 
             # call the scheduler (if there is no terminal output it means we imported nmap)
             self.schedule.emit(nmapReport, self.output == '')
@@ -947,13 +946,16 @@ class NmapImporter(QtCore.QThread):
     @staticmethod
     def _collect_script_records(host_report):
         records = []
+        seen = set()
 
         def _append_script(script_obj):
             if script_obj is None:
                 return
             script_id = str(getattr(script_obj, "scriptId", "") or "")
             output = str(getattr(script_obj, "output", "") or "")
-            if script_id and output:
+            # getScripts() returns every <script> under the host, so host and port scripts would repeat.
+            if script_id and output and (script_id, output) not in seen:
+                seen.add((script_id, output))
                 records.append((script_id, output))
 
         for script_obj in (host_report.getHostScripts() or []):

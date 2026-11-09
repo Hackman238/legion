@@ -1,3 +1,4 @@
+import logging
 import datetime
 import json
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,8 @@ SCAN_HISTORY_COLUMNS = (
     "scan_options_json",
     "result_summary",
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -109,6 +112,7 @@ def ensure_scan_submission_table(database):
         session.commit()
     except Exception:
         session.rollback()
+        logger.warning("Could not prepare the scheduler scan submission table.", exc_info=True)
     finally:
         session.close()
 
@@ -169,6 +173,7 @@ def update_scan_submission(
         result_summary: Optional[str] = None,
         target_summary: Optional[str] = None,
         scope_summary: Optional[str] = None,
+        new_job_id: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     session = database.session()
     try:
@@ -186,6 +191,9 @@ def update_scan_submission(
 
         clauses = ["updated_at = :updated_at"]
         params: Dict[str, Any] = {"id": int(row[0]), "updated_at": _utc_now()}
+        if new_job_id is not None:
+            clauses.append("job_id = :new_job_id")
+            params["new_job_id"] = str(int(new_job_id or 0) or "")
         if status is not None:
             clauses.append("status = :status")
             params["status"] = str(status or "")
