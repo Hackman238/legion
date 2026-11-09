@@ -186,7 +186,15 @@ Exploit-DB references for vulners CVEs are looked up offline from the bundled `p
 
 ## What's new
 
-Version 0.8.0 completes the move to the web interface. The Qt desktop UI is gone, `python legion.py` starts the web
+Version 0.8.1 is a fix release. It adopts the portable fixes from the community macOS port: tools never inherit
+Legion's stdin (katana and httpx no longer hang), nmap plans leave OS detection out when raw sockets are unavailable
+instead of failing (see the configuration table for `NMAP_PRIVILEGED`), the nmap HTML stylesheet is found under
+Homebrew, katana flags match current releases, the loggers no longer need a writable cache directory, and tool paths
+default to names resolved from `PATH`. It also removes the last `six` imports (a clean install no longer depends on
+another package pulling it in), supports SQLAlchemy 1.4 through 2.1, and removes an embedded Shodan API key together
+with the unused `pyshodan-api-key` setting. Thanks to Denys Kolomiiets for the macOS port this draws on.
+
+Version 0.8.0 completed the move to the web interface. The Qt desktop UI is gone, `python legion.py` starts the web
 UI, and the web UI gained the workflow the desktop had and more: sortable and filterable tables, bulk host actions and
 batch tool runs, scan re-run, browser uploads for nmap XML, `.gnmap` and masscan reports, project rename and delete,
 execution traces, findings and plan previews, a richer Host Detail, a light theme and remembered filters. Exports now
