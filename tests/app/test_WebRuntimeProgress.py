@@ -178,6 +178,48 @@ class WebRuntimeNmapProgressTest(unittest.TestCase):
         self.assertIn("--stats-every 15s", command)
         self.assertIn(" -vv ", f" {command} ")
 
+    def test_staged_scan_imports_every_report_exactly_once(self):
+        from app.web.runtime import WebRuntime
+
+        runtime = WebRuntime.__new__(WebRuntime)
+        runtime._lock = threading.RLock()
+        runtime.jobs = SimpleNamespace(is_cancel_requested=lambda _job_id: False)
+        runtime._emit_ui_invalidation = lambda *args, **kwargs: None
+        runtime._get_settings = lambda: SimpleNamespace(
+            tools_path_nmap="nmap", tools_nmap_stage1_ports="T:80", tools_nmap_stage2_ports="NSE|vulners",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            host_repo = SimpleNamespace(getAllHostObjs=lambda: [])
+            project = SimpleNamespace(
+                properties=SimpleNamespace(runningFolder=temp_dir),
+                repositoryContainer=SimpleNamespace(hostRepository=host_repo),
+            )
+            runtime.logic = SimpleNamespace(activeProject=project)
+            runtime._require_active_project = lambda: project
+            imported = []
+
+            def fake_run_command_with_tracking(**kwargs):
+                with open(f"{kwargs.get('outputfile', '')}.xml", "w", encoding="utf-8") as handle:
+                    handle.write("<nmaprun/>")
+                return True, "", 1
+
+            runtime._run_command_with_tracking = fake_run_command_with_tracking
+            runtime._import_nmap_xml = lambda xml_path, run_actions=False: imported.append((xml_path, run_actions)) or {"xml_path": xml_path}
+            runtime._update_scan_submission_status = lambda **kwargs: None
+
+            result = runtime._run_nmap_scan_and_import(
+                targets=["10.0.0.5"], discovery=True, staged=True, run_actions=True,
+                nmap_path="nmap", nmap_args="", scan_mode="legacy", scan_options={}, job_id=3,
+            )
+
+        # discovery sweep, port stage, script stage: three stages, three imports, no repeat of the last report
+        self.assertEqual(3, len(result["commands"]))
+        self.assertEqual(3, len(imported))
+        self.assertEqual(3, len({path for path, _ in imported}))
+        self.assertEqual([False, False, True], [run_actions for _, run_actions in imported])
+        self.assertEqual(result["xml_path"], imported[-1][0])
+
     def test_run_nmap_scan_and_import_chunks_rfc1918_sweep(self):
         from app.web.runtime import WebRuntime
 

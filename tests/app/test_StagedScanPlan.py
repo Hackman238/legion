@@ -65,6 +65,37 @@ class HeadlessRunNmapScanTest(unittest.TestCase):
         self.assertIn("-Pn", calls[0])
         self.assertIn("-T4", calls[0])
 
+    def test_staged_failure_after_a_completed_stage_raises_with_the_written_reports(self):
+        from app import cli_utils
+
+        def fake_run(cmd, **_kw):
+            if "--script" in cmd:
+                raise cli_utils.subprocess.CalledProcessError(1, cmd)
+            return None
+
+        with patch.object(cli_utils.subprocess, "run", side_effect=fake_run):
+            with self.assertRaises(cli_utils.NmapStageError) as raised:
+                cli_utils.run_nmap_scan(
+                    "10.0.0.5", "/tmp/legion-test/out", discovery=False, staged=True,
+                    stage_specs=["T:80", "NSE|vulners"],
+                )
+        self.assertEqual(["/tmp/legion-test/out_stage1.xml"], raised.exception.written)
+        self.assertEqual("nmap-stage2", raised.exception.stage_name)
+
+    def test_staged_reports_keep_local_paths_when_nmap_exe_runs_under_wsl(self):
+        from app import cli_utils
+
+        calls = []
+        with patch("app.web.runtime_scan_planning.is_wsl", return_value=True), \
+                patch("app.web.runtime_scan_planning.to_windows_path", side_effect=lambda path: "C:" + path.replace("/", "\\")), \
+                patch.object(cli_utils.subprocess, "run", side_effect=lambda cmd, **kw: calls.append(cmd)):
+            written = cli_utils.run_nmap_scan(
+                "10.0.0.5", "/mnt/c/Users/op/out", discovery=False, staged=True,
+                nmap_path="nmap.exe", stage_specs=["T:80"],
+            )
+        self.assertEqual(["/mnt/c/Users/op/out_stage1.xml"], written)
+        self.assertTrue(any(str(token).startswith("C:") for token in calls[0]), calls[0])
+
 
 if __name__ == "__main__":
     unittest.main()

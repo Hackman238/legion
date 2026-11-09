@@ -62,6 +62,16 @@ class ProjectRenameDeleteTest(unittest.TestCase):
             rename_project(self.runtime, os.path.join(self.tmp.name, "missing.legion"), "x")
         self.assertTrue(os.path.isfile(self.project))
 
+    def test_rename_refuses_when_target_tool_output_folder_exists(self):
+        from app.web.runtime_projects import rename_project
+
+        os.makedirs(os.path.join(self.tmp.name, "client-a-tool-output"))
+        with self.assertRaises(FileExistsError):
+            rename_project(self.runtime, self.project, "client-a")
+        # nothing moved: the project and its own output folder are untouched
+        self.assertTrue(os.path.isfile(self.project))
+        self.assertTrue(os.path.isdir(self.output_dir))
+
     def test_open_project_cannot_be_renamed_or_deleted(self):
         from app.web.runtime_projects import delete_project, rename_project
 
