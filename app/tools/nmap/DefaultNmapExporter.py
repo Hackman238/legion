@@ -15,12 +15,28 @@ Copyright (c) 2025 Shane William Scott
 
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
+import os
 import subprocess
 from logging import Logger
 
 from app.shell.Shell import Shell
 from app.timing import timing
 from app.tools.nmap.NmapExporter import NmapExporter
+
+
+NMAP_XSL_CANDIDATES = (
+    "/usr/share/nmap/nmap.xsl",          # Debian, Kali, Ubuntu
+    "/usr/local/share/nmap/nmap.xsl",    # source installs, Homebrew on Intel macOS
+    "/opt/homebrew/share/nmap/nmap.xsl",  # Homebrew on Apple Silicon
+)
+
+
+def find_nmap_xsl() -> str:
+    """The stylesheet packaged nmap installs; the first existing candidate wins, else the Debian path."""
+    for candidate in NMAP_XSL_CANDIDATES:
+        if os.path.exists(candidate):
+            return candidate
+    return NMAP_XSL_CANDIDATES[0]
 
 
 class DefaultNmapExporter(NmapExporter):
@@ -34,7 +50,7 @@ class DefaultNmapExporter(NmapExporter):
 
     @timing
     def exportOutputToHtml(self, fileName: str, outputFolder: str) -> None:
-        command = ["xsltproc", "-o", f"{fileName}.html", "/usr/share/nmap/nmap.xsl", f"{fileName}.xml"]
+        command = ["xsltproc", "-o", f"{fileName}.html", find_nmap_xsl(), f"{fileName}.xml"]
         try:
             subprocess.run(
                 command,
@@ -44,7 +60,8 @@ class DefaultNmapExporter(NmapExporter):
                 timeout=self.XSLTPROC_TIMEOUT_SECONDS,
             )
         except FileNotFoundError:
-            self.logger.error('Could not convert nmap XML to HTML: xsltproc not found. Try: apt-get install xsltproc')
+            self.logger.error('Could not convert nmap XML to HTML: xsltproc not found. '
+                              'Install it (apt-get install xsltproc / brew install libxslt).')
             return
         except subprocess.TimeoutExpired:
             self.logger.error(f"nmap output export to html timed out after {self.XSLTPROC_TIMEOUT_SECONDS}s: {fileName}")

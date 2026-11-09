@@ -11,7 +11,27 @@ class StagedScanPlanTest(unittest.TestCase):
         self.assertEqual({"kind": "scripts", "scripts": ["vulners"]}, parse_stage_spec("NSE|vulners"))
         self.assertEqual({"kind": "scripts", "scripts": ["vulners"]}, parse_stage_spec("Vulners,CVE"))
 
+    def test_unprivileged_plans_leave_out_os_detection(self):
+        from app.web import runtime_scan_planning as planning
+
+        with patch.object(planning, "can_raw_socket", return_value=False):
+            plan = planning.build_staged_scan_plan(
+                nmap_path="nmap", targets=["10.0.0.5"], output_prefix="/tmp/legion-test/out",
+                discovery=False, extra_args=[], stage_specs=["T:80,443"],
+            )
+            self.assertNotIn(" -O", plan["stages"][0]["command"])
+            self.assertIn("-sV", plan["stages"][0]["command"])
+        with patch.object(planning, "can_raw_socket", return_value=True):
+            plan = planning.build_staged_scan_plan(
+                nmap_path="nmap", targets=["10.0.0.5"], output_prefix="/tmp/legion-test/out",
+                discovery=False, extra_args=[], stage_specs=["T:80,443"],
+            )
+            self.assertIn("-sV -O", plan["stages"][0]["command"])
+
     def test_plan_chains_discovery_port_groups_and_scripts_and_imports_every_stage(self):
+        privileged = patch("app.web.runtime_scan_planning.can_raw_socket", return_value=True)
+        privileged.start()
+        self.addCleanup(privileged.stop)
         plan = build_staged_scan_plan(
             nmap_path="nmap", targets=["10.0.0.0/24"], output_prefix="/tmp/legion-test/scan", discovery=True,
             extra_args=[], stage_specs=['"PORTS|T:80,443"', "NSE|vulners", "PORTS|T:22", ""],

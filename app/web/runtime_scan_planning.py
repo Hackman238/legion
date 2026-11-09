@@ -24,6 +24,15 @@ from app.web.runtime_scan_targets import (
 
 
 
+def can_raw_socket() -> bool:
+    """Whether nmap may use raw sockets here: root (or no euid concept, e.g. Windows).
+
+    OS detection (-O, and -A which includes it) makes an unprivileged nmap quit outright, so plans built
+    without privilege leave those flags out and the scan degrades to a connect scan instead of failing.
+    """
+    return not hasattr(os, "geteuid") or os.geteuid() == 0
+
+
 def default_nmap_path(runtime) -> str:
     """The configured nmap path when it points at a real file, else plain `nmap` from PATH."""
     try:
@@ -169,7 +178,9 @@ def build_nmap_scan_plan(
     tokens = [resolved_path]
     if not bool(discovery):
         tokens.append("-Pn")
-    tokens.extend(["-T4", "-sV", "-O"])
+    tokens.extend(["-T4", "-sV"])
+    if can_raw_socket():
+        tokens.append("-O")
     tokens.extend(append_nmap_stats_every(extra_args, interval="15s"))
     tokens.extend(targets)
     tokens.extend(["-oA", output_cmd_prefix])
@@ -266,7 +277,7 @@ def build_staged_scan_plan(
                 continue
             port_stage_index += 1
             tokens = base + ["-sV"]
-            if port_stage_index == 1:
+            if port_stage_index == 1 and can_raw_socket():
                 tokens.append("-O")
             tokens.extend(["-p", spec["ports"]])
             scanned_port_specs.append(spec["ports"])
@@ -280,7 +291,8 @@ def build_staged_scan_plan(
             stages.append(_stage(f"stage{index}", f"Nmap Stage {index}: {', '.join(spec['scripts'])}", tokens, 5400))
 
     if not stages:  # nothing configured: fall back to one service scan
-        stages.append(_stage("stage1", "Nmap Service Scan", [nmap_path] + ([] if discovery else ["-Pn"]) + ["-sV", "-O"], 5400))
+        fallback = [nmap_path] + ([] if discovery else ["-Pn"]) + ["-sV"] + (["-O"] if can_raw_socket() else [])
+        stages.append(_stage("stage1", "Nmap Service Scan", fallback, 5400))
     return {"xml_path": stages[-1]["xml_path"], "stages": stages, "import_each_stage": True}
 
 def build_single_scan_plan(
@@ -332,14 +344,16 @@ def build_single_scan_plan(
         else:
             tokens.extend(["--top-ports", str(top_ports)])
 
-        if aggressive:
+        if aggressive and can_raw_socket():
             tokens.append("-A")
         else:
-            if service_detection:
+            # Without raw sockets -A and -O make nmap quit; an aggressive request degrades to its
+            # unprivileged subset (service detection and default scripts).
+            if service_detection or aggressive:
                 tokens.append("-sV")
-            if default_scripts:
+            if default_scripts or aggressive:
                 tokens.append("-sC")
-            if os_detection:
+            if os_detection and can_raw_socket():
                 tokens.append("-O")
 
         if vuln_scripts:

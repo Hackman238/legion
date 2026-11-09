@@ -279,7 +279,8 @@ def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_pat
     if discovery:
         cmd.append("-sn")
     else:
-        cmd += ["-Pn", "-T4", "-sV", "-O"]
+        from app.web.runtime_scan_planning import can_raw_socket
+        cmd += ["-Pn", "-T4", "-sV"] + (["-O"] if can_raw_socket() else [])
     cmd += extra_args + target_list + ["-oA", convert_if_needed(output_prefix)]
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

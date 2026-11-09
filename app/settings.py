@@ -266,7 +266,7 @@ class AppSettings():
     )
     KATANA_COMMAND = (
         "(command -v katana >/dev/null 2>&1 && "
-        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
+        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
         "echo katana not found"
     )
     ENUM4LINUX_NG_COMMAND = (
@@ -1324,6 +1324,7 @@ class AppSettings():
         katana_command = re.sub(r"(?i)(?:^|\s)-silent\b", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-jc\b", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-kf\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-(?:ct|crawl-duration)\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-d\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-c\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-p\s+\S+", " ", katana_command)
@@ -1334,7 +1335,7 @@ class AppSettings():
             katana_command = re.sub(r"(?i)\bkatana\b", "katana -u [WEB_URL]", katana_command, count=1)
         katana_command = re.sub(
             r"(?i)\bkatana\b",
-            "katana -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5",
+            "katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5",
             katana_command,
             count=1,
         )
@@ -1905,8 +1906,8 @@ class Settings():
                                        "2050-3305,3307-3388,3390-5431,5433-8079,8081-29999"
         self.tools_nmap_stage6_ports = "T:30000-65535"
 
-        self.tools_path_nmap = "/sbin/nmap"
-        self.tools_path_hydra = "/usr/bin/hydra"
+        self.tools_path_nmap = shutil.which("nmap") or "nmap"
+        self.tools_path_hydra = shutil.which("hydra") or "hydra"
         self.tools_path_texteditor = "/usr/bin/xdg-open"
         self.tools_pyshodan_api_key = ""
         self.tools_path_responder = "responder"

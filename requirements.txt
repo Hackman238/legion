@@ -1,5 +1,5 @@
-SQLAlchemy==1.4.51
-requests
+SQLAlchemy>=2.0,<2.2
+requests>=2.32,<3
 psutil
 Flask>=3.1,<3.2
 Werkzeug>=3.1,<3.2
@@ -14,8 +14,8 @@ pandas
 flake8
 rich
 keyring
-urllib3>=1.26.18,<2.0
-selenium==4.9.1
+urllib3>=1.26.18,<3
+selenium>=4.9.1,<5
 webdriver-manager
 markupsafe
 pipx

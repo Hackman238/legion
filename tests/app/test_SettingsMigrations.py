@@ -359,7 +359,11 @@ class SettingsMigrationTest(unittest.TestCase):
         normalized = AppSettings._ensure_katana_command(command)
 
         self.assertIn("command -v katana >/dev/null 2>&1", normalized)
-        self.assertIn("katana -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5 -u [WEB_URL]", normalized)
+        self.assertIn("katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5 -u [WEB_URL]", normalized)
+        # an older command with the comma list (rejected by katana >= 1.2) migrates to the repeated flag once
+        legacy = AppSettings._ensure_katana_command(normalized.replace("-kf robotstxt -kf sitemapxml -ct 5m", "-kf robotstxt,sitemapxml"))
+        self.assertEqual(normalized, legacy)
+        self.assertEqual(normalized, AppSettings._ensure_katana_command(normalized))
         self.assertIn("-o [OUTPUT].jsonl", normalized)
         self.assertNotIn("command -v katana -silent", normalized)
         self.assertNotIn("katana not found -o", normalized)

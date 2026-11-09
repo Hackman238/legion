@@ -252,6 +252,9 @@ def run_command_with_tracking(
         proc = subprocess.Popen(
             command,
             shell=True,
+            # Never hand the tool Legion's own stdin: ProjectDiscovery tools (katana, httpx) treat a piped stdin
+            # as another target source and wait for EOF forever, which looks like a hung scan with no output.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
