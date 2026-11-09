@@ -25,11 +25,18 @@ from app.web.runtime_scan_targets import (
 
 
 def can_raw_socket() -> bool:
-    """Whether nmap may use raw sockets here: root (or no euid concept, e.g. Windows).
+    """Whether nmap may use raw sockets here.
 
     OS detection (-O, and -A which includes it) makes an unprivileged nmap quit outright, so plans built
     without privilege leave those flags out and the scan degrades to a connect scan instead of failing.
+    Root (or no euid concept, e.g. Windows) counts as privileged. Capabilities (docker --cap-add NET_RAW as a
+    non-root user, setcap on the nmap binary) cannot be seen from the euid, so nmap's own environment
+    overrides are honoured: NMAP_PRIVILEGED asserts privilege, NMAP_UNPRIVILEGED denies it.
     """
+    if os.environ.get("NMAP_UNPRIVILEGED"):
+        return False
+    if os.environ.get("NMAP_PRIVILEGED"):
+        return True
     return not hasattr(os, "geteuid") or os.geteuid() == 0
 
 

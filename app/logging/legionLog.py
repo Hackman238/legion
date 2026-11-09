@@ -54,7 +54,7 @@ def getStartupLogger() -> Logger:
 def getAppLogger() -> Logger:
     global cachedAppLogger
     logger = getOrCreateCachedLogger("legion",
-            os.path.expanduser("~/.cache/legion/log/legion.log"), True, cachedAppLogger)
+            log_path, True, cachedAppLogger)
     cachedAppLogger = logger
     return logger
 
@@ -62,7 +62,7 @@ def getAppLogger() -> Logger:
 def getDbLogger() -> Logger:
     global cachedDbLogger
     logger = getOrCreateCachedLogger("legion-db",
-            os.path.expanduser("~/.cache/legion/log/legion-db.log"), False, cachedDbLogger)
+            os.path.join(cache_path, "legion-db.log"), False, cachedDbLogger)
     cachedDbLogger = logger
     return logger
 

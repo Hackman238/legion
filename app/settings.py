@@ -482,6 +482,8 @@ class AppSettings():
             return False
         return bool(parser.remove_option(section, option))
 
+    SHODAN_KEY_PLACEHOLDER = "YourKeyGoesHere"
+
     def _apply_default_settings_migrations(self):
         defaults = Settings()
         group_defaults = self._default_settings_group_values(defaults)
@@ -511,6 +513,16 @@ class AppSettings():
 
         for alias_group, alias_key in sorted(removals):
             changed = self._remove_group_key(alias_group, alias_key) or changed
+
+        # Earlier configs shipped a literal placeholder; the Shodan action guards on a non-empty key, so the
+        # placeholder was sent to Shodan as if it were real. Blank it once so the action reports "not configured".
+        self.actions.beginGroup("ToolSettings")
+        try:
+            if str(self.actions.value("pyshodan-api-key") or "").strip() == self.SHODAN_KEY_PLACEHOLDER:
+                self.actions.setValue("pyshodan-api-key", "")
+                changed = True
+        finally:
+            self.actions.endGroup()
 
         if changed:
             self.actions.sync()
@@ -1906,8 +1918,8 @@ class Settings():
                                        "2050-3305,3307-3388,3390-5431,5433-8079,8081-29999"
         self.tools_nmap_stage6_ports = "T:30000-65535"
 
-        self.tools_path_nmap = shutil.which("nmap") or "nmap"
-        self.tools_path_hydra = shutil.which("hydra") or "hydra"
+        self.tools_path_nmap = "nmap"  # resolved from PATH at run time (see runtime_scan_planning.default_nmap_path)
+        self.tools_path_hydra = "hydra"
         self.tools_path_texteditor = "/usr/bin/xdg-open"
         self.tools_pyshodan_api_key = ""
         self.tools_path_responder = "responder"

@@ -241,7 +241,7 @@ def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_pat
       producing its own XML; when discovery is False the stages use -Pn.
     - neither: one -T4 -sV -O service scan (with -Pn).
     """
-    from app.web.runtime_scan_planning import build_staged_scan_plan
+    from app.web.runtime_scan_planning import build_staged_scan_plan, can_raw_socket
 
     def convert_if_needed(prefix):
         if is_wsl() and nmap_path.lower().endswith('.exe'):
@@ -279,7 +279,6 @@ def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_pat
     if discovery:
         cmd.append("-sn")
     else:
-        from app.web.runtime_scan_planning import can_raw_socket
         cmd += ["-Pn", "-T4", "-sV"] + (["-O"] if can_raw_socket() else [])
     cmd += extra_args + target_list + ["-oA", convert_if_needed(output_prefix)]
     try:
