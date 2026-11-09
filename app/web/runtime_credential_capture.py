@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
@@ -11,6 +12,22 @@ from sqlalchemy import text
 from app.timing import getTimestamp
 from app.web import runtime_processes as web_runtime_processes
 from app.web import runtime_jobs as web_runtime_jobs
+
+
+RESPONDER_COMMANDS: Tuple[str, ...] = ("responder", "Responder.py")
+NTLMRELAYX_COMMANDS: Tuple[str, ...] = ("impacket-ntlmrelayx", "ntlmrelayx.py", "ntlmrelayx")
+
+
+def resolve_capture_tool(configured: Any, candidates: Tuple[str, ...]) -> str:
+    """The configured tool path when it exists, else the first candidate on PATH (Kali packages install
+    impacket-ntlmrelayx, pip installs ntlmrelayx.py), else the configured name so the error names it."""
+    wanted = str(configured or "").strip()
+    if wanted and (os.path.isfile(os.path.expanduser(wanted)) or shutil.which(wanted)):
+        return wanted
+    for candidate in candidates:
+        if shutil.which(candidate):
+            return candidate
+    return wanted or candidates[0]
 
 
 def default_credential_capture_config() -> Dict[str, Any]:
@@ -400,7 +417,8 @@ def build_credential_capture_command(runtime, tool_id: str, config: Dict[str, An
         if not interface_name:
             raise ValueError("Responder requires a capture interface.")
         outputfile = os.path.join(running_dir, f"{timestamp}-responder.log")
-        tool_path = shlex.quote(str(getattr(runtime._get_settings(), "tools_path_responder", "responder") or "responder"))
+        tool_path = shlex.quote(resolve_capture_tool(
+            getattr(runtime._get_settings(), "tools_path_responder", ""), RESPONDER_COMMANDS))
         command_parts = [tool_path, "-I", shlex.quote(interface_name)]
         if str(config.get("mode", "active") or "").strip().lower() == "passive":
             command_parts.append("-A")
@@ -428,7 +446,8 @@ def build_credential_capture_command(runtime, tool_id: str, config: Dict[str, An
             raise ValueError("ntlmrelayx requires a relay target or targets file.")
         output_base = os.path.join(running_dir, f"{timestamp}-ntlmrelayx")
         outputfile = f"{output_base}.log"
-        tool_path = shlex.quote(str(getattr(runtime._get_settings(), "tools_path_ntlmrelay", "impacket-ntlmrelayx") or "impacket-ntlmrelayx"))
+        tool_path = shlex.quote(resolve_capture_tool(
+            getattr(runtime._get_settings(), "tools_path_ntlmrelay", ""), NTLMRELAYX_COMMANDS))
         command_parts = [tool_path]
         if target:
             command_parts.extend(["-t", shlex.quote(target)])

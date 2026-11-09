@@ -1,5 +1,10 @@
 #!/bin/sh
 eval $@
 USER=${USER:-$(whoami)}
-SHELL=${SHELL:-$(getent passwd $USER|cut -d: -f7)}
+if [ -z "${SHELL:-}" ]; then
+    if command -v getent >/dev/null 2>&1; then
+        SHELL=$(getent passwd "$USER" | cut -d: -f7)
+    fi
+    SHELL=${SHELL:-/bin/sh}
+fi
 ${SHELL:-bash} -i

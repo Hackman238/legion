@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
+import os
 import sys
 
 class PyShodanScript():
     def __init__(self):
         self.dbHost = None
         self.session = None
+        self.apiKey = ""
+
+    def setApiKey(self, apiKey):
+        self.apiKey = str(apiKey or "")
 
     def setDbHost(self, dbHost):
         self.dbHost = dbHost
@@ -20,11 +25,19 @@ class PyShodanScript():
         return self.lookup(ip)
 
     def lookup(self, ip):
+        # The key comes from the caller (setApiKey) or SHODAN_API_KEY; never from this file.
+        api_key = self.apiKey or os.environ.get("SHODAN_API_KEY", "")
+        if not api_key:
+            print("SHODAN_API_KEY is not set; skipping Shodan lookup.")
+            return {}
         try:
-            from pyShodan import PyShodan
+            try:
+                from pyShodan import PyShodan
+            except ImportError:  # lowercase module name in newer pyShodan releases
+                from pyshodan import PyShodan
 
             pyShodanObj = PyShodan()
-            pyShodanObj.apiKey = "REMOVED-SHODAN-KEY"
+            pyShodanObj.apiKey = api_key
             pyShodanObj.createSession()
             pyShodanResults = pyShodanObj.searchIp(ip, allData=True)
             if isinstance(pyShodanResults, dict) and pyShodanResults:
