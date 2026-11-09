@@ -131,7 +131,6 @@ class Screenshooter(QtCore.QThread):
             if not src_path or not os.path.isfile(src_path):
                 raise FileNotFoundError("EyeWitness did not return a usable screenshot file.")
 
-            fileName = os.path.basename(src_path)
             outputfile = os.path.relpath(src_path, self.outputfolder)
             # Normalize for DB/UI
             normalized_outputfile = outputfile.replace("\\", "/")

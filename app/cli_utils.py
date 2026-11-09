@@ -25,6 +25,11 @@ from urllib.parse import urlparse
 from app.hostsfile import normalize_hostname_alias
 from db.entities.host import hostObj
 
+
+def _can_raw_socket() -> bool:
+    # nmap -O needs raw sockets (root/BPF); unprivileged nmap quits on it.
+    return not hasattr(os, "geteuid") or os.geteuid() == 0
+
 def _normalize_import_target(raw_target: str) -> str:
     candidate = str(raw_target or "").strip()
     if not candidate or candidate.startswith("#"):
@@ -161,7 +166,7 @@ def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_pat
         # Stage 2: service/version scan on discovered hosts (for demo, just rerun on all)
         output_prefix2 = output_prefix + "_stage2"
         output_prefix2_conv = convert_if_needed(output_prefix2)
-        cmd2 = [nmap_path, "-sV", "-O"] + targets.split() + ["-oA", output_prefix2_conv]
+        cmd2 = [nmap_path, "-sV"] + (["-O"] if _can_raw_socket() else []) + targets.split() + ["-oA", output_prefix2_conv]
         if not discovery:
             cmd2.insert(1, "-Pn")
         try:
@@ -175,7 +180,7 @@ def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_pat
         cmd = [nmap_path]
         if not discovery:
             cmd.append("-Pn")
-        cmd += ["-T4", "-sV", "-O"] + targets.split() + ["-oA", output_prefix_conv]
+        cmd += ["-T4", "-sV"] + (["-O"] if _can_raw_socket() else []) + targets.split() + ["-oA", output_prefix_conv]
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:

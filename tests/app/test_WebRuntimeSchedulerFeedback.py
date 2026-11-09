@@ -679,9 +679,17 @@ class WebRuntimeSchedulerFeedbackTest(unittest.TestCase):
                 "visible_candidate_tool_ids": ["nmap-vuln.nse", "whatweb", "nikto"],
             },
         }]
+        # Decision rows store naive local wall-clock timestamps
+        # (getTimestamp(human=True)); derive this one from the provider
+        # instant so the fixture means the same instant in any timezone
+        # (it previously hardcoded a UTC-5 wall clock).
+        import datetime as _datetime
+        _decision_local = _datetime.datetime(
+            2026, 3, 22, 5, 35, 18, tzinfo=_datetime.timezone.utc
+        ).astimezone()
         decisions = [{
             "id": 41,
-            "timestamp": "22 Mar 2026 00:35:18.000000",
+            "timestamp": _decision_local.strftime("%d %b %Y %H:%M:%S.%f"),
             "host_ip": "192.168.3.133",
             "port": "5357",
             "protocol": "tcp",

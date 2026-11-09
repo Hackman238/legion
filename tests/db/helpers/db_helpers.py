@@ -36,3 +36,4 @@ def mockQueryWithFilterBy(return_value):
     mock_query = MagicMock()
     mock_query.filter_by.return_value = return_value
     return mock_query
+

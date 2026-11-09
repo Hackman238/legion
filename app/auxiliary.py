@@ -22,9 +22,10 @@ import os, sys, socket, locale, webbrowser, \
     re, platform  # for webrequests, screenshot timeouts, timestamps, browser stuff and regex
 import tempfile
 import shlex
+import shutil
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import QProcess, QObject, pyqtSignal, pyqtSlot, QThread, Qt
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (was six.u)
 import ipaddress
 
 from app.httputil.isHttps import isHttps
@@ -80,7 +81,7 @@ def getAppdataTemp():
 # Get the temp folder based on os. Create if missing from *nix
 def getTempFolder():
     # Prefer environment variable for configurability
-    tempPath = os.environ.get("LEGION_TMPDIR")
+    tempPath = os.environ.get("LEGION_TMPDIR") or os.environ.get("LEGION_TMP_DIR")
     if tempPath is None:
         # Use system temp dir + 'legion'
         tempPath = os.path.join(tempfile.gettempdir(), "legion")
@@ -93,15 +94,38 @@ def getPid(qprocess):
     pid = qprocess.processId()
     return pid
 
+# Action/tool commands from legion.conf are shell pipelines
+# ("(command -v x && x ...) || echo x not found", redirects, ${VAR}
+# expansion). QProcess.start() execve()s the program directly, so such
+# strings died with "execve: No such file or directory" on "(command".
+# Route anything carrying shell syntax through /bin/sh; keep plain
+# argv-style strings and token lists on the direct exec path.
+_SHELL_SYNTAX_RE = re.compile(r"&&|\|\||[|;<>(){}`]|\$\(|\$\{|\n")
+
 def formatCommandQProcess(inputCommand):
     if isinstance(inputCommand, (list, tuple)):
         parts = list(inputCommand)
-    else:
-        parts = shlex.split(inputCommand)
+        if not parts:
+            return "", []
+        if "/" not in str(parts[0]) and shutil.which(str(parts[0])) is None:
+            return "/bin/sh", ["-c", shlex.join(str(p) for p in parts)]
+        return parts[0], parts[1:]
+    command = str(inputCommand or "")
+    if not command.strip():
+        return "", []
+    if _SHELL_SYNTAX_RE.search(command):
+        return "/bin/sh", ["-c", command]
+    parts = shlex.split(command)
     if not parts:
         return "", []
     program = parts[0]
     arguments = parts[1:]
+    # A bare tool that is not installed (much of the Kali set on macOS)
+    # would die in QProcess as "execve: No such file or directory" and
+    # surface as a crash. Via the shell it ends as a readable
+    # "command not found" in the process tab instead.
+    if "/" not in program and shutil.which(program) is None:
+        return "/bin/sh", ["-c", command]
     return program, arguments
 
 # bubble sort algorithm that sorts an array (in place) based on the values in another array
@@ -210,6 +234,11 @@ class MyQProcess(QProcess):
 
     def __init__(self, name, tabTitle, hostIp, port, protocol, command, startTime, outputfile, textbox):
         QProcess.__init__(self)
+        # Never leave the child's stdin as an open pipe Legion never
+        # writes to: ProjectDiscovery tools (katana) treat a piped stdin
+        # as an extra target source and block forever waiting for EOF,
+        # which looked like a hung scan with zero output and no sockets.
+        self.setStandardInputFile(QtCore.QProcess.nullDevice())
         process_env = QtCore.QProcessEnvironment.systemEnvironment()
         for key, value in build_tool_execution_env().items():
             process_env.insert(str(key), str(value))

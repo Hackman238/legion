@@ -401,6 +401,40 @@ function makeCell(value) {
     return td;
 }
 
+function makeSeverityCell(value) {
+    const td = document.createElement("td");
+    const raw = String(value ?? "").trim();
+    const lowered = raw.toLowerCase();
+    const normalized = lowered === "moderate" ? "medium"
+        : lowered === "informational" ? "info"
+        : ["critical", "high", "medium", "low", "info"].includes(lowered) ? lowered
+        : "none";
+    const badge = document.createElement("span");
+    badge.className = `sev sev-${normalized}`;
+    badge.textContent = raw || "—";
+    td.appendChild(badge);
+    return td;
+}
+
+function makeMonoCell(value) {
+    const td = makeCell(value);
+    td.className = "mono-cell";
+    return td;
+}
+
+function appendEmptyRow(tbody, colSpan, message) {
+    if (!tbody || tbody.children.length > 0) {
+        return;
+    }
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.className = "empty-cell";
+    td.colSpan = Math.max(1, colSpan || 1);
+    td.textContent = message;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+}
+
 function makeTruncatedCell(value, className = "") {
     const td = document.createElement("td");
     if (className) {
@@ -1295,13 +1329,22 @@ function getProcessStatusClass(status) {
     if (normalized === "running") {
         return "process-status-running";
     }
-    if (normalized === "crashed") {
+    if (normalized === "waiting" || normalized === "queued" || normalized === "pending") {
+        return "process-status-waiting";
+    }
+    if (normalized === "finished" || normalized === "completed" || normalized === "done" || normalized === "executed" || normalized === "idle") {
+        return "process-status-finished";
+    }
+    if (normalized === "crashed" || normalized === "failed" || normalized === "error") {
         return "process-status-crashed";
     }
     if (normalized === "problem") {
         return "process-status-problem";
     }
-    return "";
+    if (normalized === "killed" || normalized === "cancelled" || normalized === "cancelling" || normalized === "stopped") {
+        return "process-status-stopped";
+    }
+    return "process-status-unknown";
 }
 
 function setActionStatus(text, isError = false) {
@@ -1310,7 +1353,7 @@ function setActionStatus(text, isError = false) {
         return;
     }
     node.textContent = text;
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function setWorkspaceStatus(text, isError = false) {
@@ -1319,7 +1362,7 @@ function setWorkspaceStatus(text, isError = false) {
         return;
     }
     node.textContent = text;
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function setStartupWizardStatus(text, isError = false) {
@@ -1328,7 +1371,7 @@ function setStartupWizardStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function renderProject(project) {
@@ -1628,6 +1671,7 @@ function renderHosts(hosts) {
         tr.appendChild(actionsCell);
         body.appendChild(tr);
     });
+    appendEmptyRow(body, 8, "No hosts match the current filters.");
     setText("host-count", workspaceState.hosts.length);
     renderHostSelector(workspaceState.hosts);
     renderHostSelectionState();
@@ -1693,6 +1737,7 @@ function renderServices(services) {
         tr.appendChild(actionsCell);
         body.appendChild(tr);
     });
+    appendEmptyRow(body, 8, "No services recorded yet.");
     setText("service-count", workspaceState.services.length);
     const scopeLabel = document.getElementById("services-scope-label");
     if (scopeLabel) {
@@ -1887,6 +1932,7 @@ function renderProcesses(processes) {
         tr.appendChild(actions);
         body.appendChild(tr);
     });
+    appendEmptyRow(body, 7, "No processes yet — run a scan to start one.");
     setText("process-count", (processes || []).length);
 }
 
@@ -3024,7 +3070,7 @@ function setConfigSettingsStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function setToolAuditStatus(text, isError = false) {
@@ -3033,7 +3079,7 @@ function setToolAuditStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function setToolInstallStatus(text, isError = false) {
@@ -3042,7 +3088,7 @@ function setToolInstallStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function setDisplaySettingsStatus(text, isError = false) {
@@ -3051,7 +3097,7 @@ function setDisplaySettingsStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function setInterfaceSettingsStatus(text, isError = false) {
@@ -3060,7 +3106,7 @@ function setInterfaceSettingsStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function ensureLogoWatermark(enabled) {
@@ -3906,7 +3952,7 @@ function setWorkspaceSwitchGuardStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function closeWorkspaceSwitchGuardAction() {
@@ -5011,6 +5057,7 @@ function renderApprovals(approvals) {
         tr.appendChild(actionsCell);
         body.appendChild(tr);
     });
+    appendEmptyRow(body, 6, "No pending approvals.");
     setText("approval-count", (approvals || []).length);
 }
 
@@ -5528,18 +5575,20 @@ function renderHostDetail(payload) {
             const tr = document.createElement("tr");
             tr.appendChild(makeCell(item.id || ""));
             tr.appendChild(makeCell(item.name || ""));
-            tr.appendChild(makeCell(item.severity || ""));
+            tr.appendChild(makeSeverityCell(item.severity || ""));
             tr.appendChild(makeCell(item.product || ""));
             tr.appendChild(makeCell(item.url || ""));
             const actions = document.createElement("td");
             const del = document.createElement("button");
             del.type = "button";
             del.textContent = "Delete";
+            del.className = "btn-danger";
             del.dataset.cveDeleteId = String(item.id || "");
             actions.appendChild(del);
             tr.appendChild(actions);
             cvesBody.appendChild(tr);
         });
+        appendEmptyRow(cvesBody, 6, "No CVEs recorded for this host.");
     }
 
     const aiTechBody = document.getElementById("host-detail-ai-technologies");
@@ -5560,7 +5609,7 @@ function renderHostDetail(payload) {
         aiFindingsBody.innerHTML = "";
         aiFindings.forEach((item) => {
             const tr = document.createElement("tr");
-            tr.appendChild(makeCell(item.severity || ""));
+            tr.appendChild(makeSeverityCell(item.severity || ""));
             tr.appendChild(makeCell(item.title || ""));
             tr.appendChild(makeCell(item.cve || ""));
             tr.appendChild(makeCell(item.cvss ?? ""));
@@ -5575,7 +5624,7 @@ function renderHostDetail(payload) {
         aiManualTests.forEach((item) => {
             const tr = document.createElement("tr");
             tr.appendChild(makeCell(item.why || ""));
-            tr.appendChild(makeCell(item.command || ""));
+            tr.appendChild(makeMonoCell(item.command || ""));
             tr.appendChild(makeCell(item.scope_note || ""));
             aiManualBody.appendChild(tr);
         });
@@ -5788,7 +5837,7 @@ function setDeviceCategorySettingsStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function buildDeviceCategoryRuleRow(rule = {}) {
@@ -6532,7 +6581,7 @@ function setGraphStatus(text, isError = false) {
         return;
     }
     node.textContent = text || "";
-    node.style.color = isError ? "#ff9b9b" : "";
+    node.classList.toggle("is-error", Boolean(isError));
 }
 
 function graphFriendlyLabel(value) {
@@ -10623,7 +10672,7 @@ function setLiveChip(text, isError) {
         return;
     }
     chip.textContent = text;
-    chip.style.color = isError ? "#ff9b9b" : "";
+    chip.classList.toggle("is-error", Boolean(isError));
 }
 
 function notifyWorkspaceInvalidationWaiters(channels) {

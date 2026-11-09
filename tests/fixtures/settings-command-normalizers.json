@@ -64,7 +64,7 @@
       "name": "built-in ffuf command",
       "normalizer": "_ensure_ffuf_command",
       "input": "(command -v ffuf >/dev/null 2>&1 && ffuf -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt -s -of json -o [OUTPUT].json) || echo ffuf not found",
-      "expected": "(command -v ffuf >/dev/null 2>&1 && ffuf -s -of json -o [OUTPUT].json -u [WEB_URL]/FUZZ -w /usr/share/wordlists/dirb/common.txt) || echo ffuf not found"
+      "expected": "(command -v ffuf >/dev/null 2>&1 && { WL=${LEGION_WEB_WORDLIST:-}; if [ -z \"$WL\" ]; then for p in /usr/share/wordlists/dirb/common.txt /opt/homebrew/share/seclists/Discovery/Web-Content/common.txt /usr/local/share/seclists/Discovery/Web-Content/common.txt ./wordlists/web-common.txt; do if [ -f \"$p\" ]; then WL=$p; break; fi; done; fi; if [ ! -f \"$WL\" ]; then echo \"web wordlist not found (clone SecLists or set LEGION_WEB_WORDLIST)\"; exit 1; fi; ffuf -s -of json -o [OUTPUT].json -u [WEB_URL]/FUZZ -w \"$WL\"; }) || echo ffuf not found"
     },
     {
       "name": "generic command presence wrapper",

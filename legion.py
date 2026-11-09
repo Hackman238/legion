@@ -211,6 +211,32 @@ def ensure_web_dependency_compatibility(
 
 startupLog = None
 
+def _install_gui_excepthook():
+    # PyQt6 aborts the whole process (qFatal via pyqt6_err_print) when a
+    # Python exception escapes a Qt slot and sys.excepthook is the default.
+    # A custom hook logs the traceback instead, so one broken action does
+    # not kill the GUI.
+    def _gui_excepthook(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        logging.getLogger("legion.gui").exception(
+            "Unhandled exception in Qt slot", exc_info=(exc_type, exc_value, exc_tb)
+        )
+
+    sys.excepthook = _gui_excepthook
+
+def clamp_window_geometry(size, position, available):
+    # Fit a window inside the screen's available geometry. The window can
+    # otherwise outgrow the screen (its size hint follows scan content),
+    # which pushes centered tab bars such as Processes/Log off-screen.
+    ax, ay, aw, ah = (int(value) for value in available)
+    width = max(1, min(int(size[0]), aw))
+    height = max(1, min(int(size[1]), ah))
+    x = min(max(int(position[0]), ax), ax + aw - width)
+    y = min(max(int(position[1]), ay), ay + ah - height)
+    return (x, y, width, height)
+
 def doPathSetup():
     from app.paths import ensure_legion_home, get_legion_backup_dir, get_legion_conf_path
 
@@ -559,6 +585,7 @@ if __name__ == "__main__":
     import qasync
     import asyncio
 
+    _install_gui_excepthook()
     app = QApplication(sys.argv)
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
@@ -577,12 +604,20 @@ if __name__ == "__main__":
     # Platform-independent privilege check
     if hasattr(os, "geteuid"):
         if os.geteuid() != 0:
-            startupLog.error("Legion must run as root for raw socket access. Please start legion using sudo.")
-            notice = QMessageBox()
-            notice.setIcon(QMessageBox.Icon.Critical)
-            notice.setText("Legion must run as root for raw socket access. Please start legion using sudo.")
-            notice.exec()
-            exit(1)
+            # A root GUI is unsupported on macOS Aqua; run unprivileged there
+            # and let raw-socket scans fail/warn (they need sudo/BPF access).
+            if sys.platform == "darwin" and os.environ.get("LEGION_REQUIRE_ROOT") != "1":
+                startupLog.warning(
+                    "Running without root on macOS: GUI is unprivileged; "
+                    "raw-socket nmap scans (-sS/-O) may need sudo or BPF permissions."
+                )
+            else:
+                startupLog.error("Legion must run as root for raw socket access. Please start legion using sudo.")
+                notice = QMessageBox()
+                notice.setIcon(QMessageBox.Icon.Critical)
+                notice.setText("Legion must run as root for raw socket access. Please start legion using sudo.")
+                notice.exec()
+                exit(1)
     elif os.name == "nt":
         # On Windows, warn but do not exit
         startupLog.warning("Legion may require Administrator privileges for some features on Windows.")
@@ -611,9 +646,20 @@ if __name__ == "__main__":
     myFilter = MyEventFilter(view, MainWindow)  # to capture events
     app.installEventFilter(myFilter)
 
-    # Center the application in screen
-    screenCenter = Screen.availableGeometry().center()
-    MainWindow.move(screenCenter - MainWindow.rect().center())
+    # Center the window, but keep it fully inside the screen: scan output
+    # can grow the size hint past the screen and take tab bars with it.
+    if Screen is not None:
+        availableRect = Screen.availableGeometry()
+        windowSize = MainWindow.size()
+        centered = availableRect.center() - MainWindow.rect().center()
+        fitX, fitY, fitWidth, fitHeight = clamp_window_geometry(
+            size=(windowSize.width(), windowSize.height()),
+            position=(centered.x(), centered.y()),
+            available=(availableRect.x(), availableRect.y(),
+                       availableRect.width(), availableRect.height()),
+        )
+        MainWindow.setMaximumSize(availableRect.size())
+        MainWindow.setGeometry(fitX, fitY, fitWidth, fitHeight)
 
     import signal
 

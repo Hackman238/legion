@@ -2,6 +2,11 @@
 
 echo "Strap yourself in, we're starting Legion..."
 
+# macOS takes the native path (venv + Cocoa, no apt/X11/root GUI).
+if [ "$(uname -s)" = "Darwin" ]; then
+    exec sh "$(dirname "$0")/startLegion-macos.sh" "$@"
+fi
+
 # Set everything we might need as executable
 chmod a+x -R ./deps/*
 chmod a+x -R ./scripts/*

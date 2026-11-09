@@ -43,7 +43,7 @@ from ui.models.processmodels import *
 from ui.models.ostables import OsSummaryTableModel, OsHostsTableModel
 from ui.models.credentialmodels import CredentialCaptureModel
 from app.auxiliary import *
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (was six.u)
 import pandas as pd
 from PyQt6.QtWidgets import QAbstractItemView
 from PyQt6.QtCore import Qt

@@ -177,10 +177,6 @@ def _sanitize_headers_for_log(headers: Optional[Dict[str, Any]]) -> Dict[str, st
     return safe
 
 
-def _normalize_tool_token(value: Any) -> str:
-    return str(value or "").strip().lower()[:120]
-
-
 def _expand_unavailable_tool_ids(values: Any) -> List[str]:
     expanded = set()
     for item in list(values or []):

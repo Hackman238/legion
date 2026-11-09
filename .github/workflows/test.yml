@@ -1,0 +1,83 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+        python-version: ["3.12", "3.15"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libfontconfig1 libglib2.0-0 libxkbcommon0 nmap xsltproc
+
+      - name: Install scan tools used by smoke checks (macOS)
+        if: runner.os == 'macOS'
+        run: brew install nmap
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint (correctness codes, see .flake8)
+        run: flake8 --count
+
+      - name: Dependency audit
+        run: pip-audit
+
+      - name: Unit tests (headless Qt)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LEGION_HOME: ${{ runner.temp }}/legion-home
+          LEGION_TMPDIR: ${{ runner.temp }}/legion-tmp
+        run: python -m unittest discover -v
+
+      - name: CLI smoke
+        run: python legion.py --help
+
+      - name: macOS launcher setup smoke
+        if: runner.os == 'macOS'
+        run: |
+          rm -rf .venv
+          ./startLegion-macos.sh setup
+          .venv/bin/python legion.py --help
+
+  docker:
+    name: docker (Dockerfile.local, this checkout)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build local-source image
+        run: docker build -f docker/Dockerfile.local -t legion:ci .
+
+      - name: Smoke and unit tests in container
+        run: |
+          docker run --rm legion:ci python legion.py --help
+          docker run --rm -e QT_QPA_PLATFORM=offscreen legion:ci python -m unittest discover

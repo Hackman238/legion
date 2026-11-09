@@ -23,7 +23,7 @@ class SchedulerApprovalsStoreTest(unittest.TestCase):
         repository_factory = RepositoryFactory(db_log)
         project_manager = ProjectManager(shell, repository_factory, app_log)
         nmap_exporter = DefaultNmapExporter(shell, app_log)
-        _tool_coordinator = ToolCoordinator(shell, nmap_exporter)
+        ToolCoordinator(shell, nmap_exporter)
 
         project = project_manager.createNewProject(projectType="legion", isTemp=True)
         try:

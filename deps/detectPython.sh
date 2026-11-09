@@ -1,5 +1,32 @@
 #!/bin/bash
 
+# macOS: no apt/bc. Legion requires Python >= 3.12 (.python-version pins
+# 3.15). Prefer a compatible project .venv, then newest Homebrew Python.
+if [ "$(uname -s)" = "Darwin" ]; then
+    _legion_py_ok() {
+        command -v "$1" >/dev/null 2>&1 || return 1
+        "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null
+    }
+    export PYTHON3BIN=""
+    if [ -x ".venv/bin/python" ] && _legion_py_ok ".venv/bin/python"; then
+        export PYTHON3BIN=".venv/bin/python"
+    else
+        for _legion_py_candidate in python3.15 python3.14 python3.13 python3.12 python3; do
+            if _legion_py_ok "$_legion_py_candidate"; then
+                export PYTHON3BIN="$(command -v "$_legion_py_candidate")"
+                break
+            fi
+        done
+    fi
+    if [ -z "$PYTHON3BIN" ]; then
+        echo "Python 3.12+ not found. Install it with: brew install python@3.15" >&2
+        return 1 2>/dev/null || exit 1
+    fi
+    export PIP3BIN="$PYTHON3BIN -m pip"
+    echo "PYTHON3BIN is set to $PYTHON3BIN ($($PYTHON3BIN --version 2>&1))"
+    return 0 2>/dev/null || exit 0
+fi
+
 echo "Checking Apt..."
 # runAptGetUpdate
 apt-get update -m

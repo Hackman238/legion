@@ -1,18 +1,34 @@
-FROM gvit/python-secbase:latest
-WORKDIR /
-ENV DISPLAY :0
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=America/Chicago
-RUN mkdir -p /legion
-COPY . /legion
-RUN cd legion && \
-    chmod +x ./startLegion.sh && \
-    chmod +x ./deps/* -R && \
-    chmod +x ./scripts/* -R && \
-    mkdir -p /legion/tmp
-RUN cd legion && \
-    pip3 install -r requirements.txt --upgrade
-RUN cd legion && \
-    bash ./deps/detectScripts.sh
+# Local-source image: builds THIS checkout (including uncommitted changes).
+# Build from the repo root:
+#   docker build -f docker/Dockerfile.local -t legion:local .
+# Headless smoke:  docker run --rm legion:local python legion.py --help
+# Web UI (NO auth is built in - keep it on localhost/trusted networks only):
+#   docker run --rm -p 127.0.0.1:5000:5000 legion:local python legion.py --web --web-port 5000 --web-bind-all
+# Qt GUI needs an X server / XQuartz display forwarded.
+# Raw-socket scans need extra privilege, e.g. --cap-add NET_RAW --cap-add NET_ADMIN.
+# WARNING: the build context is your working tree. .dockerignore excludes
+# secrets/project data, but do not build from a tree containing credentials
+# you would not ship (the shipped legion.conf template is included).
+FROM python:3.15-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    QT_QPA_PLATFORM=offscreen \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git nmap xsltproc \
+        libegl1 libgl1 libfontconfig1 libglib2.0-0 libxkbcommon0 \
+        libdbus-1-3 libxcb-cursor0 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /legion
-CMD ["python3", "legion.py"]
+COPY requirements.txt ./
+RUN pip install --upgrade pip && pip install -r requirements.txt
+COPY . ./
+RUN chmod +x startLegion.sh startLegion-macos.sh deps/*.sh scripts/*.sh 2>/dev/null || true
+
+RUN useradd --create-home --shell /bin/sh legion \
+    && chown -R legion:legion /legion
+USER legion
+
+CMD ["python", "legion.py"]

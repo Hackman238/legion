@@ -35,12 +35,42 @@ class PathsTest(unittest.TestCase):
             self.assertEqual(os.path.join(custom_home, "legion.conf"), conf_path)
             self.assertTrue(os.path.isfile(conf_path))
 
+    def test_darwin_keeps_legacy_local_share_home_when_config_exists(self):
+        import app.paths as paths
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy_home = os.path.join(tmpdir, ".local", "share", "legion")
+            os.makedirs(legacy_home, exist_ok=True)
+            with open(os.path.join(legacy_home, "legion.conf"), "w", encoding="utf-8") as handle:
+                handle.write("[GeneralSettings]\n")
+
+            env = dict(os.environ)
+            env.pop("LEGION_HOME", None)
+            env["HOME"] = tmpdir
+            with patch.dict(os.environ, env, clear=True):
+                with patch("app.paths.sys.platform", "darwin"):
+                    self.assertEqual(legacy_home, paths.get_legion_home())
+
+    def test_fresh_darwin_default_home_uses_library_application_support(self):
+        import app.paths as paths
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = dict(os.environ)
+            env.pop("LEGION_HOME", None)
+            env["HOME"] = tmpdir
+            with patch.dict(os.environ, env, clear=True):
+                with patch("app.paths.sys.platform", "darwin"):
+                    expected = os.path.join(tmpdir, "Library", "Application Support", "legion")
+                    self.assertEqual(expected, paths.get_legion_home())
+
     def test_default_legion_home_falls_back_when_default_path_is_not_writable(self):
         import app.paths as paths
 
-        default_home = os.path.abspath(os.path.expanduser(paths._DEFAULT_LEGION_HOME))
         with tempfile.TemporaryDirectory() as tmpdir:
             expected_home = os.path.join(tmpdir, "legion-home", "fallback-user")
+            with patch.dict(os.environ, {"HOME": tmpdir}, clear=False):
+                os.environ.pop("LEGION_HOME", None)
+                default_home = os.path.abspath(os.path.expanduser(paths._default_legion_home()))
 
             def fake_is_writable(path: str) -> bool:
                 normalized = os.path.abspath(os.path.expanduser(path))
@@ -51,7 +81,8 @@ class PathsTest(unittest.TestCase):
                     return True
                 return True
 
-            with patch.dict(os.environ, {}, clear=False):
+            with patch.dict(os.environ, {"HOME": tmpdir}, clear=False):
+                os.environ.pop("LEGION_HOME", None)
                 with patch("app.paths.tempfile.gettempdir", return_value=tmpdir):
                     with patch("app.paths._current_user_token", return_value="fallback-user"):
                         with patch("app.paths._is_writable_directory", side_effect=fake_is_writable):

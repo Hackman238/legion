@@ -139,7 +139,7 @@ class Ui_MainWindow(object):
         self.addHostsOverlay.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
 
         ###
-        self.addHostsOverlay.setFont(QtGui.QFont('Calibri', 12))
+        self.addHostsOverlay.setFont(QtGui.QFont('Sans Serif', 12))
         self.addHostsOverlay.setAlignment(Qt.AlignmentFlag.AlignHCenter|Qt.AlignmentFlag.AlignVCenter)
         ###
         

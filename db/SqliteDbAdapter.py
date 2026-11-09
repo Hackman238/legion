@@ -85,8 +85,6 @@ class Database:
             self.dispose()
             raise DatabaseIntegrityError(f"Failed to initialise SQLite database: {exc}") from exc
 
-        self.metadata.echo = True
-        self.metadata.bind = self.engine
         self.log.info(f"Established SQLite connection on file '{dbFileName}'")
 
     def commit(self):

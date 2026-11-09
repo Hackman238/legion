@@ -91,7 +91,6 @@ class Logic:
         print("[*] Running scripted actions/automated attacks (headless mode)...")
         settingsFile = AppSettings()
         settings = Settings(settingsFile)
-        repo_container = self.activeProject.repositoryContainer
         scheduler_config = SchedulerConfigManager()
         runner_settings = normalize_runner_settings(scheduler_config.load().get("runners", {}))
         pending_httpx_bootstrap_targets = set()

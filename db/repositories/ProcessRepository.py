@@ -20,7 +20,7 @@ from typing import Union
 
 import time
 
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (was six.u)
 
 from app.timing import getTimestamp
 from sqlalchemy import text

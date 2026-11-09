@@ -13,169 +13,174 @@
         <input id="nmap-xml-run-actions" type="checkbox">
     </div>
 
+    <nav class="command-bar" aria-label="Primary">
+        <div class="command-menus">
+                    <div class="ribbon-group ribbon-menu-group">
+                    <div class="ribbon-menu" data-ribbon-menu="workspace">
+                        <button
+                            id="ribbon-workspace-menu-button"
+                            class="ribbon-btn ribbon-btn-menu"
+                            type="button"
+                            title="Workspace lifecycle options"
+                            data-ribbon-menu-toggle="workspace"
+                            aria-haspopup="menu"
+                            aria-expanded="false"
+                        >
+                            <i class="fa-solid fa-folder-tree" aria-hidden="true"></i>
+                            <span>Workspace</span>
+                            <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                        </button>
+                        <div id="ribbon-workspace-menu" class="ribbon-submenu" role="menu" aria-label="Workspace options">
+                            <button id="ribbon-launch-wizard-button" class="ribbon-submenu-item" type="button" title="Run the workspace startup wizard">Workspace Wizard</button>
+                            <button id="ribbon-workspace-new-action-button" class="ribbon-submenu-item" type="button" title="Create a new temporary workspace">New Workspace</button>
+                            <button id="ribbon-workspace-open-action-button" class="ribbon-submenu-item" type="button" title="Open an existing .legion workspace">Open Workspace</button>
+                            <button id="ribbon-workspace-save-action-button" class="ribbon-submenu-item" type="button" title="Save using the current workspace path">Save</button>
+                            <button id="ribbon-workspace-save-as-action-button" class="ribbon-submenu-item" type="button" title="Choose a destination path and save">Save As</button>
+                            <button id="ribbon-workspace-download-action-button" class="ribbon-submenu-item" type="button" title="Download a ZIP containing session and tool output folders">Download</button>
+                            <button id="ribbon-workspace-restore-action-button" class="ribbon-submenu-item" type="button" title="Restore a previously downloaded session ZIP and open it">Restore ZIP</button>
+                        </div>
+                    </div>
+                    <div class="ribbon-menu" data-ribbon-menu="import">
+                        <button
+                            id="ribbon-import-menu-button"
+                            class="ribbon-btn ribbon-btn-menu"
+                            type="button"
+                            title="Import options"
+                            data-ribbon-menu-toggle="import"
+                            aria-haspopup="menu"
+                            aria-expanded="false"
+                        >
+                            <i class="fa-solid fa-file-import" aria-hidden="true"></i>
+                            <span>Import Data</span>
+                            <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                        </button>
+                        <div id="ribbon-import-menu" class="ribbon-submenu" role="menu" aria-label="Import options">
+                            <button id="ribbon-import-xml-action-button" class="ribbon-submenu-item" type="button" title="Import scan results from an Nmap XML file">Import XML</button>
+                            <button id="ribbon-import-targets-action-button" class="ribbon-submenu-item" type="button" title="Import target hosts/subnets from a text file">Import Targets TXT</button>
+                        </div>
+                    </div>
+                    <div class="ribbon-menu" data-ribbon-menu="export">
+                        <button
+                            id="ribbon-export-menu-button"
+                            class="ribbon-btn ribbon-btn-menu"
+                            type="button"
+                            title="Export options"
+                            data-ribbon-menu-toggle="export"
+                            aria-haspopup="menu"
+                            aria-expanded="false"
+                        >
+                            <i class="fa-solid fa-file-export" aria-hidden="true"></i>
+                            <span>Export Data</span>
+                            <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                        </button>
+                        <div id="ribbon-export-menu" class="ribbon-submenu" role="menu" aria-label="Export options">
+                            <button id="ribbon-export-json-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as JSON">Export JSON</button>
+                            <button id="ribbon-export-csv-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as CSV">Export CSV</button>
+                            <button id="ribbon-export-hosts-csv-action-button" class="ribbon-submenu-item" type="button" title="Export hosts only as CSV">Export Hosts CSV</button>
+                            <button id="ribbon-export-project-report-json-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as JSON">Export Project Report JSON</button>
+                            <button id="ribbon-export-project-report-md-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as Markdown">Export Project Report Markdown</button>
+                            <button id="ribbon-export-project-report-push-action-button" class="ribbon-submenu-item" type="button" title="Push full project report to configured delivery endpoint">Push Project Report</button>
+                            <button id="ribbon-export-ai-reports-action-button" class="ribbon-submenu-item" type="button" title="Download all host reports (JSON and Markdown) as a ZIP">Export Host Reports ZIP</button>
+                        </div>
+                    </div>
+                    <div class="ribbon-menu" data-ribbon-menu="scans">
+                        <button
+                            id="ribbon-scans-menu-button"
+                            class="ribbon-btn ribbon-btn-menu"
+                            type="button"
+                            title="Scan actions"
+                            data-ribbon-menu-toggle="scans"
+                            aria-haspopup="menu"
+                            aria-expanded="false"
+                        >
+                            <i class="fa-solid fa-magnifying-glass-chart" aria-hidden="true"></i>
+                            <span>Scans</span>
+                            <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                        </button>
+                        <div id="ribbon-scans-menu" class="ribbon-submenu" role="menu" aria-label="Scan options">
+                            <button id="ribbon-scan-manual-action-button" class="ribbon-submenu-item" type="button" title="Run a manual tool against a host and port">Manual Scan</button>
+                        </div>
+                    </div>
+                    <div class="ribbon-menu" data-ribbon-menu="misc">
+                        <button
+                            id="ribbon-misc-menu-button"
+                            class="ribbon-btn ribbon-btn-menu"
+                            type="button"
+                            title="Miscellaneous workspace actions"
+                            data-ribbon-menu-toggle="misc"
+                            aria-haspopup="menu"
+                            aria-expanded="false"
+                        >
+                            <i class="fa-solid fa-toolbox" aria-hidden="true"></i>
+                            <span>Misc</span>
+                            <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                        </button>
+                        <div id="ribbon-misc-menu" class="ribbon-submenu" role="menu" aria-label="Misc options">
+                            <button id="ribbon-misc-host-selection-action-button" class="ribbon-submenu-item" type="button" title="Open host selection and notes">Host Selection</button>
+                            <button id="ribbon-misc-script-cve-action-button" class="ribbon-submenu-item" type="button" title="Open Add Script/CVE form">Add Script/CVE</button>
+                        </div>
+                    </div>
+                    <div class="ribbon-menu" data-ribbon-menu="logging">
+                        <button
+                            id="ribbon-logging-menu-button"
+                            class="ribbon-btn ribbon-btn-menu"
+                            type="button"
+                            title="View logs and diagnostics"
+                            data-ribbon-menu-toggle="logging"
+                            aria-haspopup="menu"
+                            aria-expanded="false"
+                        >
+                            <i class="fa-solid fa-clipboard-list" aria-hidden="true"></i>
+                            <span>Logging</span>
+                            <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                        </button>
+                        <div id="ribbon-logging-menu" class="ribbon-submenu" role="menu" aria-label="Logging options">
+                            <button id="ribbon-logging-jobs-button" class="ribbon-submenu-item" type="button" title="View background jobs">Jobs</button>
+                            <button id="ribbon-logging-submitted-scans-button" class="ribbon-submenu-item" type="button" title="View submitted scan history">Submitted Scans</button>
+                            <button id="ribbon-logging-scheduler-decisions-button" class="ribbon-submenu-item" type="button" title="View scheduler decisions">Scheduler Decisions</button>
+                            <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View provider request and response logs">Provider Logs</button>
+                        </div>
+                    </div>
+                    <button
+                        id="ribbon-credential-capture-toggle-button"
+                        class="ribbon-btn ribbon-btn-toggle{% if credential_capture.get('panel_enabled', True) %} is-active{% endif %}"
+                        type="button"
+                        title="{{ 'Hide' if credential_capture.get('panel_enabled', True) else 'Show' }} Responder / NTLM Relay panel"
+                        aria-pressed="{{ 'true' if credential_capture.get('panel_enabled', True) else 'false' }}"
+                    >
+                        <i class="fa-solid fa-user-secret" aria-hidden="true"></i>
+                        <span>Responder / Relay</span>
+                    </button>
+                    <div class="ribbon-menu" data-ribbon-menu="settings">
+                        <button
+                            id="ribbon-settings-menu-button"
+                            class="ribbon-btn ribbon-btn-menu"
+                            type="button"
+                            title="Application and scheduler settings"
+                            data-ribbon-menu-toggle="settings"
+                            aria-haspopup="menu"
+                            aria-expanded="false"
+                        >
+                            <i class="fa-solid fa-gear" aria-hidden="true"></i>
+                            <span>Settings</span>
+                            <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
+                        </button>
+                        <div id="ribbon-settings-menu" class="ribbon-submenu" role="menu" aria-label="Settings options">
+                            <button id="ribbon-scheduler-settings-button" class="ribbon-submenu-item" type="button" title="Open scheduler settings">Scheduler</button>
+                            <button id="ribbon-interface-settings-button" class="ribbon-submenu-item" type="button" title="Open interface settings">Interface</button>
+                            <button id="ribbon-device-category-settings-button" class="ribbon-submenu-item" type="button" title="Open device category settings">Device Categories</button>
+                            <button id="ribbon-report-provider-settings-button" class="ribbon-submenu-item" type="button" title="Open project report provider settings">Report Provider</button>
+                            <button id="ribbon-app-settings-button" class="ribbon-submenu-item" type="button" title="Open and edit legion.conf settings">App Settings</button>
+                        </div>
+                    </div>
+                    </div>
+        </div>
+        <span class="command-status"><span id="action-status" aria-live="polite">Idle</span><span class="command-status-sep" aria-hidden="true">|</span><span id="workspace-status" aria-live="polite">Idle</span></span>
+        <button id="ribbon-scan-add-action-button" class="ribbon-submenu-item is-primary" type="button" title="Open the Nmap scan wizard">Add Scan</button>
+    </nav>
     <section class="panel panel-full ribbon-panel">
         <div class="ribbon">
             <div class="ribbon-column ribbon-main-column">
-                <div class="ribbon-group ribbon-menu-group">
-                <div class="ribbon-menu" data-ribbon-menu="workspace">
-                    <button
-                        id="ribbon-workspace-menu-button"
-                        class="ribbon-btn ribbon-btn-menu"
-                        type="button"
-                        title="Workspace lifecycle options"
-                        data-ribbon-menu-toggle="workspace"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                    >
-                        <i class="fa-solid fa-folder-tree" aria-hidden="true"></i>
-                        <span>Workspace</span>
-                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
-                    </button>
-                    <div id="ribbon-workspace-menu" class="ribbon-submenu" role="menu" aria-label="Workspace options">
-                        <button id="ribbon-launch-wizard-button" class="ribbon-submenu-item" type="button" title="Run the workspace startup wizard">Workspace Wizard</button>
-                        <button id="ribbon-workspace-new-action-button" class="ribbon-submenu-item" type="button" title="Create a new temporary workspace">New Workspace</button>
-                        <button id="ribbon-workspace-open-action-button" class="ribbon-submenu-item" type="button" title="Open an existing .legion workspace">Open Workspace</button>
-                        <button id="ribbon-workspace-save-action-button" class="ribbon-submenu-item" type="button" title="Save using the current workspace path">Save</button>
-                        <button id="ribbon-workspace-save-as-action-button" class="ribbon-submenu-item" type="button" title="Choose a destination path and save">Save As</button>
-                        <button id="ribbon-workspace-download-action-button" class="ribbon-submenu-item" type="button" title="Download a ZIP containing session and tool output folders">Download</button>
-                        <button id="ribbon-workspace-restore-action-button" class="ribbon-submenu-item" type="button" title="Restore a previously downloaded session ZIP and open it">Restore ZIP</button>
-                    </div>
-                </div>
-                <div class="ribbon-menu" data-ribbon-menu="import">
-                    <button
-                        id="ribbon-import-menu-button"
-                        class="ribbon-btn ribbon-btn-menu"
-                        type="button"
-                        title="Import options"
-                        data-ribbon-menu-toggle="import"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                    >
-                        <i class="fa-solid fa-file-import" aria-hidden="true"></i>
-                        <span>Import Data</span>
-                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
-                    </button>
-                    <div id="ribbon-import-menu" class="ribbon-submenu" role="menu" aria-label="Import options">
-                        <button id="ribbon-import-xml-action-button" class="ribbon-submenu-item" type="button" title="Import scan results from an Nmap XML file">Import XML</button>
-                        <button id="ribbon-import-targets-action-button" class="ribbon-submenu-item" type="button" title="Import target hosts/subnets from a text file">Import Targets TXT</button>
-                    </div>
-                </div>
-                <div class="ribbon-menu" data-ribbon-menu="export">
-                    <button
-                        id="ribbon-export-menu-button"
-                        class="ribbon-btn ribbon-btn-menu"
-                        type="button"
-                        title="Export options"
-                        data-ribbon-menu-toggle="export"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                    >
-                        <i class="fa-solid fa-file-export" aria-hidden="true"></i>
-                        <span>Export Data</span>
-                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
-                    </button>
-                    <div id="ribbon-export-menu" class="ribbon-submenu" role="menu" aria-label="Export options">
-                        <button id="ribbon-export-json-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as JSON">Export JSON</button>
-                        <button id="ribbon-export-csv-action-button" class="ribbon-submenu-item" type="button" title="Export workspace data as CSV">Export CSV</button>
-                        <button id="ribbon-export-hosts-csv-action-button" class="ribbon-submenu-item" type="button" title="Export hosts only as CSV">Export Hosts CSV</button>
-                        <button id="ribbon-export-project-report-json-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as JSON">Export Project Report JSON</button>
-                        <button id="ribbon-export-project-report-md-action-button" class="ribbon-submenu-item" type="button" title="Export full project report as Markdown">Export Project Report Markdown</button>
-                        <button id="ribbon-export-project-report-push-action-button" class="ribbon-submenu-item" type="button" title="Push full project report to configured delivery endpoint">Push Project Report</button>
-                        <button id="ribbon-export-ai-reports-action-button" class="ribbon-submenu-item" type="button" title="Download all host reports (JSON and Markdown) as a ZIP">Export Host Reports ZIP</button>
-                    </div>
-                </div>
-                <div class="ribbon-menu" data-ribbon-menu="scans">
-                    <button
-                        id="ribbon-scans-menu-button"
-                        class="ribbon-btn ribbon-btn-menu"
-                        type="button"
-                        title="Scan actions"
-                        data-ribbon-menu-toggle="scans"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                    >
-                        <i class="fa-solid fa-magnifying-glass-chart" aria-hidden="true"></i>
-                        <span>Scans</span>
-                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
-                    </button>
-                    <div id="ribbon-scans-menu" class="ribbon-submenu" role="menu" aria-label="Scan options">
-                        <button id="ribbon-scan-add-action-button" class="ribbon-submenu-item" type="button" title="Open the Nmap scan wizard">Add Scan</button>
-                        <button id="ribbon-scan-manual-action-button" class="ribbon-submenu-item" type="button" title="Run a manual tool against a host and port">Manual Scan</button>
-                    </div>
-                </div>
-                <div class="ribbon-menu" data-ribbon-menu="misc">
-                    <button
-                        id="ribbon-misc-menu-button"
-                        class="ribbon-btn ribbon-btn-menu"
-                        type="button"
-                        title="Miscellaneous workspace actions"
-                        data-ribbon-menu-toggle="misc"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                    >
-                        <i class="fa-solid fa-toolbox" aria-hidden="true"></i>
-                        <span>Misc</span>
-                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
-                    </button>
-                    <div id="ribbon-misc-menu" class="ribbon-submenu" role="menu" aria-label="Misc options">
-                        <button id="ribbon-misc-host-selection-action-button" class="ribbon-submenu-item" type="button" title="Open host selection and notes">Host Selection</button>
-                        <button id="ribbon-misc-script-cve-action-button" class="ribbon-submenu-item" type="button" title="Open Add Script/CVE form">Add Script/CVE</button>
-                    </div>
-                </div>
-                <div class="ribbon-menu" data-ribbon-menu="logging">
-                    <button
-                        id="ribbon-logging-menu-button"
-                        class="ribbon-btn ribbon-btn-menu"
-                        type="button"
-                        title="View logs and diagnostics"
-                        data-ribbon-menu-toggle="logging"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                    >
-                        <i class="fa-solid fa-clipboard-list" aria-hidden="true"></i>
-                        <span>Logging</span>
-                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
-                    </button>
-                    <div id="ribbon-logging-menu" class="ribbon-submenu" role="menu" aria-label="Logging options">
-                        <button id="ribbon-logging-jobs-button" class="ribbon-submenu-item" type="button" title="View background jobs">Jobs</button>
-                        <button id="ribbon-logging-submitted-scans-button" class="ribbon-submenu-item" type="button" title="View submitted scan history">Submitted Scans</button>
-                        <button id="ribbon-logging-scheduler-decisions-button" class="ribbon-submenu-item" type="button" title="View scheduler decisions">Scheduler Decisions</button>
-                        <button id="ribbon-logging-ai-provider-button" class="ribbon-submenu-item" type="button" title="View provider request and response logs">Provider Logs</button>
-                    </div>
-                </div>
-                <button
-                    id="ribbon-credential-capture-toggle-button"
-                    class="ribbon-btn ribbon-btn-toggle{% if credential_capture.get('panel_enabled', True) %} is-active{% endif %}"
-                    type="button"
-                    title="{{ 'Hide' if credential_capture.get('panel_enabled', True) else 'Show' }} Responder / NTLM Relay panel"
-                    aria-pressed="{{ 'true' if credential_capture.get('panel_enabled', True) else 'false' }}"
-                >
-                    <i class="fa-solid fa-user-secret" aria-hidden="true"></i>
-                    <span>Responder / Relay</span>
-                </button>
-                <div class="ribbon-menu" data-ribbon-menu="settings">
-                    <button
-                        id="ribbon-settings-menu-button"
-                        class="ribbon-btn ribbon-btn-menu"
-                        type="button"
-                        title="Application and scheduler settings"
-                        data-ribbon-menu-toggle="settings"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                    >
-                        <i class="fa-solid fa-gear" aria-hidden="true"></i>
-                        <span>Settings</span>
-                        <small class="ribbon-caret"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></small>
-                    </button>
-                    <div id="ribbon-settings-menu" class="ribbon-submenu" role="menu" aria-label="Settings options">
-                        <button id="ribbon-scheduler-settings-button" class="ribbon-submenu-item" type="button" title="Open scheduler settings">Scheduler</button>
-                        <button id="ribbon-interface-settings-button" class="ribbon-submenu-item" type="button" title="Open interface settings">Interface</button>
-                        <button id="ribbon-device-category-settings-button" class="ribbon-submenu-item" type="button" title="Open device category settings">Device Categories</button>
-                        <button id="ribbon-report-provider-settings-button" class="ribbon-submenu-item" type="button" title="Open project report provider settings">Report Provider</button>
-                        <button id="ribbon-app-settings-button" class="ribbon-submenu-item" type="button" title="Open and edit legion.conf settings">App Settings</button>
-                    </div>
-                </div>
-                </div>
                 <div class="ribbon-lower-row">
                     <div class="ribbon-group ribbon-project-group" aria-label="Project summary">
                         <div class="ribbon-project-header">
@@ -192,75 +197,127 @@
                             <div class="ribbon-project-lines">
                                 <p class="meta-note" id="project-output-folder">{{ snapshot.project.output_folder }}</p>
                                 <p class="meta-note" id="project-running-folder">{{ snapshot.project.running_folder }}</p>
-                                <p class="meta-note">Action status: <span id="action-status">Idle</span></p>
-                                <p class="meta-note">Workspace status: <span id="workspace-status">Idle</span></p>
                             </div>
-                        </div>
-                    </div>
-                    <div class="ribbon-group ribbon-rationale-group" aria-label="Scheduler decision rationale">
-                        <div class="ribbon-rationale-header">
-                            <div>
-                                <h2>Decision Rationale</h2>
-                                <p><span id="decision-rationale-count">{{ snapshot.scheduler_rationale_feed | length }}</span> recent items</p>
-                            </div>
-                        </div>
-                        <div class="ribbon-rationale-body" id="decision-rationale-body">
-                            {% if snapshot.scheduler_rationale_feed %}
-                                {% for entry in snapshot.scheduler_rationale_feed %}
-                                    <article class="rationale-entry">
-                                        <div class="rationale-entry-top">
-                                            <div class="rationale-entry-heading">
-                                                <p class="rationale-entry-prefix">{{ entry.host_ip if entry.host_ip else "Project-wide" }}{% if entry.port %}:{{ entry.port }}{% endif %}{% if entry.protocol %}/{{ entry.protocol }}{% endif %}</p>
-                                                <strong class="rationale-entry-title">{{ entry.headline }}</strong>
-                                            </div>
-                                            <span class="rationale-entry-time">{{ entry.timestamp }}</span>
-                                        </div>
-                                        {% if entry.tags %}
-                                            <div class="rationale-entry-tags">
-                                                {% for tag in entry.tags %}
-                                                    <span class="chip rationale-chip">{{ tag }}</span>
-                                                {% endfor %}
-                                            </div>
-                                        {% endif %}
-                                        <p class="rationale-entry-summary">{{ entry.summary }}</p>
-                                        {% if entry.details %}
-                                            <div class="rationale-entry-details">
-                                                {% for detail in entry.details %}
-                                                    <div class="rationale-entry-line">{{ detail }}</div>
-                                                {% endfor %}
-                                            </div>
-                                        {% endif %}
-                                    </article>
-                                {% endfor %}
-                            {% else %}
-                                <p class="meta-note rationale-empty">Scheduler rationale will appear here as tools are ranked, suppressed, and executed.</p>
-                            {% endif %}
-                        </div>
-                    </div>
-                    <div class="ribbon-group ribbon-summary-group" aria-label="Workspace summary">
-                        <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Hosts</span>
-                            <strong id="stat-hosts" class="ribbon-stat-value">{{ snapshot.summary.hosts }}</strong>
-                        </div>
-                        <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Open Ports</span>
-                            <strong id="stat-open-ports" class="ribbon-stat-value">{{ snapshot.summary.open_ports }}</strong>
-                        </div>
-                        <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Services</span>
-                            <strong id="stat-services" class="ribbon-stat-value">{{ snapshot.summary.services }}</strong>
-                        </div>
-                        <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Running Jobs</span>
-                            <strong id="stat-running" class="ribbon-stat-value">{{ snapshot.summary.running_processes }}</strong>
-                        </div>
-                        <div class="ribbon-stat-card">
-                            <span class="ribbon-stat-label">Finished Jobs</span>
-                            <strong id="stat-finished" class="ribbon-stat-value">{{ snapshot.summary.finished_processes }}</strong>
                         </div>
                     </div>
                 </div>
             </div>
+        </div>
+    </section>
+    <div class="status-strip" aria-label="Workspace summary">
+        <span class="stat-inline">Hosts <strong id="stat-hosts" class="ribbon-stat-value">{{ snapshot.summary.hosts }}</strong></span>
+        <span class="stat-inline">Open Ports <strong id="stat-open-ports" class="ribbon-stat-value">{{ snapshot.summary.open_ports }}</strong></span>
+        <span class="stat-inline">Services <strong id="stat-services" class="ribbon-stat-value">{{ snapshot.summary.services }}</strong></span>
+        <span class="stat-inline">Running Jobs <strong id="stat-running" class="ribbon-stat-value">{{ snapshot.summary.running_processes }}</strong></span>
+        <span class="stat-inline">Finished Jobs <strong id="stat-finished" class="ribbon-stat-value">{{ snapshot.summary.finished_processes }}</strong></span>
+    </div>
+    <section class="panel panel-full">
+        <div class="panel-header">
+            <h2>Dangerous Action Approvals</h2>
+            <p id="approval-count">{{ snapshot.scheduler_approvals | length }}</p>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Target</th>
+                    <th>Action</th>
+                    <th>Risk & Policy</th>
+                    <th>Planner</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="approvals-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+
+    <section class="panel panel-7">
+        <div class="panel-header">
+            <h2>Hosts</h2>
+            <div class="panel-header-actions">
+                <label class="panel-inline-select">
+                    Category
+                    <select id="hosts-category-filter-select">
+                        <option value="">all categories</option>
+                    </select>
+                </label>
+                <p id="host-count">{{ snapshot.hosts | length }}</p>
+                <button
+                    id="hosts-reset-filter-button"
+                    class="icon-btn"
+                    type="button"
+                    title="Reset host filters (show only up hosts)"
+                    aria-label="Reset host filters (show only up hosts)"
+                >
+                    <i class="fa-solid fa-filter-circle-xmark" aria-hidden="true"></i>
+                    <span class="sr-only">Reset host filters</span>
+                </button>
+                <div class="ribbon-menu panel-menu" data-ribbon-menu="hosts-panel">
+                    <button
+                        id="hosts-panel-menu-button"
+                        class="panel-menu-button"
+                        type="button"
+                        data-ribbon-menu-toggle="hosts-panel"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                        title="Host options">
+                        <i class="fa-solid fa-bars" aria-hidden="true"></i>
+                        <span class="sr-only">Host options</span>
+                    </button>
+                    <div id="hosts-panel-menu" class="ribbon-submenu panel-submenu" role="menu" aria-label="Host options">
+                        <div class="panel-submenu-group">
+                            <p class="panel-submenu-title">Export</p>
+                            <button id="hosts-export-json-button" class="ribbon-submenu-item" type="button" title="Export visible hosts as JSON">Export JSON</button>
+                            <button id="hosts-export-csv-button" class="ribbon-submenu-item" type="button" title="Export visible hosts as CSV">Export CSV</button>
+                        </div>
+                        <div class="panel-submenu-group">
+                            <p class="panel-submenu-title">Filter</p>
+                            <button id="hosts-filter-show-all-button" class="ribbon-submenu-item" type="button" title="Show all hosts regardless of status">Show All</button>
+                            <button id="hosts-filter-hide-down-button" class="ribbon-submenu-item" type="button" title="Hide hosts with down status">Hide Down Hosts</button>
+                            <div class="panel-filter-dropdown panel-filter-dropdown-menu" id="hosts-service-filter-dropdown">
+                                <button
+                                    id="hosts-service-filter-button"
+                                    class="ribbon-submenu-item panel-filter-button"
+                                    type="button"
+                                    aria-haspopup="true"
+                                    aria-expanded="false"
+                                >Services</button>
+                                <div id="hosts-service-filter-popover" class="panel-filter-popover" hidden>
+                                    <div class="panel-filter-popover-header">
+                                        <strong>Open services</strong>
+                                        <button id="hosts-service-filter-clear-button" type="button">Clear</button>
+                                    </div>
+                                    <div id="hosts-service-filter-list" class="panel-filter-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th></th>
+                    <th>IP</th>
+                    <th>Hostname</th>
+                    <th>Status</th>
+                    <th>OS</th>
+                    <th>Categories</th>
+                    <th>Open Ports</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody id="hosts-body"></tbody>
+            </table>
+        </div>
+    </section>
+    <section class="panel panel-5 process-panel">
+        <div class="panel-header"><h2>Processes</h2></div>
             <div class="ribbon-group ribbon-process-group" aria-label="Process activity">
                 <div class="ribbon-process-header">
                     <div class="ribbon-process-meta">
@@ -308,89 +365,238 @@
                     </table>
                 </div>
             </div>
-        </div>
     </section>
 
-    <section id="credential-capture-panel" class="panel panel-full credential-capture-panel"{% if not credential_capture.get('panel_enabled', True) %} hidden{% endif %}>
-        <div class="panel-header credential-capture-header">
-            <div class="credential-capture-heading">
-                <h2>Credential Capture</h2>
-                <p>
-                    <span id="credential-capture-count">{{ credential_capture.get('capture_count', 0) }}</span> captures |
-                    <span id="credential-capture-hash-count">{{ credential_capture.get('unique_hash_count', 0) }}</span> unique hashes
-                </p>
-            </div>
-            <div class="modal-actions credential-capture-header-actions">
-                <button id="credential-capture-open-credentials-button" type="button">Credentials</button>
-                <button id="credential-capture-open-config-button" type="button">Configuration</button>
+    <section class="panel panel-7">
+        <div class="panel-header">
+            <h2>Services</h2>
+            <div class="panel-header-actions">
+                <label class="panel-inline-select">
+                    Category
+                    <select id="services-category-filter-select">
+                        <option value="">all categories</option>
+                    </select>
+                </label>
+                <p id="services-scope-label" class="panel-scope-label">all hosts</p>
+                <p id="service-count">{{ snapshot.services | length }}</p>
+                <button
+                    id="services-panel-toggle-button"
+                    class="panel-menu-button"
+                    type="button"
+                    title="Show Services"
+                    aria-label="Show Services"
+                    aria-expanded="false"
+                    aria-controls="services-panel-body"
+                >
+                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                    <span class="sr-only">Toggle Services</span>
+                </button>
             </div>
         </div>
-        <div class="credential-capture-grid">
-            <article class="credential-capture-card">
-                <div class="credential-capture-card-header">
-                    <div>
-                        <h3>Responder</h3>
-                        <p id="credential-capture-responder-status">{{ credential_capture.get('responder', {}).get('session', {}).get('status', 'Idle') }}</p>
-                    </div>
-                    <label class="credential-capture-inline-select">
-                        Mode
-                        <select id="credential-capture-responder-mode-quick">
-                            <option value="active" {% if credential_capture.get('responder', {}).get('config', {}).get('mode', 'active') != 'passive' %}selected{% endif %}>active</option>
-                            <option value="passive" {% if credential_capture.get('responder', {}).get('config', {}).get('mode', '') == 'passive' %}selected{% endif %}>passive</option>
-                        </select>
-                    </label>
-                </div>
-                <p id="credential-capture-responder-meta" class="meta-note">
-                    Interface: {{ credential_capture.get('responder', {}).get('config', {}).get('interface_name', '') or 'not configured' }}
-                </p>
-                <div class="modal-actions">
-                    <button id="credential-capture-responder-start-button" type="button">Start</button>
-                    <button id="credential-capture-responder-stop-button" type="button">Stop</button>
-                    <button id="credential-capture-responder-view-log-button" type="button">View Log</button>
-                    <button id="credential-capture-responder-download-log-button" type="button">Download Log</button>
-                </div>
-            </article>
-            <article class="credential-capture-card">
-                <div class="credential-capture-card-header">
-                    <div>
-                        <h3>ntlmrelayx</h3>
-                        <p id="credential-capture-ntlmrelayx-status">{{ credential_capture.get('ntlmrelayx', {}).get('session', {}).get('status', 'Idle') }}</p>
-                    </div>
-                </div>
-                <p id="credential-capture-ntlmrelayx-meta" class="meta-note">
-                    Target: {{ credential_capture.get('ntlmrelayx', {}).get('config', {}).get('target', '') or credential_capture.get('ntlmrelayx', {}).get('config', {}).get('targets_file', '') or 'not configured' }}
-                </p>
-                <div class="modal-actions">
-                    <button id="credential-capture-ntlmrelayx-start-button" type="button">Start</button>
-                    <button id="credential-capture-ntlmrelayx-stop-button" type="button">Stop</button>
-                    <button id="credential-capture-ntlmrelayx-view-log-button" type="button">View Log</button>
-                    <button id="credential-capture-ntlmrelayx-download-log-button" type="button">Download Log</button>
-                </div>
-            </article>
-            <article class="credential-capture-card credential-capture-recent-card">
-                <div class="credential-capture-card-header">
-                    <div>
-                        <h3>Recent Captures</h3>
-                        <p class="meta-note">Latest observed hashes and credentials.</p>
-                    </div>
-                </div>
-                <div id="credential-capture-recent-list" class="credential-capture-recent-list">
-                    {% if credential_capture.get('recent_captures') %}
-                        {% for capture in credential_capture.get('recent_captures', []) %}
-                            <div class="credential-capture-recent-item">
-                                <strong>{{ capture.get('username', '') or 'unknown-user' }}</strong>
-                                <span>{{ capture.get('source', '') or capture.get('tool', '') }}</span>
-                                <small>{{ capture.get('capturedAt', '') }}</small>
+        <div id="services-panel-body" class="table-wrap" hidden>
+            <table>
+                <thead>
+                <tr>
+                    <th></th>
+                    <th>Service</th>
+                    <th>Port</th>
+                    <th>Hosts</th>
+                    <th>Ports</th>
+                    <th>Protocols</th>
+                    <th>Categories</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="services-body"></tbody>
+            </table>
+        </div>
+    </section>
+    <section class="panel panel-5 rationale-panel">
+                    <div class="ribbon-group ribbon-rationale-group" aria-label="Scheduler decision rationale">
+                        <div class="ribbon-rationale-header">
+                            <div>
+                                <h2>Decision Rationale</h2>
+                                <p><span id="decision-rationale-count">{{ snapshot.scheduler_rationale_feed | length }}</span> recent items</p>
                             </div>
-                        {% endfor %}
-                    {% else %}
-                        <p class="meta-note credential-capture-empty">No captured credentials yet.</p>
-                    {% endif %}
-                </div>
-            </article>
-        </div>
+                        </div>
+                        <div class="ribbon-rationale-body" id="decision-rationale-body">
+                            {% if snapshot.scheduler_rationale_feed %}
+                                {% for entry in snapshot.scheduler_rationale_feed %}
+                                    <article class="rationale-entry">
+                                        <div class="rationale-entry-top">
+                                            <div class="rationale-entry-heading">
+                                                <p class="rationale-entry-prefix">{{ entry.host_ip if entry.host_ip else "Project-wide" }}{% if entry.port %}:{{ entry.port }}{% endif %}{% if entry.protocol %}/{{ entry.protocol }}{% endif %}</p>
+                                                <strong class="rationale-entry-title">{{ entry.headline }}</strong>
+                                            </div>
+                                            <span class="rationale-entry-time">{{ entry.timestamp }}</span>
+                                        </div>
+                                        {% if entry.tags %}
+                                            <div class="rationale-entry-tags">
+                                                {% for tag in entry.tags %}
+                                                    <span class="chip rationale-chip">{{ tag }}</span>
+                                                {% endfor %}
+                                            </div>
+                                        {% endif %}
+                                        <p class="rationale-entry-summary">{{ entry.summary }}</p>
+                                        {% if entry.details %}
+                                            <div class="rationale-entry-details">
+                                                {% for detail in entry.details %}
+                                                    <div class="rationale-entry-line">{{ detail }}</div>
+                                                {% endfor %}
+                                            </div>
+                                        {% endif %}
+                                    </article>
+                                {% endfor %}
+                            {% else %}
+                                <p class="meta-note rationale-empty">Scheduler rationale will appear here as tools are ranked, suppressed, and executed.</p>
+                            {% endif %}
+                        </div>
+                    </div>
     </section>
 
+    <section class="panel panel-full">
+        <div class="panel-header">
+            <h2>Host Detail</h2>
+            <p id="host-detail-name"></p>
+        </div>
+                <div class="detail-grid">
+        <div class="detail-cell detail-full">
+    <h3>Ports</h3>
+    <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Port</th>
+                        <th>Protocol</th>
+                        <th>State</th>
+                        <th>Service</th>
+                        <th>Product</th>
+                        <th>Banner</th>
+                        <th>Screenshot</th>
+                    </tr>
+                    </thead>
+                    <tbody id="host-detail-ports"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="detail-cell">
+    <h3>Scripts</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Script DB ID</th>
+                        <th>Script ID</th>
+                        <th>Output</th>
+                        <th>Action</th>
+                    </tr>
+                    </thead>
+                    <tbody id="host-detail-scripts"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="detail-cell">
+    <h3>CVEs</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>CVE ID</th>
+                        <th>Name</th>
+                        <th>Severity</th>
+                        <th>Product</th>
+                        <th>URL</th>
+                        <th>Action</th>
+                    </tr>
+                    </thead>
+                    <tbody id="host-detail-cves"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="detail-cell">
+            <div class="panel-header">
+                <h3>Device Categories</h3>
+                <p id="host-device-category-count">0</p>
+            </div>
+            <div id="host-detail-categories" class="category-chip-list"></div>
+            <p id="host-detail-category-note" class="meta-note"></p>
+        </div>
+        <div class="detail-cell">
+            <div class="panel-header">
+                <h3>Technologies</h3>
+                <p id="host-ai-tech-count">0</p>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Version</th>
+                        <th>CPE</th>
+                        <th>Evidence</th>
+                    </tr>
+                    </thead>
+                    <tbody id="host-detail-ai-technologies"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="detail-cell">
+            <div class="panel-header">
+                <h3>Findings</h3>
+                <p id="host-ai-finding-count">0</p>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Severity</th>
+                        <th>Title</th>
+                        <th>CVE</th>
+                        <th>CVSS</th>
+                        <th>Evidence</th>
+                    </tr>
+                    </thead>
+                    <tbody id="host-detail-ai-findings"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="detail-cell detail-full">
+            <div class="panel-header">
+                <h3>Manual Tests</h3>
+                <p id="host-ai-manual-count">0</p>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Why</th>
+                        <th>Command</th>
+                        <th>Scope Note</th>
+                    </tr>
+                    </thead>
+                    <tbody id="host-detail-ai-manual-tests"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="detail-cell">
+            <div class="panel-header">
+                <h3>Analysis Status</h3>
+                <p id="host-ai-analysis-status"></p>
+            </div>
+            <div class="host-ai-report-actions">
+                <button id="host-ai-export-json-button" type="button">Export Report JSON</button>
+                <button id="host-ai-export-md-button" type="button">Export Report Markdown</button>
+            </div>
+        </div>
+        <div class="detail-cell">
+            <div class="panel-header">
+                <h3>Screenshots</h3>
+                <p id="host-screenshot-count">0</p>
+            </div>
+            <div id="host-detail-screenshots" class="screenshot-list"></div>
+        </div>
+        </div>
+    </section>
     <section id="graph-workspace-panel" class="panel panel-full graph-panel" data-graph-enabled="{{ 'true' if graph_workspace_enabled else 'false' }}"{% if not graph_workspace_enabled %} hidden{% endif %}>
         <div class="panel-header graph-panel-header">
             <div class="graph-panel-heading">
@@ -737,276 +943,86 @@
         </div>
         </div>
     </section>
-    <section class="panel">
-        <div class="panel-header">
-            <h2>Hosts</h2>
-            <div class="panel-header-actions">
-                <label class="panel-inline-select">
-                    Category
-                    <select id="hosts-category-filter-select">
-                        <option value="">all categories</option>
-                    </select>
-                </label>
-                <p id="host-count">{{ snapshot.hosts | length }}</p>
-                <button
-                    id="hosts-reset-filter-button"
-                    class="icon-btn"
-                    type="button"
-                    title="Reset host filters (show only up hosts)"
-                    aria-label="Reset host filters (show only up hosts)"
-                >
-                    <i class="fa-solid fa-filter-circle-xmark" aria-hidden="true"></i>
-                    <span class="sr-only">Reset host filters</span>
-                </button>
-                <div class="ribbon-menu panel-menu" data-ribbon-menu="hosts-panel">
-                    <button
-                        id="hosts-panel-menu-button"
-                        class="panel-menu-button"
-                        type="button"
-                        data-ribbon-menu-toggle="hosts-panel"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                        title="Host options">
-                        <i class="fa-solid fa-bars" aria-hidden="true"></i>
-                        <span class="sr-only">Host options</span>
-                    </button>
-                    <div id="hosts-panel-menu" class="ribbon-submenu panel-submenu" role="menu" aria-label="Host options">
-                        <div class="panel-submenu-group">
-                            <p class="panel-submenu-title">Export</p>
-                            <button id="hosts-export-json-button" class="ribbon-submenu-item" type="button" title="Export visible hosts as JSON">Export JSON</button>
-                            <button id="hosts-export-csv-button" class="ribbon-submenu-item" type="button" title="Export visible hosts as CSV">Export CSV</button>
-                        </div>
-                        <div class="panel-submenu-group">
-                            <p class="panel-submenu-title">Filter</p>
-                            <button id="hosts-filter-show-all-button" class="ribbon-submenu-item" type="button" title="Show all hosts regardless of status">Show All</button>
-                            <button id="hosts-filter-hide-down-button" class="ribbon-submenu-item" type="button" title="Hide hosts with down status">Hide Down Hosts</button>
-                            <div class="panel-filter-dropdown panel-filter-dropdown-menu" id="hosts-service-filter-dropdown">
-                                <button
-                                    id="hosts-service-filter-button"
-                                    class="ribbon-submenu-item panel-filter-button"
-                                    type="button"
-                                    aria-haspopup="true"
-                                    aria-expanded="false"
-                                >Services</button>
-                                <div id="hosts-service-filter-popover" class="panel-filter-popover" hidden>
-                                    <div class="panel-filter-popover-header">
-                                        <strong>Open services</strong>
-                                        <button id="hosts-service-filter-clear-button" type="button">Clear</button>
-                                    </div>
-                                    <div id="hosts-service-filter-list" class="panel-filter-list"></div>
-                                </div>
-                            </div>
-                        </div>
+    <section id="credential-capture-panel" class="panel panel-full credential-capture-panel"{% if not credential_capture.get('panel_enabled', True) %} hidden{% endif %}>
+        <div class="panel-header credential-capture-header">
+            <div class="credential-capture-heading">
+                <h2>Credential Capture</h2>
+                <p>
+                    <span id="credential-capture-count">{{ credential_capture.get('capture_count', 0) }}</span> captures |
+                    <span id="credential-capture-hash-count">{{ credential_capture.get('unique_hash_count', 0) }}</span> unique hashes
+                </p>
+            </div>
+            <div class="modal-actions credential-capture-header-actions">
+                <button id="credential-capture-open-credentials-button" type="button">Credentials</button>
+                <button id="credential-capture-open-config-button" type="button">Configuration</button>
+            </div>
+        </div>
+        <div class="credential-capture-grid">
+            <article class="credential-capture-card">
+                <div class="credential-capture-card-header">
+                    <div>
+                        <h3>Responder</h3>
+                        <p id="credential-capture-responder-status">{{ credential_capture.get('responder', {}).get('session', {}).get('status', 'Idle') }}</p>
+                    </div>
+                    <label class="credential-capture-inline-select">
+                        Mode
+                        <select id="credential-capture-responder-mode-quick">
+                            <option value="active" {% if credential_capture.get('responder', {}).get('config', {}).get('mode', 'active') != 'passive' %}selected{% endif %}>active</option>
+                            <option value="passive" {% if credential_capture.get('responder', {}).get('config', {}).get('mode', '') == 'passive' %}selected{% endif %}>passive</option>
+                        </select>
+                    </label>
+                </div>
+                <p id="credential-capture-responder-meta" class="meta-note">
+                    Interface: {{ credential_capture.get('responder', {}).get('config', {}).get('interface_name', '') or 'not configured' }}
+                </p>
+                <div class="modal-actions">
+                    <button id="credential-capture-responder-start-button" type="button">Start</button>
+                    <button id="credential-capture-responder-stop-button" type="button">Stop</button>
+                    <button id="credential-capture-responder-view-log-button" type="button">View Log</button>
+                    <button id="credential-capture-responder-download-log-button" type="button">Download Log</button>
+                </div>
+            </article>
+            <article class="credential-capture-card">
+                <div class="credential-capture-card-header">
+                    <div>
+                        <h3>ntlmrelayx</h3>
+                        <p id="credential-capture-ntlmrelayx-status">{{ credential_capture.get('ntlmrelayx', {}).get('session', {}).get('status', 'Idle') }}</p>
                     </div>
                 </div>
-            </div>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th></th>
-                    <th>IP</th>
-                    <th>Hostname</th>
-                    <th>Status</th>
-                    <th>OS</th>
-                    <th>Categories</th>
-                    <th>Open Ports</th>
-                    <th></th>
-                </tr>
-                </thead>
-                <tbody id="hosts-body"></tbody>
-            </table>
-        </div>
-    </section>
-
-    <section class="panel">
-        <div class="panel-header">
-            <h2>Services</h2>
-            <div class="panel-header-actions">
-                <label class="panel-inline-select">
-                    Category
-                    <select id="services-category-filter-select">
-                        <option value="">all categories</option>
-                    </select>
-                </label>
-                <p id="services-scope-label" class="panel-scope-label">all hosts</p>
-                <p id="service-count">{{ snapshot.services | length }}</p>
-                <button
-                    id="services-panel-toggle-button"
-                    class="panel-menu-button"
-                    type="button"
-                    title="Show Services"
-                    aria-label="Show Services"
-                    aria-expanded="false"
-                    aria-controls="services-panel-body"
-                >
-                    <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                    <span class="sr-only">Toggle Services</span>
-                </button>
-            </div>
-        </div>
-        <div id="services-panel-body" class="table-wrap" hidden>
-            <table>
-                <thead>
-                <tr>
-                    <th></th>
-                    <th>Service</th>
-                    <th>Port</th>
-                    <th>Hosts</th>
-                    <th>Ports</th>
-                    <th>Protocols</th>
-                    <th>Categories</th>
-                    <th>Actions</th>
-                </tr>
-                </thead>
-                <tbody id="services-body"></tbody>
-            </table>
+                <p id="credential-capture-ntlmrelayx-meta" class="meta-note">
+                    Target: {{ credential_capture.get('ntlmrelayx', {}).get('config', {}).get('target', '') or credential_capture.get('ntlmrelayx', {}).get('config', {}).get('targets_file', '') or 'not configured' }}
+                </p>
+                <div class="modal-actions">
+                    <button id="credential-capture-ntlmrelayx-start-button" type="button">Start</button>
+                    <button id="credential-capture-ntlmrelayx-stop-button" type="button">Stop</button>
+                    <button id="credential-capture-ntlmrelayx-view-log-button" type="button">View Log</button>
+                    <button id="credential-capture-ntlmrelayx-download-log-button" type="button">Download Log</button>
+                </div>
+            </article>
+            <article class="credential-capture-card credential-capture-recent-card">
+                <div class="credential-capture-card-header">
+                    <div>
+                        <h3>Recent Captures</h3>
+                        <p class="meta-note">Latest observed hashes and credentials.</p>
+                    </div>
+                </div>
+                <div id="credential-capture-recent-list" class="credential-capture-recent-list">
+                    {% if credential_capture.get('recent_captures') %}
+                        {% for capture in credential_capture.get('recent_captures', []) %}
+                            <div class="credential-capture-recent-item">
+                                <strong>{{ capture.get('username', '') or 'unknown-user' }}</strong>
+                                <span>{{ capture.get('source', '') or capture.get('tool', '') }}</span>
+                                <small>{{ capture.get('capturedAt', '') }}</small>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <p class="meta-note credential-capture-empty">No captured credentials yet.</p>
+                    {% endif %}
+                </div>
+            </article>
         </div>
     </section>
 
-    <section class="panel panel-full">
-        <div class="panel-header">
-            <h2>Host Detail</h2>
-            <p id="host-detail-name"></p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>Port</th>
-                    <th>Protocol</th>
-                    <th>State</th>
-                    <th>Service</th>
-                    <th>Product</th>
-                    <th>Banner</th>
-                    <th>Screenshot</th>
-                </tr>
-                </thead>
-                <tbody id="host-detail-ports"></tbody>
-            </table>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>Script DB ID</th>
-                    <th>Script ID</th>
-                    <th>Output</th>
-                    <th>Action</th>
-                </tr>
-                </thead>
-                <tbody id="host-detail-scripts"></tbody>
-            </table>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>CVE ID</th>
-                    <th>Name</th>
-                    <th>Severity</th>
-                    <th>Product</th>
-                    <th>URL</th>
-                    <th>Action</th>
-                </tr>
-                </thead>
-                <tbody id="host-detail-cves"></tbody>
-            </table>
-        </div>
-        <div class="panel-header">
-            <h3>Device Categories</h3>
-            <p id="host-device-category-count">0</p>
-        </div>
-        <div id="host-detail-categories" class="category-chip-list"></div>
-        <p id="host-detail-category-note" class="meta-note"></p>
-        <div class="panel-header">
-            <h3>Technologies</h3>
-            <p id="host-ai-tech-count">0</p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Version</th>
-                    <th>CPE</th>
-                    <th>Evidence</th>
-                </tr>
-                </thead>
-                <tbody id="host-detail-ai-technologies"></tbody>
-            </table>
-        </div>
-        <div class="panel-header">
-            <h3>Findings</h3>
-            <p id="host-ai-finding-count">0</p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>Severity</th>
-                    <th>Title</th>
-                    <th>CVE</th>
-                    <th>CVSS</th>
-                    <th>Evidence</th>
-                </tr>
-                </thead>
-                <tbody id="host-detail-ai-findings"></tbody>
-            </table>
-        </div>
-        <div class="panel-header">
-            <h3>Manual Tests</h3>
-            <p id="host-ai-manual-count">0</p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>Why</th>
-                    <th>Command</th>
-                    <th>Scope Note</th>
-                </tr>
-                </thead>
-                <tbody id="host-detail-ai-manual-tests"></tbody>
-            </table>
-        </div>
-        <div class="panel-header">
-            <h3>Analysis Status</h3>
-            <p id="host-ai-analysis-status"></p>
-        </div>
-        <div class="host-ai-report-actions">
-            <button id="host-ai-export-json-button" type="button">Export Report JSON</button>
-            <button id="host-ai-export-md-button" type="button">Export Report Markdown</button>
-        </div>
-        <div class="panel-header">
-            <h3>Screenshots</h3>
-            <p id="host-screenshot-count">0</p>
-        </div>
-        <div id="host-detail-screenshots" class="screenshot-list"></div>
-    </section>
-
-    <section class="panel panel-full">
-        <div class="panel-header">
-            <h2>Dangerous Action Approvals</h2>
-            <p id="approval-count">{{ snapshot.scheduler_approvals | length }}</p>
-        </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Target</th>
-                    <th>Action</th>
-                    <th>Risk & Policy</th>
-                    <th>Planner</th>
-                    <th>Actions</th>
-                </tr>
-                </thead>
-                <tbody id="approvals-body"></tbody>
-            </table>
-        </div>
-    </section>
 
 </main>
 

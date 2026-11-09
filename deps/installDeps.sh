@@ -1,5 +1,22 @@
 #!/bin/bash
 
+# macOS: external scan tools come from Homebrew (optional, resolved via PATH).
+# Only formulae that exist in homebrew-core are listed; whatweb/wapiti/hping3
+# have no formula (install manually if needed). xsltproc ships with macOS.
+# NOTE: homebrew's `medusa` is a smart-contract fuzzer, NOT the Foofus login
+# bruteforcer Legion's snmp-brute action expects - do not install it here.
+if [ "$(uname -s)" = "Darwin" ]; then
+    if command -v brew >/dev/null 2>&1; then
+        for tool in nmap nikto hydra sqlmap sslscan dnsmap; do
+            brew install "$tool" 2>/dev/null || \
+                echo "Optional tool $tool failed to install; Legion still runs without it."
+        done
+    else
+        echo "Homebrew not found; install scan tools manually (brew install nmap nikto ...)."
+    fi
+    exit 0
+fi
+
 source ./deps/apt.sh
 
 # Install deps

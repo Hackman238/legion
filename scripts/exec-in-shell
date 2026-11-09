@@ -1,5 +1,11 @@
 #!/bin/sh
 eval $@
 USER=${USER:-$(whoami)}
-SHELL=${SHELL:-$(getent passwd $USER|cut -d: -f7)}
+if [ -z "${SHELL:-}" ]; then
+    if command -v getent >/dev/null 2>&1; then
+        SHELL=$(getent passwd "$USER" | cut -d: -f7)
+    fi
+    # macOS has no getent; fall back to the default shell there.
+    SHELL=${SHELL:-/bin/zsh}
+fi
 ${SHELL:-bash} -i

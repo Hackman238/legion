@@ -1568,6 +1568,51 @@ class WebRuntimeDomainModulesTest(unittest.TestCase):
         self.assertIn("-sC", plan["stages"][0]["command"])
         self.assertIn("--top-ports 1000", plan["stages"][0]["command"])
 
+    def test_runtime_scan_planning_omits_os_detection_without_privileges(self):
+        from unittest.mock import patch
+
+        from app.web import runtime_scan_planning
+
+        with patch.object(runtime_scan_planning, "can_raw_socket", return_value=False, create=True):
+            staged = runtime_scan_planning.build_nmap_scan_plan(
+                None,
+                targets=["10.0.0.5"],
+                discovery=True,
+                staged=True,
+                nmap_path="nmap",
+                nmap_args="",
+                output_prefix="/tmp/scan-staged",
+                scan_mode="easy",
+                scan_options={},
+            )
+            hard = runtime_scan_planning.build_nmap_scan_plan(
+                None,
+                targets=["10.0.0.5"],
+                discovery=False,
+                staged=False,
+                nmap_path="nmap",
+                nmap_args="",
+                output_prefix="/tmp/scan-hard",
+                scan_mode="hard",
+                scan_options={},
+            )
+            legacy_staged = runtime_scan_planning.build_nmap_scan_plan(
+                None,
+                targets=["10.0.0.5"],
+                discovery=True,
+                staged=True,
+                nmap_path="nmap",
+                nmap_args="",
+                output_prefix="/tmp/scan-legacy",
+                scan_mode="legacy",
+                scan_options={},
+            )
+
+        for stage in staged["stages"] + hard["stages"] + legacy_staged["stages"]:
+            tokens = stage["command"].split()
+            self.assertNotIn("-O", tokens, stage["command"])
+            self.assertNotIn("-A", tokens, stage["command"])
+
     def test_runtime_scan_nmap_module_starts_scan_job_and_records_submission(self):
         from app.web import runtime_scan_nmap
 

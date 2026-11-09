@@ -22,9 +22,8 @@ from PyQt6.QtWidgets import *
 from PyQt6 import QtWidgets, QtGui
 from app.auxiliary import *                                             # for timestamps
 from app.timing import getTimestamp
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (was six.u)
 import shlex
-import os
 
 class BruteWidget(QtWidgets.QWidget):
     
@@ -811,7 +810,7 @@ class HostInformationWidget(QtWidgets.QWidget):
         self.LongitudeLayout.addWidget(self.LongitudeText)
         self.LongitudeLayout.addStretch()
         
-        font = QtGui.QFont('Calibri', 12)        # in each different section
+        font = QtGui.QFont('Sans Serif', 12)        # in each different section
         font.setBold(True)
         self.HostStatusLabel.setText('Host Status')
         self.HostStatusLabel.setFont(font)

@@ -1,4 +1,9 @@
-FROM python:3.10
+# Dev image: tracks the development branch of the public repo.
+# Build from this directory:  docker build -f Dockerfile.dev -t legion:dev .
+# Pin another ref with --build-arg LEGION_REF=<sha-or-branch>.
+FROM python:3.15
+
+ARG LEGION_REF=development
 
 WORKDIR /
 ENV DISPLAY=:0
@@ -15,7 +20,9 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone https://github.com/Hackman238/legion.git -b development
+RUN git clone https://github.com/Hackman238/legion.git \
+    && git -C legion fetch origin "${LEGION_REF}" \
+    && git -C legion checkout --detach FETCH_HEAD
 RUN cd legion && \
     chmod +x ./startLegion.sh && \
     chmod +x ./deps/* -R && \

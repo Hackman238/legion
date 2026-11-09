@@ -22,7 +22,7 @@ from PyQt6.QtGui import *                                               # for fi
 from PyQt6.QtWidgets import *
 from PyQt6 import QtWidgets, QtGui
 from app.auxiliary import *                                             # for timestamps
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (was six.u)
 from ui.ancillaryDialog import flipState
 
 try:
@@ -62,7 +62,7 @@ class AddHostsDialog(QtWidgets.QDialog):
         
         self.lblHostExample = QtWidgets.QLabel(self)
         self.lblHostExample.setText('Ex: 192.168.1.0/24; 10.10.10.10-20; 2001:db8::/64; bing.com')
-        self.font = QtGui.QFont('Calibri', 10)
+        self.font = QtGui.QFont('Sans Serif', 10)
         self.lblHostExample.setFont(self.font)
         self.lblHostExample.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.spacer = QSpacerItem(15,15)

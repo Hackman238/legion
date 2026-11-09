@@ -44,6 +44,11 @@ class PythonImporter(QtCore.QThread):
     def setHostIp(self, hostIp):
         self.hostIp = hostIp
 
+    def setShodanApiKey(self, apiKey):
+        shodan_script = self.pythonScriptDispatch.get('pyShodan')
+        if shodan_script is not None and hasattr(shodan_script, "setApiKey"):
+            shodan_script.setApiKey(apiKey)
+
     def setPythonScript(self, pythonScript):
         self.pythonScriptObj = self.pythonScriptDispatch[pythonScript]
 

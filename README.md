@@ -167,7 +167,7 @@ Legion is best supported today on recent Linux pentest/operator environments:
 
 Recommended baseline:
 
-- Python `3.12+`
+- Python `3.12+` (project `.python-version` pins the current `3.15`)
 - a current Chromium or Firefox install for screenshot workflows
 - Nmap plus whichever local tools you want Legion to orchestrate (`nuclei`, `ffuf`, `whatweb`, `smbmap`, `enum4linux-ng`, `wpscan`, and similar)
 
@@ -188,6 +188,62 @@ python legion.py --web
 ```
 
 Open `http://127.0.0.1:5000` unless you used `--web-bind-all`.
+
+### macOS (native, Apple Silicon / Intel)
+
+Requires Homebrew Python 3.15 (see `.python-version`; any `3.12+` works).
+No Docker, X11, or root GUI is used; the Qt interface runs on the native
+Cocoa platform, and the web/headless/MCP paths work unchanged.
+
+```shell
+brew install python@3.15 nmap nikto   # nmap/nikto: core scan tools
+# optional tools, resolved from PATH when present:
+brew install hydra sqlmap sslscan dnsmap
+
+git clone https://github.com/Hackman238/legion.git
+cd legion
+chmod +x startLegion-macos.sh
+./startLegion-macos.sh setup          # creates .venv, installs requirements
+./startLegion-macos.sh --web          # web UI on 127.0.0.1:5000
+./startLegion-macos.sh                # or the Qt GUI (unprivileged)
+```
+
+Notes for macOS:
+
+- Raw-socket nmap scans (`-sS`, `-O`) need root or `/dev/bpf*` access; the
+  GUI itself runs unprivileged (set `LEGION_REQUIRE_ROOT=1` to restore the
+  root-only gate). macOS may also prompt for Local Network permission.
+- Config lives in `~/Library/Application Support/legion/legion.conf`
+  (override with `LEGION_HOME`, temp dir with `LEGION_TMPDIR`).
+- Tool paths are bare names resolved via `PATH` (`/opt/homebrew/bin` on
+  Apple Silicon, `/usr/local/bin` on Intel); terminal actions open
+  Terminal.app. There is no Homebrew formula for whatweb/wapiti/hping3 or
+  the Foofus `medusa` (the brew `medusa` package is an unrelated fuzzer) -
+  install those manually if needed, or use Legion's container tool mode.
+- Tests: `QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover`,
+  lint `.venv/bin/flake8`, audit `.venv/bin/pip-audit` (after
+  `.venv/bin/python -m pip install -r requirements-dev.txt`).
+  `./startLegion.sh` on macOS delegates to `startLegion-macos.sh`.
+
+### Docker
+
+Two slim images are provided in addition to the Kali operator image at the
+repo root:
+
+```shell
+# This checkout (recommended for development/CI parity):
+docker build -f docker/Dockerfile.local -t legion:local .
+docker run --rm legion:local python legion.py --help
+
+# Published code at a pinned ref (docker/Dockerfile, ARG LEGION_REF):
+docker build -t legion docker/
+```
+
+Both run as the unprivileged `legion` user. The web UI has **no built-in
+authentication**: bind it to localhost
+(`-p 127.0.0.1:5000:5000 ... --web --web-bind-all`) or a trusted network
+only. Raw-socket scans need extra privilege, e.g.
+`--cap-add NET_RAW --cap-add NET_ADMIN`.
 
 ### Kali Side-By-Side Dev Install
 

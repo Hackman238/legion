@@ -81,7 +81,6 @@ class SmokeTests(unittest.TestCase):
 
     def test_project_save_and_load_roundtrip(self):
         project = self._create_project()
-        host_repository = project.repositoryContainer.hostRepository
 
         session = project.database.session()
         session.add(hostObj(ip="10.0.0.1", ipv4="10.0.0.1", hostname="smoke-host"))

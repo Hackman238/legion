@@ -26,8 +26,9 @@ class MockObserver(AbstractUpdateProgressObserver):
     finished = False
     progress = 0
 
-    def onProgressUpdate(self, progress) -> None:
+    def onProgressUpdate(self, progress, title="") -> None:
         self.progress = progress
+        self.title = title
 
     def onStart(self) -> None:
         self.started = True
@@ -64,3 +65,8 @@ class UpdateProgressObservableTest(unittest.TestCase):
         self.updateProgressObservable.updateProgress(25)
         self.assertEqual(25, self.someObserver.progress)
         self.assertEqual(25, self.anotherObserver.progress)
+
+    def test_updateProgress_forwardsTitleToObservers(self):
+        self.updateProgressObservable.updateProgress(40, "Scanning 10.0.0.1")
+        self.assertEqual("Scanning 10.0.0.1", self.someObserver.title)
+        self.assertEqual("Scanning 10.0.0.1", self.anotherObserver.title)

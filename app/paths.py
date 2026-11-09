@@ -6,7 +6,14 @@ import tempfile
 from typing import Optional
 
 
-_DEFAULT_LEGION_HOME = "~/.local/share/legion"
+import sys
+
+def _default_legion_home() -> str:
+    # Computed at call time (not import) so platform is never stale.
+    if sys.platform == "darwin":
+        return "~/Library/Application Support/legion"
+    return "~/.local/share/legion"
+
 _warned_fallback_home = False
 log = logging.getLogger(__name__)
 
@@ -50,7 +57,13 @@ def _is_writable_directory(path: str) -> bool:
 
 def get_legion_home() -> str:
     override = str(os.environ.get("LEGION_HOME", "") or "").strip()
-    base = override if override else _DEFAULT_LEGION_HOME
+    if not override and sys.platform == "darwin":
+        # Preserve pre-macOS-port installs/data that used the Linux-style
+        # home. Fresh macOS installs use ~/Library/Application Support.
+        legacy_home = os.path.abspath(os.path.expanduser("~/.local/share/legion"))
+        if os.path.isfile(os.path.join(legacy_home, "legion.conf")):
+            return legacy_home
+    base = override if override else _default_legion_home()
     resolved = os.path.abspath(os.path.expanduser(base))
     if override or _is_writable_directory(resolved):
         return resolved

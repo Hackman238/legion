@@ -18,7 +18,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 from sqlalchemy import Column, Integer, ForeignKey, String
 
 from db.database import Base
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (was six.u)
 
 
 class process_output(Base):

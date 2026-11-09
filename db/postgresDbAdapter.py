@@ -15,6 +15,9 @@ Copyright (c) 2025 Shane William Scott
 
 """
 
+# NOTE: experimental and currently unused - nothing imports this adapter
+# (the app uses db/SqliteDbAdapter.py) and no Postgres driver (psycopg)
+# is in requirements.txt. Kept import-safe under SQLAlchemy 2.
 import time
 import threading
 from random import randint
@@ -32,7 +35,7 @@ class Database:
         self.log = getDbLogger()
         self.base = Base
         try:
-            self.establishSqliteConnection(user, passw. db. host, port)
+            self.establishSqliteConnection(user, passw, db, host, port)
         except Exception as e:
             self.log.error('Could not create SQLite database. Please try again.')
             self.log.info(e)
@@ -51,19 +54,16 @@ class Database:
         self.passw = passw
         self.dbsemaphore = threading.Semaphore(1)  # to control concurrent write access to db
         url = 'postgresql://{}:{}@{}:{}/{}'
-        url = url.format(user, password, host, port, db)
+        url = url.format(user, passw, host, port, db)
         # The return value of create_engine() is our connection object
-        self.engine = sqlalchemy.create_engine(
-            url, client_encoding='utf8')
+        self.engine = create_engine(url)
         # We then bind the connection to MetaData()
         #meta = sqlalchemy.MetaData(bind=con, reflect=True)
         self.session = scoped_session(sessionmaker())
         self.session.configure(bind=self.engine, autoflush=False)
         self.metadata = self.base.metadata
         self.metadata.create_all(self.engine)
-        self.metadata.echo = True
-        self.metadata.bind = self.engine
-        self.log.info(f"Established SQLite connection on file '{dbFileName}'")
+        self.log.info(f"Established Postgres connection to db '{db}'")
 
     def commit(self):
         self.dbsemaphore.acquire()

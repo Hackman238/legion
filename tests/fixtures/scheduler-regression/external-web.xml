@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="nmap.xsl" type="text/xsl"?>
+<nmaprun scanner="nmap" args="nmap -oX output.xml -sV 198.51.100.25"
+         start="1586997299" startstr="Wed Apr 15 20:34:59 2020" version="7.80" xmloutputversion="1.04">
+    <scaninfo type="connect" protocol="tcp" numservices="2" services="80,443"/>
+    <verbose level="0"/>
+    <debugging level="0"/>
+    <host starttime="1586997299" endtime="1586997299">
+        <status state="up" reason="syn-ack" reason_ttl="0"/>
+        <address addr="198.51.100.25" addrtype="ipv4"/>
+        <hostnames>
+            <hostname name="portal.example.test" type="PTR"/>
+        </hostnames>
+        <ports>
+            <port protocol="tcp" portid="80">
+                <state state="open" reason="syn-ack" reason_ttl="0"/>
+                <service extrainfo="" name="http" servicefp="" product="nginx" conf="10" version="1.25"/>
+            </port>
+            <port protocol="tcp" portid="443">
+                <state state="open" reason="syn-ack" reason_ttl="0"/>
+                <service extrainfo="" name="https" servicefp="" product="nginx" conf="10" version="1.25"/>
+            </port>
+        </ports>
+        <times srtt="1000" rttvar="100" to="100000"/>
+    </host>
+    <runstats>
+        <finished time="1586997299" timestr="Wed Apr 15 20:34:59 2020" elapsed="0.21"
+                  summary="Only a test."
+                  exit="success"/>
+        <hosts up="1" down="0" total="1"/>
+    </runstats>
+</nmaprun>

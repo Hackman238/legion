@@ -106,3 +106,40 @@ class LegionLauncherTest(unittest.TestCase):
             )
         self.assertEqual(1, ctx.exception.code)
         self.assertIn("incompatible Flask/Werkzeug environment", stderr.getvalue())
+
+    def test_clamp_window_geometry_shrinks_oversized_window_to_screen(self):
+        # Reported on macOS: the window grew to 4217x1025 on a 1728-wide
+        # screen and the (centered) Log tab moved off-screen.
+        result = legion.clamp_window_geometry(
+            size=(4217, 1100), position=(0, 49), available=(0, 33, 1728, 1025)
+        )
+        self.assertEqual((0, 33, 1728, 1025), result)
+
+    def test_clamp_window_geometry_moves_offscreen_window_back_inside(self):
+        result = legion.clamp_window_geometry(
+            size=(1200, 800), position=(1500, 900), available=(0, 33, 1728, 1025)
+        )
+        self.assertEqual((528, 258, 1200, 800), result)
+
+    def test_clamp_window_geometry_keeps_fitting_window_unchanged(self):
+        result = legion.clamp_window_geometry(
+            size=(1200, 800), position=(100, 80), available=(0, 33, 1728, 1025)
+        )
+        self.assertEqual((100, 80, 1200, 800), result)
+
+    def test_gui_excepthook_logs_instead_of_aborting(self):
+        import sys
+
+        original_hook = sys.excepthook
+        try:
+            legion._install_gui_excepthook()
+            self.assertIsNot(sys.excepthook, sys.__excepthook__)
+            try:
+                raise NameError("name 'MyQProcess' is not defined")
+            except NameError:
+                # Must log and return normally, not raise/abort.
+                with self.assertLogs("legion.gui", level="ERROR") as logs:
+                    sys.excepthook(*sys.exc_info())
+            self.assertIn("MyQProcess", "\n".join(logs.output))
+        finally:
+            sys.excepthook = original_hook

@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# macOS uses the native Cocoa Qt platform plugin, not X11/$DISPLAY.
+if [ "$(uname -s)" = "Darwin" ]; then
+    echo "macOS: using native Cocoa display, no X server needed."
+    return 0 2>/dev/null || exit 0
+fi
+
 checkWsl() {
 # Check if WSL is in use
 if grep -q Microsoft /proc/version; then

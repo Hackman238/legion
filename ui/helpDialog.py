@@ -22,7 +22,7 @@ from PyQt6.QtGui import *
 from PyQt6.QtWidgets import *
 from PyQt6 import QtWidgets, QtGui
 from app.auxiliary import *
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (was six.u)
 from ui.ancillaryDialog import flipState
 
 class License(QtWidgets.QPlainTextEdit):

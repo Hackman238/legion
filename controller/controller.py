@@ -17,7 +17,9 @@ Copyright (c) 2025 Shane William Scott
 """
 
 import signal  # for file operations, to kill processes, for regex, for subprocesses
+import shlex
 import subprocess
+import sys
 import tempfile
 import os
 import socket
@@ -26,7 +28,8 @@ import ipaddress
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 from PyQt6.QtCore import QTimer, QElapsedTimer, QVariant
-from PyQt6 import sip, QtWidgets
+from PyQt6.QtWidgets import QMenu, QMessageBox
+from PyQt6 import sip, QtCore, QtWidgets
 
 from app.ApplicationInfo import applicationInfo
 from app.Screenshooter import Screenshooter
@@ -34,7 +37,10 @@ from app.actions.updateProgress.UpdateProgressObservable import UpdateProgressOb
 from app.importers.NmapImporter import NmapImporter
 from app.importers.PythonImporter import PythonImporter
 from app.tools.nmap.NmapPaths import getNmapRunningFolder
-from app.auxiliary import unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl
+from app.auxiliary import (
+    unixPath2Win, winPath2Unix, getPid, formatCommandQProcess, isWsl, BrowserOpener,
+    MyQProcess,
+)
 from app.timing import getTimestamp, timing
 from app.scheduler.approvals import ensure_scheduler_approval_table, queue_pending_approval, update_pending_approval
 from app.scheduler.audit import log_scheduler_decision
@@ -44,7 +50,6 @@ from app.scheduler.planner import SchedulerPlanner
 from app.scheduler.state import ensure_scheduler_target_state_table, upsert_target_state
 from app.screenshot_targets import apply_preferred_target_placeholders, choose_preferred_host
 from ui.observers.QtUpdateProgressObserver import QtUpdateProgressObserver
-import os
 
 try:
     import queue
@@ -365,6 +370,27 @@ class Controller:
         self.screenshooter = Screenshooter(self.settings.general_screenshooter_timeout)
         self.screenshooter.done.connect(self.screenshotFinished)
         self.screenshooter.log.connect(self.view.ui.LogOutputTextView.append)
+
+    @staticmethod
+    def _can_raw_socket() -> bool:
+        # nmap SYN/UDP/OS scans need raw sockets (root/BPF). The macOS GUI
+        # runs unprivileged, so builders must degrade or use sudo -n.
+        return not hasattr(os, "geteuid") or os.geteuid() == 0
+
+    @staticmethod
+    def _darwin_terminal_argv(command: str):
+        # Terminal.app starts in $HOME, so reference exec-in-shell and the
+        # working directory by absolute path. The tool command itself is an
+        # intentional shell command; only AppleScript string escaping is
+        # applied (backslash first, then double quotes).
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        exec_in_shell = os.path.join(repo_root, "scripts", "exec-in-shell")
+        shell_line = (
+            f"cd {shlex.quote(repo_root)} && "
+            f"{shlex.quote(exec_in_shell)} {command}"
+        )
+        escaped = shell_line.replace("\\", "\\\\").replace('"', '\\"')
+        return ["osascript", "-e", f'tell application "Terminal" to do script "{escaped}"']
 
     def initBrowserOpener(self):
         self.browser = BrowserOpener()                                  # browser opener object (different thread)
@@ -1079,7 +1105,13 @@ class Controller:
                         log.info(f"Removing IPv6-incompatible easy-mode options: {', '.join(removed_easy)}")
                     easy_mode_flags = [flag for flag in easy_mode_flags if flag not in removed_easy]
 
-                command_tokens = ["nmap"]
+                # SYN/UDP/OS scans need raw sockets. Unprivileged (macOS GUI):
+                # SYN/UDP requests go through sudo -n (works with cached or
+                # passwordless credentials, fails loudly otherwise), plain
+                # scans degrade to connect scan without -O.
+                privileged = self._can_raw_socket()
+                needs_privilege = bool(easyStealth or includeUDP)
+                command_tokens = ["sudo", "-n", "nmap"] if (needs_privilege and not privileged) else ["nmap"]
                 if ipv6_flag:
                     command_tokens.append("-6")
                 # Easy mode should not rely on ping/host discovery since many hosts block probes.
@@ -1101,8 +1133,10 @@ class Controller:
                         command_tokens.extend(["-sS", "-sU"])
                     command_tokens.extend(["-sV", "--version-light"])
 
+                if privileged or needs_privilege:
+                    command_tokens.append("-O")
                 command_tokens.extend([
-                    "-O", f"-T{str(nmapSpeed)}",
+                    f"-T{str(nmapSpeed)}",
                     target_hosts_str, "--stats-every", "10s", "-oA", outputfile
                 ])
                 command = ' '.join(token for token in command_tokens if token)
@@ -1372,7 +1406,6 @@ class Controller:
         if action.text() == 'Delete Port':
             # targets: list of [ip, port, protocol, serviceName]
             repo_container = self.logic.activeProject.repositoryContainer
-            host_repo = repo_container.hostRepository
             port_repo = repo_container.portRepository
             for t in targets:
                 ip, port, protocol, _ = t
@@ -1427,7 +1460,17 @@ class Controller:
                     command = self._apply_target_placeholders(command, ip[0], port=ip[1])
                     if "[term]" in command:
                         command = command.replace("[term]", "")
-                        if terminal:
+                        if sys.platform == "darwin":
+                            # No xterm/gnome-terminal on macOS: open Terminal.app.
+                            subprocess.Popen(
+                                self._darwin_terminal_argv(command),
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True,
+                                close_fds=True,
+                            )
+                        elif terminal:
                             subprocess.Popen(
                                 terminal + " -e './scripts/exec-in-shell " + command + "'",
                                 shell=True,
@@ -1887,7 +1930,13 @@ class Controller:
             if script_path and arg:
                 try:
                     cmd = f"python3 {shlex.quote(script_path)} {shlex.quote(str(arg))}"
-                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+                    script_env = dict(os.environ)
+                    if "shodan" in name.lower():
+                        shodan_key = str(getattr(self.settings, "tools_pyshodan_api_key", "") or "")
+                        if shodan_key:
+                            script_env["SHODAN_API_KEY"] = shodan_key
+                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30,
+                                            env=script_env)
                     output = result.stdout + ("\n" + result.stderr if result.stderr else "")
                 except Exception as e:
                     log.exception(f"Error running script: {script_path} with arg: {arg}")
@@ -2083,25 +2132,31 @@ class Controller:
                     return ""
                 return "T:" + ",".join(tcp_ports)
 
-            command_tokens = ["nmap"]
+            # Staged scans historically use SYN (+UDP) and -O, all of which
+            # need raw sockets. Unprivileged: UDP stages go through sudo -n,
+            # TCP-only stages degrade to connect scan without -O.
+            privileged = self._can_raw_socket()
+            include_udp_effective = True if include_udp is None else bool(include_udp)
+            command_tokens = (
+                ["sudo", "-n", "nmap"] if (include_udp_effective and not privileged) else ["nmap"]
+            )
             if enable_ipv6:
                 command_tokens.append("-6")
 
-            # Legacy behavior: include UDP by default in staged scans.
-            include_udp_effective = True if include_udp is None else bool(include_udp)
             stealth_effective = stealth  # None means "legacy" (do not override -sV behavior)
 
             # In GUI flows, targets often block ping probes: -Pn keeps targets from being skipped as "down".
             command_tokens.append("-Pn")
             if discovery:
                 command_tokens.append("-T4")
-                command_tokens.append("-O")
+                if privileged or include_udp_effective:
+                    command_tokens.append("-O")
 
             if include_udp_effective:
                 command_tokens.append("-sSU")
             else:
-                # TCP-only staged scan
-                command_tokens.append("-sS")
+                # TCP-only staged scan (connect scan when unprivileged)
+                command_tokens.append("-sS" if privileged else "-sT")
 
             # Only apply the Easy-mode stealth toggle when explicitly provided; otherwise keep legacy defaults.
             if stealth_effective is None:
@@ -2273,6 +2328,8 @@ class Controller:
                             try:
                                 self.pythonImporter.setOutput(str(qProcess.display.toPlainText()))
                                 self.pythonImporter.setHostIp(str(qProcess.hostIp))
+                                self.pythonImporter.setShodanApiKey(
+                                    getattr(self.settings, "tools_pyshodan_api_key", ""))
                                 self.pythonImporter.setPythonScript(pythonScript)
                                 self.pythonImporter.start()
                             except Exception:
@@ -2742,7 +2799,6 @@ class Controller:
                     results = []
                     for task in list(tasks or []):
                         decision = task.decision
-                        service = str(task.service_name or "")
                         hostname = str(task.hostname or "")
                         ip = str(task.host_ip or "")
                         port = str(task.port or "")
@@ -2990,7 +3046,7 @@ class Controller:
         )
         run_once_btn = message.addButton("Run Once", QMessageBox.ButtonRole.AcceptRole)
         always_btn = message.addButton("Always Allow Family", QMessageBox.ButtonRole.YesRole)
-        skip_btn = message.addButton("Skip", QMessageBox.ButtonRole.RejectRole)
+        message.addButton("Skip", QMessageBox.ButtonRole.RejectRole)
         message.setDefaultButton(run_once_btn)
         message.exec()
         clicked = message.clickedButton()

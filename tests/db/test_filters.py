@@ -20,8 +20,7 @@ from unittest.mock import patch
 
 
 class FiltersTest(unittest.TestCase):
-    @patch('utilities.stenoLogging.get_logger')
-    def setUp(self, get_logger) -> None:
+    def setUp(self) -> None:
         return
 
     def test_applyFilters_InvokedWithNoFilters_ReturnsEmptyString(self):

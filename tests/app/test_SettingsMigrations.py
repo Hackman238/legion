@@ -87,6 +87,15 @@ hydra_path=/opt/legacy/hydra
 
 
 class SettingsMigrationTest(unittest.TestCase):
+    def setUp(self):
+        # Fixture configs below are selected through HOME; an outer
+        # LEGION_HOME (CI exports one for the whole suite) would shadow
+        # them and make these tests read a shared live config instead.
+        env_patch = patch.dict(os.environ, {}, clear=False)
+        env_patch.start()
+        os.environ.pop("LEGION_HOME", None)
+        self.addCleanup(env_patch.stop)
+
     def test_command_normalizer_fixtures_are_canonical_and_idempotent(self):
         from app.settings import AppSettings
 
@@ -313,6 +322,66 @@ class SettingsMigrationTest(unittest.TestCase):
                 self.assertNotIn("responder", scheduler_ids)
                 self.assertNotIn("ntlmrelayx", scheduler_ids)
 
+    def test_darwin_migration_rewrites_shipped_linux_paths_and_privileged_nmap(self):
+        shipped_config = """[BruteSettings]
+password-wordlist-path=/usr/share/wordlists/
+username-wordlist-path=/usr/share/wordlists/
+
+[GeneralSettings]
+default-terminal=xterm
+
+[ToolSettings]
+texteditor-path=featherpad
+nmap-path=/sbin/nmap
+
+[HostActions]
+nmap-discover=Run nmap-discover, nmap -n -sV -O --version-light -T4 [IP]
+nmap-fast-udp=Run nmap (fast UDP), nmap -n -Pn -sU -F --min-rate=1000 -vvvvv [IP]
+nmap-full-tcp=Run nmap (full TCP), nmap -Pn -sV -sC -O -p- -T4 -vvvvv [IP]
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = os.path.join(tmpdir, ".local", "share", "legion")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "legion.conf")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write(shipped_config)
+
+            with patch.dict(os.environ, {"HOME": tmpdir}, clear=False):
+                with patch("app.settings.sys.platform", "darwin"):
+                    with patch("os.geteuid", return_value=501):
+                        from app.settings import AppSettings
+
+                        app_settings = AppSettings()
+
+                general = app_settings.getGeneralSettings()
+                brute = app_settings.getBruteSettings()
+                tools = app_settings.getToolSettings()
+                host_actions = {row[1]: row for row in app_settings.getHostActions()}
+                port_actions = {row[1]: row for row in app_settings.getPortActions()}
+
+                self.assertEqual("Terminal", general["default-terminal"])
+                self.assertEqual("./wordlists/", brute["username-wordlist-path"])
+                self.assertEqual("./wordlists/", brute["password-wordlist-path"])
+                self.assertEqual("/usr/bin/open", tools["texteditor-path"])
+                self.assertNotEqual("/sbin/nmap", tools["nmap-path"])
+
+                discover_cmd = str(host_actions["nmap-discover"][2])
+                full_tcp_cmd = str(host_actions["nmap-full-tcp"][2])
+                fast_udp_cmd = str(host_actions["nmap-fast-udp"][2])
+                self.assertNotIn(" -O", discover_cmd)
+                self.assertNotIn(" -O", full_tcp_cmd)
+                # UDP scan keeps -sU but must go through sudo (BPF/root).
+                self.assertTrue(fast_udp_cmd.startswith("sudo -n nmap"), fast_udp_cmd)
+
+                web_discovery_cmd = str(port_actions["web-content-discovery"][2])
+                self.assertIn("seclists", web_discovery_cmd.lower())
+                self.assertIn("web-common.txt", web_discovery_cmd)
+                parsed = subprocess.run(
+                    ["bash", "-n", "-c", web_discovery_cmd],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(0, parsed.returncode, parsed.stderr)
+
     def test_nuclei_normalization_does_not_mutate_probe_or_output_tokens(self):
         from app.settings import AppSettings
 
@@ -359,7 +428,8 @@ class SettingsMigrationTest(unittest.TestCase):
         normalized = AppSettings._ensure_katana_command(command)
 
         self.assertIn("command -v katana >/dev/null 2>&1", normalized)
-        self.assertIn("katana -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5 -u [WEB_URL]", normalized)
+        self.assertIn("katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5 -u [WEB_URL]", normalized)
+        self.assertNotIn("-kf robotstxt,sitemapxml", normalized)
         self.assertIn("-o [OUTPUT].jsonl", normalized)
         self.assertNotIn("command -v katana -silent", normalized)
         self.assertNotIn("katana not found -o", normalized)

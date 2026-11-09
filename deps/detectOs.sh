@@ -1,6 +1,15 @@
 #!/bin/bash
 
 unameOutput=`uname -a`
+
+# macOS: native Cocoa build, no /etc/os-release and no apt.
+if [ "$(uname -s)" = "Darwin" ]; then
+    echo "Detected macOS $(sw_vers -productVersion 2>/dev/null || echo unknown)"
+    export OS_RELEASE="macOS"
+    export OS_RELEASE_VERSION="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+    export ISWSL=""
+    return 0 2>/dev/null || exit 0
+fi
 releaseVersion=`grep 'VERSION_ID' /etc/os-release | cut -d '"' -f 2`
 releaseName=`grep "^NAME=\"" /etc/os-release | cut -d '"' -f 2`
 wslEnv=""

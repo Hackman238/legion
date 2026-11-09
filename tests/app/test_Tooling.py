@@ -228,7 +228,17 @@ class ToolingEnvTest(unittest.TestCase):
             ),
         ]
 
-        plan = build_tool_install_plan(rows, platform="kali")
+        # Hermetic: a fake `go` on PATH pins the no-bootstrap branch
+        # regardless of whether the host running the tests has Go.
+        with tempfile.TemporaryDirectory() as fake_bin:
+            fake_go = os.path.join(fake_bin, "go")
+            with open(fake_go, "w", encoding="utf-8") as handle:
+                handle.write("#!/bin/sh\nexit 0\n")
+            os.chmod(fake_go, 0o755)
+            plan = build_tool_install_plan(
+                rows, platform="kali",
+                base_env={"PATH": fake_bin, "HOME": fake_bin},
+            )
         self.assertEqual("kali", plan["platform"])
         self.assertEqual(2, plan["command_count"])
         commands = [item["command"] for item in plan["commands"]]

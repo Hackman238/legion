@@ -219,7 +219,7 @@ class AddSettingsDialog(QtWidgets.QDialog):  # dialog shown when the user select
         self.populateAutomatedAttacksTab()
 
     def populateGeneralTab(self):
-        self.terminalsSupported = ['gnome-terminal','xterm']
+        self.terminalsSupported = ['gnome-terminal', 'xterm', 'Terminal']
         self.terminalComboBox.insertItems(0, self.terminalsSupported)
 
         self.fastProcessesComboBox.setCurrentIndex(int(self.settings.general_max_fast_processes) - 1)

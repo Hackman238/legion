@@ -20,6 +20,7 @@ Copyright (c) 2025 Shane William Scott
 import shutil
 import os
 import re
+import sys
 
 from app.core.config_store import IniSettingsStore
 from app.core.common import sortArrayWithArray
@@ -266,7 +267,7 @@ class AppSettings():
     )
     KATANA_COMMAND = (
         "(command -v katana >/dev/null 2>&1 && "
-        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
+        "katana -u [WEB_URL] -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5 -o [OUTPUT].jsonl) || "
         "echo katana not found"
     )
     ENUM4LINUX_NG_COMMAND = (
@@ -348,7 +349,7 @@ class AppSettings():
     }
 
     def __init__(self):
-        config_dir = ensure_legion_home()
+        ensure_legion_home()
         config_path = get_legion_conf_path()
         if not os.path.exists(config_path):
             repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
@@ -482,11 +483,66 @@ class AppSettings():
             return False
         return bool(parser.remove_option(section, option))
 
+    @staticmethod
+    def _is_privileged() -> bool:
+        return not hasattr(os, "geteuid") or os.geteuid() == 0
+
+    @classmethod
+    def _ensure_unprivileged_nmap_command(cls, command: str) -> str:
+        raw = str(command or "")
+        if cls._is_privileged() or not re.search(r"(?i)\bnmap\b", raw):
+            return raw
+        # OS detection makes unprivileged nmap quit outright; drop it so
+        # the scan degrades to a connect scan instead of failing.
+        updated = re.sub(r"\s+-O(?=\s|$)", "", raw)
+        # UDP scan has no unprivileged form; run it via sudo -n so it works
+        # with cached/passwordless credentials and fails loudly otherwise.
+        if re.search(r"(?i)(^|\s)-sU(?=\s|$)", updated) and not updated.lstrip().lower().startswith("sudo "):
+            updated = re.sub(r"(?i)^(\s*)nmap\b", r"\1sudo -n nmap", updated, count=1)
+        return updated
+
+    def _apply_platform_settings_migrations(self) -> bool:
+        # The shipped legion.conf carries Linux/Kali values. On macOS,
+        # rewrite the known shipped values (only exact matches, so user
+        # customizations survive) to native equivalents; code defaults
+        # alone never apply because the keys already exist in the file.
+        if sys.platform != "darwin":
+            return False
+        rewrites = {
+            "GeneralSettings": {
+                "default-terminal": ({"xterm", "gnome-terminal"}, "Terminal"),
+            },
+            "BruteSettings": {
+                "username-wordlist-path": ({"/usr/share/wordlists/", "/usr/share/wordlists"}, "./wordlists/"),
+                "password-wordlist-path": ({"/usr/share/wordlists/", "/usr/share/wordlists"}, "./wordlists/"),
+            },
+            "ToolSettings": {
+                "texteditor-path": (
+                    {"featherpad", "/usr/bin/featherpad", "xdg-open", "/usr/bin/xdg-open"},
+                    "/usr/bin/open",
+                ),
+                "nmap-path": ({"/sbin/nmap"}, "nmap"),
+                "hydra-path": ({"/usr/bin/hydra"}, "hydra"),
+            },
+        }
+        changed = False
+        for group_name, entries in rewrites.items():
+            self.actions.beginGroup(group_name)
+            try:
+                for key, (linux_values, darwin_value) in entries.items():
+                    current = self.actions.value(key)
+                    if current is not None and str(current).strip() in linux_values:
+                        self.actions.setValue(key, darwin_value)
+                        changed = True
+            finally:
+                self.actions.endGroup()
+        return changed
+
     def _apply_default_settings_migrations(self):
         defaults = Settings()
         group_defaults = self._default_settings_group_values(defaults)
         legacy_aliases = self._legacy_settings_aliases()
-        changed = False
+        changed = self._apply_platform_settings_migrations()
         removals = set()
 
         for group_name, entries in group_defaults.items():
@@ -538,6 +594,7 @@ class AppSettings():
                 label = str(value[0] or "")
                 command = str(value[1] or "")
                 updated_command = self._normalize_action_command(str(key), command)
+                updated_command = self._ensure_unprivileged_nmap_command(updated_command)
                 if updated_command != command:
                     self.actions.setValue(str(key), [label, updated_command])
                     changed = True
@@ -663,6 +720,7 @@ class AppSettings():
                 command = str(value[1] or "")
                 scope = str(value[2] or "") if len(value) > 2 else ""
                 updated_command = self._normalize_action_command(str(key), command)
+                updated_command = self._ensure_unprivileged_nmap_command(updated_command)
                 if updated_command != command:
                     self.actions.setValue(str(key), [label, updated_command, scope])
                     changed = True
@@ -1151,20 +1209,61 @@ class AppSettings():
         normalized = normalized.strip()
         return f"if command -v {tool} >/dev/null 2>&1; then {normalized}; else echo {tool} not found; fi"
 
+    # The shipped Kali wordlist path must not be baked in: resolve it at
+    # run time (env override, Kali path, SecLists under either Homebrew
+    # prefix, then the small wordlist shipped in this repo) and fail with
+    # an actionable message when none exists (fresh macOS has none of the
+    # Linux paths).
+    _WEB_WORDLIST_RESOLVE = (
+        'WL=${LEGION_WEB_WORDLIST:-}; '
+        'if [ -z "$WL" ]; then '
+        'for p in /usr/share/wordlists/dirb/common.txt '
+        '/opt/homebrew/share/seclists/Discovery/Web-Content/common.txt '
+        '/usr/local/share/seclists/Discovery/Web-Content/common.txt '
+        './wordlists/web-common.txt; do '
+        'if [ -f "$p" ]; then WL=$p; break; fi; '
+        'done; fi; '
+        'if [ ! -f "$WL" ]; then '
+        'echo "web wordlist not found (clone SecLists or set LEGION_WEB_WORDLIST)"; exit 1; fi; '
+    )
+
+    @classmethod
+    def _ensure_web_wordlist_resolution(cls, command: str, tool: str) -> str:
+        raw = str(command or "")
+        legacy_wordlist = "/usr/share/wordlists/dirb/common.txt"
+        if "LEGION_WEB_WORDLIST" in raw or legacy_wordlist not in raw:
+            return raw
+        updated = raw.replace(legacy_wordlist, '"$WL"')
+        probe = re.search(
+            rf"(command\s+-v\s+{re.escape(tool)}\s*>/dev/null\s+2>&1\s*&&\s*)",
+            updated,
+        )
+        if probe:
+            updated = updated[:probe.end()] + "{ " + cls._WEB_WORDLIST_RESOLVE + updated[probe.end():]
+            updated = re.sub(
+                r"\)(?=\s*\|\|\s*echo\s+(?:feroxbuster/gobuster|ffuf)\s+not\s+found)",
+                "; })",
+                updated,
+                count=1,
+            )
+            return updated
+        return "{ " + cls._WEB_WORDLIST_RESOLVE + updated + "; }"
+
     @classmethod
     def _ensure_web_content_discovery_command(cls, command: str) -> str:
         raw = str(command or "")
         if "gobuster" not in raw.lower():
             return raw
         if cls.LEGACY_WEB_CONTENT_DISCOVERY_COMMAND == raw:
-            return cls.WEB_CONTENT_DISCOVERY_COMMAND
+            return cls._ensure_web_wordlist_resolution(cls.WEB_CONTENT_DISCOVERY_COMMAND, "gobuster")
         legacy_gobuster_block = (
             "(command -v gobuster >/dev/null 2>&1 && "
             "gobuster dir -u http://[IP]:[PORT]/ -w /usr/share/wordlists/dirb/common.txt -o [OUTPUT].txt)"
         )
         if legacy_gobuster_block in raw:
-            return raw.replace(legacy_gobuster_block, cls.WEB_CONTENT_GOBUSTER_COMMAND)
-        return raw
+            return cls._ensure_web_wordlist_resolution(
+                raw.replace(legacy_gobuster_block, cls.WEB_CONTENT_GOBUSTER_COMMAND), "gobuster")
+        return cls._ensure_web_wordlist_resolution(raw, "gobuster")
 
     @classmethod
     def _ensure_httpx_command(cls, command: str) -> str:
@@ -1324,6 +1423,7 @@ class AppSettings():
         katana_command = re.sub(r"(?i)(?:^|\s)-silent\b", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-jc\b", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-kf\s+\S+", " ", katana_command)
+        katana_command = re.sub(r"(?i)(?:^|\s)-(?:ct|crawl-duration)\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-d\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-c\s+\S+", " ", katana_command)
         katana_command = re.sub(r"(?i)(?:^|\s)-p\s+\S+", " ", katana_command)
@@ -1332,9 +1432,12 @@ class AppSettings():
         katana_command = re.sub(r"(?i)(?:^|\s)-u\s+\S+", " -u [WEB_URL]", katana_command, count=1)
         if not re.search(r"(?i)(?:^|\s)-u(?:\s|$)", katana_command):
             katana_command = re.sub(r"(?i)\bkatana\b", "katana -u [WEB_URL]", katana_command, count=1)
+        # Modern katana (>=1.2) rejects "-kf a,b" lists (repeat the flag
+        # instead) and a big sitemap at -rl 5 can crawl for hours, so cap
+        # the crawl duration: the action must always finish.
         katana_command = re.sub(
             r"(?i)\bkatana\b",
-            "katana -silent -jsonl -d 2 -jc -kf robotstxt,sitemapxml -c 5 -p 1 -rl 5",
+            "katana -silent -jsonl -d 2 -jc -kf robotstxt -kf sitemapxml -ct 5m -c 5 -p 1 -rl 5",
             katana_command,
             count=1,
         )
@@ -1519,7 +1622,8 @@ class AppSettings():
         normalized = re.sub(r"\s*>\s*\[OUTPUT\][^\s\)]*", " ", normalized)
         normalized = re.sub(r"(?i)\bffuf\b", "ffuf -s -of json -o [OUTPUT].json", normalized, count=1)
         normalized = re.sub(r"\s{2,}", " ", normalized).strip().replace(probe_marker, "ffuf")
-        return re.sub(r"\s+\)", ")", normalized)
+        normalized = re.sub(r"\s+\)", ")", normalized)
+        return cls._ensure_web_wordlist_resolution(normalized, "ffuf")
 
     @staticmethod
     def _ensure_hydra_command(command: str) -> str:
@@ -1855,7 +1959,7 @@ class Settings():
     def __init__(self, appSettings=None):
 
         # general
-        self.general_default_terminal = "gnome-terminal"
+        self.general_default_terminal = "Terminal" if sys.platform == "darwin" else "gnome-terminal"
         self.general_tool_output_black_background = "False"
         self.general_colorful_ascii_background = "False"
         self.general_screenshooter_timeout = "15000"
@@ -1869,8 +1973,9 @@ class Settings():
 
         # brute
         self.brute_store_cleartext_passwords_on_exit = "True"
-        self.brute_username_wordlist_path = "/usr/share/wordlists/"
-        self.brute_password_wordlist_path = "/usr/share/wordlists/"
+        _wordlists = "./wordlists/" if sys.platform == "darwin" else "/usr/share/wordlists/"
+        self.brute_username_wordlist_path = _wordlists
+        self.brute_password_wordlist_path = _wordlists
         self.brute_default_username = "root"
         self.brute_default_password = "password"
         self.brute_services = "asterisk,afp,cisco,cisco-enable,cvs,firebird,ftp,ftps,http-head,http-get," + \
@@ -1892,12 +1997,10 @@ class Settings():
                                        "2050-3305,3307-3388,3390-5431,5433-8079,8081-29999"
         self.tools_nmap_stage6_ports = "T:30000-65535"
 
-        self.tools_path_nmap = "/sbin/nmap"
-        self.tools_path_hydra = "/usr/bin/hydra"
-        self.tools_path_texteditor = "/usr/bin/xdg-open"
+        self.tools_path_nmap = shutil.which("nmap") or "nmap"
+        self.tools_path_hydra = shutil.which("hydra") or "hydra"
+        self.tools_path_texteditor = "/usr/bin/open" if sys.platform == "darwin" else "/usr/bin/xdg-open"
         self.tools_pyshodan_api_key = ""
-        self.tools_path_responder = "/usr/bin/responder"
-        self.tools_path_ntlmrelay = "/usr/bin/ntlmrelayx.py"
         self.tools_path_responder = "responder"
         self.tools_path_ntlmrelay = "ntlmrelayx.py"
 

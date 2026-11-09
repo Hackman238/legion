@@ -24,6 +24,22 @@ from app.tools.nmap.NmapExporter import NmapExporter
 import os
 
 
+def findNmapXsl() -> str:
+    # The repo ships nmap.xsl at its root; packaged nmap also installs one
+    # (Homebrew on macOS, /usr/share on Linux). First existing wins.
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    candidates = [
+        os.path.join(repo_root, "nmap.xsl"),
+        "/opt/homebrew/share/nmap/nmap.xsl",
+        "/usr/local/share/nmap/nmap.xsl",
+        "/usr/share/nmap/nmap.xsl",
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
 class DefaultNmapExporter(NmapExporter):
     def __init__(self, shell: Shell, logger: Logger):
         self.logger = logger
@@ -32,10 +48,13 @@ class DefaultNmapExporter(NmapExporter):
     @timing
     def exportOutputToHtml(self, fileName: str, outputFolder: str) -> None:
         try:
-            command = f"xsltproc -o {fileName}.html /usr/share/nmap/nmap.xsl {fileName}.xml"
-            p = subprocess.Popen(command, shell=True)
+            # Argv list (no shell): paths may contain spaces.
+            p = subprocess.Popen(
+                ["xsltproc", "-o", f"{fileName}.html", findNmapXsl(), f"{fileName}.xml"]
+            )
             p.wait()
             self.shell.move(f"{fileName}.html", outputFolder)
         except:
             self.logger.error("nmap output export to html attempted, but failed.")
-            self.logger.error('Could not convert nmap XML to HTML. Try: apt-get install xsltproc')
+            self.logger.error('Could not convert nmap XML to HTML. '
+                              'Install xsltproc (brew install libxslt / apt-get install xsltproc)')

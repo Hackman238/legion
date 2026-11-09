@@ -22,8 +22,9 @@ from PyQt6.QtGui import *                                               # for fi
 from PyQt6.QtWidgets import *
 from PyQt6 import QtWidgets, QtGui, QtCore
 from app.auxiliary import *                                             # for timestamps
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (was six.u)
 from ui.ancillaryDialog import flipState
+from app.paths import get_legion_conf_path
 from app.settings import AppSettings
 
 class Config(QtWidgets.QPlainTextEdit):
@@ -31,7 +32,12 @@ class Config(QtWidgets.QPlainTextEdit):
         super(Config, self).__init__(parent)
         self.setMinimumHeight(550)
         self.setStyleSheet(qss)
-        self.setPlainText(open(os.path.expanduser('~/.local/share/legion/legion.conf'),'r').read())
+        conf_path = get_legion_conf_path()
+        initial_text = ""
+        if os.path.exists(conf_path):
+            with open(conf_path, 'r') as handle:
+                initial_text = handle.read()
+        self.setPlainText(initial_text)
         self.setReadOnly(False)
 
     def getText(self):
@@ -91,12 +97,14 @@ class ConfigDialog(QtWidgets.QDialog):
         self.setLayout(self.Main)
 
     def save(self):
-        fileObj = open(os.path.expanduser('~/.local/share/legion/legion.conf'),'w')
-        fileObj.write(self.configObj.getText())
-        fileObj.close()
+        conf_path = get_legion_conf_path()
+        os.makedirs(os.path.dirname(conf_path), exist_ok=True)
+        with open(conf_path, 'w') as fileObj:
+            fileObj.write(self.configObj.getText())
         self._save_tool_settings()
         self.controller.loadSettings()
-        self.configObj.setPlainText(open(os.path.expanduser('~/.local/share/legion/legion.conf'),'r').read())
+        with open(conf_path, 'r') as fileObj:
+            self.configObj.setPlainText(fileObj.read())
 
     def _buildToolsTab(self):
         layout = QtWidgets.QFormLayout()
@@ -134,8 +142,8 @@ class ConfigDialog(QtWidgets.QDialog):
             line_edit.setText(filename)
 
     def _save_tool_settings(self):
-        config_path = os.path.expanduser('~/.local/share/legion/legion.conf')
-        qsettings = QtCore.QSettings(config_path, QtCore.QSettings.Format.NativeFormat)
+        config_path = get_legion_conf_path()
+        qsettings = QtCore.QSettings(config_path, QtCore.QSettings.Format.IniFormat)
         qsettings.beginGroup('ToolSettings')
         qsettings.setValue('responder-path', self.responderPathEdit.text().strip())
         qsettings.setValue('ntlmrelay-path', self.ntlmrelayPathEdit.text().strip())

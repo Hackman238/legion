@@ -366,7 +366,6 @@ def generic_snmpwalk(snmpwalk_args,oids):
     for key, val in list(oids.items()):
         try:
             printout(('################## Enumerating %s Table using: %s (%s)'%(key,val[0],val[1])),YELLOW)
-            entry={}
             out=os.popen('snmpwalk'+snmpwalk_args+' '+val[0]+' '+' | cut -d\'=\' -f 2').readlines()
                     
             print('\tINFO')
@@ -547,17 +546,17 @@ def select_community(results,options):
     try:
         printout("\nIdentified Community strings",WHITE)
 
-        for l,r in enumerate(results):
+        for idx,r in enumerate(results):
             if r.write==True:
-                printout ('\t%s) %s %s (%s)(RW)'%(l,str(r.addr[0]).ljust(15,' '),str(r.community),str(r.version)),GREEN)
-                default=l
+                printout ('\t%s) %s %s (%s)(RW)'%(idx,str(r.addr[0]).ljust(15,' '),str(r.community),str(r.version)),GREEN)
+                default=idx
             elif r.write==False:
-                printout ('\t%s) %s %s (%s)(RO)'%(l,str(r.addr[0]).ljust(15,' '),str(r.community),str(r.version)),BLUE)
+                printout ('\t%s) %s %s (%s)(RO)'%(idx,str(r.addr[0]).ljust(15,' '),str(r.community),str(r.version)),BLUE)
             else:
-                printout ('\t%s) %s %s (%s)'%(l,str(r.addr[0]).ljust(15,' '),str(r.community),str(r.version)),RED)
-        
+                printout ('\t%s) %s %s (%s)'%(idx,str(r.addr[0]).ljust(15,' '),str(r.community),str(r.version)),RED)
+
             if default is None:
-                default = l
+                default = idx
         
         if not options.enum:
             return
@@ -572,7 +571,7 @@ def select_community(results,options):
         try:
             return results[int(selection)]
         except:
-            return results[l]
+            return results[idx]
     except KeyboardInterrupt:
         exit(0)
 

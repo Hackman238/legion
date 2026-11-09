@@ -36,6 +36,14 @@ def apply_engagement_scan_profile(
     return options
 
 
+def can_raw_socket() -> bool:
+    # nmap OS detection (-O, and -A which includes it) and UDP scan need
+    # raw sockets: root (or CAP_NET_RAW) on POSIX, BPF access on macOS.
+    # The macOS GUI runs unprivileged, so plans must degrade instead of
+    # emitting flags that make nmap quit immediately.
+    return not hasattr(os, "geteuid") or os.geteuid() == 0
+
+
 def build_nmap_scan_plan(
         runtime,
         *,
@@ -152,7 +160,9 @@ def build_nmap_scan_plan(
         stage1_tokens = [resolved_path, "-sn", *targets]
         stage1_tokens = append_nmap_stats_every(stage1_tokens, interval="15s")
         stage1_tokens.extend(["-oA", stage1_cmd_prefix])
-        stage2_tokens = [resolved_path, "-sV", "-O"]
+        stage2_tokens = [resolved_path, "-sV"]
+        if can_raw_socket():
+            stage2_tokens.append("-O")
         if not bool(discovery):
             stage2_tokens.append("-Pn")
         stage2_tokens.extend(append_nmap_stats_every(extra_args, interval="15s"))
@@ -183,7 +193,9 @@ def build_nmap_scan_plan(
     tokens = [resolved_path]
     if not bool(discovery):
         tokens.append("-Pn")
-    tokens.extend(["-T4", "-sV", "-O"])
+    tokens.extend(["-T4", "-sV"])
+    if can_raw_socket():
+        tokens.append("-O")
     tokens.extend(append_nmap_stats_every(extra_args, interval="15s"))
     tokens.extend(targets)
     tokens.extend(["-oA", output_cmd_prefix])
@@ -247,14 +259,16 @@ def build_single_scan_plan(
         else:
             tokens.extend(["--top-ports", str(top_ports)])
 
-        if aggressive:
+        if aggressive and can_raw_socket():
             tokens.append("-A")
         else:
-            if service_detection:
+            # Without raw-socket privilege -A/-O make nmap quit; degrade
+            # an aggressive request to its unprivileged subset.
+            if service_detection or aggressive:
                 tokens.append("-sV")
-            if default_scripts:
+            if default_scripts or aggressive:
                 tokens.append("-sC")
-            if os_detection:
+            if os_detection and can_raw_socket():
                 tokens.append("-O")
 
         if vuln_scripts:
