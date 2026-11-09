@@ -31,10 +31,7 @@ class PyShodanScript():
             print("SHODAN_API_KEY is not set; skipping Shodan lookup.")
             return {}
         try:
-            try:
-                from pyShodan import PyShodan
-            except ImportError:  # lowercase module name in newer pyShodan releases
-                from pyshodan import PyShodan
+            from pyShodan import PyShodan  # the only module the PyPI package ships (checked against 0.2.16)
 
             pyShodanObj = PyShodan()
             pyShodanObj.apiKey = api_key
