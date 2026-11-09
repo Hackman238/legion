@@ -79,6 +79,16 @@
   (Phase 4) no longer depends on Qt or X11. The brute-force (Hydra) tabs of the desktop UI have no web equivalent;
   Hydra runs are available through the governed scheduler actions instead.
 
+## Status Update (2026-11-09, 0.8.0)
+- Shipped as 0.8.0. The web UI now exposes everything the runtime could already do (execution traces, findings, plan
+  preview, command-family policy, full exports) and the operator workflow the desktop UI had: sortable and filterable
+  tables, bulk host actions, batch tool runs, scan re-run, an import dialog with browser uploads (nmap XML, `.gnmap`,
+  masscan), project rename and delete, confirmation dialogs and toasts.
+- Exposed instances are protected by an optional web token (`--web-token` / `LEGION_WEB_TOKEN`, generated
+  automatically with `--web-bind-all`); the REST API is documented in `docs/api.md`.
+- The headless CLI runs the `[StagedNmapSettings]` stages, imports reports with `--nmap-xml` and works inside a
+  project file with `--project`; the MCP server implements the MCP protocol over stdio with 32 tools.
+
 ## Locked-In Policy Choices
 - Pre-approval scope is by command family (template-level), not exact one-off command lines.
 - Initial dangerous categories:
