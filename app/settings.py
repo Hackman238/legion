@@ -274,6 +274,11 @@ class AppSettings():
         "enum4linux-ng -A -oJ [OUTPUT] [IP]; "
         "else echo enum4linux-ng not found; fi"
     )
+    RDP_SEC_CHECK_COMMAND = (
+        "(command -v rdp-sec-check.pl >/dev/null 2>&1 && rdp-sec-check.pl [IP]:[PORT]) || "
+        "(command -v rdp-sec-check >/dev/null 2>&1 && rdp-sec-check [IP]:[PORT]) || "
+        "([ -f scripts/rdp-sec-check.pl ] && perl scripts/rdp-sec-check.pl [IP]:[PORT]) || echo rdp-sec-check not found"
+    )
     SMBMAP_COMMAND = (
         "if command -v smbmap >/dev/null 2>&1; then "
         "smbmap -H [IP] -P [PORT] --no-write-check -q | tee [OUTPUT].txt; "
@@ -728,6 +733,8 @@ class AppSettings():
             normalized = cls._ensure_enum4linux_ng_command(normalized)
         if normalized_tool == "smbmap":
             normalized = cls._ensure_smbmap_command(normalized)
+        if normalized_tool == "rdp-sec-check" and "scripts/rdp-sec-check.pl" in normalized and "command -v" not in normalized:
+            normalized = cls.RDP_SEC_CHECK_COMMAND  # the bundled Perl script was never shipped; use an installed copy
         if normalized_tool == "rpcclient-enum":
             normalized = cls._ensure_rpcclient_enum_command(normalized)
         if normalized_tool == "netexec":
