@@ -79,6 +79,13 @@
   (Phase 4) no longer depends on Qt or X11. The brute-force (Hydra) tabs of the desktop UI have no web equivalent;
   Hydra runs are available through the governed scheduler actions instead.
 
+## Status Update (2026-11-09, 0.8.1)
+- Fix release: the portable pieces of the community macOS port (pull request #53) were adopted in #55 and #56
+  (stdin isolation for tools, privilege-aware nmap plans, PATH-resolved tool defaults, logger import without a
+  writable home), the last `six` imports and an embedded Shodan key were removed, and SQLAlchemy 1.4 through 2.1 are
+  supported with the SQLite connection pool pinned. The macOS launcher and Darwin settings paths from #53 were not
+  taken; they would need redoing for the web-only product if macOS becomes a supported platform.
+
 ## Status Update (2026-11-09, 0.8.0)
 - Shipped as 0.8.0. The web UI now exposes everything the runtime could already do (execution traces, findings, plan
   preview, command-family policy, full exports) and the operator workflow the desktop UI had: sortable and filterable

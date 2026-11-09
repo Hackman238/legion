@@ -34,9 +34,10 @@ making contributions to the project. We ask that you also follow our contributor
 #### Working on the code
 
 * Set up a virtualenv and install the dependencies: `python3 -m venv .venv && source .venv/bin/activate &&
-  pip install -r requirements.txt`. No Qt or display server is needed.
+  pip install -r requirements-dev.txt` (the runtime requirements plus flake8 and pip-audit). No Qt or display server
+  is needed.
 * Run the whole suite before opening a PR: `python3 -m unittest` (or `python3 -m pytest tests`). Check the exit
-  code, not just the summary line.
+  code, not just the summary line. Run `python3 -m flake8` as well; the rules live in `.flake8`.
 * Add a regression test with every bug fix, next to the existing tests for that module under `tests/`.
 * Keep changes minimal and in the style of the surrounding code; the web runtime (`app/web/`), scheduler
   (`app/scheduler/`), importers and the MCP server each have their own tests you can run on their own.
