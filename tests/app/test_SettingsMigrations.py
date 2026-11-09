@@ -170,6 +170,17 @@ class SettingsMigrationTest(unittest.TestCase):
             messages = [str(call.args[0]) % tuple(call.args[1:]) for call in warning.call_args_list]
             self.assertTrue(any("pyshodan-api-key" in m and "Scheduler integrations" in m for m in messages), messages)
 
+    def test_rdp_sec_check_legacy_command_migrates_to_installed_tool_lookup(self):
+        from app.settings import AppSettings
+
+        legacy = "perl ./scripts/rdp-sec-check.pl [IP]:[PORT]"  # the script was never bundled: always "No such file"
+        migrated = AppSettings._normalize_action_command("rdp-sec-check", legacy)
+        self.assertEqual(AppSettings.RDP_SEC_CHECK_COMMAND, migrated)
+        self.assertIn("command -v rdp-sec-check", migrated)
+        self.assertEqual(migrated, AppSettings._normalize_action_command("rdp-sec-check", migrated))  # stable
+        custom = "perl /opt/tools/rdp-sec-check.pl [IP]:[PORT]"  # an operator's own path is left alone
+        self.assertEqual(custom, AppSettings._normalize_action_command("rdp-sec-check", custom))
+
     def test_repeated_nikto_config_fixture_migrates_once_and_stays_stable(self):
         fixture_path = os.path.join(
             os.path.dirname(__file__),
