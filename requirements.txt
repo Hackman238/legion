@@ -11,7 +11,6 @@ pyExploitDb
 pyShodan
 GitPython
 pandas
-flake8
 rich
 keyring
 urllib3>=1.26.18,<3

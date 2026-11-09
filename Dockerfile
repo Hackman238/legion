@@ -32,6 +32,7 @@ CMD ["python3", "legion.py", "--web", "--web-bind-all"]
 # - Web UI (scans need raw sockets, hence --cap-add):
 #   docker run --rm -p 5000:5000 -v legion-data:/data -e LEGION_WEB_TOKEN=change-me \
 #       --cap-add=NET_RAW --cap-add=NET_ADMIN legion
+#   With --user (not root) also pass -e NMAP_PRIVILEGED=1, or scan plans leave OS detection out.
 # - Headless CLI:
 #   docker run --rm -v "$PWD:/work" legion python3 legion.py --headless --input-file /work/targets.txt \
 #       --staged-scan --output-file /work/results.json

@@ -16,7 +16,6 @@ Copyright (c) 2025 Shane William Scott
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
-import os
 import logging
 from logging import Logger
 
@@ -26,55 +25,39 @@ from logging import Logger
 if hasattr(logging, "logAsyncioTasks"):
     logging.logAsyncioTasks = False
 
+# Legion logs to the console (stderr) through Rich; nothing is written to a log file, so importing this module
+# touches no directory and works with a read-only or absent home (containers, service accounts).
+
 cachedAppLogger = None
 cachedStartupLogger = None
 cachedDbLogger = None
 
-cache_path = os.environ.get("LEGION_LOG_DIR") or os.path.expanduser("~/.cache/legion/log")
-try:
-    os.makedirs(cache_path, exist_ok=True)
-except OSError:
-    # A read-only or absent home (containers, service accounts): log under the temp dir instead of crashing.
-    import tempfile
-    cache_path = os.path.join(tempfile.gettempdir(), "legion", "log")
-    try:
-        os.makedirs(cache_path, exist_ok=True)
-    except OSError:
-        cache_path = tempfile.gettempdir()
-log_path = os.path.join(cache_path, 'legion.log')
 
 def getStartupLogger() -> Logger:
     global cachedStartupLogger
-    logger = getOrCreateCachedLogger("legion-startup",
-            os.path.join(cache_path, "legion-startup.log"), True, cachedStartupLogger)
-    cachedStartupLogger = logger
-    return logger
+    cachedStartupLogger = getOrCreateCachedLogger("legion-startup", cachedStartupLogger)
+    return cachedStartupLogger
 
 
 def getAppLogger() -> Logger:
     global cachedAppLogger
-    logger = getOrCreateCachedLogger("legion",
-            log_path, True, cachedAppLogger)
-    cachedAppLogger = logger
-    return logger
+    cachedAppLogger = getOrCreateCachedLogger("legion", cachedAppLogger)
+    return cachedAppLogger
 
 
 def getDbLogger() -> Logger:
     global cachedDbLogger
-    logger = getOrCreateCachedLogger("legion-db",
-            os.path.join(cache_path, "legion-db.log"), False, cachedDbLogger)
-    cachedDbLogger = logger
-    return logger
+    cachedDbLogger = getOrCreateCachedLogger("legion-db", cachedDbLogger)
+    return cachedDbLogger
 
 
-def getOrCreateCachedLogger(logName: str, logPath: str, console: bool, cachedLogger):
+def getOrCreateCachedLogger(logName: str, cachedLogger):
     if cachedLogger:
         return cachedLogger
 
-    from rich.logging import RichHandler
-
     import sys
     from rich.console import Console
+    from rich.logging import RichHandler
     logging.basicConfig(
         level="INFO",
         format="%(message)s",

@@ -17,7 +17,7 @@ Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@
 """
 
 from db.SqliteDbAdapter import Database
-from six import u as unicode
+unicode = str  # Python 3: str is unicode (six is no longer a dependency)
 
 from db.entities.note import note
 

@@ -25,11 +25,10 @@ class PyShodanScript():
         return self.lookup(ip)
 
     def lookup(self, ip):
-        # The key comes from Legion's tool settings (setApiKey) or the environment; never from this file.
+        # The key comes from the caller (setApiKey) or SHODAN_API_KEY; never from this file.
         api_key = self.apiKey or os.environ.get("SHODAN_API_KEY", "")
         if not api_key:
-            print("SHODAN_API_KEY is not set; skipping Shodan lookup. "
-                  "Set it in the environment or in Legion tool settings.")
+            print("SHODAN_API_KEY is not set; skipping Shodan lookup.")
             return {}
         try:
             try:

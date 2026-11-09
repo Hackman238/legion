@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import re
@@ -22,22 +23,39 @@ from app.web.runtime_scan_targets import (
     summarize_scan_scope,
 )
 
+log = logging.getLogger(__name__)
+
+OS_DETECTION_DROPPED_MESSAGE = (
+    "nmap cannot use raw sockets here (not running as root): OS detection is left out of the scan plan. "
+    "Set NMAP_PRIVILEGED=1 if nmap has the capability anyway (setcap, docker --cap-add NET_RAW)."
+)
 
 
-def can_raw_socket() -> bool:
+def can_raw_socket(nmap_path: str = "") -> bool:
     """Whether nmap may use raw sockets here.
 
     OS detection (-O, and -A which includes it) makes an unprivileged nmap quit outright, so plans built
     without privilege leave those flags out and the scan degrades to a connect scan instead of failing.
-    Root (or no euid concept, e.g. Windows) counts as privileged. Capabilities (docker --cap-add NET_RAW as a
-    non-root user, setcap on the nmap binary) cannot be seen from the euid, so nmap's own environment
+    Root (or no euid concept, e.g. Windows) counts as privileged, and so does Windows nmap.exe driven from
+    WSL: Npcap grants it raw sockets whatever the WSL user's euid is. Capabilities (docker --cap-add NET_RAW
+    as a non-root user, setcap on the nmap binary) cannot be seen from the euid, so nmap's own environment
     overrides are honoured: NMAP_PRIVILEGED asserts privilege, NMAP_UNPRIVILEGED denies it.
     """
     if os.environ.get("NMAP_UNPRIVILEGED"):
         return False
     if os.environ.get("NMAP_PRIVILEGED"):
         return True
+    if str(nmap_path or "").lower().endswith(".exe") and is_wsl():
+        return True
     return not hasattr(os, "geteuid") or os.geteuid() == 0
+
+
+def os_detection_allowed(nmap_path: str = "") -> bool:
+    """can_raw_socket for a plan that wants OS detection: when it is dropped, say so once per plan."""
+    if can_raw_socket(nmap_path):
+        return True
+    log.warning(OS_DETECTION_DROPPED_MESSAGE)
+    return False
 
 
 def default_nmap_path(runtime) -> str:
@@ -186,7 +204,7 @@ def build_nmap_scan_plan(
     if not bool(discovery):
         tokens.append("-Pn")
     tokens.extend(["-T4", "-sV"])
-    if can_raw_socket():
+    if os_detection_allowed(resolved_path):
         tokens.append("-O")
     tokens.extend(append_nmap_stats_every(extra_args, interval="15s"))
     tokens.extend(targets)
@@ -273,6 +291,7 @@ def build_staged_scan_plan(
     if discovery:
         stages.append(_stage("stage0-discovery", "Nmap Host Discovery", [nmap_path, "-sn"], 1800))
 
+    privileged = os_detection_allowed(nmap_path)  # the first port stage (or the fallback) wants -O
     port_stage_index = 0
     for index, raw_spec in enumerate(stage_specs, start=1):
         spec = parse_stage_spec(raw_spec)
@@ -284,7 +303,7 @@ def build_staged_scan_plan(
                 continue
             port_stage_index += 1
             tokens = base + ["-sV"]
-            if port_stage_index == 1 and can_raw_socket():
+            if port_stage_index == 1 and privileged:
                 tokens.append("-O")
             tokens.extend(["-p", spec["ports"]])
             scanned_port_specs.append(spec["ports"])
@@ -298,7 +317,7 @@ def build_staged_scan_plan(
             stages.append(_stage(f"stage{index}", f"Nmap Stage {index}: {', '.join(spec['scripts'])}", tokens, 5400))
 
     if not stages:  # nothing configured: fall back to one service scan
-        fallback = [nmap_path] + ([] if discovery else ["-Pn"]) + ["-sV"] + (["-O"] if can_raw_socket() else [])
+        fallback = [nmap_path] + ([] if discovery else ["-Pn"]) + ["-sV"] + (["-O"] if privileged else [])
         stages.append(_stage("stage1", "Nmap Service Scan", fallback, 5400))
     return {"xml_path": stages[-1]["xml_path"], "stages": stages, "import_each_stage": True}
 
@@ -351,7 +370,8 @@ def build_single_scan_plan(
         else:
             tokens.extend(["--top-ports", str(top_ports)])
 
-        if aggressive and can_raw_socket():
+        privileged = os_detection_allowed(nmap_path) if (aggressive or os_detection) else False
+        if aggressive and privileged:
             tokens.append("-A")
         else:
             # Without raw sockets -A and -O make nmap quit; an aggressive request degrades to its
@@ -360,7 +380,7 @@ def build_single_scan_plan(
                 tokens.append("-sV")
             if default_scripts or aggressive:
                 tokens.append("-sC")
-            if os_detection and can_raw_socket():
+            if os_detection and privileged:
                 tokens.append("-O")
 
         if vuln_scripts:
