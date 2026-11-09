@@ -2004,6 +2004,11 @@
         </div>
         <p class="meta-note">Live interface controls for the current workspace. Changes apply immediately.</p>
         <label class="settings-inline-toggle">
+            <input id="interface-light-theme" type="checkbox">
+            <span>Light theme</span>
+        </label>
+        <p class="meta-note">Stored in this browser only. The dark theme is the default.</p>
+        <label class="settings-inline-toggle">
             <input id="interface-graph-workspace-enabled" type="checkbox">
             <span>Enable graph workspace</span>
         </label>
@@ -2463,13 +2468,13 @@
             <label>
                 What to import
                 <select id="import-kind-select">
-                    <option value="xml">Nmap XML report</option>
+                    <option value="xml">Scan report (nmap XML or .gnmap, masscan XML, JSON or list output)</option>
                     <option value="targets">Target list (one IP, CIDR, hostname or URL per line)</option>
                 </select>
             </label>
             <label>
                 Upload a file from this browser
-                <input id="import-file-input" type="file" accept=".xml,.txt,.lst,.csv,text/plain,text/xml,application/xml">
+                <input id="import-file-input" type="file" accept=".xml,.gnmap,.json,.txt,.lst,.list,.csv,text/plain,text/xml,application/xml,application/json">
             </label>
             <p class="meta-note">or</p>
             <label>

@@ -15,6 +15,7 @@ const workspaceState = {
     hostDetail: null,
     manualToolTargets: [],
     bulkHostIds: new Set(),
+    persistedFiltersProject: "",
     manualToolOptions: [],
     deviceCategoryRules: [],
     builtInDeviceCategories: [],
@@ -1688,6 +1689,7 @@ function clearHostDetailView({resetForms = true} = {}) {
 function resetWorkspaceDisplayForProjectSwitch({clearProjectPaths = false} = {}) {
     workspaceState.hosts = [];
     workspaceState.hostsHydrated = false;
+    workspaceState.persistedFiltersProject = "";
     workspaceState.lastSnapshotSummaryKey = "";
     workspaceState.hostFilter = "hide_down";
     workspaceState.hostServiceFilter = "";
@@ -2196,6 +2198,107 @@ function writeStoredFlag(key, value) {
         window.localStorage.setItem(key, value ? "1" : "0");
     } catch (_err) {
     }
+}
+
+function readStoredJson(key, fallback) {
+    try {
+        const raw = window.localStorage.getItem(key);
+        return raw === null ? fallback : JSON.parse(raw);
+    } catch (_err) {
+        return fallback;
+    }
+}
+
+function writeStoredJson(key, value) {
+    try {
+        if (value === null || value === undefined) {
+            window.localStorage.removeItem(key);
+        } else {
+            window.localStorage.setItem(key, JSON.stringify(value));
+        }
+    } catch (_err) {
+    }
+}
+
+// ---- Theme (per browser) ----
+function applyLightThemeEnabled(enabled, {persist = true} = {}) {
+    const next = Boolean(enabled);
+    if (next) {
+        document.documentElement.setAttribute("data-theme", "light");
+    } else {
+        document.documentElement.removeAttribute("data-theme");
+    }
+    setChecked("interface-light-theme", next);
+    if (persist) {
+        try {
+            window.localStorage.setItem("legion_theme", next ? "light" : "dark");
+        } catch (_err) {
+        }
+    }
+}
+
+function isLightThemeEnabled() {
+    try {
+        return window.localStorage.getItem("legion_theme") === "light";
+    } catch (_err) {
+        return document.documentElement.getAttribute("data-theme") === "light";
+    }
+}
+
+// ---- Persisted host/service filters (per project, per browser) ----
+const FILTER_STORAGE_PREFIX = "legion_filters:";
+
+function filterStorageKey(projectName) {
+    const name = String(projectName || workspaceState.persistedFiltersProject || "").trim();
+    return name ? `${FILTER_STORAGE_PREFIX}${name}` : "";
+}
+
+function persistWorkspaceFilters() {
+    const key = filterStorageKey();
+    if (!key) {
+        return;
+    }
+    const payload = {
+        hostFilter: workspaceState.hostFilter || "hide_down",
+        hostServiceFilters: Array.isArray(workspaceState.hostServiceFilters) ? workspaceState.hostServiceFilters : [],
+        hostCategoryFilter: workspaceState.hostCategoryFilter || "",
+        servicesCategoryFilter: workspaceState.servicesCategoryFilter || "",
+    };
+    const isDefault = payload.hostFilter === "hide_down" && !payload.hostServiceFilters.length
+        && !payload.hostCategoryFilter && !payload.servicesCategoryFilter;
+    writeStoredJson(key, isDefault ? null : payload);
+}
+
+function restoreWorkspaceFilters(projectName) {
+    const name = String(projectName || "").trim();
+    if (!name || name === workspaceState.persistedFiltersProject) {
+        return false;
+    }
+    workspaceState.persistedFiltersProject = name;
+    const saved = readStoredJson(filterStorageKey(name), null);
+    if (!saved || typeof saved !== "object") {
+        return false;
+    }
+    workspaceState.hostFilter = saved.hostFilter === "show_all" ? "show_all" : "hide_down";
+    workspaceState.hostServiceFilters = normalizeServiceFilterList(saved.hostServiceFilters || []);
+    workspaceState.hostServiceFilter = workspaceState.hostServiceFilters.join(",");
+    workspaceState.hostCategoryFilter = String(saved.hostCategoryFilter || "").trim();
+    workspaceState.servicesCategoryFilter = String(saved.servicesCategoryFilter || "").trim();
+    syncHostFilterControls();
+    return true;
+}
+
+// ---- Remembered paths (per browser) ----
+function rememberPath(key, value) {
+    const path = String(value || "").trim();
+    if (path) {
+        writeStoredJson(`legion_path:${key}`, path);
+    }
+}
+
+function recallPath(key) {
+    const value = readStoredJson(`legion_path:${key}`, "");
+    return typeof value === "string" ? value : "";
 }
 
 function formatElapsedSeconds(value) {
@@ -3762,7 +3865,7 @@ async function setFamilyPolicyAction(familyId, state) {
 async function openWorkspacePickerAction() {
     closeRibbonMenus();
     setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", true);
-    setValue("open-workspace-path-input", getValue("project-open-path"));
+    setValue("open-workspace-path-input", getValue("project-open-path") || recallPath("open"));
     await refreshProjectListAction();
 }
 
@@ -3909,6 +4012,7 @@ async function openWorkspacePath(path) {
         setActionStatus("Open failed: a project path is required", true);
         return;
     }
+    rememberPath("open", target);
     setValue("project-open-path", target);
     setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false);
     await openProject();
@@ -4356,7 +4460,7 @@ async function saveWorkspaceFromRibbonAction(forcePrompt = false) {
     const path = getValue("project-save-path").trim();
     if (forcePrompt || !path) {
         const current = document.getElementById("project-name")?.title || "";
-        setValue("save-as-path-input", path || (current.endsWith(".legion") && !current.includes("/tmp/") ? current : ""));
+        setValue("save-as-path-input", path || (current.endsWith(".legion") && !current.includes("/tmp/") ? current : "") || recallPath("save_as"));
         setChecked("save-as-replace", getChecked("project-save-replace"));
         refreshProjectListAction().catch(() => {});  // fills the path suggestions
         setGenericModalOpen("save-as-modal", "saveAsOpen", true);
@@ -4367,6 +4471,7 @@ async function saveWorkspaceFromRibbonAction(forcePrompt = false) {
 
 async function confirmSaveAsDialog() {
     const path = getValue("save-as-path-input").trim();
+    rememberPath("save_as", path);
     if (!path) {
         setActionStatus("Save failed: destination path is required", true);
         return;
@@ -4477,7 +4582,7 @@ async function importNmapXmlFromRibbonAction() {
 function openImportDialog(kind = "xml") {
     closeRibbonMenus();
     setValue("import-kind-select", kind === "targets" ? "targets" : "xml");
-    setValue("import-path-input", kind === "targets" ? getValue("targets-file-path") : getValue("nmap-xml-path"));
+    setValue("import-path-input", (kind === "targets" ? getValue("targets-file-path") : getValue("nmap-xml-path")) || recallPath(kind === "targets" ? "import_targets" : "import_xml"));
     const fileInput = document.getElementById("import-file-input");
     if (fileInput) {
         fileInput.value = "";
@@ -4536,13 +4641,15 @@ async function submitImportDialog() {
             }
         } else if (kind === "xml") {
             setValue("nmap-xml-path", path);
+            rememberPath("import_xml", path);
             body = await postJson("/api/nmap/import-xml", {path, run_actions: runActions});
         } else {
             setValue("targets-file-path", path);
+            rememberPath("import_targets", path);
             body = await postJson("/api/targets/import-file", {path});
         }
         const jobId = body?.job?.id;
-        const label = kind === "xml" ? "Nmap XML import" : "Targets import";
+        const label = kind === "xml" ? "Scan report import" : "Targets import";
         setActionStatus(jobId ? `${label} queued (job ${jobId})` : `${label} queued`);
         setGenericModalOpen("import-modal", "importOpen", false);
         await pollSnapshot();
@@ -4673,6 +4780,7 @@ async function setHostFilterAction(filter) {
     workspaceState.hostFilter = String(filter || "hide_down").trim().toLowerCase() === "show_all"
         ? "show_all"
         : "hide_down";
+    persistWorkspaceFilters();
     syncHostFilterControls();
     closeRibbonMenus();
     await loadWorkspaceHosts();
@@ -4681,6 +4789,7 @@ async function setHostFilterAction(filter) {
 
 async function setHostCategoryFilterAction(category) {
     workspaceState.hostCategoryFilter = String(category || "").trim();
+    persistWorkspaceFilters();
     syncHostFilterControls();
     renderHosts(workspaceState.hosts);
     await Promise.all([
@@ -4704,6 +4813,7 @@ async function setHostServiceFilterAction(service) {
 async function setHostServiceFiltersAction(services) {
     workspaceState.hostServiceFilters = normalizeServiceFilterList(services);
     workspaceState.hostServiceFilter = workspaceState.hostServiceFilters.join(",");
+    persistWorkspaceFilters();
     syncHostFilterControls();
     syncHostServiceFilterOptions();
     renderHosts(workspaceState.hosts);
@@ -4717,6 +4827,7 @@ async function setHostServiceFiltersAction(services) {
 
 async function setServicesCategoryFilterAction(category) {
     workspaceState.servicesCategoryFilter = String(category || "").trim();
+    persistWorkspaceFilters();
     syncHostFilterControls();
     renderServices(workspaceState.services);
     await loadWorkspaceServices();
@@ -4749,6 +4860,7 @@ async function resetHostFiltersAction() {
     workspaceState.servicesHostFilterId = 0;
     workspaceState.servicesHostFilterLabel = "";
     workspaceState.servicesCategoryFilter = "";
+    persistWorkspaceFilters();
     syncHostFilterControls();
     renderHosts(workspaceState.hosts);
     renderServices(workspaceState.services);
@@ -4905,6 +5017,7 @@ async function refreshInterfaceSettingsAction() {
         setChecked("interface-graph-workspace-enabled", graphEnabled);
         setChecked("interface-credential-capture-panel-enabled", featureFlags.credential_capture_panel);
         setChecked("interface-colorful-ascii-background", Boolean(display?.colorful_ascii_background));
+        setChecked("interface-light-theme", isLightThemeEnabled());
         setInterfaceSettingsStatus("Interface settings loaded");
     } catch (err) {
         setInterfaceSettingsStatus(`Load failed: ${err.message}`, true);
@@ -11885,6 +11998,7 @@ function renderSnapshot(snapshot) {
     }
     if (snapshot.project) {
         renderProject(snapshot.project);
+        restoreWorkspaceFilters(snapshot.project.name);
     }
     if (snapshot.summary) {
         renderSummary(snapshot.summary);
@@ -12351,6 +12465,7 @@ async function createNewTemporaryProjectCore() {
     setActionStatus("Created temporary project");
     resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: true});
     renderProject(body?.project || {});
+    restoreWorkspaceFilters(body?.project?.name);
     await refreshWorkspace();
     await Promise.all([pollSnapshot(), loadApprovals()]);
 }
@@ -13463,6 +13578,8 @@ function bindActionButtons() {
     bind("hosts-bulk-run-tool-button", bulkRunToolAction);
     bind("hosts-bulk-clear-button", clearHostBulkSelectionAction);
     bind("hosts-select-all", (event) => toggleAllVisibleHostsAction(Boolean(event?.target?.checked)), "change");
+    bind("interface-light-theme", (event) => applyLightThemeEnabled(Boolean(event?.target?.checked)), "change");
+    applyLightThemeEnabled(isLightThemeEnabled(), {persist: false});
     initTableEnhancements();
     bind("ribbon-export-services-csv-action-button", () => exportTableAction("services"));
     bind("ribbon-export-ports-csv-action-button", () => exportTableAction("ports"));
