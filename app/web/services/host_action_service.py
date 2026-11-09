@@ -114,6 +114,11 @@ class HostActionService:
                 host_ids.append(value)
         if not host_ids:
             raise ValueError("host_ids must contain at least one host id.")
+        if action == "remove":
+            # Deleting hosts cascades through ports, scripts, CVEs, notes and the evidence graph; a large
+            # selection would hold the request for minutes, so it runs as a cancellable job instead.
+            job = self.runtime.start_bulk_host_remove_job(host_ids)
+            return {"status": "accepted", "action": action, "requested": len(host_ids), "job": job}
         results = []
         for host_id in host_ids:
             try:

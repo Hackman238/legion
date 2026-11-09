@@ -86,7 +86,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 | POST | `/api/workspace/services/delete` | `host_id`, `service` | Remove a service from a host. |
 | POST | `/api/workspace/hosts/<id>/dig-deeper` | | Queue AI-assisted deep analysis of the host (job; needs a provider). |
 | DELETE | `/api/workspace/hosts/<id>` | | Remove the host and everything attached to it. |
-| POST | `/api/workspace/hosts/bulk-action` | `action` (`rescan`, `dig-deeper`, `refresh-screenshots`, `remove`), `host_ids[]` | Apply one action to many hosts; the response lists the outcome per host (`202`, or `200` for `remove`). |
+| POST | `/api/workspace/hosts/bulk-action` | `action` (`rescan`, `dig-deeper`, `refresh-screenshots`, `remove`), `host_ids[]` | Apply one action to many hosts (`202`). Rescan, dig-deeper and screenshots answer with the outcome per host; `remove` queues one job whose result lists the outcome per host. |
 
 ## Tools and processes
 

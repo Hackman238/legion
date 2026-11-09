@@ -16,6 +16,7 @@ const workspaceState = {
     manualToolTargets: [],
     bulkHostIds: new Set(),
     persistedFiltersProject: "",
+    persistedFiltersTemporary: false,
     manualToolOptions: [],
     deviceCategoryRules: [],
     builtInDeviceCategories: [],
@@ -343,6 +344,33 @@ const STARTUP_WIZARD_SESSION_KEY = "legion_startup_wizard_done";
 
 const modalFocusReturnTargets = {};
 const openModalIdStack = []; // ids in open order; the last entry is the dialog that owns keyboard focus
+// How Escape closes each stacked dialog (looked up by the id on top of openModalIdStack).
+const MODAL_ESCAPE_CLOSERS = {
+    "nmap-scan-modal": () => closeNmapScanModalAction(),
+    "manual-scan-modal": () => closeManualScanModalAction(),
+    "host-selection-modal": () => closeHostSelectionModalAction(),
+    "script-cve-modal": () => closeScriptCveModalAction(),
+    "provider-logs-modal": () => closeProviderLogsModalAction(),
+    "credentials-modal": () => closeCredentialsModalAction(),
+    "credential-capture-config-modal": () => closeCredentialCaptureConfigModalAction(),
+    "jobs-modal": () => closeJobsModalAction(),
+    "submitted-scans-modal": () => closeSubmittedScansModalAction(),
+    "scheduler-decisions-modal": () => closeSchedulerDecisionsModalAction(),
+    "scheduler-executions-modal": () => setGenericModalOpen("scheduler-executions-modal", "executionsOpen", false),
+    "findings-modal": () => setGenericModalOpen("findings-modal", "findingsOpen", false),
+    "open-workspace-modal": () => setGenericModalOpen("open-workspace-modal", "openWorkspaceOpen", false),
+    "confirm-modal": () => resolveConfirmModal(false),
+    "import-modal": () => setGenericModalOpen("import-modal", "importOpen", false),
+    "save-as-modal": () => setGenericModalOpen("save-as-modal", "saveAsOpen", false),
+    "interface-settings-modal": () => setInterfaceSettingsModalOpen(false),
+    "workspace-switch-guard-modal": () => setWorkspaceSwitchGuardModalOpen(false),
+    "host-remove-modal": () => closeHostRemoveModalAction(true),
+    "graph-note-modal": () => closeGraphNoteModalAction(false),
+    "app-settings-modal": () => closeAppSettingsAction(),
+    "device-category-settings-modal": () => closeDeviceCategorySettingsAction(),
+    "scheduler-settings-modal": () => closeSchedulerSettingsAction(),
+    "report-provider-modal": () => closeReportProviderModalAction(),
+};
 const MODAL_FOCUSABLE_SELECTOR = [
     "button:not([disabled])", "[href]", "input:not([disabled]):not([type=hidden])", "select:not([disabled])",
     "textarea:not([disabled])", "[tabindex]:not([tabindex='-1'])",
@@ -2046,10 +2074,19 @@ async function bulkHostActionImpl(action) {
     }
     setWorkspaceStatus(`${label}: queueing for ${hosts.length} host${hosts.length === 1 ? "" : "s"}...`);
     try {
-        const body = await postJson("/api/workspace/hosts/bulk-action", {
+        let body = await postJson("/api/workspace/hosts/bulk-action", {
             action,
             host_ids: hosts.map((host) => parseInt(host.id, 10)),
         });
+        if (action === "remove" && body?.job?.id) {
+            // Removal runs as a job (it cascades through the evidence graph); wait for its per-host outcome.
+            setWorkspaceStatus(`Removing ${hosts.length} host${hosts.length === 1 ? "" : "s"} (job ${body.job.id})...`);
+            const job = await waitForJobCompletion(body.job.id, 30 * 60 * 1000, 1000);
+            if (String(job?.status || "") !== "completed") {
+                throw new Error(job?.error || `job ${body.job.id} ${job?.status || "did not finish"}`);
+            }
+            body = job.result || {};
+        }
         const failed = Number(body?.failed || 0);
         const succeeded = Number(body?.succeeded || 0);
         if (failed) {
@@ -2076,8 +2113,9 @@ async function bulkRunToolAction() {
     }
     let targets = [];
     try {
-        const perHost = await Promise.all(hosts.map((host) => fetchWorkspaceToolTargets({hostId: Number(host.id) || 0, limit: 2000})));
-        targets = perHost.flat();
+        const selectedIds = new Set(hosts.map((host) => Number(host.id) || 0));
+        const allTargets = await fetchWorkspaceToolTargets({limit: 5000});
+        targets = allTargets.filter((target) => selectedIds.has(Number(target?.host_id) || 0));
     } catch (err) {
         setWorkspaceStatus(`Load tool targets failed: ${err.message}`, true);
         return;
@@ -2255,8 +2293,8 @@ function filterStorageKey(projectName) {
 
 function persistWorkspaceFilters() {
     const key = filterStorageKey();
-    if (!key) {
-        return;
+    if (!key || workspaceState.persistedFiltersTemporary) {
+        return;  // a temporary workspace has a throwaway path; remembering its filters would only litter storage
     }
     const payload = {
         hostFilter: workspaceState.hostFilter || "hide_down",
@@ -2269,12 +2307,17 @@ function persistWorkspaceFilters() {
     writeStoredJson(key, isDefault ? null : payload);
 }
 
-function restoreWorkspaceFilters(projectName) {
-    const name = String(projectName || "").trim();
+function restoreWorkspaceFilters(project) {
+    const source = project && typeof project === "object" ? project : {name: project};
+    const name = String(source.name || "").trim();
     if (!name || name === workspaceState.persistedFiltersProject) {
         return false;
     }
     workspaceState.persistedFiltersProject = name;
+    workspaceState.persistedFiltersTemporary = Boolean(source.is_temporary);
+    if (workspaceState.persistedFiltersTemporary) {
+        return false;
+    }
     const saved = readStoredJson(filterStorageKey(name), null);
     if (!saved || typeof saved !== "object") {
         return false;
@@ -3999,6 +4042,7 @@ async function deleteProjectAction(project) {
     }
     try {
         await postJson("/api/project/delete", {path});
+        writeStoredJson(filterStorageKey(path), null);  // its remembered filters go with it
         setActionStatus(`Deleted ${project.name || path}`);
         await refreshProjectListAction();
     } catch (err) {
@@ -4633,6 +4677,7 @@ async function submitImportDialog() {
                 method: "POST",
                 body: formData,
             });
+            handleUnauthorizedResponse(response);
             try {
                 body = await response.json();
             } catch (_err) {
@@ -7679,12 +7724,25 @@ function collectProjectReportDeliveryFromForm() {
     };
 }
 
+let unauthorizedRedirectStarted = false;
+
+function handleUnauthorizedResponse(response) {
+    // The web token cookie expired or the token was rotated: every call would fail from here on, so go to /login.
+    if (!response || response.status !== 401 || unauthorizedRedirectStarted) {
+        return false;
+    }
+    unauthorizedRedirectStarted = true;
+    window.location.assign("/login");
+    return true;
+}
+
 async function postJson(url, payload) {
     const response = await fetch(url, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload || {}),
     });
+    handleUnauthorizedResponse(response);
     let body = {};
     try {
         body = await response.json();
@@ -7699,6 +7757,7 @@ async function postJson(url, payload) {
 
 async function fetchJson(url) {
     const response = await fetch(url, {cache: "no-store"});
+    handleUnauthorizedResponse(response);
     if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
     }
@@ -12021,7 +12080,7 @@ function renderSnapshot(snapshot) {
     }
     if (snapshot.project) {
         renderProject(snapshot.project);
-        if (restoreWorkspaceFilters(snapshot.project.name) && workspaceState.hostsHydrated) {
+        if (restoreWorkspaceFilters(snapshot.project) && workspaceState.hostsHydrated) {
             // Filters came back after the tables were already loaded with defaults: load them again.
             Promise.all([loadWorkspaceHosts(), loadWorkspaceServices()]).catch(() => {});
         }
@@ -12299,6 +12358,8 @@ function connectSnapshotWebSocket() {
             window.clearInterval(snapshotSocketState.watchdog);
             snapshotSocketState.watchdog = null;
         }
+        // A socket refused for want of a token never reconnects; one cheap probe tells us to go to /login instead.
+        fetch("/api/jobs?limit=1", {cache: "no-store"}).then(handleUnauthorizedResponse).catch(() => {});
         setLiveChip("Reconnecting", true);
         snapshotSocketState.attempts += 1;
         const delay = Math.min(30000, 1500 * (2 ** Math.min(snapshotSocketState.attempts - 1, 4)));
@@ -12309,6 +12370,9 @@ function connectSnapshotWebSocket() {
 async function pollSnapshot() {
     try {
         const response = await fetch("/api/snapshot", {cache: "no-store"});
+        if (handleUnauthorizedResponse(response)) {
+            return;
+        }
         if (!response.ok) {
             setLiveChip("Polling Error", true);
             return;
@@ -12491,7 +12555,7 @@ async function createNewTemporaryProjectCore() {
     setActionStatus("Created temporary project");
     resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: true});
     renderProject(body?.project || {});
-    restoreWorkspaceFilters(body?.project?.name);
+    restoreWorkspaceFilters(body?.project || {});
     await refreshWorkspace();
     await Promise.all([pollSnapshot(), loadApprovals()]);
 }
@@ -12530,7 +12594,7 @@ async function openProjectCore() {
     resetWorkspaceDisplayForProjectSwitch({clearProjectPaths: false});
     setValue("project-save-path", "");
     renderProject(body?.project || {});
-    restoreWorkspaceFilters(body?.project?.name);
+    restoreWorkspaceFilters(body?.project || {});
     await refreshWorkspace();
     await Promise.all([pollSnapshot(), loadApprovals()]);
 }
@@ -13887,6 +13951,14 @@ function bindActionButtons() {
         }
         if (screenshotModalState.modalOpen) {
             closeScreenshotModal(true);
+            return;
+        }
+        // Dialogs stack (a confirmation over the Open Workspace picker, a note over the graph): Escape must close
+        // the one on top, which is the last entry of the focus stack, not the first flag in a fixed list.
+        const topModalId = openModalIdStack[openModalIdStack.length - 1] || "";
+        const topCloser = topModalId ? MODAL_ESCAPE_CLOSERS[topModalId] : null;
+        if (topCloser && document.getElementById(topModalId)?.classList.contains("is-open")) {
+            topCloser();
             return;
         }
         if (uiModalState.nmapScanOpen) {

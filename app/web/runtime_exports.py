@@ -9,6 +9,11 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy import text
 
+from app.scheduler.approvals import list_pending_approvals
+from app.scheduler.execution import list_execution_records
+from app.scheduler.scan_history import list_scan_submissions
+from app.web.runtime_tool_catalog import workspace_tools_rows
+
 # Table name -> loader(runtime) returning a list of row dicts. Every table the UI shows (and a few it only
 # summarises) can be exported on its own through /api/export/table/<name>.<csv|json>.
 EXPORT_TABLES = (
@@ -39,6 +44,15 @@ def _rows(value: Any) -> List[Dict[str, Any]]:
                 return [dict(item) for item in value[key] if isinstance(item, dict)]
         return []
     return [dict(item) for item in list(value or []) if isinstance(item, dict)]
+
+
+def _store_rows(runtime, loader) -> List[Dict[str, Any]]:
+    """Run `loader(database)` against the open project; the loaders take limit=None for every row."""
+    with runtime._lock:
+        project = getattr(runtime.logic, "activeProject", None)
+        if project is None:
+            return []
+        return _rows(loader(project.database))
 
 
 def _sql_rows(runtime, sql: str) -> List[Dict[str, Any]]:
@@ -91,21 +105,21 @@ def export_table_rows(runtime, table: str) -> List[Dict[str, Any]]:
             "FROM note n JOIN hostObj h ON h.id = n.hostId ORDER BY h.ip"
         ))
     if name == "processes":
-        return _rows(runtime.get_workspace_processes(limit=_UNBOUNDED))
+        return _rows(runtime._processes(limit=_UNBOUNDED))  # get_workspace_processes clamps to the UI's 500
     if name == "jobs":
         return _rows(runtime.jobs.list_jobs(limit=_UNBOUNDED))
     if name == "scan_history":
-        return _rows(runtime.get_scan_history(limit=_UNBOUNDED))
+        return _store_rows(runtime, lambda database: list_scan_submissions(database, limit=None))
     if name == "scheduler_decisions":
         return _rows(runtime.get_scheduler_decisions(limit=_UNBOUNDED))
     if name == "scheduler_approvals":
-        return _rows(runtime.get_scheduler_approvals(limit=_UNBOUNDED, status=None))
+        return _store_rows(runtime, lambda database: list_pending_approvals(database, limit=None, status=None))
     if name == "scheduler_executions":
-        return _rows(runtime.get_scheduler_execution_records(limit=_UNBOUNDED))
+        return _store_rows(runtime, lambda database: list_execution_records(database, limit=None))
     if name == "credentials":
         return _rows(runtime.get_workspace_credential_captures(limit=None))
     if name == "tools":
-        return _rows(runtime.get_workspace_tools_page(limit=_UNBOUNDED, offset=0))
+        return _rows(workspace_tools_rows(runtime))  # every configured action, not the picker's page
     raise KeyError(f"Unknown export table: {table}")
 
 
