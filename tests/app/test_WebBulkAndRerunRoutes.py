@@ -80,7 +80,11 @@ class WebBulkAndRerunRoutesTest(unittest.TestCase):
         class _Runtime:
             def __init__(self):
                 self.deleted = []
+                self.invalidations = []
                 self.jobs = SimpleNamespace(is_cancel_requested=lambda _job_id: False)
+
+            def _emit_ui_invalidation(self, *channels, **_kw):
+                self.invalidations.append(tuple(channels))
 
             def _start_job(self, job_type, runner, *, payload=None, **_kw):
                 return {"id": 5, "type": job_type, "payload": payload, "result": runner(5)}
@@ -101,6 +105,8 @@ class WebBulkAndRerunRoutesTest(unittest.TestCase):
         self.assertEqual(2, job["result"]["succeeded"])
         self.assertEqual(1, job["result"]["failed"])
         self.assertEqual("error", job["result"]["results"][2]["status"])
+        # one invalidation for the whole batch, after the deletes, so every browser reloads hosts/services/graph
+        self.assertEqual([("overview", "hosts", "services", "graph")], runtime.invalidations)
 
     def test_bulk_action_validates_input(self):
         self.assertEqual(400, self.client.post("/api/workspace/hosts/bulk-action", json={"action": "explode", "host_ids": [1]}).status_code)

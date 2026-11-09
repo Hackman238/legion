@@ -31,6 +31,13 @@ class WebTokenAuthTest(unittest.TestCase):
         self.assertEqual(200, self.client.get("/api/snapshot", headers={"X-Legion-Token": "s3cret-token"}).status_code)
         self.assertEqual(401, self.client.get("/api/snapshot", headers={"Authorization": "Bearer wrong"}).status_code)
         self.assertEqual(200, self.client.get("/health").status_code)  # health stays open for probes
+        # A browser following an API link (export downloads) sends a real navigation Accept header, */* included,
+        # and must land on the login page; a JSON client keeps getting 401.
+        browser_accept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+        navigated = self.client.get("/api/export/table/hosts.csv", headers={"Accept": browser_accept})
+        self.assertEqual(302, navigated.status_code)
+        self.assertTrue(navigated.headers["Location"].endswith("/login"))
+        self.assertEqual(401, self.client.get("/api/export/table/hosts.csv", headers={"Accept": "application/json, text/plain, */*"}).status_code)
 
     def test_page_redirects_to_login_and_cookie_grants_access(self):
         response = self.client.get("/")

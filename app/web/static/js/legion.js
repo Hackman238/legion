@@ -2081,10 +2081,8 @@ async function bulkHostActionImpl(action) {
         if (action === "remove" && body?.job?.id) {
             // Removal runs as a job (it cascades through the evidence graph); wait for its per-host outcome.
             setWorkspaceStatus(`Removing ${hosts.length} host${hosts.length === 1 ? "" : "s"} (job ${body.job.id})...`);
+            // waitForJobCompletion resolves only for a completed job and throws for failed or cancelled ones.
             const job = await waitForJobCompletion(body.job.id, 30 * 60 * 1000, 1000);
-            if (String(job?.status || "") !== "completed") {
-                throw new Error(job?.error || `job ${body.job.id} ${job?.status || "did not finish"}`);
-            }
             body = job.result || {};
         }
         const failed = Number(body?.failed || 0);
@@ -2097,7 +2095,11 @@ async function bulkHostActionImpl(action) {
         }
         if (action === "remove") {
             clearHostBulkSelectionAction();
-            await loadWorkspaceHosts();
+            if (hosts.some((host) => parseInt(host.id, 10) === parseInt(workspaceState.selectedHostId, 10))) {
+                clearHostDetailView();  // the host shown in Host Detail was among those removed
+                workspaceState.selectedHostId = null;
+            }
+            await Promise.all([refreshWorkspace(), loadApprovals()]);  // same full reload as a single remove
         }
         await pollSnapshot();
     } catch (err) {
@@ -4677,7 +4679,9 @@ async function submitImportDialog() {
                 method: "POST",
                 body: formData,
             });
-            handleUnauthorizedResponse(response);
+            if (handleUnauthorizedResponse(response)) {
+                return;  // the browser is on its way to /login
+            }
             try {
                 body = await response.json();
             } catch (_err) {
