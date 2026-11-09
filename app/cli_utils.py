@@ -16,7 +16,7 @@ Copyright (c) 2025 Shane William Scott
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 
-import os
+import shlex
 import sys
 import subprocess
 from typing import Iterable, List
@@ -222,53 +222,68 @@ def to_windows_path(path):
             return f"{drive.upper()}:\\{rest_win}"
         return path
 
-def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_path="nmap"):
+class NmapStageError(RuntimeError):
+    """A staged scan stopped part-way; `written` lists the XML reports of the stages that did complete."""
+
+    def __init__(self, stage_name, written):
+        super().__init__(f"nmap stage {stage_name} failed")
+        self.stage_name = str(stage_name)
+        self.written = list(written or [])
+
+
+def run_nmap_scan(targets, output_prefix, discovery=True, staged=False, nmap_path="nmap", stage_specs=None,
+                  nmap_args=""):
     """
-    Run nmap scan on the given targets.
-    - targets: string of targets (space/comma separated)
-    - output_prefix: path prefix for nmap output files
-    - discovery: if True, enable host discovery; if False, use -Pn
-    - staged: if True, run a staged scan (simple implementation: run a basic scan, then a service scan)
-    Returns the path to the main nmap XML output.
+    Run nmap against the given targets and return the XML reports written (a list of paths), or None on failure.
+    A staged scan that fails after some stages completed raises NmapStageError carrying the reports written so far.
+    - discovery: run a host-discovery sweep (-sn). With staged=False and discovery=True that is the whole scan.
+    - staged: run the configured [StagedNmapSettings] stages (service detection per port group, NSE stage), each
+      producing its own XML; when discovery is False the stages use -Pn.
+    - neither: one -T4 -sV -O service scan (with -Pn).
     """
-    # Convert output_prefix to Windows path if running under WSL and using nmap.exe
+    from app.web.runtime_scan_planning import build_staged_scan_plan
+
     def convert_if_needed(prefix):
         if is_wsl() and nmap_path.lower().endswith('.exe'):
             return to_windows_path(prefix)
         return prefix
 
+    target_list = [item for item in str(targets or "").split() if item]
+    try:
+        extra_args = shlex.split(str(nmap_args or "")) if str(nmap_args or "").strip() else []
+    except ValueError as exc:
+        print(f"Error: invalid --nmap-args: {exc}", file=sys.stderr)
+        return None
+
     if staged:
-        # Example staged: first a fast scan, then a service scan
-        # Stage 1: host discovery
-        output_prefix1 = output_prefix + "_stage1"
-        output_prefix1_conv = convert_if_needed(output_prefix1)
-        cmd1 = [nmap_path, "-sn"] + targets.split() + ["-oA", output_prefix1_conv]
-        try:
-            subprocess.run(cmd1, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as e:
-            print(f"Error running nmap stage 1: {e}", file=sys.stderr)
-            return None
-        # Stage 2: service/version scan on discovered hosts (for demo, just rerun on all)
-        output_prefix2 = output_prefix + "_stage2"
-        output_prefix2_conv = convert_if_needed(output_prefix2)
-        cmd2 = [nmap_path, "-sV", "-O"] + targets.split() + ["-oA", output_prefix2_conv]
-        if not discovery:
-            cmd2.insert(1, "-Pn")
-        try:
-            subprocess.run(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as e:
-            print(f"Error running nmap stage 2: {e}", file=sys.stderr)
-            return None
-        return output_prefix + "_stage2.xml"
+        # The planner converts the -oA argument for nmap.exe under WSL itself; xml_path stays a local path.
+        plan = build_staged_scan_plan(
+            nmap_path=nmap_path,
+            targets=target_list,
+            output_prefix=output_prefix,
+            discovery=bool(discovery),
+            extra_args=extra_args,
+            stage_specs=list(stage_specs or []),
+        )
+        written = []
+        for stage in plan["stages"]:
+            try:
+                subprocess.run(shlex.split(stage["command"]), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                print(f"Error running nmap stage {stage['tool_name']}: {exc}", file=sys.stderr)
+                raise NmapStageError(stage["tool_name"], written) from exc
+            written.append(stage["xml_path"])
+        return written
+
+    cmd = [nmap_path]
+    if discovery:
+        cmd.append("-sn")
     else:
-        output_prefix_conv = convert_if_needed(output_prefix)
-        cmd = [nmap_path]
-        if not discovery:
-            cmd.append("-Pn")
-        cmd += ["-T4", "-sV", "-O"] + targets.split() + ["-oA", output_prefix_conv]
-        try:
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as e:
-            print(f"Error running nmap: {e}", file=sys.stderr)
-            return None
-        return output_prefix + ".xml"
+        cmd += ["-Pn", "-T4", "-sV", "-O"]
+    cmd += extra_args + target_list + ["-oA", convert_if_needed(output_prefix)]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        print(f"Error running nmap: {exc}", file=sys.stderr)
+        return None
+    return [output_prefix + ".xml"]

@@ -173,15 +173,16 @@ def queue_pending_approval(database, record: Dict[str, Any]) -> int:
 
 def list_pending_approvals(
         database,
-        limit: int = 200,
+        limit: Optional[int] = 200,
         status: Optional[str] = None,
         host_ip: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    """Newest first. `limit=None` returns every matching row (exports); the UI passes a bounded limit."""
     session = database.session()
     try:
         _ensure_table(session)
         query = f"SELECT {_select_columns()} FROM scheduler_pending_approval"
-        params: Dict[str, Any] = {"limit": max(1, min(int(limit), 1000))}
+        params: Dict[str, Any] = {} if limit is None else {"limit": max(1, min(int(limit), 1000))}
         clauses = []
         if status:
             clauses.append("status = :status")
@@ -191,7 +192,7 @@ def list_pending_approvals(
             params["host_ip"] = str(host_ip or "")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY id DESC LIMIT :limit"
+        query += " ORDER BY id DESC" + ("" if limit is None else " LIMIT :limit")
         result = session.execute(text(query), params)
         rows = result.fetchall()
         return [_row_to_dict(result, row) for row in rows]

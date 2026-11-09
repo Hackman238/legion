@@ -4,12 +4,17 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Legion{% endblock %}</title>
-    <link
-        rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
-        referrerpolicy="no-referrer"
-    >
+    {# Font Awesome Free 6.5.1 is bundled (app/web/static/vendor/fontawesome) so icons work on offline labs. #}
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/legion.css') }}">
+    <script>
+        // Apply the stored theme before the first paint so a light-theme user never sees a dark flash.
+        try {
+            if (window.localStorage.getItem("legion_theme") === "light") {
+                document.documentElement.setAttribute("data-theme", "light");
+            }
+        } catch (_err) {}
+    </script>
 </head>
 <body{% if legion_ui_opaque or legion_colorful_ascii_background %} class="{% if legion_ui_opaque %}opaque-ui{% endif %}{% if legion_ui_opaque and legion_colorful_ascii_background %} {% endif %}{% if legion_colorful_ascii_background %}colorful-background{% endif %}"{% endif %}>
 <div class="background-glow"></div>
@@ -26,7 +31,13 @@
         <div class="topbar-meta">
             <span class="chip">{{ legion_version_label }}</span>
             <span class="chip">{{ legion_web_bind_label }}</span>
-            <span class="chip">No auth</span>
+            {% if legion_auth_enabled %}
+            <form method="post" action="/logout" class="chip-form">
+                <button class="chip chip-button" type="submit" title="Forget the web token on this browser">Token auth · sign out</button>
+            </form>
+            {% else %}
+            <span class="chip" title="No authentication: only bind to localhost, or pass --web-token when exposing the UI">No auth</span>
+            {% endif %}
             <span class="chip" id="live-status">Live</span>
         </div>
     </header>

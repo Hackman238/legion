@@ -750,17 +750,27 @@ class WebRuntimeDomainModulesTest(unittest.TestCase):
         self.assertEqual("1", runtime.request_call["headers"]["X-Test"])
         self.assertEqual("text/markdown; charset=utf-8", runtime.request_call["headers"]["Content-Type"])
 
-    def test_runtime_tools_module_pages_supported_tools_and_scheduler_only_entries(self):
+    def test_runtime_tools_module_pages_every_configured_tool_and_marks_missing_ones(self):
+        from unittest.mock import patch
         from app.web import runtime_tools
 
         runtime = _ToolRuntime()
 
-        page = runtime_tools.get_workspace_tools_page(runtime, service="http", limit=10, offset=0)
+        # Every configured port action is listed; only installed executables are runnable.
+        from app.web.runtime_tool_catalog import reset_executable_availability_cache
 
-        self.assertEqual(2, page["total"])
-        self.assertEqual(["screenshooter", "whatweb-http"], [item["tool_id"] for item in page["tools"]])
-        self.assertFalse(page["tools"][0]["runnable"])
-        self.assertTrue(page["tools"][1]["runnable"])
+        reset_executable_availability_cache()  # availability is cached across requests; start from a clean slate
+        with patch("app.web.runtime_tool_catalog.shutil.which", side_effect=lambda name: "/usr/bin/whatweb" if name == "whatweb" else None):
+            page = runtime_tools.get_workspace_tools_page(runtime, service="http", limit=10, offset=0)
+
+        self.assertEqual(3, page["total"])
+        self.assertEqual(["screenshooter", "whatweb-http", "custom-tool"], [item["tool_id"] for item in page["tools"]])
+        by_id = {item["tool_id"]: item for item in page["tools"]}
+        self.assertFalse(by_id["screenshooter"]["runnable"])  # scheduler-only entry
+        self.assertTrue(by_id["whatweb-http"]["runnable"])
+        self.assertEqual("whatweb", by_id["whatweb-http"]["executable"])
+        self.assertFalse(by_id["custom-tool"]["runnable"])  # `custom` is not installed
+        self.assertFalse(by_id["custom-tool"]["available"])
         self.assertIsNone(page["next_offset"])
 
     def test_runtime_tools_module_sorts_tool_targets_and_normalizes_query_params(self):

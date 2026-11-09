@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Tuple, Any, Dict
 
 from app.web.http_utils import clamp_int
 
@@ -30,13 +30,36 @@ class WorkspaceToolTargetsQuery:
     service: str
     host_id: int
     limit: int
+    host_ids: Tuple[int, ...] = ()
 
     @classmethod
     def from_args(cls, args: Any) -> "WorkspaceToolTargetsQuery":
+        host_ids = []
+        for token in str(args.get("host_ids", "") or "").split(","):
+            token = token.strip()
+            if token.isdigit() and int(token) > 0 and int(token) not in host_ids:
+                host_ids.append(int(token))
         return cls(
             service=str(args.get("service", "") or "").strip(),
             host_id=clamp_int(args.get("host_id", 0), 0, 0, 10**9),
             limit=clamp_int(args.get("limit", 300), 300, 1, 5000),
+            host_ids=tuple(host_ids),
+        )
+
+
+@dataclass(frozen=True)
+class ToolRunTarget:
+    host_ip: str
+    port: str
+    protocol: str
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "ToolRunTarget":
+        source = payload if isinstance(payload, dict) else {}
+        return cls(
+            host_ip=str(source.get("host_ip", "") or "").strip(),
+            port=str(source.get("port", "") or "").strip(),
+            protocol=str(source.get("protocol", "tcp") or "tcp").strip().lower() or "tcp",
         )
 
 
@@ -48,6 +71,7 @@ class ToolRunRequest:
     tool_id: str
     parameters: Dict[str, Any]
     timeout: int
+    targets: Tuple[ToolRunTarget, ...] = ()
 
     @classmethod
     def from_payload(cls, payload: Any) -> "ToolRunRequest":
@@ -64,4 +88,8 @@ class ToolRunRequest:
             tool_id=str(source.get("tool_id", "") or "").strip(),
             parameters=dict(source.get("parameters", {}) or {}) if isinstance(source.get("parameters", {}), dict) else {},
             timeout=timeout,
+            targets=tuple(
+                ToolRunTarget.from_payload(item)
+                for item in (source.get("targets") if isinstance(source.get("targets"), list) else [])
+            ),
         )

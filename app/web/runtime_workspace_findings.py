@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import sys
+
+from typing import Any, Dict
 
 from app.scheduler.state import get_target_state as load_target_state
 from app.web.runtime_workspace_identity import resolve_host_os
@@ -73,7 +75,10 @@ def get_findings(
             host_rows = [_host_state_row(host, target_state)]
             preloaded_states = {int(host_id): target_state}
         else:
-            host_rows = list(runtime._hosts(limit=max(1, min(int(limit_hosts or 500), 5000))) or [])
+            # limit_hosts=None (exports) means every host; the UI passes a bounded value.
+            host_rows = list(runtime._hosts(
+                limit=None if limit_hosts is None else max(1, min(int(limit_hosts or 500), 5000)),
+            ) or [])
             preloaded_states = None
             if target_state_getter is load_target_state:
                 # Default getter (also what WebRuntime passes): one bulk query instead of a lookup per host.
@@ -84,7 +89,7 @@ def get_findings(
                 )
 
         findings = []
-        max_items = max(1, min(int(limit_findings or 1000), 5000))
+        max_items = sys.maxsize if limit_findings is None else max(1, min(int(limit_findings or 1000), 5000))
         for row in host_rows:
             row_host_id = int(row.get("id", 0) or 0)
             if preloaded_states is not None:

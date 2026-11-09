@@ -23,13 +23,15 @@ RUN pip3 install --break-system-packages --upgrade pip && \
 ENV LEGION_HOME=/data
 VOLUME ["/data"]
 
-# The web interface listens on 5000 and must bind all interfaces to be reachable from the host
+# The web interface listens on 5000 and must bind all interfaces to be reachable from the host.
+# Binding all interfaces requires a web token: set LEGION_WEB_TOKEN, or read the generated one from the container log.
 EXPOSE 5000
 CMD ["python3", "legion.py", "--web", "--web-bind-all"]
 
 # Usage notes:
 # - Web UI (scans need raw sockets, hence --cap-add):
-#   docker run --rm -p 5000:5000 -v legion-data:/data --cap-add=NET_RAW --cap-add=NET_ADMIN legion
+#   docker run --rm -p 5000:5000 -v legion-data:/data -e LEGION_WEB_TOKEN=change-me \
+#       --cap-add=NET_RAW --cap-add=NET_ADMIN legion
 # - Headless CLI:
 #   docker run --rm -v "$PWD:/work" legion python3 legion.py --headless --input-file /work/targets.txt \
 #       --staged-scan --output-file /work/results.json

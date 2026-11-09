@@ -230,15 +230,40 @@ def update_scan_submission(
         session.close()
 
 
-def list_scan_submissions(database, limit: int = 200) -> List[Dict[str, Any]]:
+def get_scan_submission(database, submission_id: int) -> Optional[Dict[str, Any]]:
     session = database.session()
     try:
         _ensure_table(session)
-        safe_limit = max(1, min(int(limit or 200), 2000))
         result = session.execute(text(
             "SELECT " + ", ".join(SCAN_HISTORY_COLUMNS) + " "
-            "FROM scheduler_scan_submission ORDER BY id DESC LIMIT :limit"
-        ), {"limit": safe_limit})
+            "FROM scheduler_scan_submission WHERE id = :id LIMIT 1"
+        ), {"id": int(submission_id or 0)})
+        row = result.fetchone()
+        if row is None:
+            return None
+        item = dict(zip(result.keys(), row))
+        item["targets"] = _from_json(item.get("targets_json"), [])
+        item["scan_options"] = _from_json(item.get("scan_options_json"), {})
+        return item
+    finally:
+        session.close()
+
+
+def list_scan_submissions(database, limit: Optional[int] = 200) -> List[Dict[str, Any]]:
+    """Newest first. `limit=None` returns every row (exports); the UI always passes a bounded limit."""
+    session = database.session()
+    try:
+        _ensure_table(session)
+        if limit is None:
+            result = session.execute(text(
+                "SELECT " + ", ".join(SCAN_HISTORY_COLUMNS) + " FROM scheduler_scan_submission ORDER BY id DESC"
+            ))
+        else:
+            safe_limit = max(1, min(int(limit or 200), 2000))
+            result = session.execute(text(
+                "SELECT " + ", ".join(SCAN_HISTORY_COLUMNS) + " "
+                "FROM scheduler_scan_submission ORDER BY id DESC LIMIT :limit"
+            ), {"limit": safe_limit})
         rows = result.fetchall()
         payload: List[Dict[str, Any]] = []
         for row in rows:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.web.runtime_workspace_mutation import normalize_host_ids
+
 from typing import Any, Dict
 
 from app.web.host_action_schema import (
@@ -92,3 +94,46 @@ class HostActionService:
 
     def delete_host_workspace(self, host_id: int) -> Dict[str, Any]:
         return self.runtime.delete_host_workspace(int(host_id))
+
+    BULK_ACTIONS = ("rescan", "dig-deeper", "refresh-screenshots", "remove")
+
+    def bulk_host_action(self, payload: Any) -> Dict[str, Any]:
+        """Apply one host action to many hosts; every host is attempted and failures are reported per host."""
+        source = payload if isinstance(payload, dict) else {}
+        action = str(source.get("action", "") or "").strip().lower()
+        if action not in self.BULK_ACTIONS:
+            raise ValueError(f"action must be one of: {', '.join(self.BULK_ACTIONS)}.")
+        raw_ids = source.get("host_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise ValueError("host_ids must be a non-empty list.")
+        host_ids = normalize_host_ids(raw_ids)
+        if not host_ids:
+            raise ValueError("host_ids must contain at least one host id.")
+        if action == "remove":
+            # Deleting hosts cascades through ports, scripts, CVEs, notes and the evidence graph; a large
+            # selection would hold the request for minutes, so it runs as a cancellable job instead.
+            job = self.runtime.start_bulk_host_remove_job(host_ids)
+            return {"status": "accepted", "action": action, "requested": len(host_ids), "job": job}
+        results = []
+        for host_id in host_ids:
+            try:
+                if action == "rescan":
+                    outcome = {"job": self.runtime.start_host_rescan_job(host_id)}
+                elif action == "dig-deeper":
+                    outcome = {"job": self.runtime.start_host_dig_deeper_job(host_id)}
+                elif action == "refresh-screenshots":
+                    outcome = {"job": self.runtime.start_host_screenshot_refresh_job(host_id)}
+                else:
+                    outcome = dict(self.runtime.delete_host_workspace(host_id) or {})
+                results.append({"host_id": host_id, "status": "ok", **outcome})
+            except Exception as exc:
+                results.append({"host_id": host_id, "status": "error", "error": str(exc)})
+        succeeded = sum(1 for item in results if item["status"] == "ok")
+        return {
+            "status": "ok" if succeeded == len(results) else ("partial" if succeeded else "error"),
+            "action": action,
+            "requested": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+            "results": results,
+        }

@@ -1078,10 +1078,10 @@ def _extract_direct_command_tools(command_text: str) -> List[str]:
 
 
 def _iter_configured_command_texts(settings: object) -> Iterable[str]:
+    # Only port actions are launched by the web/CLI/MCP runtime; the desktop-era host actions and
+    # [term] launchers would otherwise report ssh, ftp, telnet, grep, tee ... as missing "custom" tools.
     for attr_name, command_index in (
-        ("hostActions", 2),
         ("portActions", 2),
-        ("portTerminalActions", 2),
     ):
         for row in list(getattr(settings, attr_name, []) or []):
             if isinstance(row, (list, tuple)) and len(row) > command_index:

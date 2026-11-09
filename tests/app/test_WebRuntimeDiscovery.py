@@ -28,7 +28,7 @@ class WebRuntimeDiscoveryTest(unittest.TestCase):
             discovery=True,
             staged=False,
             run_actions=True,
-            nmap_path="nmap",
+            nmap_path="",  # resolved from settings by the scan planner
             nmap_args="",
             scan_mode="legacy",
             scan_options={},

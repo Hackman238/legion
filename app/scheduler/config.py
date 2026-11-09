@@ -17,7 +17,7 @@ from app.scheduler.policy import (
 from app.scheduler.runners import normalize_runner_settings
 
 DEFAULT_FEATURE_FLAGS = {
-    "graph_workspace": False,
+    "graph_workspace": True,
     "credential_capture_panel": True,
     "optional_runners": True,
     "context_summary_enabled": True,
@@ -677,6 +677,19 @@ class SchedulerConfigManager:
         if not replaced:
             families.append(entry)
 
+        config["preapproved_command_families"] = families
+        self.save(config)
+        return self.load()
+
+    def clear_family_policy(self, family_id: str) -> Dict[str, Any]:
+        """Forget a family's pre-approval/suppression so its actions go back through the normal policy."""
+        family_key = str(family_id or "").strip()
+        if not family_key:
+            return self.load()
+        config = copy.deepcopy(self.load())
+        families = [item for item in self.list_family_policies() if item.get("family_id") != family_key]
+        if len(families) == len(self.list_family_policies()):
+            return self.load()
         config["preapproved_command_families"] = families
         self.save(config)
         return self.load()
