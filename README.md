@@ -185,9 +185,13 @@ Exploit-DB references for vulners CVEs are looked up offline from the bundled `p
 
 ## What's new
 
-Version 0.7.1 is a stability release: it fixes the desktop UI failing to start and crashing on exit, several data-loss
-paths around *Save As* and Nmap imports, a per-host report that included other hosts' findings and credentials, and a
-long list of web runtime, scheduler and importer bugs. See [CHANGELOG.txt](CHANGELOG.txt) for the full list.
+Version 0.8.0 completes the move to the web interface. The Qt desktop UI is gone, `python legion.py` starts the web
+UI, and the web UI gained the workflow the desktop had and more: sortable and filterable tables, bulk host actions and
+batch tool runs, scan re-run, browser uploads for nmap XML, `.gnmap` and masscan reports, project rename and delete,
+execution traces, findings and plan previews, a richer Host Detail, a light theme and remembered filters. Exports now
+cover the whole project, an optional web token protects exposed instances, the headless CLI runs the configured staged
+scans and works inside a project file, and the MCP server speaks the real protocol. The release also carries a long
+list of scheduler, importer and runtime fixes. See [CHANGELOG.txt](CHANGELOG.txt) for the full list.
 
 ## Development
 

@@ -1,3 +1,31 @@
+legion (0.8.0-1) UNRELEASED; urgency=medium
+
+  * Remove the Qt desktop UI; `legion` now starts the web interface and the
+    package no longer depends on PyQt6, qasync or X11 libraries. The headless
+    CLI and MCP server are unchanged.
+  * Web UI: sortable, filterable tables; toasts and confirmation dialogs;
+    bulk host actions and batch tool runs; scan re-run; import dialog with
+    browser uploads for nmap XML, .gnmap and masscan XML/JSON/list reports;
+    Open Workspace picker with rename and delete; executions, findings, plan
+    preview and command-family policy views; richer Host Detail; light theme;
+    remembered filters and paths; Font Awesome bundled for offline use.
+  * Exports cover the whole project (every table as CSV or JSON) instead of
+    the capped UI snapshot.
+  * Security: optional web token (--web-token / LEGION_WEB_TOKEN) with a login
+    page, required automatically when binding all interfaces; cross-site and
+    DNS-rebinding requests are rejected; API errors are always JSON.
+  * Scheduler: brute-force nmap scripts and unsafe script arguments are
+    classified as risky, blocked candidates are never re-admitted, approvals
+    re-check policy before running, and the evidence-graph sync, approval and
+    execution stores are indexed and skip unchanged state.
+  * Headless CLI: --discovery and --staged-scan run the configured stages,
+    plus --nmap-args, --nmap-xml and --project.
+  * MCP server speaks the MCP protocol over stdio with 32 tools.
+  * Many fixes in the web runtime, importers, parsers, configuration loading
+    and database cleanup; see CHANGELOG.txt.
+
+ -- Shane Scott <sscott@shanewilliamscott.com>  Mon, 09 Nov 2026 19:49:24 +0000
+
 legion (0.7.1-1) UNRELEASED; urgency=medium
 
   * Fix the desktop UI failing to start and segfaulting on exit, and stop

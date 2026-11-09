@@ -1,4 +1,4 @@
-LEGION Unreleased
+LEGION 0.8.0
 
 * Removed the legacy Qt desktop UI. `python legion.py` now starts the web interface; the headless CLI and MCP server are unchanged. PyQt6, qasync and the X11/xvfb packages are no longer dependencies, and the Nmap importer no longer needs Qt.
 * Dropped the unused `asyncio` backport and `six` from the requirements.
