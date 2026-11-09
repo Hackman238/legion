@@ -14,7 +14,8 @@ legion (0.8.1-1) UNRELEASED; urgency=medium
     pins its connection pool so Save As behaves the same on both.
   * Removed an embedded Shodan API key from scripts/python/pyShodan.py and the
     unused pyshodan-api-key entry from legion.conf (the Shodan integration key
-    lives in the scheduler settings, the keyring or SHODAN_API_KEY).
+    lives in the scheduler settings, the keyring or SHODAN_API_KEY); the
+    script imports only the module the PyPI package ships.
   * flake8 and pip-audit moved to requirements-dev.txt.
 
  -- Shane Scott <sscott@shanewilliamscott.com>  Mon, 09 Nov 2026 21:48:47 +0000
