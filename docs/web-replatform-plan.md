@@ -75,8 +75,9 @@
 - 0.7.1 hardened the runtime behind those features: UTF-8-tolerant output capture, kill reporting independent of the
   tool's exit code, no signalling of stale PIDs, batched workspace queries, per-host locking for scheduler state,
   race-safe graph upserts, and per-engine schema caching.
-- Open items: `get_script_output`-style views now slice in SQL, but the Qt desktop UI still has no web equivalent for
-  brute-force tabs; packaging (Phase 4) is unchanged.
+- Cutover complete: the Qt desktop UI has been removed and `python legion.py` starts the web interface. Packaging
+  (Phase 4) no longer depends on Qt or X11. The brute-force (Hydra) tabs of the desktop UI have no web equivalent;
+  Hydra runs are available through the governed scheduler actions instead.
 
 ## Locked-In Policy Choices
 - Pre-approval scope is by command family (template-level), not exact one-off command lines.

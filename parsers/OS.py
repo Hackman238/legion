@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 __author__ =  'ketchup'
 __version__=  '0.1'

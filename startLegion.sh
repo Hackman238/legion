@@ -36,10 +36,6 @@ then
     echo "Installing Python Libraries..."
     ./deps/installPythonLibs.sh
 
-    # Patch Qt
-    echo "Stripping some ABIs from Qt libraries..."
-    ./deps/fixQt.sh
-
     # Determine if additional Sparta scripts are installed
     bash ./deps/detectScripts.sh
 
@@ -47,13 +43,8 @@ then
     rm .justcloned -f
 fi
 
-export QT_XCB_NATIVE_PAINTING=0
-export QT_AUTO_SCREEN_SCALE_FACTOR=1.5
-
-# Verify X can be reached
-source ./deps/checkXserver.sh
-
 if [[ $1 != 'setup' ]]
 then
-    /usr/bin/env python3 legion.py
+    # Starts the web interface; pass any legion.py options through (e.g. ./startLegion.sh --web-port 8080).
+    /usr/bin/env python3 legion.py --web "$@"
 fi

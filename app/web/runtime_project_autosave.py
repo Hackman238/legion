@@ -111,7 +111,8 @@ def maybe_schedule_autosave_locked(runtime):
     if runtime._save_in_progress or runtime._has_running_autosave_job():
         runtime._autosave_next_due_monotonic = now + 20.0
         return
-    if runtime._count_running_scan_jobs() > 0:
+    # Autosave copies the database with the backup API, so only scan-type jobs (which change it heavily) defer it.
+    if runtime._count_running_scan_jobs(scan_jobs_only=True) > 0:
         runtime._autosave_next_due_monotonic = now + 30.0
         return
     if runtime._count_running_or_waiting_processes(project) > 0 or len(runtime._active_processes) > 0:

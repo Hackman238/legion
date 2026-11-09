@@ -5,6 +5,7 @@ Qt-free INI settings store with a minimal QSettings-like API surface.
 from __future__ import annotations
 
 import configparser
+import logging
 import csv
 import io
 import os
@@ -23,10 +24,24 @@ class IniSettingsStore:
         self._file_path = str(file_path)
         self._groups = []
         self._list_value_groups = set(list_value_groups or self._LIST_VALUE_GROUPS)
-        self._parser = configparser.ConfigParser(interpolation=None)
+        # strict=False tolerates duplicate sections/options in a hand-edited file instead of raising.
+        self._parser = configparser.ConfigParser(interpolation=None, strict=False)
         self._parser.optionxform = str
         if os.path.exists(self._file_path):
-            self._parser.read(self._file_path, encoding="utf-8")
+            self._load()
+
+    def _load(self):
+        """Read the file; a broken or non-UTF-8 config falls back to defaults instead of aborting startup."""
+        try:
+            with open(self._file_path, "rb") as handle:
+                text = handle.read().decode("utf-8", errors="replace")
+            self._parser.read_string(text, source=self._file_path)
+        except (configparser.Error, OSError) as exc:
+            logging.getLogger("legion.config").warning(
+                "Could not parse %s (%s); using default settings until it is fixed.", self._file_path, exc
+            )
+            self._parser = configparser.ConfigParser(interpolation=None, strict=False)
+            self._parser.optionxform = str
 
     def fileName(self) -> str:
         return self._file_path
@@ -87,8 +102,15 @@ class IniSettingsStore:
         parent = os.path.dirname(self._file_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(self._file_path, "w", encoding="utf-8") as handle:
-            self._parser.write(handle, space_around_delimiters=False)
+        # Write to a sibling temp file and swap it in, so a crash mid-write never leaves a truncated config.
+        temp_path = f"{self._file_path}.tmp-{os.getpid()}"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                self._parser.write(handle, space_around_delimiters=False)
+            os.replace(temp_path, self._file_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def _current_section(self) -> str:
         if not self._groups:

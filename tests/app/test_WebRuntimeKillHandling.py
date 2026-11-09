@@ -21,6 +21,9 @@ class _DummyProcessRepo:
         self.problems = []
         self.outputs = {}
 
+    def getProcessById(self, process_id):
+        return {"id": int(process_id)}
+
     def storeProcess(self, _stub):
         return 1
 

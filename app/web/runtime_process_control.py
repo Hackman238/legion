@@ -90,6 +90,8 @@ def kill_process(runtime, process_id: int) -> Dict[str, Any]:
         with runtime._lock:
             project = runtime._require_active_project()
             process_repo = project.repositoryContainer.processRepository
+            if process_repo.getProcessById(process_key) is None:
+                raise KeyError(f"Unknown process id: {process_key}")
             status = str(process_repo.getStatusByProcessId(str(process_key)) or "")
             # Without a live handle this process was not started by this session (a stale row left by a
             # crash/restart or a reopened/restored project), so its stored PID may now belong to an
@@ -123,7 +125,16 @@ def close_process(runtime, process_id: int) -> Dict[str, Any]:
     with runtime._lock:
         project = runtime._require_active_project()
         process_repo = project.repositoryContainer.processRepository
+        if process_repo.getProcessById(int(process_id)) is None:
+            raise KeyError(f"Unknown process id: {process_id}")
         status = str(process_repo.getStatusByProcessId(str(int(process_id))) or "")
+    if status in {"Running", "Waiting"}:
+        # Hiding a live tool must stop it: otherwise it keeps running (and holding its port/interface) under a
+        # row that is already marked closed, and a second instance can be started on top of it.
+        kill_process(runtime, int(process_id))
+    with runtime._lock:
+        project = runtime._require_active_project()
+        process_repo = project.repositoryContainer.processRepository
         session = project.database.session()
         try:
             session.execute(text(
@@ -134,9 +145,7 @@ def close_process(runtime, process_id: int) -> Dict[str, Any]:
             session.rollback()
         finally:
             session.close()
-        if status in {"Running", "Waiting"}:
-            process_repo.storeProcessCancelStatus(str(int(process_id)))
-    result = {"closed": True, "process_id": int(process_id)}
+    result = {"closed": True, "process_id": int(process_id), "stopped": status in {"Running", "Waiting"}}
     runtime._emit_ui_invalidation("processes", "overview", throttle_seconds=0.1)
     return result
 
@@ -256,6 +265,10 @@ def tool_execution_profile(runtime, tool_name: Any) -> Dict[str, Any]:
 
 
 def resolve_process_timeout_policy(runtime, tool_name: Any, requested_timeout: Any) -> Dict[str, Any]:
+    # An explicit 0 (credential-capture listeners such as Responder) disables the inactivity timeout: these
+    # tools legitimately print nothing for hours. None/'' keep the 300 s default.
+    if isinstance(requested_timeout, (int, float)) and not isinstance(requested_timeout, bool) and requested_timeout <= 0:
+        return {"quiet_long_running": False, "inactivity_timeout_seconds": 0, "hard_timeout_seconds": 0}
     try:
         default_timeout = max(1, int(requested_timeout or 300))
     except (TypeError, ValueError):

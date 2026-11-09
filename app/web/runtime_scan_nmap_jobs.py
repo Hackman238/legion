@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, Optional
 
 from app.screenshot_targets import choose_preferred_command_host
+from app.web.runtime_scan_submission import start_job_with_scan_submission
 
 
 def start_subnet_rescan_job(runtime, subnet: str) -> Dict[str, Any]:
@@ -72,19 +73,16 @@ def start_nmap_xml_import_job(
         run_actions: bool = False,
 ) -> Dict[str, Any]:
     xml_path = runtime._normalize_existing_file(path)
-    job = runtime._start_job(
+    return start_job_with_scan_submission(
+        runtime,
         "import-nmap-xml",
         lambda job_id: runtime._import_nmap_xml(xml_path, bool(run_actions), job_id=int(job_id or 0)),
         payload={"path": xml_path, "run_actions": bool(run_actions)},
-    )
-    runtime._record_scan_submission(
         submission_kind="import_nmap_xml",
-        job_id=int(job.get("id", 0) or 0),
         source_path=xml_path,
         run_actions=bool(run_actions),
         result_summary=f"queued import from {os.path.basename(xml_path)}",
     )
-    return job
 
 
 def start_host_rescan_job(runtime, host_id: int) -> Dict[str, Any]:
@@ -153,7 +151,8 @@ def start_nmap_scan_job(
         "scan_mode": resolved_scan_mode,
         "scan_options": resolved_scan_options,
     }
-    job = runtime._start_job(
+    return start_job_with_scan_submission(
+        runtime,
         "nmap-scan",
         lambda job_id: runtime._run_nmap_scan_and_import(
             normalized_targets,
@@ -167,10 +166,7 @@ def start_nmap_scan_job(
             job_id=int(job_id or 0),
         ),
         payload=payload,
-    )
-    runtime._record_scan_submission(
         submission_kind="nmap_scan",
-        job_id=int(job.get("id", 0) or 0),
         targets=normalized_targets,
         discovery=bool(discovery),
         staged=bool(staged),
@@ -181,4 +177,3 @@ def start_nmap_scan_job(
         scan_options=resolved_scan_options,
         result_summary=f"queued nmap for {runtime._compact_targets(normalized_targets)}",
     )
-    return job

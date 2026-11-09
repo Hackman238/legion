@@ -7,6 +7,10 @@ from app.scheduler.orchestrator import SchedulerDecisionDisposition
 from app.scheduler.state import build_attempted_action_entry
 from app.timing import getTimestamp
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def handle_scheduler_blocked_decision(runtime, *, target, decision, command_template):
     _ = command_template
@@ -116,16 +120,21 @@ def handle_scheduler_execution_result(runtime, *, target, decision, result: Dict
         except Exception:
             output_text = ""
     if output_text or artifact_refs:
-        observed_payload = extract_tool_observations(
-            str(decision.tool_id or ""),
-            output_text,
-            port=str(target.port or ""),
-            protocol=str(target.protocol or "tcp"),
-            service=str(target.service_name or ""),
-            artifact_refs=artifact_refs,
-            host_ip=str(target.host_ip or ""),
-            hostname=str(getattr(target, "hostname", "") or ""),
-        )
+        try:
+            observed_payload = extract_tool_observations(
+                str(decision.tool_id or ""),
+                output_text,
+                port=str(target.port or ""),
+                protocol=str(target.protocol or "tcp"),
+                service=str(target.service_name or ""),
+                artifact_refs=artifact_refs,
+                host_ip=str(target.host_ip or ""),
+                hostname=str(getattr(target, "hostname", "") or ""),
+            )
+        except Exception:
+            # The tool already ran; a parser bug must not abort the scheduler run for this host.
+            logger.warning("Observation parsing failed for %s on %s", decision.tool_id, target.host_ip, exc_info=True)
+            observed_payload = {}
         _merge_observed_discovery_results(runtime, decision, observed_payload, observed_raw)
 
     runtime._persist_shared_target_state(

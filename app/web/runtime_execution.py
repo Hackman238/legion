@@ -148,7 +148,11 @@ def run_command_with_tracking(
     started_at = time.monotonic()
     timeout_policy = runtime._resolve_process_timeout_policy(tool_name, timeout)
     quiet_long_running = bool(timeout_policy.get("quiet_long_running", False))
-    inactivity_timeout_seconds = max(1, int(timeout_policy.get("inactivity_timeout_seconds", timeout) or timeout or 300))
+    try:
+        inactivity_timeout_seconds = max(0, int(timeout_policy.get("inactivity_timeout_seconds", 300)))
+    except (TypeError, ValueError):
+        inactivity_timeout_seconds = 300
+    # 0 disables the inactivity timeout (long-running listeners); the hard timeout still applies when set.
     hard_timeout_seconds = max(0, int(timeout_policy.get("hard_timeout_seconds", 0) or 0))
     progress_state = {
         "adapter": runtime._process_progress_adapter_for_command(str(tool_name), str(command)),
@@ -352,6 +356,8 @@ def run_command_with_tracking(
                     timed_out = True
                     timeout_reason = f"timeout after {int(hard_timeout_seconds)}s total runtime"
                     runtime._signal_process_tree(proc, force=True)
+                elif inactivity_timeout_seconds <= 0:
+                    pass
                 elif quiet_long_running and (now - last_activity_at) > int(inactivity_timeout_seconds):
                     timed_out = True
                     timeout_reason = f"timeout after {int(inactivity_timeout_seconds)}s without CPU/IO activity"

@@ -2065,11 +2065,21 @@ def sync_execution_record_to_evidence_graph(
             host_token = _clean_text(getattr(step, "target_ref", {}).get("host_ip", "") if hasattr(step, "target_ref") else "", limit=160, allow_unknown=True)
         if not host_token:
             return []
+        # Key artifact/screenshot nodes by host id like sync_target_state_to_evidence_graph does, so the two
+        # syncs share nodes instead of each creating its own copy; keep the label the state sync chose.
+        host_row = session.execute(
+            text("SELECT id FROM hostObj WHERE ip = :ip ORDER BY id ASC LIMIT 1"), {"ip": host_token}
+        ).fetchone()
+        resolved_host_id = int(host_row[0] or 0) if host_row else 0
+        existing_label_row = session.execute(
+            text("SELECT label FROM graph_node WHERE node_key = :node_key LIMIT 1"), {"node_key": f"host:{host_token}"}
+        ).fetchone()
+        host_label = _clean_text(existing_label_row[0], limit=240, allow_unknown=True) if existing_label_row else ""
         host_node_id, changed = _upsert_node(
             session,
             node_key=f"host:{host_token}",
             node_type="host",
-            label=host_token,
+            label=host_label or host_token,
             confidence=88.0,
             source_kind="observed",
             source_ref=f"execution:{_clean_text(getattr(execution_record, 'execution_id', ''), limit=80, allow_unknown=True)}",
@@ -2124,7 +2134,7 @@ def sync_execution_record_to_evidence_graph(
             node_type = "screenshot" if artifact_token.lower().endswith(".png") else "artifact"
             artifact_node_id, changed = _upsert_node(
                 session,
-                node_key=f"{node_type}:{host_token}:{artifact_token}",
+                node_key=f"{node_type}:{resolved_host_id or host_token}:{artifact_token}",
                 node_type=node_type,
                 label=artifact_token.split("/")[-1] or artifact_token,
                 confidence=96.0,
@@ -2210,8 +2220,102 @@ def sync_execution_record_to_evidence_graph(
         session.close()
 
 
+def delete_host_from_evidence_graph(database, *, host_id: int, host_ip: str = "") -> int:
+    """Remove the graph nodes keyed to a deleted host (and the edges/evidence refs that pointed at them).
+
+    rebuild_evidence_graph only walks existing hostObj rows, so without this the nodes of a deleted host
+    would stay in the graph forever. Returns the number of nodes removed.
+    """
+    resolved_host_id = int(host_id or 0)
+    host_token = _clean_text(host_ip, limit=160, allow_unknown=True)
+    if resolved_host_id <= 0 and not host_token:
+        return 0
+    ensure_scheduler_graph_tables(database)
+    key_patterns: List[str] = []
+    if resolved_host_id > 0:
+        for prefix in (
+            "port", "service", "technology", "finding", "credential", "artifact", "screenshot",
+            "evidence:finding", "evidence:technology", "evidence:credential",
+        ):
+            key_patterns.append(f"{prefix}:{resolved_host_id}:%")
+    exact_keys: List[str] = []
+    if host_token:
+        exact_keys.append(f"host:{host_token}")
+        key_patterns.append(f"action:{host_token}:%")
+        key_patterns.append(f"artifact:{host_token}:%")
+        key_patterns.append(f"screenshot:{host_token}:%")
+    if resolved_host_id > 0:
+        exact_keys.append(f"host:{resolved_host_id}")
+    session = database.session()
+    try:
+        clauses = []
+        params: Dict[str, Any] = {}
+        for index, key in enumerate(exact_keys):
+            clauses.append(f"node_key = :exact_{index}")
+            params[f"exact_{index}"] = key
+        for index, pattern in enumerate(key_patterns):
+            clauses.append(f"node_key LIKE :pattern_{index} ESCAPE '\\'")
+            params[f"pattern_{index}"] = pattern.replace("_", "\\_")
+        if not clauses:
+            return 0
+        where_sql = " OR ".join(clauses)
+        node_ids = [
+            str(row[0]) for row in session.execute(
+                text(f"SELECT node_id FROM graph_node WHERE {where_sql}"), params
+            ).fetchall()
+        ]
+        if not node_ids:
+            return 0
+        deleted_set = set(node_ids)
+        neighbour_ids: set = set()
+        for chunk_start in range(0, len(node_ids), 400):
+            chunk = node_ids[chunk_start:chunk_start + 400]
+            in_clause, in_params = _sql_in_clause("node_id", chunk)
+            for from_id, to_id in session.execute(text(
+                f"SELECT from_node_id, to_node_id FROM graph_edge WHERE from_node_id IN ({in_clause}) OR to_node_id IN ({in_clause})"
+            ), in_params).fetchall():
+                for node_id in (str(from_id or ""), str(to_id or "")):
+                    if node_id and node_id not in deleted_set:
+                        neighbour_ids.add(node_id)
+            session.execute(text(f"DELETE FROM graph_edge WHERE from_node_id IN ({in_clause}) OR to_node_id IN ({in_clause})"), in_params)
+            session.execute(text(f"DELETE FROM graph_evidence_ref WHERE owner_kind = 'node' AND owner_id IN ({in_clause})"), in_params)
+            session.execute(text(f"DELETE FROM graph_node WHERE node_id IN ({in_clause})"), in_params)
+        # Shared nodes (hostnames, CPEs, CVEs, exploits, identities) that only this host pointed at are now
+        # orphans. Only the deleted host's former neighbours are considered: a graph-wide sweep would race a
+        # concurrent sync that has inserted a node but not yet its edges.
+        orphan_ids: List[str] = []
+        neighbour_list = sorted(neighbour_ids)
+        for chunk_start in range(0, len(neighbour_list), 400):
+            chunk = neighbour_list[chunk_start:chunk_start + 400]
+            in_clause, in_params = _sql_in_clause("node_id", chunk)
+            orphan_rows = session.execute(text(
+                f"SELECT node_id FROM graph_node WHERE node_id IN ({in_clause}) "
+                "AND type IN ('fqdn', 'cpe', 'cve', 'exploit', 'identity') "
+                "AND node_id NOT IN (SELECT from_node_id FROM graph_edge) "
+                "AND node_id NOT IN (SELECT to_node_id FROM graph_edge)"
+            ), in_params).fetchall()
+            orphan_ids.extend(str(row[0]) for row in orphan_rows)
+        for chunk_start in range(0, len(orphan_ids), 400):
+            chunk = orphan_ids[chunk_start:chunk_start + 400]
+            in_clause, in_params = _sql_in_clause("node_id", chunk)
+            session.execute(text(f"DELETE FROM graph_evidence_ref WHERE owner_kind = 'node' AND owner_id IN ({in_clause})"), in_params)
+            session.execute(text(f"DELETE FROM graph_node WHERE node_id IN ({in_clause})"), in_params)
+        node_ids.extend(orphan_ids)
+        session.commit()
+        from app.scheduler.state import invalidate_target_state_graph_cache
+        invalidate_target_state_graph_cache(database, host_id=resolved_host_id)
+        return len(node_ids)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 def rebuild_evidence_graph(database, *, host_id: Optional[int] = None) -> List[str]:
     ensure_scheduler_graph_tables(database)
+    from app.scheduler.state import invalidate_target_state_graph_cache
+    invalidate_target_state_graph_cache(database, host_id=host_id)
     session = database.session()
     try:
         params: Dict[str, Any] = {}

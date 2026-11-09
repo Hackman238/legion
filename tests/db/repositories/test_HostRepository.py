@@ -16,7 +16,7 @@ Copyright (c) 2025 Shane William Scott
 Author(s): Shane Scott (sscott@shanewilliamscott.com), Dmitriy Dubson (d.dubson@gmail.com)
 """
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from tests.db.helpers.db_helpers import mockExecuteRows, mockQueryWithFilterBy, mockFirstByReturnValue
 
@@ -71,7 +71,7 @@ class HostRepositoryTest(unittest.TestCase):
         self.assertEqual({"host": "some_host"}, params)
 
     def test_getHosts_InvokedWithNoFilters_ReturnsHosts(self):
-        from app.auxiliary import Filters
+        from app.core.common import Filters
         self.mockDbSession.execute.return_value = mockExecuteRows([('host1',), ('host2',)], ['ip'])
         expectedQuery = "SELECT * FROM hostObj AS hosts WHERE 1=1"
         filters: Filters = Filters()
@@ -83,7 +83,7 @@ class HostRepositoryTest(unittest.TestCase):
         self.assertEqual(expectedQuery, str(query))
 
     def test_getHosts_InvokedWithAFewFilters_ReturnsFilteredHosts(self):
-        from app.auxiliary import Filters
+        from app.core.common import Filters
         self.mockDbSession.execute.return_value = mockExecuteRows([('host1',), ('host2',)], ['ip'])
         expectedQuery = ("SELECT * FROM hostObj AS hosts WHERE 1=1"
                          " AND hosts.status != 'down' AND hosts.checked != 'True'")
@@ -105,7 +105,7 @@ class HostRepositoryTest(unittest.TestCase):
         self.assertEqual(actual_host_info, expected_host_info)
 
     def test_getHostsAndPorts_InvokedWithNoFilters_FetchesHostsAndPortsMatchingKeywords(self):
-        from app.auxiliary import Filters
+        from app.core.common import Filters
 
         filters: Filters = Filters()
         filters.apply(up=True, down=True, checked=True, portopen=True, portfiltered=True, portclosed=True,
@@ -115,7 +115,7 @@ class HostRepositoryTest(unittest.TestCase):
                                       service_name="some_service_name", expectedQuery=expectedQuery)
 
     def test_getHostsAndPorts_InvokedWithFewFilters_FetchesHostsAndPortsWithFiltersApplied(self):
-        from app.auxiliary import Filters
+        from app.core.common import Filters
 
         filters: Filters = Filters()
         filters.apply(up=True, down=False, checked=True, portopen=True, portfiltered=True, portclosed=True,

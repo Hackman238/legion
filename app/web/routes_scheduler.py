@@ -12,6 +12,14 @@ def _scheduler_service() -> SchedulerService:
     return SchedulerService(runtime_from_app())
 
 
+@scheduler_bp.after_request
+def _disable_cache(response):
+    response.headers["Cache-Control"] = "no-store, max-age=0, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 @scheduler_bp.post("/api/scheduler/run")
 def scheduler_run():
     service = _scheduler_service()

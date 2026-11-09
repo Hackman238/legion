@@ -14,7 +14,7 @@ Copyright (c) 2025 Shane William Scott
     If not, see <http://www.gnu.org/licenses/>.
 
 """
-from app.auxiliary import log
+from app.core.common import log
 from parsers.Parser import parseNmapReport
 
 if __name__ == '__main__':

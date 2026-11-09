@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List
 
 from app.web import runtime_scan_capture_analysis as web_runtime_scan_capture_analysis
+from app.web.runtime_scan_submission import start_job_with_scan_submission
 
 
 preferred_capture_interface_sort_key = web_runtime_scan_capture_analysis.preferred_capture_interface_sort_key
@@ -54,7 +55,8 @@ def start_passive_capture_scan_job(
         "run_actions": bool(run_actions),
         "scan_mode": "passive_capture",
     }
-    job = runtime._start_job(
+    return start_job_with_scan_submission(
+        runtime,
         "passive-capture-scan",
         lambda job_id: runtime._run_passive_capture_scan(
             interface_name=resolved_interface,
@@ -63,10 +65,7 @@ def start_passive_capture_scan_job(
             job_id=int(job_id or 0),
         ),
         payload=payload,
-    )
-    runtime._record_scan_submission(
         submission_kind="passive_capture_scan",
-        job_id=int(job.get("id", 0) or 0),
         targets=[],
         discovery=False,
         staged=False,
@@ -82,7 +81,6 @@ def start_passive_capture_scan_job(
         scope_summary=f"interface: {resolved_interface} | duration: {resolved_duration}m",
         result_summary=f"queued passive capture on {resolved_interface} for {resolved_duration}m",
     )
-    return job
 
 
 def run_passive_capture_scan(

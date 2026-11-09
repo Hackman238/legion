@@ -1,5 +1,6 @@
 import contextlib
 import datetime
+import hashlib
 import json
 import logging
 import re
@@ -1116,12 +1117,60 @@ def modify_target_state(
     return merged
 
 
+_target_state_graph_digests: Dict[Any, str] = {}
+_target_state_graph_digests_guard = threading.Lock()
+_TARGET_STATE_GRAPH_DIGEST_LIMIT = 4096
+# Stamped on every write; they say nothing about what the graph should contain.
+_GRAPH_DIGEST_VOLATILE_KEYS = {"updated_at", "state_version"}
+
+
+def _graph_digest_key(database, host_id: int):
+    return (id(database), str(getattr(database, "name", "") or ""), int(host_id or 0))
+
+
+def invalidate_target_state_graph_cache(database=None, host_id=None) -> None:
+    """Forget the last-synced digest so the next upsert re-syncs the host (or every host) to the graph."""
+    with _target_state_graph_digests_guard:
+        if database is None:
+            _target_state_graph_digests.clear()
+            return
+        if host_id is not None:
+            _target_state_graph_digests.pop(_graph_digest_key(database, int(host_id or 0)), None)
+            return
+        db_prefix = (id(database), str(getattr(database, "name", "") or ""))
+        for key in [k for k in _target_state_graph_digests if k[:2] == db_prefix]:
+            _target_state_graph_digests.pop(key, None)
+
+
 def _sync_target_state_graph(database, host_id: int, merged: Dict[str, Any]):
+    # The graph sync replays every port/service/finding/credential node of the host (hundreds of statements);
+    # the orchestrator upserts the state several times per round, mostly without changing it.
+    try:
+        # *_json keys are serialised copies of the list fields (absent on the first write, present after): the
+        # list fields themselves carry the content.
+        comparable = {
+            k: v for k, v in dict(merged or {}).items()
+            if k not in _GRAPH_DIGEST_VOLATILE_KEYS and not str(k).endswith("_json")
+        }
+        digest = hashlib.sha1(json.dumps(comparable, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    except Exception:
+        digest = ""
+    key = _graph_digest_key(database, host_id)
+    if digest:
+        with _target_state_graph_digests_guard:
+            if _target_state_graph_digests.get(key) == digest:
+                return
     try:
         from app.scheduler.graph import sync_target_state_to_evidence_graph
         sync_target_state_to_evidence_graph(database, host_id=int(host_id or 0), target_state=merged)
     except Exception:
         logger.warning("Failed to sync target state for host %s to evidence graph.", host_id, exc_info=True)
+        return
+    if digest:
+        with _target_state_graph_digests_guard:
+            if len(_target_state_graph_digests) >= _TARGET_STATE_GRAPH_DIGEST_LIMIT:
+                _target_state_graph_digests.clear()
+            _target_state_graph_digests[key] = digest
 
 
 def _upsert_target_state_locked(

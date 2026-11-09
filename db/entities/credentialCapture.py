@@ -14,7 +14,7 @@ Copyright (c) 2025 Shane William Scott
     If not, see <http://www.gnu.org/licenses/>.
 """
 from sqlalchemy import Column, Integer, String, DateTime, Text
-from datetime import datetime
+from datetime import datetime, timezone
 
 from db.database import Base
 
@@ -36,4 +36,4 @@ class credentialCapture(Base):
         self.username = username or ''
         self.hash = hash_value or ''
         self.details = details or ''
-        self.capturedAt = datetime.utcnow()
+        self.capturedAt = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC, as stored before

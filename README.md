@@ -15,7 +15,8 @@ OpenAI, Claude, LM Studio or any OpenAI-compatible local server. Risky actions p
 classification and an explicit approval queue before anything runs, and every decision is audited in the project.
 
 The same orchestration core is exposed through a **web UI** (the primary interface), a **headless CLI** for
-automation, and an **MCP server** for AI agents. The original Qt desktop UI remains in the tree for compatibility.
+automation, and an **MCP server** for AI agents. The former Qt desktop UI has been removed; `python legion.py` now
+starts the web interface.
 
 <p align="center">
   <img src="images/LegionScreenshot.png" alt="Legion web interface screenshot">
@@ -61,7 +62,7 @@ python legion.py --tool-install-plan kali      # or: ubuntu
 ### Web UI (primary)
 
 ```shell
-python legion.py --web                                # http://127.0.0.1:5000
+python legion.py                                      # http://127.0.0.1:5000 (same as --web)
 python legion.py --web --web-port 8080 --web-bind-all # listen on all interfaces
 python legion.py --web --web-transparent-ui           # enable translucent UI effects (opaque by default)
 ```
@@ -84,14 +85,6 @@ python legion.py --mcp-server
 Exposes project access, planning, approvals, graph and state queries, findings, execution traces and report export
 over MCP, through the same governed core as the web UI.
 
-### Qt desktop (compatibility)
-
-```shell
-python legion.py
-```
-
-Kept for migration purposes; new features land in the web UI first.
-
 ## Installation
 
 ### Supported environments
@@ -99,7 +92,7 @@ Kept for migration purposes; new features land in the web UI first.
 - Kali Linux (current rolling release), Ubuntu 22.04 LTS or 24.04 LTS
 - Python 3.12 or newer
 - Nmap, plus whichever tools you want Legion to orchestrate (`--tool-audit` lists them)
-- Chromium or Firefox for screenshots
+- Chromium or Firefox for screenshots (no display server or Qt libraries are needed)
 
 Legion is local-first: no Docker, external database or remote service is required.
 
@@ -139,7 +132,7 @@ Exploit-DB references for vulners CVEs are looked up offline from the bundled `p
 
 | Option | Description |
 | --- | --- |
-| `--web` | Run the web interface. |
+| `--web` | Run the web interface (the default when no mode flag is given). |
 | `--web-port PORT` | Web interface port (default `5000`). |
 | `--web-bind-all` | Bind to `0.0.0.0` instead of `127.0.0.1`. |
 | `--web-transparent-ui` | Enable translucent UI effects (the UI is opaque by default). |
@@ -166,8 +159,8 @@ long list of web runtime, scheduler and importer bugs. See [CHANGELOG.txt](CHANG
 python3 -m unittest            # or: python3 -m pytest tests
 ```
 
-The suite runs headless (`QT_QPA_PLATFORM=offscreen` is set by the tests that need Qt). Design notes live in
-[docs/](docs/); contribution guidelines are in [CONTRIBUTING.md](CONTRIBUTING.md).
+The suite needs no display server or Qt libraries. Design notes live in [docs/](docs/); contribution guidelines
+are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
@@ -181,5 +174,5 @@ Legion is licensed under the GNU General Public License v3.0. See [LICENSE](LICE
 - Several additional `PortActions`, `PortTerminalActions`, and `SchedulerSettings` are credited to batmancrew.
 - The Nmap XML parsing engine was largely based on code by yunshu, modified by ketchup and SECFORCE.
 - `ms08-067_check` used by `smbenum.sh` is credited to Bernardo Damele A.G.
-- Legion depends heavily on Nmap, Hydra, Python, Flask, PyQt, SQLAlchemy, Selenium, Chromium/Firefox, and many other tools and projects.
+- Legion depends heavily on Nmap, Hydra, Python, Flask, SQLAlchemy, Selenium, Chromium/Firefox, and many other tools and projects.
 - Special thanks to Dmitriy Dubson for continued contributions to the project.

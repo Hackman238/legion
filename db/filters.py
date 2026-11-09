@@ -24,6 +24,12 @@ def applyFilters(filters):
     query_filter += applyPortFilters(filters)
     return query_filter
 
+def _like_pattern(word) -> str:
+    """Keyword as a literal LIKE fragment: quotes doubled, and %/_ escaped so they match themselves."""
+    escaped = str(word or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return sanitise(escaped)
+
+
 def _get_filter(filters, key, default=None):
     if isinstance(filters, dict):
         return filters.get(key, default)
@@ -38,9 +44,10 @@ def applyHostsFilters(filters):
     if not _get_filter(filters, 'checked'):
         query_filter += " AND hosts.checked != 'True'"
     for word in _get_filter(filters, 'keywords', []):
-        query_filter += (f" AND (hosts.ip LIKE '%{sanitise(word)}%'"
-                         f" OR hosts.osMatch LIKE '%{sanitise(word)}%'"
-                         f" OR hosts.hostname LIKE '%{sanitise(word)}%')")
+        pattern = _like_pattern(word)
+        query_filter += (f" AND (hosts.ip LIKE '%{pattern}%' ESCAPE '\\'"
+                         f" OR hosts.osMatch LIKE '%{pattern}%' ESCAPE '\\'"
+                         f" OR hosts.hostname LIKE '%{pattern}%' ESCAPE '\\')")
     return query_filter
 
 def applyPortFilters(filters):

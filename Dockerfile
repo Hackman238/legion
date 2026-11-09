@@ -1,14 +1,11 @@
-# Legion Dockerfile - Recommended for Kali 2025+ and modern Linux
+# Legion Dockerfile - web interface, headless CLI and MCP server (no desktop UI)
 FROM kalilinux/kali-rolling:latest
 
-# Install system dependencies
+# Install system dependencies: Python, Nmap and a browser for screenshots
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    python3 python3-pip python3-setuptools python3-pyqt6 python3-pyqt6.qt6webkit \
-    python3-pyqt6.qt6svg python3-pyqt6.qt6network python3-pyqt6.qt6widgets \
-    python3-pyqt6.qt6gui python3-pyqt6.qt6core \
-    libgl1-mesa-glx libglib2.0-0 libx11-6 xauth x11-apps \
-    git curl \
+    python3 python3-pip python3-venv \
+    nmap git curl \
     chromium chromium-driver \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -19,18 +16,22 @@ WORKDIR /opt/legion
 COPY . /opt/legion
 
 # Install Python dependencies
-RUN pip3 install --upgrade pip && \
-    pip3 install -r requirements.txt
+RUN pip3 install --break-system-packages --upgrade pip && \
+    pip3 install --break-system-packages -r requirements.txt
 
-# Expose X11 for GUI
-ENV DISPLAY=:0
+# Project files, logs and settings live here; mount a volume to keep them
+ENV LEGION_HOME=/data
+VOLUME ["/data"]
 
-# Default command: run Legion GUI (with optional MCP server)
-# To use MCP: docker run ... legion python3 legion.py --mcp-server
-# To use GUI: ensure X11 forwarding is set up (see README for details)
-CMD ["python3", "legion.py"]
+# The web interface listens on 5000 and must bind all interfaces to be reachable from the host
+EXPOSE 5000
+CMD ["python3", "legion.py", "--web", "--web-bind-all"]
 
 # Usage notes:
-# - For GUI: run with X11 forwarding, e.g.:
-#   docker run -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix --network=host -it legion
-# - For MCP/AI: add --mcp-server to CMD or entrypoint as needed
+# - Web UI (scans need raw sockets, hence --cap-add):
+#   docker run --rm -p 5000:5000 -v legion-data:/data --cap-add=NET_RAW --cap-add=NET_ADMIN legion
+# - Headless CLI:
+#   docker run --rm -v "$PWD:/work" legion python3 legion.py --headless --input-file /work/targets.txt \
+#       --staged-scan --output-file /work/results.json
+# - MCP server:
+#   docker run --rm -i legion python3 legion.py --mcp-server
