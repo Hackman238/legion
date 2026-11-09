@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 from app.Project import Project
 from app.eyewitness import run_eyewitness_capture, summarize_eyewitness_failure
 from app.logging.legionLog import getAppLogger
+from app.paths import get_legion_install_dir
 from app.screenshot_metadata import (
     build_screenshot_metadata,
     build_screenshot_state_row,
@@ -491,6 +492,7 @@ class Logic:
                     result = subprocess.run(
                         rendered_command,
                         shell=True,
+                        cwd=get_legion_install_dir(),
                         capture_output=True,
                         text=True,
                         timeout=int(request.timeout or 300),
@@ -883,6 +885,7 @@ class Logic:
                     result = subprocess.run(
                         command,
                         shell=True,
+                        cwd=get_legion_install_dir(),
                         capture_output=True,
                         text=True,
                         timeout=900,

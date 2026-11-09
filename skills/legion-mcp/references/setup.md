@@ -68,10 +68,11 @@ Replace `/path/to/legion` with the checkout and use the interpreter that has the
 
 ### Claude Code
 
-User scope (every project):
+User scope (every project). The default scope is `local`, which registers the server for the current project
+only, so `--scope user` matters:
 
 ```bash
-claude mcp add legion -e LEGION_HOME=$HOME/.local/share/legion -- /path/to/legion/.venv/bin/python /path/to/legion/legion.py --mcp-server
+claude mcp add legion --scope user -e LEGION_HOME=$HOME/.local/share/legion -- /path/to/legion/.venv/bin/python /path/to/legion/legion.py --mcp-server
 ```
 
 Project scope: a `.mcp.json` at the project root, which Claude Code asks to approve on first use:
@@ -112,7 +113,9 @@ python3 /path/to/legion/skills/legion-mcp/scripts/mcp_smoke_test.py --python /pa
 ```
 
 It prints the server's name and version from `initialize`, the tool count from `tools/list` and the result
-of `list_projects`. A JSON parse error means something wrote to stdout besides the server; start it with a
+of `list_projects`. It gives up after `--timeout` seconds (default 60) and then prints the tail of the server's
+log. The server can be started from any directory: tools run from Legion's own directory, so the bundled
+`scripts/` and `wordlists/` are found. A JSON parse error means something wrote to stdout besides the server; start it with a
 plain command rather than through a login shell that prints a banner.
 
 ## Installing this skill

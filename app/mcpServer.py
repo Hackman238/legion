@@ -349,7 +349,11 @@ class MCPServer:
                 "handler": self.list_tool_catalog,
             },
             "run_tool": {
-                "description": "Run one catalog tool against a host/port as a tracked process (dangerous tools follow the approval policy).",
+                "description": (
+                    "Run one catalog tool against a host/port as a tracked process. The engagement policy decides "
+                    "first: status accepted means it was queued as a job, approval_required means a pending approval "
+                    "was created instead (approval_ids) and nothing ran, blocked means the policy refuses it."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -479,8 +483,45 @@ class MCPServer:
         logic = Logic(shell, project_manager, tool_coordinator)
         if getattr(logic, "activeProject", None) is None:
             logic.createNewTemporaryProject()
+            self._own_temporary_project = logic.activeProject
         self._runtime = WebRuntime(logic)
         return self._runtime
+
+    def close(self):
+        """Remove the temporary project this server created, if it is still open, still temporary and still empty.
+
+        Every session that makes a tool call starts one; without this each leaves a project file and two
+        directories in the temp directory, and list_projects offers them all back. A temporary project that holds
+        hosts or tool runs is kept: the agent may simply not have saved yet.
+        """
+        project = getattr(self, "_own_temporary_project", None)
+        runtime = self._runtime
+        if project is None or runtime is None:
+            return
+        try:
+            logic = runtime.logic
+            if getattr(logic, "activeProject", None) is not project or not project.properties.isTemporary:
+                return
+            from sqlalchemy import text as sql_text
+
+            session = project.database.session()
+            try:
+                used = 0
+                for table in ("hostObj", "process", "scheduler_pending_approval"):
+                    try:
+                        used += int(session.execute(sql_text(f'SELECT COUNT(*) FROM "{table}"')).scalar() or 0)
+                    except Exception:
+                        session.rollback()  # the approval table only exists once something was queued
+            finally:
+                session.close()
+            if used:
+                return
+            logic.projectManager.closeProject(project)
+            project.database.dispose()
+            logic.activeProject = None
+            self._own_temporary_project = None
+        except Exception:
+            pass  # best effort at exit; never turn a clean shutdown into a traceback
 
     async def list_projects(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
@@ -678,7 +719,7 @@ class MCPServer:
     async def run_tool(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         from app.web.services.tool_service import ToolService
 
-        return ToolService(self._ensure_runtime()).start_tool_run(dict(arguments or {}))
+        return ToolService(self._ensure_runtime()).start_governed_tool_run(dict(arguments or {}), requested_by="MCP")
 
     async def start_nmap_scan(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         from app.web.services.scan_service import ScanService
@@ -811,7 +852,12 @@ class MCPServer:
         reader = asyncio.StreamReader(limit=_MAX_REQUEST_LINE_BYTES)
         protocol = asyncio.StreamReaderProtocol(reader)
         await asyncio.get_event_loop().connect_read_pipe(lambda: protocol, sys.stdin)
+        try:
+            await self._serve(reader)
+        finally:
+            self.close()
 
+    async def _serve(self, reader):
         while True:
             line = await _read_request_line(reader)
             if line is None:

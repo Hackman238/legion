@@ -34,6 +34,48 @@ class ToolService:
             "truncated": len(targets) >= query.limit,  # the caller asked for more than one page can hold
         }
 
+    def start_governed_tool_run(self, payload: Any, *, requested_by: str = "mcp") -> Dict[str, Any]:
+        """A tool run asked for by an agent: the engagement policy decides before anything executes.
+
+        Allowed tools are queued exactly like start_tool_run. A tool the policy puts behind approval becomes a
+        pending approval per target and nothing runs; a blocked tool is refused. A person clicking Run in the web
+        UI is their own approval, which is why start_tool_run itself does not ask.
+        """
+        from app.web import runtime_tools
+
+        request = ToolRunRequest.from_payload(payload)
+        if not request.tool_id:
+            raise ValueError("host_ip, port and tool_id are required.")
+        targets = [(t.host_ip, t.port, t.protocol) for t in request.targets] or [
+            (request.host_ip, request.port, request.protocol)
+        ]
+        targets = list(dict.fromkeys(target for target in targets if target[0] and target[1]))
+        if not targets:
+            raise ValueError("host_ip, port and tool_id are required.")
+        verdict = runtime_tools.evaluate_tool_run_policy(
+            self.runtime, request.tool_id, request.protocol, request.parameters,
+        )
+        policy = {
+            key: verdict[key] for key in ("state", "risk_tags", "reason", "risk_summary", "safer_alternative")
+        }
+        if verdict["state"] == "allowed":
+            result = self.start_tool_run(payload)
+            result["policy"] = policy
+            return result
+        if verdict["state"] == "blocked":
+            return {"status": "blocked", "job": None, "jobs": [], "queued": 0, "approval_ids": [], "policy": policy}
+        approval_ids = [
+            runtime_tools.queue_tool_run_approval(
+                self.runtime, host_ip=host_ip, port=port, protocol=protocol, verdict=verdict,
+                requested_by=requested_by,
+            )
+            for host_ip, port, protocol in targets
+        ]
+        return {
+            "status": "approval_required", "job": None, "jobs": [], "queued": 0,
+            "approval_ids": approval_ids, "policy": policy,
+        }
+
     def start_tool_run(self, payload: Any) -> Dict[str, Any]:
         """Queue one tool run, or one per entry in `targets` (a batch run shares tool, options and timeout)."""
         request = ToolRunRequest.from_payload(payload)

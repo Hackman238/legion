@@ -119,7 +119,7 @@ Tools and pipettes that can be run against a service/port, with their risk categ
 
 ### `run_tool`
 
-Run one catalog tool against a host/port as a tracked process (dangerous tools follow the approval policy).
+Run one catalog tool against a host/port as a tracked process. The engagement policy decides first: status accepted means it was queued as a job, approval_required means a pending approval was created instead (approval_ids) and nothing ran, blocked means the policy refuses it.
 
 | Argument | Type | Notes |
 | --- | --- | --- |
