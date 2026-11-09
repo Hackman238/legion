@@ -49,10 +49,11 @@ from its plans and logs that it did.
 The server speaks MCP over stdio. It must be started with the Python that has Legion's requirements and with
 `LEGION_HOME` pointing at the data directory the user wants (default `~/.local/share/legion`). Use absolute paths.
 
-Claude Code, for the current user:
+Claude Code, for every project of the current user (without `--scope user` the default scope is `local`: only
+the project the command is run in):
 
 ```bash
-claude mcp add legion -e LEGION_HOME=$HOME/.local/share/legion -- /path/to/legion/.venv/bin/python /path/to/legion/legion.py --mcp-server
+claude mcp add legion --scope user -e LEGION_HOME=$HOME/.local/share/legion -- /path/to/legion/.venv/bin/python /path/to/legion/legion.py --mcp-server
 ```
 
 Codex, in `~/.codex/config.toml`:
@@ -109,7 +110,11 @@ Do not re-submit a scan because the first call returned quickly; it is running.
 4. **Follow up on a service.** `list_tool_catalog` with `service` and `port` lists the tools and pipettes that
    apply, each with its risk category. `run_tool` queues one as a tracked process; `list_processes` and
    `get_process_output` (paged with `offset` and `limit`) read its output; `kill_process` stops a runaway.
-   Dangerous tools do not run on `run_tool`: they create an approval instead.
+   The engagement policy decides before `run_tool` executes anything, and the result's `status` says which:
+   `accepted` (queued as a job), `approval_required` (a pending approval was created, see `approval_ids`; nothing
+   ran) or `blocked` (the policy refuses it; `policy.reason` says why). The catalog's `danger_categories` show in
+   advance which tools are likely to need approval. Treat `approval_required` as a question for the user, not
+   as something to approve yourself.
 5. **Let the scheduler plan.** `get_plan_preview` shows the next governed steps for a host or service
    without running anything. `run_scheduler` starts a governed run over the whole project; it creates approvals
    for anything the policy marks risky. `list_approvals` (status `pending`), then `approve_approval`,

@@ -11,6 +11,16 @@ _warned_fallback_home = False
 log = logging.getLogger(__name__)
 
 
+def get_legion_install_dir() -> str:
+    """The directory holding legion.py, scripts/ and wordlists/.
+
+    Shipped actions name bundled files relatively (`./scripts/smbenum.sh`, `./wordlists/...`), so tool
+    processes run from here; otherwise they only work when Legion happens to be started from its own directory
+    (the packaged launchers do that, an MCP client starting `legion.py --mcp-server` by absolute path does not).
+    """
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def _current_user_token() -> str:
     try:
         raw = str(getpass.getuser() or "").strip()

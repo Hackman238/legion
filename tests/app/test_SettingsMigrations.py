@@ -173,13 +173,15 @@ class SettingsMigrationTest(unittest.TestCase):
     def test_rdp_sec_check_legacy_command_migrates_to_installed_tool_lookup(self):
         from app.settings import AppSettings
 
-        legacy = "perl ./scripts/rdp-sec-check.pl [IP]:[PORT]"  # the script was never bundled: always "No such file"
-        migrated = AppSettings._normalize_action_command("rdp-sec-check", legacy)
-        self.assertEqual(AppSettings.RDP_SEC_CHECK_COMMAND, migrated)
-        self.assertIn("command -v rdp-sec-check", migrated)
-        self.assertEqual(migrated, AppSettings._normalize_action_command("rdp-sec-check", migrated))  # stable
-        custom = "perl /opt/tools/rdp-sec-check.pl [IP]:[PORT]"  # an operator's own path is left alone
-        self.assertEqual(custom, AppSettings._normalize_action_command("rdp-sec-check", custom))
+        target = AppSettings.RDP_SEC_CHECK_COMMAND
+        self.assertTrue(target.startswith("if command -v rdp-sec-check.pl"))
+        self.assertNotIn("||", target)  # a failing tool must not fall through to "not found" or a second run
+        for legacy in AppSettings.RDP_SEC_CHECK_LEGACY_COMMANDS:  # the never-bundled script, and the && || chain
+            self.assertEqual(target, AppSettings._normalize_action_command("rdp-sec-check", legacy))
+        self.assertEqual(target, AppSettings._normalize_action_command("rdp-sec-check", target))  # stable
+        for custom in ("perl /opt/tools/rdp-sec-check.pl [IP]:[PORT]",
+                       "perl /home/me/scripts/rdp-sec-check.pl [IP]:[PORT]"):  # an operator's own path is left alone
+            self.assertEqual(custom, AppSettings._normalize_action_command("rdp-sec-check", custom))
 
     def test_repeated_nikto_config_fixture_migrates_once_and_stays_stable(self):
         fixture_path = os.path.join(

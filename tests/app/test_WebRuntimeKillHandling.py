@@ -1,3 +1,4 @@
+import os
 import collections
 import collections.abc
 import threading
@@ -290,6 +291,10 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         import subprocess
         # Go tools (katana, httpx) read a piped stdin as another target list and block forever on it.
         self.assertEqual(subprocess.DEVNULL, popen.call_args.kwargs.get("stdin"))
+        # ...and run from Legion's own directory, so ./scripts and ./wordlists resolve wherever Legion was started.
+        from app.paths import get_legion_install_dir
+        self.assertEqual(get_legion_install_dir(), popen.call_args.kwargs.get("cwd"))
+        self.assertTrue(os.path.isfile(os.path.join(get_legion_install_dir(), "legion.py")))
 
     def test_run_command_forces_completion_when_reader_does_not_close(self):
         from app.web.runtime import WebRuntime

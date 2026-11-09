@@ -4,7 +4,10 @@ import os
 from typing import Any, Dict, Optional
 
 from app.pipettes import find_pipette
-from app.scheduler.planner import SchedulerPlanner
+from app.scheduler.family import build_command_family_id
+from app.scheduler.planner import ScheduledAction, SchedulerPlanner
+from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
+from app.scheduler.risk import classify_risk_tags
 from app.screenshot_targets import apply_preferred_target_placeholders
 from app.settings import AppSettings, Settings
 from app.timing import getTimestamp
@@ -179,6 +182,93 @@ def start_tool_run_job(
         ),
         payload=payload,
     )
+
+
+def evaluate_tool_run_policy(
+        runtime,
+        tool_id: str,
+        protocol: str = "tcp",
+        parameters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """What the engagement policy says about running one catalog tool: allowed, approval_required or blocked.
+
+    The same classification and policy engine the scheduler uses, applied to a single requested run, so a tool
+    asked for directly (by an agent through MCP) cannot do what the scheduler would have had to ask about.
+    """
+    resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+    with runtime._lock:
+        runtime._require_active_project()
+        settings = runtime._get_settings()
+        action = runtime._find_port_action(settings, tool_id)
+        if action is None:
+            raise KeyError(f"Unknown tool id: {tool_id}")
+        label = str(action[0])
+        template = str(action[2])
+        service_scope = runtime._split_csv(str(action[3] if len(action) > 3 else ""))
+        declared_tags = []
+        pipette = find_pipette(tool_id)
+        if pipette is not None:
+            template = pipette.command_template_for_values(pipette.validate_parameter_values(parameters))
+            declared_tags = list(pipette.risk_tags)
+        risk_tags = list(dict.fromkeys(declared_tags + classify_risk_tags(
+            template, tool_id=str(tool_id), label=label, service_scope=service_scope,
+        )))
+        family_id = build_command_family_id(str(tool_id), resolved_protocol, template)
+        family_state = runtime.scheduler_config.get_family_policy_state(family_id) if family_id else ""
+        decision = evaluate_policy_for_risk_tags(
+            risk_tags,
+            runtime._load_engagement_policy_locked(persist_if_missing=True),
+            family_policy_state=family_state,
+        )
+    return {
+        "state": decision.state,
+        "tool_id": str(tool_id),
+        "label": label,
+        "command_template": template,
+        "family_id": family_id,
+        "risk_tags": list(decision.risk_tags),
+        "reason": decision.reason,
+        "risk_summary": decision.risk_summary,
+        "safer_alternative": decision.safer_alternative,
+        "family_policy_state": decision.family_policy_state,
+    }
+
+
+def queue_tool_run_approval(
+        runtime,
+        *,
+        host_ip: str,
+        port: str,
+        protocol: str,
+        verdict: Dict[str, Any],
+        requested_by: str = "mcp",
+) -> int:
+    """Queue a requested tool run as a pending approval; approving it runs it through the usual approval flow."""
+    resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+    service_name = str(runtime._service_name_for_target(str(host_ip), str(port), resolved_protocol) or "")
+    decision = ScheduledAction.from_legacy_fields(
+        tool_id=str(verdict.get("tool_id", "")),
+        label=str(verdict.get("label", "")),
+        command_template=str(verdict.get("command_template", "")),
+        protocol=resolved_protocol,
+        score=100.0,
+        rationale=f"Requested directly through {requested_by} (run_tool).",
+        mode="manual",
+        goal_profile="",
+        family_id=str(verdict.get("family_id", "")),
+        danger_categories=list(verdict.get("risk_tags", []) or []),
+        requires_approval=True,
+        target_ref={
+            "host_ip": str(host_ip), "port": str(port), "service": service_name, "protocol": resolved_protocol,
+        },
+        policy_reason=str(verdict.get("reason", "")),
+        risk_summary=str(verdict.get("risk_summary", "")),
+        safer_alternative=str(verdict.get("safer_alternative", "")),
+        family_policy_state=str(verdict.get("family_policy_state", "")),
+    )
+    return int(runtime._queue_scheduler_approval(
+        decision, str(host_ip), str(port), resolved_protocol, service_name, str(verdict.get("command_template", "")),
+    ))
 
 
 def run_manual_tool(

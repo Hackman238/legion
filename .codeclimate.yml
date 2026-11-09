@@ -10,7 +10,6 @@ exclude_patterns:
   - "scripts/"
   - "wordlists/"
   - "backup/"
-  - "docker/"
   - "log/"
   - "tmp/"
   - "images/"

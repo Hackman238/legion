@@ -109,20 +109,8 @@ tmp/
 # init
 .initialized
 
-# extension scripts
-scripts/ms08-067_check.py
-scripts/ndr.py
-scripts/rdp-sec-check.pl
-scripts/smbenum.sh
-scripts/installDeps.sh
-scripts/smtp-user-enum.pl
-scripts/snmpcheck.rb
-
+# optional third-party checkouts placed next to the bundled scripts
 scripts/CloudFail
-
-docker/runLocal.sh
-docker/cleanupUntagged.sh
-docker/cleanupExited.sh
 
 log/*.log
 fixname.sh

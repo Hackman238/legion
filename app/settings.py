@@ -274,10 +274,20 @@ class AppSettings():
         "enum4linux-ng -A -oJ [OUTPUT] [IP]; "
         "else echo enum4linux-ng not found; fi"
     )
+    # if/elif rather than `a && run || b`: a tool that is installed but exits non-zero must not fall through to the
+    # next variant (a second run against the host) or to the "not found" message.
     RDP_SEC_CHECK_COMMAND = (
+        "if command -v rdp-sec-check.pl >/dev/null 2>&1; then rdp-sec-check.pl [IP]:[PORT]; "
+        "elif command -v rdp-sec-check >/dev/null 2>&1; then rdp-sec-check [IP]:[PORT]; "
+        "elif [ -f scripts/rdp-sec-check.pl ]; then perl scripts/rdp-sec-check.pl [IP]:[PORT]; "
+        "else echo rdp-sec-check not found; fi"
+    )
+    # Commands Legion itself shipped for this action; anything else is the operator's own and is left alone.
+    RDP_SEC_CHECK_LEGACY_COMMANDS = (
+        "perl ./scripts/rdp-sec-check.pl [IP]:[PORT]",
         "(command -v rdp-sec-check.pl >/dev/null 2>&1 && rdp-sec-check.pl [IP]:[PORT]) || "
         "(command -v rdp-sec-check >/dev/null 2>&1 && rdp-sec-check [IP]:[PORT]) || "
-        "([ -f scripts/rdp-sec-check.pl ] && perl scripts/rdp-sec-check.pl [IP]:[PORT]) || echo rdp-sec-check not found"
+        "([ -f scripts/rdp-sec-check.pl ] && perl scripts/rdp-sec-check.pl [IP]:[PORT]) || echo rdp-sec-check not found",
     )
     SMBMAP_COMMAND = (
         "if command -v smbmap >/dev/null 2>&1; then "
@@ -733,7 +743,7 @@ class AppSettings():
             normalized = cls._ensure_enum4linux_ng_command(normalized)
         if normalized_tool == "smbmap":
             normalized = cls._ensure_smbmap_command(normalized)
-        if normalized_tool == "rdp-sec-check" and "scripts/rdp-sec-check.pl" in normalized and "command -v" not in normalized:
+        if normalized_tool == "rdp-sec-check" and " ".join(normalized.split()) in cls.RDP_SEC_CHECK_LEGACY_COMMANDS:
             normalized = cls.RDP_SEC_CHECK_COMMAND  # the bundled Perl script was never shipped; use an installed copy
         if normalized_tool == "rpcclient-enum":
             normalized = cls._ensure_rpcclient_enum_command(normalized)

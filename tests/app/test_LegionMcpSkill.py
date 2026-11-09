@@ -41,6 +41,17 @@ class LegionMcpSkillTest(unittest.TestCase):
                          "export_report", "save_project"):
             self.assertIn(required, named)
 
+    def test_skill_states_the_registration_scope_and_run_tool_outcomes(self):
+        _, body = self._frontmatter()
+        self.assertIn("claude mcp add legion --scope user", body)  # the CLI default scope is the current project
+        for status in ("accepted", "approval_required", "blocked"):
+            self.assertIn(f"`{status}`", body)
+        from app.mcpServer import MCPServer
+
+        description = MCPServer().tools["run_tool"]["description"]
+        for status in ("accepted", "approval_required", "blocked"):
+            self.assertIn(status, description)
+
     def test_tools_reference_matches_the_server(self):
         result = subprocess.run(
             [sys.executable, os.path.join(SKILL, "scripts", "generate_tools_reference.py"), "--check"],
