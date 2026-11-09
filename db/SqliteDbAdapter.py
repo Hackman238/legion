@@ -23,6 +23,7 @@ from random import randint
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import QueuePool
 from sqlalchemy.orm.scoping import scoped_session
 from sqlalchemy.exc import DatabaseError as SADatabaseError
 from sqlalchemy.exc import OperationalError as SAOperationalError
@@ -69,9 +70,13 @@ class Database:
     def establishSqliteConnection(self, dbFileName: str):
         self.name = dbFileName
         self.dbsemaphore = threading.Semaphore(1)  # to control concurrent write access to db
+        # QueuePool explicitly: SQLAlchemy 2.x defaults file SQLite to it, 1.4 to NullPool (a new connection per
+        # query). ProjectManager.saveProjectAs removes a temporary project's file while work started earlier may
+        # still use its repositories; only a pooled, still-open connection keeps that unlinked file readable.
         self.engine = create_engine(
             'sqlite:///{dbFileName}'.format(dbFileName=dbFileName),
-            connect_args={'check_same_thread': False}
+            connect_args={'check_same_thread': False},
+            poolclass=QueuePool,
         )
         self.session = scoped_session(sessionmaker(bind=self.engine))
         self.session.configure(bind=self.engine, autoflush=False)

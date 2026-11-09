@@ -35,26 +35,36 @@ class StagedScanPlanTest(unittest.TestCase):
             with patch.object(planning, "is_wsl", return_value=False):
                 self.assertFalse(planning.can_raw_socket("nmap.exe"))
 
-    def test_dropped_os_detection_is_logged_once_per_plan(self):
+    def test_dropped_os_detection_is_logged_once_per_process_and_only_when_wanted(self):
+        import logging
         from app.web import runtime_scan_planning as planning
 
+        planning.reset_os_detection_warning()
+        self.addCleanup(planning.reset_os_detection_warning)
+        logger = logging.getLogger("app.web.runtime_scan_planning")
         with patch.object(planning, "can_raw_socket", return_value=False):
+            # a scripts-only staged plan never carries -O: nothing to warn about
+            with patch.object(logger, "warning") as warning:
+                plan = planning.build_staged_scan_plan(
+                    nmap_path="nmap", targets=["10.0.0.5"], output_prefix="/tmp/legion-test/out",
+                    discovery=True, extra_args=[], stage_specs=["NSE|vulners"],
+                )
+            warning.assert_not_called()
             with self.assertLogs("app.web.runtime_scan_planning", level="WARNING") as logs:
                 plan = planning.build_staged_scan_plan(
                     nmap_path="nmap", targets=["10.0.0.5"], output_prefix="/tmp/legion-test/out",
                     discovery=True, extra_args=[], stage_specs=["T:80", "T:443", "NSE|vulners"],
                 )
-            self.assertEqual(1, len(logs.records))
-            self.assertIn("OS detection is left out", logs.output[0])
-            self.assertFalse(any(" -O" in stage["command"] for stage in plan["stages"]))
-            with self.assertLogs("app.web.runtime_scan_planning", level="WARNING") as logs:
-                plan = planning.build_single_scan_plan(
+                # a chunked sweep builds one plan per chunk: the same reason is not repeated
+                plan2 = planning.build_single_scan_plan(
                     runtime=None, targets=["10.0.0.5"], nmap_path="nmap", output_prefix="/tmp/legion-test/out",
                     mode="hard", options={"aggressive": True}, extra_args=[],
                 )
             self.assertEqual(1, len(logs.records))
-            self.assertIn("-sV -sC", plan["stages"][0]["command"])
-            self.assertNotIn("-A", plan["stages"][0]["command"].split())
+            self.assertIn("OS detection is left out", logs.output[0])
+            self.assertFalse(any(" -O" in stage["command"] for stage in plan["stages"]))
+            self.assertIn("-sV -sC", plan2["stages"][0]["command"])
+            self.assertNotIn("-A", plan2["stages"][0]["command"].split())
         with patch.object(planning, "can_raw_socket", return_value=True):
             plan = planning.build_single_scan_plan(
                 runtime=None, targets=["10.0.0.5"], nmap_path="nmap", output_prefix="/tmp/legion-test/out",
