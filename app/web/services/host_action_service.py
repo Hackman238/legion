@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.web.runtime_workspace_mutation import normalize_host_ids
+
 from typing import Any, Dict
 
 from app.web.host_action_schema import (
@@ -104,14 +106,7 @@ class HostActionService:
         raw_ids = source.get("host_ids")
         if not isinstance(raw_ids, list) or not raw_ids:
             raise ValueError("host_ids must be a non-empty list.")
-        host_ids = []
-        for raw in raw_ids:
-            try:
-                value = int(raw)
-            except (TypeError, ValueError):
-                continue
-            if value > 0 and value not in host_ids:
-                host_ids.append(value)
+        host_ids = normalize_host_ids(raw_ids)
         if not host_ids:
             raise ValueError("host_ids must contain at least one host id.")
         if action == "remove":

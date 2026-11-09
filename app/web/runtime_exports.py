@@ -46,27 +46,33 @@ def _rows(value: Any) -> List[Dict[str, Any]]:
     return [dict(item) for item in list(value or []) if isinstance(item, dict)]
 
 
-def _store_rows(runtime, loader) -> List[Dict[str, Any]]:
-    """Run `loader(database)` against the open project; the loaders take limit=None for every row."""
+def _active_database(runtime):
+    """The open project's database, looked up under the lock; reads then run outside it (SQLite serialises them)
+    so a large export does not stall scans, imports and the live UI."""
     with runtime._lock:
         project = getattr(runtime.logic, "activeProject", None)
-        if project is None:
-            return []
-        return _rows(loader(project.database))
+        return getattr(project, "database", None) if project is not None else None
+
+
+def _store_rows(runtime, loader) -> List[Dict[str, Any]]:
+    """Run `loader(database)` against the open project; the loaders take limit=None for every row."""
+    database = _active_database(runtime)
+    if database is None:
+        return []
+    return _rows(loader(database))
 
 
 def _sql_rows(runtime, sql: str) -> List[Dict[str, Any]]:
-    with runtime._lock:
-        project = getattr(runtime.logic, "activeProject", None)
-        if project is None:
-            return []
-        session = project.database.session()
-        try:
-            result = session.execute(text(sql))
-            keys = list(result.keys())
-            return [dict(zip(keys, row)) for row in result.fetchall()]
-        finally:
-            session.close()
+    database = _active_database(runtime)
+    if database is None:
+        return []
+    session = database.session()
+    try:
+        result = session.execute(text(sql))
+        keys = list(result.keys())
+        return [dict(zip(keys, row)) for row in result.fetchall()]
+    finally:
+        session.close()
 
 
 def export_table_rows(runtime, table: str) -> List[Dict[str, Any]]:

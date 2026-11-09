@@ -126,9 +126,9 @@ def update_host_categories(
         }
 
 
-def start_bulk_host_remove_job(runtime, host_ids: List[int]) -> Dict[str, Any]:
-    """Delete many hosts in the background; the job result lists the outcome per host."""
-    ids = []
+def normalize_host_ids(host_ids) -> List[int]:
+    """Positive, de-duplicated integer host ids in request order; junk entries are dropped."""
+    ids: List[int] = []
     for raw in list(host_ids or []):
         try:
             value = int(raw)
@@ -136,18 +136,29 @@ def start_bulk_host_remove_job(runtime, host_ids: List[int]) -> Dict[str, Any]:
             continue
         if value > 0 and value not in ids:
             ids.append(value)
+    return ids
+
+
+def start_bulk_host_remove_job(runtime, host_ids: List[int]) -> Dict[str, Any]:
+    """Delete many hosts in the background; the job result lists the outcome per host."""
+    ids = normalize_host_ids(host_ids)
     if not ids:
         raise ValueError("host_ids must contain at least one host id.")
 
     def _run(job_id):
         results = []
-        for host_id in ids:
-            if int(job_id or 0) > 0 and runtime.jobs.is_cancel_requested(int(job_id)):
-                raise RuntimeError("cancelled")
-            try:
-                results.append({"host_id": host_id, "status": "ok", **dict(delete_host_workspace(runtime, host_id) or {})})
-            except Exception as exc:
-                results.append({"host_id": host_id, "status": "error", "error": str(exc)})
+        try:
+            for host_id in ids:
+                if int(job_id or 0) > 0 and runtime.jobs.is_cancel_requested(int(job_id)):
+                    raise RuntimeError("cancelled")
+                try:
+                    results.append({"host_id": host_id, "status": "ok", **dict(delete_host_workspace(runtime, host_id) or {})})
+                except Exception as exc:
+                    results.append({"host_id": host_id, "status": "error", "error": str(exc)})
+        finally:
+            # Hosts are gone (or partly gone on cancel): every connected browser reloads hosts, services and graph.
+            if any(item["status"] == "ok" for item in results):
+                runtime._emit_ui_invalidation("overview", "hosts", "services", "graph")
         succeeded = sum(1 for item in results if item["status"] == "ok")
         return {
             "action": "remove",
