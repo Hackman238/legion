@@ -1,0 +1,16 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.env.*
+*.db
+*.sqlite
+*.legion
+backup/
+tmp/
+log/
+*.log
+.pytest_cache
+debian/legion/

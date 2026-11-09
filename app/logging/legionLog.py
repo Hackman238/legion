@@ -30,16 +30,23 @@ cachedAppLogger = None
 cachedStartupLogger = None
 cachedDbLogger = None
 
-cache_path = os.path.expanduser("~/.cache/legion/log")
+cache_path = os.environ.get("LEGION_LOG_DIR") or os.path.expanduser("~/.cache/legion/log")
+try:
+    os.makedirs(cache_path, exist_ok=True)
+except OSError:
+    # A read-only or absent home (containers, service accounts): log under the temp dir instead of crashing.
+    import tempfile
+    cache_path = os.path.join(tempfile.gettempdir(), "legion", "log")
+    try:
+        os.makedirs(cache_path, exist_ok=True)
+    except OSError:
+        cache_path = tempfile.gettempdir()
 log_path = os.path.join(cache_path, 'legion.log')
-if not os.path.isfile(log_path):
-    if not os.path.isdir(cache_path):
-        os.makedirs(cache_path)
 
 def getStartupLogger() -> Logger:
     global cachedStartupLogger
     logger = getOrCreateCachedLogger("legion-startup",
-            os.path.expanduser("~/.cache/legion/log/legion-startup.log"), True, cachedStartupLogger)
+            os.path.join(cache_path, "legion-startup.log"), True, cachedStartupLogger)
     cachedStartupLogger = logger
     return logger
 

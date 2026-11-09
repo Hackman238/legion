@@ -26,7 +26,18 @@ class DefaultNmapExporterTest(unittest.TestCase):
         self.mockShell = MagicMock()
         self.nmapExporter = DefaultNmapExporter(self.mockShell, self.log)
 
-    EXPECTED_ARGV = ["xsltproc", "-o", "some file.html", "/usr/share/nmap/nmap.xsl", "some file.xml"]
+    @property
+    def EXPECTED_ARGV(self):
+        from app.tools.nmap.DefaultNmapExporter import find_nmap_xsl
+        return ["xsltproc", "-o", "some file.html", find_nmap_xsl(), "some file.xml"]
+
+    def test_find_nmap_xsl_prefers_an_existing_packaged_copy(self):
+        from app.tools.nmap import DefaultNmapExporter as module
+
+        with patch.object(module.os.path, "exists", side_effect=lambda p: p == "/opt/homebrew/share/nmap/nmap.xsl"):
+            self.assertEqual("/opt/homebrew/share/nmap/nmap.xsl", module.find_nmap_xsl())
+        with patch.object(module.os.path, "exists", return_value=False):
+            self.assertEqual("/usr/share/nmap/nmap.xsl", module.find_nmap_xsl())  # Debian path as the fallback
 
     @patch("subprocess.run")
     def test_exportOutputToHtml_WhenProvidedFileNameAndOutputFolder_ExportsOutputSuccessfully(self, processRun):

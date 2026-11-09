@@ -1,3 +1,9 @@
+LEGION Unreleased
+
+* Portability fixes adopted from Denys Kolomiiets' macOS port (pull request #53): tool processes never inherit Legion's stdin (katana and httpx blocked forever on a piped stdin), nmap plans leave out OS detection when raw sockets are unavailable instead of failing, the nmap HTML stylesheet is found under Homebrew as well as /usr/share, katana uses the repeated `-kf` form modern releases require and a 5-minute crawl cap, the log directory honours `LEGION_LOG_DIR` and falls back to the temp directory when the cache directory is not writable, tool paths default to bare names resolved from PATH, `exec-in-shell` works without getent, and `.dockerignore` keeps projects and secrets out of images.
+* The three database entity modules still imported `six`, which 0.8.0 dropped from the requirements; a clean install now starts. SQLAlchemy 2 is what the code runs on and the requirements say so (the 1.4 pin, the urllib3 1.x pin and the selenium 4.9.1 pin are gone).
+* Removed the embedded Shodan API key from `scripts/python/pyShodan.py`; the key comes from the tool settings or `SHODAN_API_KEY`. Anyone who used that key should consider it exposed and rotate it.
+
 LEGION 0.8.0
 
 * Removed the legacy Qt desktop UI. `python legion.py` now starts the web interface; the headless CLI and MCP server are unchanged. PyQt6, qasync and the X11/xvfb packages are no longer dependencies, and the Nmap importer no longer needs Qt.
