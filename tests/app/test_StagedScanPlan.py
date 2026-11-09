@@ -22,6 +22,47 @@ class StagedScanPlanTest(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch("os.geteuid", return_value=1000):
             self.assertTrue(can_raw_socket())  # capabilities (docker --cap-add NET_RAW) asserted the nmap way
 
+    def test_windows_nmap_under_wsl_counts_as_privileged(self):
+        import os
+        from app.web import runtime_scan_planning as planning
+
+        env = {key: value for key, value in os.environ.items() if key not in {"NMAP_PRIVILEGED", "NMAP_UNPRIVILEGED"}}
+        with patch.dict(os.environ, env, clear=True), patch("os.geteuid", return_value=1000):
+            with patch.object(planning, "is_wsl", return_value=True):
+                # Npcap grants raw sockets to nmap.exe; the WSL euid says nothing about it
+                self.assertTrue(planning.can_raw_socket("/mnt/c/Program Files/Nmap/nmap.exe"))
+                self.assertFalse(planning.can_raw_socket("nmap"))  # a Linux nmap in WSL still needs root
+            with patch.object(planning, "is_wsl", return_value=False):
+                self.assertFalse(planning.can_raw_socket("nmap.exe"))
+
+    def test_dropped_os_detection_is_logged_once_per_plan(self):
+        from app.web import runtime_scan_planning as planning
+
+        with patch.object(planning, "can_raw_socket", return_value=False):
+            with self.assertLogs("app.web.runtime_scan_planning", level="WARNING") as logs:
+                plan = planning.build_staged_scan_plan(
+                    nmap_path="nmap", targets=["10.0.0.5"], output_prefix="/tmp/legion-test/out",
+                    discovery=True, extra_args=[], stage_specs=["T:80", "T:443", "NSE|vulners"],
+                )
+            self.assertEqual(1, len(logs.records))
+            self.assertIn("OS detection is left out", logs.output[0])
+            self.assertFalse(any(" -O" in stage["command"] for stage in plan["stages"]))
+            with self.assertLogs("app.web.runtime_scan_planning", level="WARNING") as logs:
+                plan = planning.build_single_scan_plan(
+                    runtime=None, targets=["10.0.0.5"], nmap_path="nmap", output_prefix="/tmp/legion-test/out",
+                    mode="hard", options={"aggressive": True}, extra_args=[],
+                )
+            self.assertEqual(1, len(logs.records))
+            self.assertIn("-sV -sC", plan["stages"][0]["command"])
+            self.assertNotIn("-A", plan["stages"][0]["command"].split())
+        with patch.object(planning, "can_raw_socket", return_value=True):
+            plan = planning.build_single_scan_plan(
+                runtime=None, targets=["10.0.0.5"], nmap_path="nmap", output_prefix="/tmp/legion-test/out",
+                mode="hard", options={"service_detection": True}, extra_args=[],
+            )
+            # nothing asked for OS detection: nothing to warn about either
+            self.assertNotIn("-O", plan["stages"][0]["command"].split())
+
     def test_unprivileged_plans_leave_out_os_detection(self):
         from app.web import runtime_scan_planning as planning
 

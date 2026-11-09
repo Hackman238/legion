@@ -391,7 +391,6 @@ class AppSettings():
                 "nmap-path": defaults.tools_path_nmap,
                 "hydra-path": defaults.tools_path_hydra,
                 "texteditor-path": defaults.tools_path_texteditor,
-                "pyshodan-api-key": defaults.tools_pyshodan_api_key,
                 "responder-path": defaults.tools_path_responder,
                 "ntlmrelay-path": defaults.tools_path_ntlmrelay,
             },
@@ -437,7 +436,6 @@ class AppSettings():
                 "nmap-path": [("ToolSettings", "nmap_path"), ("GeneralSettings", "nmap_path")],
                 "hydra-path": [("ToolSettings", "hydra_path"), ("GeneralSettings", "hydra_path")],
                 "texteditor-path": [("ToolSettings", "texteditor_path"), ("GeneralSettings", "texteditor_path")],
-                "pyshodan-api-key": [("ToolSettings", "pyshodan_api_key"), ("GeneralSettings", "pyshodan_api_key")],
                 "responder-path": [("ToolSettings", "responder_path"), ("GeneralSettings", "responder_path")],
                 "ntlmrelay-path": [("ToolSettings", "ntlmrelay_path"), ("GeneralSettings", "ntlmrelay_path")],
             },
@@ -482,8 +480,6 @@ class AppSettings():
             return False
         return bool(parser.remove_option(section, option))
 
-    SHODAN_KEY_PLACEHOLDER = "YourKeyGoesHere"
-
     def _apply_default_settings_migrations(self):
         defaults = Settings()
         group_defaults = self._default_settings_group_values(defaults)
@@ -514,15 +510,12 @@ class AppSettings():
         for alias_group, alias_key in sorted(removals):
             changed = self._remove_group_key(alias_group, alias_key) or changed
 
-        # Earlier configs shipped a literal placeholder; the Shodan action guards on a non-empty key, so the
-        # placeholder was sent to Shodan as if it were real. Blank it once so the action reports "not configured".
-        self.actions.beginGroup("ToolSettings")
-        try:
-            if str(self.actions.value("pyshodan-api-key") or "").strip() == self.SHODAN_KEY_PLACEHOLDER:
-                self.actions.setValue("pyshodan-api-key", "")
-                changed = True
-        finally:
-            self.actions.endGroup()
+        # Nothing ever read the ToolSettings Shodan key: the Shodan integration takes its key from the scheduler
+        # integrations (keyring / SHODAN_API_KEY). Drop the entry (and the shipped placeholder) from older configs
+        # so a real key is not left in plaintext for nothing.
+        for stale_group, stale_key in (("ToolSettings", "pyshodan-api-key"), ("ToolSettings", "pyshodan_api_key"),
+                                       ("GeneralSettings", "pyshodan_api_key")):
+            changed = self._remove_group_key(stale_group, stale_key) or changed
 
         if changed:
             self.actions.sync()
@@ -1833,7 +1826,6 @@ class AppSettings():
         self.actions.setValue('nmap-path', newSettings.tools_path_nmap)
         self.actions.setValue('hydra-path', newSettings.tools_path_hydra)
         self.actions.setValue('texteditor-path', newSettings.tools_path_texteditor)
-        self.actions.setValue('pyshodan-api-key', newSettings.tools_pyshodan_api_key)
         self.actions.setValue('responder-path', newSettings.tools_path_responder)
         self.actions.setValue('ntlmrelay-path', newSettings.tools_path_ntlmrelay)
         self.actions.endGroup()
@@ -1921,9 +1913,8 @@ class Settings():
         self.tools_path_nmap = "nmap"  # resolved from PATH at run time (see runtime_scan_planning.default_nmap_path)
         self.tools_path_hydra = "hydra"
         self.tools_path_texteditor = "/usr/bin/xdg-open"
-        self.tools_pyshodan_api_key = ""
         self.tools_path_responder = "responder"
-        self.tools_path_ntlmrelay = "ntlmrelayx.py"
+        self.tools_path_ntlmrelay = "impacket-ntlmrelayx"  # Kali/Debian name; pip installs provide ntlmrelayx.py
 
         # GUI settings
         self.gui_process_tab_column_widths = "125,0,100,150,100,100,100,100,100,100,100,100,100,100,100,100,100"
@@ -2061,10 +2052,6 @@ class Settings():
                 self.tools_path_texteditor = self.toolSettings.get(
                     'texteditor-path',
                     self.tools_path_texteditor,
-                )
-                self.tools_pyshodan_api_key = self.toolSettings.get(
-                    'pyshodan-api-key',
-                    self.tools_pyshodan_api_key,
                 )
                 self.tools_path_responder = self.toolSettings.get('responder-path', self.tools_path_responder)
                 self.tools_path_ntlmrelay = self.toolSettings.get('ntlmrelay-path', self.tools_path_ntlmrelay)

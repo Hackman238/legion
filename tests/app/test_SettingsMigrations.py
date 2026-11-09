@@ -133,7 +133,7 @@ class SettingsMigrationTest(unittest.TestCase):
                 )
                 self.assertEqual(0, parsed.returncode, parsed.stderr)
 
-    def test_shipped_shodan_placeholder_is_blanked_on_upgrade(self):
+    def test_unused_shodan_tool_setting_is_removed_on_upgrade(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_dir = os.path.join(tmpdir, ".local", "share", "legion")
             os.makedirs(config_dir, exist_ok=True)
@@ -147,10 +147,12 @@ class SettingsMigrationTest(unittest.TestCase):
                 from app.settings import AppSettings, Settings
 
                 settings = Settings(AppSettings())
-                # the placeholder was never a key: the enrichment action must see "not configured", not a bogus key
-                self.assertEqual("", settings.tools_pyshodan_api_key)
+                self.assertFalse(hasattr(settings, "tools_pyshodan_api_key"))  # nothing reads it: it is gone
+                self.assertEqual("nmap", settings.tools_path_nmap)
             with open(config_path, "r", encoding="utf-8") as handle:
-                self.assertNotIn("YourKeyGoesHere", handle.read())
+                saved = handle.read()
+            self.assertNotIn("pyshodan", saved)
+            self.assertIn("nmap-path=nmap", saved)
 
     def test_repeated_nikto_config_fixture_migrates_once_and_stays_stable(self):
         fixture_path = os.path.join(

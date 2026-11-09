@@ -151,6 +151,7 @@ A `Dockerfile` is included for local builds (`docker build -t legion .`). Pre-bu
 | Scheduler and AI provider preferences | `${LEGION_HOME}/scheduler-ai.json` |
 | API keys | OS keyring or encrypted local store, never the JSON file; `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `SHODAN_API_KEY`, `CHAOS_API_KEY` and `GRAYHATWARFARE_API_KEY` are also honoured |
 | Tool paths, providers, engagement policy | **Settings** in the web UI |
+| Nmap raw sockets (OS detection, `-A`) | Detected from running as root. `NMAP_PRIVILEGED=1` asserts it when nmap has the capability anyway (`setcap`, Docker `--cap-add NET_RAW` as a non-root user); `NMAP_UNPRIVILEGED=1` denies it. Without raw sockets scan plans leave OS detection out and say so in the log |
 | Web UI token | `--web-token` or `LEGION_WEB_TOKEN` (see the command-line reference) |
 | Extra pipette definitions | `LEGION_PIPETTES_PATH` (directory of pipette JSON files, see [docs/pipettes.md](docs/pipettes.md)) |
 
@@ -196,7 +197,10 @@ list of scheduler, importer and runtime fixes. See [CHANGELOG.txt](CHANGELOG.txt
 ## Development
 
 ```shell
-python3 -m unittest            # or: python3 -m pytest tests
+pip install -r requirements-dev.txt   # the runtime requirements plus flake8 and pip-audit
+python3 -m unittest                   # or: python3 -m pytest tests
+python3 -m flake8                     # rules in .flake8
+python3 -m pip_audit -r requirements.txt
 ```
 
 The suite needs no display server or Qt libraries. Design notes live in [docs/](docs/); contribution guidelines
