@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
-from app.paths import get_legion_install_dir
+from app.paths import tool_working_directory
 from app.settings import AppSettings
 from app.timing import getTimestamp
 from app.tooling import build_tool_execution_env
@@ -253,7 +253,7 @@ def run_command_with_tracking(
         proc = subprocess.Popen(
             command,
             shell=True,
-            cwd=get_legion_install_dir(),  # actions reference ./scripts and ./wordlists relatively
+            cwd=tool_working_directory(command),  # the install directory when ./scripts or ./wordlists is named
             # Never hand the tool Legion's own stdin: ProjectDiscovery tools (katana, httpx) treat a piped stdin
             # as another target source and wait for EOF forever, which looks like a hung scan with no output.
             stdin=subprocess.DEVNULL,

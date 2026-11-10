@@ -291,10 +291,32 @@ class WebRuntimeKillHandlingTest(unittest.TestCase):
         import subprocess
         # Go tools (katana, httpx) read a piped stdin as another target list and block forever on it.
         self.assertEqual(subprocess.DEVNULL, popen.call_args.kwargs.get("stdin"))
-        # ...and run from Legion's own directory, so ./scripts and ./wordlists resolve wherever Legion was started.
-        from app.paths import get_legion_install_dir
-        self.assertEqual(get_legion_install_dir(), popen.call_args.kwargs.get("cwd"))
-        self.assertTrue(os.path.isfile(os.path.join(get_legion_install_dir(), "legion.py")))
+        # A command with no bundled-file reference keeps the directory Legion was started from...
+        self.assertIsNone(popen.call_args.kwargs.get("cwd"))
+
+    def test_commands_naming_bundled_files_run_from_the_install_directory(self):
+        from app.paths import get_legion_install_dir, tool_working_directory
+        from app.web.runtime import WebRuntime
+
+        install_dir = get_legion_install_dir()
+        self.assertTrue(os.path.isfile(os.path.join(install_dir, "legion.py")))
+        for command in ("bash ./scripts/smbenum.sh 10.0.0.5", "hydra -C ./wordlists/ssh-user.txt 10.0.0.5 ssh",
+                        "if [ -f scripts/rdp-sec-check.pl ]; then perl scripts/rdp-sec-check.pl 10.0.0.5:3389; fi"):
+            self.assertEqual(install_dir, tool_working_directory(command), command)
+        # ...while a scan carrying the operator's own relative paths must resolve them where Legion was started.
+        for command in ("nmap -iL targets.txt --excludefile exclude.txt -oA /tmp/out", "nmap --script ./custom.nse h",
+                        "python3 /opt/myscripts/probe.py 10.0.0.5"):
+            self.assertIsNone(tool_working_directory(command), command)
+
+        repo = _DummyProcessRepo()
+        runtime = self._make_runtime(repo)
+        with patch("app.web.runtime_execution._PROCESS_READER_EXIT_GRACE_SECONDS", 0.0):
+            with patch("app.web.runtime_execution.subprocess.Popen", return_value=_ExitedProc()) as popen:
+                WebRuntime._run_command_with_tracking(
+                    runtime, tool_name="smbenum", tab_title="Test", host_ip="127.0.0.1", port="445",
+                    protocol="tcp", command="bash ./scripts/smbenum.sh 127.0.0.1", outputfile="/tmp/out", timeout=30,
+                )
+        self.assertEqual(install_dir, popen.call_args.kwargs.get("cwd"))
 
     def test_run_command_forces_completion_when_reader_does_not_close(self):
         from app.web.runtime import WebRuntime

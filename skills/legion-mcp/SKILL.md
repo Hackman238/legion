@@ -23,10 +23,14 @@ file is about getting it running and using it well.
 
 Legion launches real scanners against real hosts. Before any scan or tool run, confirm that the user is
 authorized to test the targets (their own network, a signed engagement, a lab). Ask when the scope is unclear.
-Set the engagement policy to match the authorization (`set_engagement_policy`, see below) rather than loosening
-it to make a step go through, and never approve a pending approval on the user's behalf unless they said so for
-that action: the approval queue exists so a human decides about credential attacks, exploitation and other risky
-steps.
+The engagement policy and the approval queue exist so a human decides about credential attacks, exploitation and
+other risky steps, and the server enforces that: by default an MCP client cannot approve requests or loosen the
+policy (those calls are refused with an explanation). When a step is blocked or waits for approval, tell the user
+what and why and let them decide; do not look for another tool that gets the same effect.
+
+The operator can delegate approvals and policy changes to the agent by registering the server with
+`LEGION_MCP_OPERATOR_MODE=1` in its environment. Suggest that only when the user asks for it, and even then
+approve an approval only when they said so for that action.
 
 ## Setup
 
@@ -95,15 +99,19 @@ Most mutating tools return `{"status": "accepted", "job": {...}}` immediately. P
 `id` until its status is `completed`, `failed` or `cancelled`, then read the results through the query tools.
 Do not re-submit a scan because the first call returned quickly; it is running.
 
-1. **Policy.** `get_engagement_policy`, then `set_engagement_policy` if it does not match the authorization.
-   Presets: `external_recon`, `external_pentest`, `internal_quick_recon`, `internal_recon`, `internal_pentest`,
-   `custom`. `approval_mode` is `never`, `risky` or `always`; `credential_attack_mode` and the other risk modes
-   are `blocked`, `approval` or `allowed`.
+1. **Policy.** `get_engagement_policy` first. Presets: `external_recon`, `external_pentest`,
+   `internal_quick_recon`, `internal_recon`, `internal_pentest`, `custom`. `approval_mode` is `never`, `risky`
+   or `always`; `credential_attack_mode` and the other risk modes are `blocked`, `approval` or `allowed`.
+   `set_engagement_policy` may tighten the policy (and naming a preset resets to that preset's defaults); a
+   change that would allow more is refused unless the operator enabled operator mode, so if the policy is
+   stricter than the user's authorization, say so and let them change it in the web UI.
 2. **Get data in.** `start_nmap_scan` with `targets` (IPs, CIDRs, hostnames) and a `scan_mode` of `easy`
    (top 1000 ports, service detection, default scripts), `hard` (no host discovery, T4), `legacy` (the classic
    `-T4 -sV -O` scan) or `rfc1918_discovery` (chunked sweep of private ranges); `staged: true` runs the
    configured port and script stages instead. `run_discovery` is the one-call version for a single target.
-   `import_nmap_xml` imports an existing report. Each returns a job.
+   `import_nmap_xml` imports an existing report. Each returns a job. Extra `nmap_args` go through the policy
+   like any other command: a scan whose arguments are risky (brute-force or unsafe NSE scripts, flooding rates)
+   comes back `blocked` or `approval_required` with no job; drop those arguments or ask the user.
 3. **Look at what came back.** `list_hosts` (filter `show_all` to include hosts that are down), `get_host` for
    the full picture of one host, `list_services` for the service view across hosts, `list_scan_history` for
    what was submitted.
@@ -117,8 +125,9 @@ Do not re-submit a scan because the first call returned quickly; it is running.
    as something to approve yourself.
 5. **Let the scheduler plan.** `get_plan_preview` shows the next governed steps for a host or service
    without running anything. `run_scheduler` starts a governed run over the whole project; it creates approvals
-   for anything the policy marks risky. `list_approvals` (status `pending`), then `approve_approval`,
-   `execute_approved_plan_step` or `reject_approval` with a `reason`, each only when the user has decided.
+   for anything the policy marks risky. `list_approvals` (status `pending`) shows what is waiting; report it to
+   the user, who approves in the web UI. `reject_approval` with a `reason` is always available. `approve_approval`
+   and `execute_approved_plan_step` work only in operator mode, and then only when the user has decided.
 6. **Read results.** `query_findings` for findings, `query_state` for the consolidated target state of a host,
    `query_graph` for the evidence graph (`search`, `node_types`, `min_confidence`), `list_execution_traces` and
    `get_execution_trace` for exactly what ran and what it printed. `create_annotation` records an analyst note
@@ -139,3 +148,7 @@ many scripts is large. Ask for what the next step needs rather than everything.
   `show_all`), or discovery was blocked by a firewall (`scan_mode: hard` skips host discovery).
 - Approvals that never appear: the policy's `approval_mode` is `never` or the action's risk mode is `allowed`,
   so the step ran without asking. Check `list_execution_traces`.
+- `PermissionError` from `approve_approval`, `execute_approved_plan_step` or `set_engagement_policy`: the server
+  is not in operator mode. That is the default and is working as intended; relay the decision to the user.
+- Asking `run_tool` again for something already waiting returns the same `approval_ids`; it does not queue a
+  second request, and it is not a way to check status (use `list_approvals`).

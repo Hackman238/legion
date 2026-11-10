@@ -118,9 +118,25 @@ log. The server can be started from any directory: tools run from Legion's own d
 `scripts/` and `wordlists/` are found. A JSON parse error means something wrote to stdout besides the server; start it with a
 plain command rather than through a login shell that prints a banner.
 
+## Operator mode
+
+By default the MCP client can read everything, start scans and run tools that the engagement policy allows, queue
+approvals, reject approvals and tighten the policy. It cannot approve an approval or change the policy to allow
+more: the agent is the party those controls check. An operator who wants to delegate both adds one variable to
+the server's environment when registering it:
+
+```bash
+claude mcp add legion --scope user -e LEGION_HOME=$HOME/.local/share/legion -e LEGION_MCP_OPERATOR_MODE=1 -- /path/to/legion/.venv/bin/python /path/to/legion/legion.py --mcp-server
+```
+
+(`env = { ..., LEGION_MCP_OPERATOR_MODE = "1" }` in Codex's `config.toml`, `"LEGION_MCP_OPERATOR_MODE": "1"` in
+a JSON client's `env`.) In operator mode approval-required scans also run directly, because a scan has no
+approval record for a person to act on later. Leave it off unless the user asks for it.
+
 ## Installing this skill
 
-The skill directory is `skills/legion-mcp` in the Legion repository. Copy or symlink it where the agent looks:
+The skill directory is `skills/legion-mcp` in the Legion repository (the Debian package installs it at
+`/usr/share/legion/skills/legion-mcp`, with `legion.py` at `/usr/share/legion/legion.py`). Copy or symlink it where the agent looks:
 
 - Claude Code: `~/.claude/skills/legion-mcp` (every project) or `.claude/skills/legion-mcp` in a project.
 - Codex: `~/.codex/skills/legion-mcp`, or `.agents/skills/legion-mcp` in a project.
