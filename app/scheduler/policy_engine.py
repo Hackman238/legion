@@ -112,6 +112,24 @@ def _decision_for_tag(tag: str, policy: EngagementPolicy) -> str:
     return "allowed"
 
 
+def policy_loosenings(old_policy, new_policy) -> List[str]:
+    """What `new_policy` permits that `old_policy` did not, as "risk_tag: old -> new" strings; [] when it only tightens.
+
+    Uses the engine itself as the oracle: every known risk tag (and an untagged action) is evaluated under both
+    policies, so any field that changes a decision is covered without listing fields here.
+    """
+    from app.scheduler.risk import VALID_RISK_TAGS
+
+    loosened = []
+    for tag in [""] + sorted(VALID_RISK_TAGS):
+        tags = [tag] if tag else []
+        before = evaluate_policy_for_risk_tags(tags, old_policy).state
+        after = evaluate_policy_for_risk_tags(tags, new_policy).state
+        if _decision_rank(after) < _decision_rank(before):
+            loosened.append(f"{tag or 'untagged actions'}: {before} -> {after}")
+    return loosened
+
+
 def _policy_reason(
         state: str,
         risk_tags: List[str],

@@ -44,7 +44,7 @@ Run a quick discovery scan on a target and optionally invoke the shared schedule
 
 ### `start_nmap_scan`
 
-Queue an nmap scan of targets (IPs, CIDRs, hostnames) and import the results.
+Queue an nmap scan of targets (IPs, CIDRs, hostnames) and import the results. Extra nmap_args go through the engagement policy: status accepted means the scan was queued; blocked or approval_required means it was not (drop the risky arguments or ask the operator).
 
 | Argument | Type | Notes |
 | --- | --- | --- |
@@ -184,7 +184,7 @@ No arguments.
 
 ### `set_engagement_policy`
 
-Update the normalized Legion engagement policy.
+Update the engagement policy. An MCP client may only tighten it; a change that would allow something the current policy blocks or holds for approval is refused unless the operator started the server with LEGION_MCP_OPERATOR_MODE=1. Naming a preset resets to that preset.
 
 | Argument | Type | Notes |
 | --- | --- | --- |
@@ -235,7 +235,7 @@ List pending or historical approval requests.
 
 ### `approve_approval`
 
-Approve a pending approval request without necessarily executing it.
+Approve a pending approval request without necessarily executing it. Refused unless the operator started the server with LEGION_MCP_OPERATOR_MODE=1; otherwise a person approves in the web UI.
 
 | Argument | Type | Notes |
 | --- | --- | --- |
@@ -246,7 +246,7 @@ Approve a pending approval request without necessarily executing it.
 
 ### `execute_approved_plan_step`
 
-Approve and execute a pending approval request through the shared approval flow.
+Approve and execute a pending approval request. Refused unless the operator started the server with LEGION_MCP_OPERATOR_MODE=1; otherwise a person approves in the web UI.
 
 | Argument | Type | Notes |
 | --- | --- | --- |

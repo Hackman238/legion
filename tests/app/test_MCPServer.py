@@ -202,6 +202,7 @@ class MCPServerTest(unittest.TestCase):
         saved = self._call_tool("save_project", {"path": "/tmp/saved.legion", "replace": False})
         self.assertEqual("/tmp/saved.legion", saved["project"]["name"])
 
+    @mock.patch.dict(os.environ, {"LEGION_MCP_OPERATOR_MODE": "1"})  # approvals are delegated here
     def test_plan_preview_and_approval_tools_delegate_to_runtime(self):
         preview = self._call_tool("get_plan_preview", {"host_id": 11, "mode": "compare", "limit_actions": 4})
         self.assertEqual("compare", preview["requested_mode"])
@@ -273,6 +274,7 @@ class MCPServerTest(unittest.TestCase):
         self.assertIs(service.runtime, self.runtime)
         self.assertEqual({"target": "10.0.0.5", "run_actions": True}, request_payload)
 
+    @mock.patch.dict(os.environ, {"LEGION_MCP_OPERATOR_MODE": "1"})  # approvals are delegated here
     def test_approval_tools_use_scheduler_service_boundary(self):
         from app.web.services.scheduler_service import SchedulerService
 
@@ -399,6 +401,43 @@ class MCPServerTest(unittest.TestCase):
         self.assertEqual(11, mocked_state.call_args.args[1])
         self.assertEqual(42, mocked_state.call_args.kwargs["limit"])
 
+
+    def test_approving_is_refused_without_operator_mode_and_rejecting_is_not(self):
+        env = {key: value for key, value in os.environ.items() if key != "LEGION_MCP_OPERATOR_MODE"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            for tool in ("approve_approval", "execute_approved_plan_step"):
+                response = _drain_coroutine(self.server.handle_request({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": {"approval_id": 77}},
+                }))
+                self.assertTrue(response["result"]["isError"], tool)
+                self.assertIn("LEGION_MCP_OPERATOR_MODE", response["result"]["content"][0]["text"])
+            rejected = self._call_tool("reject_approval", {"approval_id": 77, "reason": "out of scope"})
+        self.assertNotIn("approve_scheduler_approval", [call[0] for call in self.runtime.last_calls])
+        self.assertTrue(rejected)
+
+    def test_policy_changes_over_mcp_may_tighten_but_not_loosen(self):
+        env = {key: value for key, value in os.environ.items() if key != "LEGION_MCP_OPERATOR_MODE"}
+        self.runtime.policy = {"preset": "internal_recon"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            loosen = _drain_coroutine(self.server.handle_request({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "set_engagement_policy", "arguments": {"credential_attack_mode": "allowed"}},
+            }))
+            self.assertTrue(loosen["result"]["isError"])
+            self.assertIn("credential_bruteforce: blocked -> allowed", loosen["result"]["content"][0]["text"])
+            self.assertNotIn("set_engagement_policy", [call[0] for call in self.runtime.last_calls])
+            for attempt in ({"approval_mode": "never"}, {"preset": "internal_pentest"}, {"allow_exploitation": True}):
+                response = _drain_coroutine(self.server.handle_request({
+                    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": "set_engagement_policy", "arguments": attempt},
+                }))
+                self.assertTrue(response["result"]["isError"], attempt)
+            self._call_tool("set_engagement_policy", {"approval_mode": "always"})  # tightening is always allowed
+        self.assertIn(("set_engagement_policy", {"approval_mode": "always"}), self.runtime.last_calls)
+        with mock.patch.dict(os.environ, {"LEGION_MCP_OPERATOR_MODE": "1"}):
+            self._call_tool("set_engagement_policy", {"credential_attack_mode": "allowed"})
+        self.assertIn(("set_engagement_policy", {"credential_attack_mode": "allowed"}), self.runtime.last_calls)
 
     def test_ensure_runtime_creates_temporary_project_when_none_is_active(self):
         from app.mcpServer import MCPServer

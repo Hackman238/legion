@@ -51,6 +51,24 @@ def _bool_arg(arguments: Dict[str, Any], key: str, default: bool = False) -> boo
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
 
+# The MCP caller is the party the engagement policy and the approval queue exist to check, so by default it
+# cannot approve requests or loosen the policy. The operator who registers the server can delegate both by
+# setting this variable in the server's environment.
+OPERATOR_MODE_ENV = "LEGION_MCP_OPERATOR_MODE"
+
+
+def operator_mode_enabled() -> bool:
+    return str(os.environ.get(OPERATOR_MODE_ENV, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_operator_mode(action: str) -> None:
+    if operator_mode_enabled():
+        return
+    raise PermissionError(
+        f"{action} is not available to an MCP client by default. A person does this in the Legion web UI; "
+        f"the operator can delegate it to the agent by starting the MCP server with {OPERATOR_MODE_ENV}=1."
+    )
+
 
 class MCPServer:
     def __init__(self, runtime=None):
@@ -108,7 +126,11 @@ class MCPServer:
                 "handler": self.get_engagement_policy,
             },
             "set_engagement_policy": {
-                "description": "Update the normalized Legion engagement policy.",
+                "description": (
+                    "Update the engagement policy. An MCP client may only tighten it; a change that would allow "
+                    "something the current policy blocks or holds for approval is refused unless the operator "
+                    "started the server with LEGION_MCP_OPERATOR_MODE=1. Naming a preset resets to that preset."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -160,7 +182,11 @@ class MCPServer:
                 "handler": self.list_approvals,
             },
             "approve_approval": {
-                "description": "Approve a pending approval request without necessarily executing it.",
+                "description": (
+                    "Approve a pending approval request without necessarily executing it. Refused unless the "
+                    "operator started the server with LEGION_MCP_OPERATOR_MODE=1; otherwise a person approves "
+                    "in the web UI."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -174,7 +200,10 @@ class MCPServer:
                 "handler": self.approve_approval,
             },
             "execute_approved_plan_step": {
-                "description": "Approve and execute a pending approval request through the shared approval flow.",
+                "description": (
+                    "Approve and execute a pending approval request. Refused unless the operator started the "
+                    "server with LEGION_MCP_OPERATOR_MODE=1; otherwise a person approves in the web UI."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -369,7 +398,11 @@ class MCPServer:
                 "handler": self.run_tool,
             },
             "start_nmap_scan": {
-                "description": "Queue an nmap scan of targets (IPs, CIDRs, hostnames) and import the results.",
+                "description": (
+                    "Queue an nmap scan of targets (IPs, CIDRs, hostnames) and import the results. Extra nmap_args "
+                    "go through the engagement policy: status accepted means the scan was queued; blocked or "
+                    "approval_required means it was not (drop the risky arguments or ask the operator)."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -571,7 +604,27 @@ class MCPServer:
         runtime = self._ensure_runtime()
         from app.web.services.scheduler_service import SchedulerService
 
-        return SchedulerService(runtime).update_engagement_policy(arguments or {})
+        service = SchedulerService(runtime)
+        updates = dict(arguments or {})
+        if not operator_mode_enabled():
+            from app.scheduler.policy import normalize_engagement_policy
+            from app.scheduler.policy_engine import policy_loosenings
+            from app.web.runtime_scheduler_policy_config import merge_engagement_policy_payload
+
+            current = dict(service.get_engagement_policy() or {})
+            fallback = str(current.get("legacy_goal_profile", "") or "internal_asset_discovery")
+            before = normalize_engagement_policy(current, fallback_goal_profile=fallback)
+            after = normalize_engagement_policy(
+                merge_engagement_policy_payload(current, updates), fallback_goal_profile=fallback,
+            )
+            loosened = policy_loosenings(before, after)
+            if loosened:
+                raise PermissionError(
+                    "This change would loosen the engagement policy (" + "; ".join(loosened) + "). An MCP client "
+                    "may only tighten it. A person changes it in the Legion web UI, or the operator delegates it "
+                    f"by starting the MCP server with {OPERATOR_MODE_ENV}=1."
+                )
+        return service.update_engagement_policy(updates)
 
     async def get_plan_preview(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self._ensure_runtime()
@@ -586,6 +639,7 @@ class MCPServer:
         return SchedulerService(runtime).list_approvals(arguments)
 
     async def approve_approval(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        _require_operator_mode("Approving an approval request")
         runtime = self._ensure_runtime()
         approval_id = _int_arg(arguments, "approval_id", 0)
         if approval_id <= 0:
@@ -603,6 +657,7 @@ class MCPServer:
         }
 
     async def execute_approved_plan_step(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        _require_operator_mode("Approving and executing an approval request")
         runtime = self._ensure_runtime()
         approval_id = _int_arg(arguments, "approval_id", 0)
         if approval_id <= 0:
@@ -724,7 +779,9 @@ class MCPServer:
     async def start_nmap_scan(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         from app.web.services.scan_service import ScanService
 
-        return ScanService(self._ensure_runtime()).nmap_scan(dict(arguments or {}))
+        return ScanService(self._ensure_runtime()).start_governed_nmap_scan(
+            dict(arguments or {}), approvals_delegated=operator_mode_enabled(),
+        )
 
     async def import_nmap_xml(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         from app.web.services.scan_service import ScanService

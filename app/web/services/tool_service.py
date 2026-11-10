@@ -57,7 +57,7 @@ class ToolService:
         )
         policy = {
             key: verdict[key] for key in ("state", "risk_tags", "reason", "risk_summary", "safer_alternative")
-        }
+        }  # what the caller needs to explain the outcome; the command template stays server-side
         if verdict["state"] == "allowed":
             result = self.start_tool_run(payload)
             result["policy"] = policy

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from app.scheduler.policy import (
+    VALID_ENGAGEMENT_PRESETS,
     ensure_scheduler_engagement_policy_table,
     get_project_engagement_policy,
     normalize_engagement_policy,
@@ -17,6 +18,12 @@ def merge_engagement_policy_payload(
 ) -> Dict[str, Any]:
     merged = dict(current_policy or {})
     incoming = dict(updates or {}) if isinstance(updates, dict) else {}
+    named_preset = str(incoming.get("preset", "") or "").strip().lower()
+    if named_preset in VALID_ENGAGEMENT_PRESETS and named_preset != "custom":
+        # Choosing a standard preset means that preset: start from its defaults and apply only what came with
+        # this update. Merging over the current policy kept earlier overrides (credential attacks allowed,
+        # approvals off) under the name of a preset that does not allow them.
+        return incoming
     if isinstance(merged.get("custom_overrides"), dict) and isinstance(incoming.get("custom_overrides"), dict):
         custom_overrides = dict(merged.get("custom_overrides", {}))
         custom_overrides.update(incoming.get("custom_overrides", {}))

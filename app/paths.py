@@ -21,6 +21,21 @@ def get_legion_install_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+_BUNDLED_REFERENCE = re.compile(r"""(?:^|[\s"'(=;&|])(?:\./)?(?:scripts|wordlists)/""")
+
+
+def tool_working_directory(command: str) -> Optional[str]:
+    """Where a tool command should run: the install directory if it names bundled files, else unchanged (None).
+
+    Only commands that reference `scripts/` or `wordlists/` relatively need the install directory. Everything
+    else, in particular a scan carrying the operator's own arguments (`-iL targets.txt`, `--excludefile ...`),
+    keeps the directory Legion was started from, so relative paths the operator typed still resolve there.
+    """
+    if _BUNDLED_REFERENCE.search(str(command or "")):
+        return get_legion_install_dir()
+    return None
+
+
 def _current_user_token() -> str:
     try:
         raw = str(getpass.getuser() or "").strip()

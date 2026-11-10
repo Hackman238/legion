@@ -120,10 +120,16 @@ env = { LEGION_HOME = "/home/you/.local/share/legion" }
 Scans need the same privileges as the web UI, so run the client (or Legion) as root when the agent should launch
 nmap itself (or give nmap the capability and set `NMAP_PRIVILEGED=1`).
 
+The MCP client is held to the engagement policy: `run_tool` and the extra arguments of `start_nmap_scan` are
+classified first, so a risky run becomes a pending approval or is refused. By default the client cannot approve
+requests or loosen the policy; a person does that in the web UI. To delegate both to the agent, add
+`"LEGION_MCP_OPERATOR_MODE": "1"` to the server's `env`.
+
 An agent skill that teaches Claude Code, Codex and other Agent Skills clients how to install Legion, register the
 server and work through scans, approvals and reports lives in [skills/legion-mcp](skills/legion-mcp). Copy or
 symlink that directory to `~/.claude/skills/legion-mcp` or `~/.codex/skills/legion-mcp`; inside this repository
-it is already linked for both, and `.mcp.json` registers the server for Claude Code.
+it is already linked for both, and `.mcp.json` registers the server for Claude Code. The Debian package installs
+the skill at `/usr/share/legion/skills/legion-mcp`.
 `skills/legion-mcp/scripts/mcp_smoke_test.py` checks a registration end to end.
 
 ## Installation

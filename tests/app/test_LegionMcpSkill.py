@@ -48,6 +48,10 @@ class LegionMcpSkillTest(unittest.TestCase):
             self.assertIn(f"`{status}`", body)
         from app.mcpServer import MCPServer
 
+        self.assertIn("LEGION_MCP_OPERATOR_MODE=1", body)  # how approvals and policy changes are delegated
+        tools = MCPServer().tools
+        for gated in ("approve_approval", "execute_approved_plan_step", "set_engagement_policy"):
+            self.assertIn("LEGION_MCP_OPERATOR_MODE", tools[gated]["description"])
         description = MCPServer().tools["run_tool"]["description"]
         for status in ("accepted", "approval_required", "blocked"):
             self.assertIn(status, description)

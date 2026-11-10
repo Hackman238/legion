@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, Optional
 
 from app.pipettes import find_pipette
+from app.scheduler.approvals import list_pending_approvals
 from app.scheduler.family import build_command_family_id
 from app.scheduler.planner import ScheduledAction, SchedulerPlanner
 from app.scheduler.policy_engine import evaluate_policy_for_risk_tags
@@ -184,6 +185,27 @@ def start_tool_run_job(
     )
 
 
+def _policy_view(decision) -> Dict[str, Any]:
+    return {
+        "state": decision.state,
+        "risk_tags": list(decision.risk_tags),
+        "reason": decision.reason,
+        "risk_summary": decision.risk_summary,
+        "safer_alternative": decision.safer_alternative,
+        "family_policy_state": decision.family_policy_state,
+    }
+
+
+def evaluate_command_policy(runtime, command: str, *, tool_id: str = "", label: str = "") -> Dict[str, Any]:
+    """The engagement policy's verdict on an arbitrary command line (for example nmap with caller-supplied args)."""
+    with runtime._lock:
+        risk_tags = classify_risk_tags(str(command or ""), tool_id=str(tool_id), label=str(label))
+        decision = evaluate_policy_for_risk_tags(
+            risk_tags, runtime._load_engagement_policy_locked(persist_if_missing=True),
+        )
+    return _policy_view(decision)
+
+
 def evaluate_tool_run_policy(
         runtime,
         tool_id: str,
@@ -220,18 +242,14 @@ def evaluate_tool_run_policy(
             runtime._load_engagement_policy_locked(persist_if_missing=True),
             family_policy_state=family_state,
         )
-    return {
-        "state": decision.state,
+    verdict = _policy_view(decision)
+    verdict.update({
         "tool_id": str(tool_id),
         "label": label,
         "command_template": template,
         "family_id": family_id,
-        "risk_tags": list(decision.risk_tags),
-        "reason": decision.reason,
-        "risk_summary": decision.risk_summary,
-        "safer_alternative": decision.safer_alternative,
-        "family_policy_state": decision.family_policy_state,
-    }
+    })
+    return verdict
 
 
 def queue_tool_run_approval(
@@ -243,8 +261,22 @@ def queue_tool_run_approval(
         verdict: Dict[str, Any],
         requested_by: str = "mcp",
 ) -> int:
-    """Queue a requested tool run as a pending approval; approving it runs it through the usual approval flow."""
+    """Queue a requested tool run as a pending approval; approving it runs it through the usual approval flow.
+
+    Asking again for a run that is already waiting returns the existing approval: a caller that retries (or
+    re-asks to see whether it was approved) must not stack up copies that would each run the tool.
+    """
     resolved_protocol = str(protocol or "tcp").strip().lower() or "tcp"
+    with runtime._lock:
+        project = runtime._require_active_project()
+        for item in list_pending_approvals(project.database, limit=1000, status="pending", host_ip=str(host_ip)):
+            if (
+                    str(item.get("tool_id", "")) == str(verdict.get("tool_id", ""))
+                    and str(item.get("port", "")) == str(port)
+                    and (str(item.get("protocol", "") or "tcp").lower() == resolved_protocol)
+                    and str(item.get("command_template", "")) == str(verdict.get("command_template", ""))
+            ):
+                return int(item.get("id", 0) or 0)
     service_name = str(runtime._service_name_for_target(str(host_ip), str(port), resolved_protocol) or "")
     decision = ScheduledAction.from_legacy_fields(
         tool_id=str(verdict.get("tool_id", "")),
